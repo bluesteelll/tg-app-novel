@@ -705,7 +705,7 @@ export function createGame(deps: GameDeps): Game {
 
   /** Applies a visual batch after its blocking loads; resolves with the batch's own end (transitions, wait). */
   const stage = async (s: Session, visual: readonly VisualCommand[], instant: boolean): Promise<{ done: Promise<void> }> => {
-    const ids = imageIds(visual);
+    const ids = imageIds(visual, { stage: scene.snapshot(), manifest: s.ch?.assets ?? null });
     if (ids.length > 0) {
       // F1 step 9: an asset that fails to load is skipped by the scene, and the story goes on.
       await scene.ensure(ids, s.abort.signal);

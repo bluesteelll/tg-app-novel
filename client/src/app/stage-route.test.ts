@@ -1,8 +1,10 @@
 import { expect, test } from 'vitest';
 
-import type { VisualCommand } from '../scene/executor.ts';
-import type { BgId, CgId, CharId, ExprId, KnotName, PropId, PuzzleLocalId, SectionId, SfxId, StagingCommand, TrackId } from '../story/staging.ts';
-import { imageIds, splitBatch } from './stage-route.ts';
+import type { SceneSnapshot, VisualCommand } from '../scene/executor.ts';
+import type { AssetEntry, AssetManifest } from '../story/catalog.ts';
+import type { BgId, CgId, ChapterId, CharId, ExprId, KnotName, PropId, PuzzleLocalId, SectionId, SfxId, StagingCommand, TrackId } from '../story/staging.ts';
+import { parseTags } from '../story/tags.ts';
+import { imageIds, manifestIndex, splitBatch } from './stage-route.ts';
 
 // Commands as parseTags types them; the brands are earned by the parser in production.
 /** One command of every kind: a kind added to StagingCommand fails `check` here until its route is pinned. */
@@ -62,4 +64,121 @@ test('stage-route: think goes to the session, anim and fx to the scene', () => {
   // A batch without it: the line is spoken as usual.
   expect(splitBatch([ALL.anim, ALL.bgm]).think).toBe(false);
   expect(splitBatch([]).think).toBe(false);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// A shot chapter's batch (docs/plans/shots §5.2, rev. 4 W4 and m5; lane SH4): the drawn files it ensures.
+
+const B64 = (bytes: number): string => 'A'.repeat(Math.ceil(bytes / 3) * 4);
+type RawBox = readonly [number, number, number, number];
+const member = (file: string, frame: RawBox, at: RawBox): unknown => ({ file, frame, at });
+/** A face member as a manifest's `shots` carries it: rest `neutral`, a layer per other expression, talk in each. */
+function rawCast(shot: string, c: string, at: RawBox, exprs: readonly string[], figure = false): unknown {
+  const f = (x: string): string => `face/${shot}/${c}/${x}`;
+  const motion = (x: string): unknown => ({
+    blink: { half: member(f(x), [0, 0, 1, 1], at), closed: member(f(x), [1, 0, 1, 1], at) },
+    talk: [member(`talk/${shot}/${c}/${x}`, [0, 0, 40, 20], at)],
+    accent: member(f(x), [2, 0, 1, 1], at),
+  });
+  return {
+    char: c,
+    view: 'face',
+    face: { rest: 'neutral', exprs: Object.fromEntries(['neutral', ...exprs].map((x) => [x, { layer: x === 'neutral' ? null : member(f(x), [0, 40, at[2], at[3]], at), motion: motion(x) }])), head: at },
+    body: { cx: 540, cy: 1300, rx: 200, ry: 600, rot: 0, feet: [540, 1900] },
+    headDepth: 0.5,
+    plateau: B64(Math.ceil((25 * 47) / 8)),
+    plateauCoarse: B64(Math.ceil((13 * 24) / 8)),
+    band: 40,
+    group: 0,
+    figure: figure ? member(`sheet/${shot}`, [0, 200, 300, 1000], [300, 600, 300, 1000]) : null,
+    hair: [{ member: member(`sheet/${shot}`, [0, 0, 200, 120], [at[0], at[1] - 60, 200, 120]), pivot: [at[0], at[1]] }],
+  };
+}
+const rawShot = (cast: readonly unknown[], planes: readonly unknown[] = []): unknown => ({ w: 1080, h: 2048, frame: 'two', focus: [540, 1024], cast, planes, ambient: [], depth: B64(13 * 24) });
+const entry = (url: string): AssetEntry => ({ kind: 'image', w: 256, h: 256, decodedBytes: 262_144, avif: { url: `${url}.avif`, bytes: 100 }, webp: { url: `${url}.webp`, bytes: 120 } });
+/** A shot chapter's manifest: `two` (ally and stranger), `two_cu` (ally), `fig` (a figure plane), `wide` (a plane). */
+function shotManifest(chapterId: string, base: string, exprs: readonly string[]): AssetManifest {
+  const ids = ['bg/two', 'bg/two_cu', 'bg/fig', 'bg/wide', 'sheet/two', 'sheet/two_cu', 'sheet/fig', 'sheet/wide'];
+  for (const x of exprs) {
+    ids.push(`face/two/ally/${x}`, `face/two/stranger/${x}`, `face/two_cu/ally/${x}`, `face/fig/ally/${x}`);
+  }
+  return {
+    chapterId: chapterId as ChapterId,
+    assets: Object.fromEntries(ids.map((id) => [id, entry(`${base}${id.replaceAll('/', '-')}`)])),
+    shots: {
+      two: rawShot([rawCast('two', 'ally', [200, 520, 160, 200], exprs), rawCast('two', 'stranger', [700, 500, 160, 200], exprs)]),
+      two_cu: rawShot([rawCast('two_cu', 'ally', [400, 600, 300, 380], exprs)]),
+      fig: rawShot([rawCast('fig', 'ally', [200, 520, 160, 200], exprs, true)]),
+      wide: rawShot([], [{ member: member('sheet/wide', [0, 0, 100, 100], [0, 1500, 1080, 548]), depth: 0.2, pivot: [540, 2048], front: true }]),
+    },
+  };
+}
+const SHOTS = shotManifest('ch4', '/assets/', ['smile', 'worried']);
+const on = (bg: string | null, faces: Array<[string, string]> = []): SceneSnapshot => ({
+  bg: bg as BgId | null,
+  cg: null,
+  chars: faces.map(([char, expr]) => ({ char: char as CharId, expr: expr as ExprId, at: 'center' })),
+  props: [],
+});
+const cmdFace = (c: string, x: string): VisualCommand => ({ kind: 'face', char: c as CharId, expr: x as ExprId, ms: null });
+const cmdScene = (b: string): VisualCommand => ({ kind: 'scene', bg: b as BgId, t: 'cut', ms: 500 });
+const cmdBg = (b: string): VisualCommand => ({ kind: 'bg', bg: b as BgId, t: 'cut', ms: 500 });
+
+test('stage-route: a batch ensures the sheet when a face is not at rest or the shot has cut-outs', () => {
+  // At rest, the plate alone: the plate shows every face.
+  expect(imageIds([cmdScene('two')], { stage: on(null), manifest: SHOTS })).toEqual(['bg/two']);
+  // A face off its rest: its face file and the sheet (the hair locks drawn over it).
+  expect(imageIds([cmdFace('ally', 'smile')], { stage: on('two'), manifest: SHOTS })).toEqual(['bg/two', 'face/two/ally/smile', 'sheet/two']);
+  // Cut-outs need the sheet at rest too: a figure plane, a plane.
+  expect(imageIds([cmdScene('fig')], { stage: on('two'), manifest: SHOTS })).toEqual(['bg/fig', 'sheet/fig']);
+  expect(imageIds([cmdScene('wide')], { stage: on('two'), manifest: SHOTS })).toEqual(['bg/wide', 'sheet/wide']);
+  // Back to the rest: no sheet, no face file.
+  expect(imageIds([cmdFace('ally', 'neutral')], { stage: on('two', [['ally', 'smile']]), manifest: SHOTS })).toEqual(['bg/two']);
+});
+
+test("stage-route: manifestIndex knows a face from the chapter's rigs", () => {
+  // No char/ entry: the face vocabulary is the rigs' (a face of a shot chapter validates against its own manifest).
+  const idx = manifestIndex(SHOTS);
+  expect([idx.hasChar('ally'), idx.hasChar('stranger'), idx.hasChar('keeper')]).toEqual([true, true, false]);
+  expect([idx.hasExpr('ally', 'smile'), idx.hasExpr('ally', 'neutral'), idx.hasExpr('ally', 'furious'), idx.hasExpr('keeper', 'smile')]).toEqual([true, true, false, false]);
+  expect(parseTags(['face: ally smile'], idx).commands).toEqual([cmdFace('ally', 'smile')]);
+  // A legacy chapter answers from its sprites only.
+  const legacy = manifestIndex({ chapterId: 'ch1' as ChapterId, assets: Object.fromEntries([['char/ally/neutral', entry('/assets/char-ally-neutral')]]) });
+  expect([legacy.hasChar('ally'), legacy.hasExpr('ally', 'neutral'), legacy.hasExpr('ally', 'smile')]).toEqual([true, true, false]);
+});
+
+test('stage-route: a batch ensures the face file of every visible face not at rest, never a talk file', () => {
+  // The shot after the cut and the persisted faces decide: a bg cut keeps ally's smile, in the new shot's files.
+  expect(imageIds([cmdBg('two_cu')], { stage: on('two', [['ally', 'smile']]), manifest: SHOTS })).toEqual(['bg/two_cu', 'face/two_cu/ally/smile', 'sheet/two_cu']);
+  // A scene resets the faces to their rest: the plate alone.
+  expect(imageIds([cmdScene('two_cu')], { stage: on('two', [['ally', 'smile']]), manifest: SHOTS })).toEqual(['bg/two_cu']);
+  // A second face changes: both visible faces off rest are ensured, the persisted one included.
+  const both = imageIds([cmdFace('stranger', 'worried')], { stage: on('two', [['ally', 'smile']]), manifest: SHOTS });
+  expect(both).toEqual(['bg/two', 'face/two/ally/smile', 'face/two/stranger/worried', 'sheet/two']);
+  // A face never names a sprite on a shot chapter, and no batch names a talk file (motion, never awaited).
+  for (const ids of [both, imageIds([cmdFace('ally', 'smile'), cmdBg('two')], { stage: on('two'), manifest: SHOTS })]) {
+    expect(ids.filter((id) => id.startsWith('talk/') || id.startsWith('char/'))).toEqual([]);
+  }
+});
+
+test("stage-route: a paid chapter's batch ensures its gated face files", () => {
+  // A paid chapter's manifest: every file gated; the blush lives only in a gated face file.
+  const paid = shotManifest('ch2', '/api/assets/', ['blush']);
+  const ids = imageIds([cmdFace('ally', 'blush')], { stage: on('two'), manifest: paid });
+  expect(ids).toEqual(['bg/two', 'face/two/ally/blush', 'sheet/two']);
+  for (const id of ids) {
+    const e = paid.assets[id];
+    expect(e?.kind === 'image' ? e.avif.url : null, id).toMatch(/^\/api\/assets\//);
+  }
+});
+
+test("stage-route: a sprite chapter's ids are unchanged with a context", () => {
+  // ch1-ch3: cast-less rigs (or none) make no shot chapter, so the ids are today's, a face's sprite included.
+  const castless: AssetManifest = { chapterId: 'ch1' as ChapterId, assets: {}, shots: { two: rawShot([]) } };
+  const cmds = [ALL.bg, ALL.scene, ALL.show, ALL.hide, ALL.cg, ALL.face, ALL.wait];
+  const today = imageIds(cmds);
+  expect(today).toEqual(['bg/cafe', 'bg/street', 'char/ally/neutral', 'cg/letter', 'char/ally/smile']);
+  for (const manifest of [castless, { chapterId: 'ch1' as ChapterId, assets: {} }, null]) {
+    expect(imageIds(cmds, { stage: on('two', [['ally', 'smile']]), manifest })).toEqual(today);
+  }
 });
