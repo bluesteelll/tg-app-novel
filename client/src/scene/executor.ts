@@ -214,8 +214,10 @@ function reduce(s: SceneSnapshot, cmds: readonly VisualCommand[]): SceneSnapshot
   }
   const propsCmd = find(cmds, 'props');
   if (propsCmd !== undefined) {
-    const byProp = new Map(propsCmd.props.map((p) => [p.prop, p]));
-    props = [...byProp.values()];
+    // Keyed by anchor and prop (RULINGS 245 Q8): one prop id at two anchors is two placements, and a base and its
+    // patches share their anchor's key.
+    const byAnchor = new Map(propsCmd.props.map((p) => [`${p.at ?? p.prop}\n${p.prop}`, p]));
+    props = [...byAnchor.values()];
   }
   return { bg, cg, chars, props, ...(cam && { cam }) };
 }
@@ -592,6 +594,17 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
      * new anchor fades in with its art.
      */
     const syncProps = (ms: number): void => {
+      // A prop shown now keeps its live record wherever it moves: into an anchor the target names, or out of one to its
+      // own key, it is drawn at the new key in this batch without a take (RULINGS 245 Q8, GM6a cut deviation 5).
+      const shown = new Map<PropId, TextureHandle<T>>();
+      for (const a of anchors.values()) {
+        for (const v of a.views) {
+          if (!ended(v.handle)) {
+            shown.set(v.prop, v.handle);
+          }
+        }
+      }
+      const propHandle = (p: PropId): TextureHandle<T> | undefined => handleFor(propSlot(p)) ?? shown.get(p);
       const byKey = new Map<string, PropPlacement[]>();
       for (const p of target.props) {
         byKey.set(p.at ?? p.prop, [...(byKey.get(p.at ?? p.prop) ?? []), p]);
@@ -606,7 +619,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       }
       /** Shown in `a`, or its texture is here. */
       const can = (a: PropAnchor<T> | undefined, p: PropPlacement): boolean =>
-        a?.views.some((v) => v.prop === p.prop) === true || handleFor(propSlot(p.prop)) !== undefined;
+        a?.views.some((v) => v.prop === p.prop) === true || propHandle(p.prop) !== undefined;
       for (const [k, a] of [...anchors]) {
         if (!(byKey.get(k) ?? []).some((p) => can(a, p))) {
           anchors.delete(k);
@@ -648,7 +661,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
           // (critique r2 W1, RULINGS 200).
           a.views = [...views];
           for (const p of live) {
-            const h = handleFor(propSlot(p.prop));
+            const h = propHandle(p.prop);
             if (h !== undefined && !views.some((v) => v.prop === p.prop)) {
               const v: PropView<T> = {
                 slot: propSlot(p.prop),

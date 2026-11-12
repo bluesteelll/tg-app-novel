@@ -1386,11 +1386,13 @@ test('executor: an anchor the target names is never taken over', async () => {
   expect(h.drawOrder(h.contentOf(drawer)).map((x) => x.key)).toEqual(['drawer']);
   h.ex.destroy();
   // A prop moved into a key that has its anchor: that anchor is never replaced in the map (it would outlive destroy).
+  // The moved prop is drawn there from its live record in the same batch (RULINGS 245 Q8, GM6a review r2's carry).
   const m = harness();
   await m.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.glint'])], NOW);
   const base = one(m.anchors('props').filter((x) => x.key === 'room.drawer'));
   await m.ex.apply([bg('room', 'crossfade', 300), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'])], { instant: true });
-  expect(m.drawOrder(m.contentOf(base)).map((x) => x.key)).toEqual(['drawer']);
+  expect(m.anchors('props')).toEqual([base]);
+  expect(m.drawOrder(m.contentOf(base)).map((x) => x.key)).toEqual(['drawer', 'glint']);
   m.ex.destroy();
   expect(m.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
 });
@@ -1744,4 +1746,48 @@ test("executor: a face applies after the batch's show", async () => {
     expect(h.ex.snapshot().chars).toEqual([{ char: 'ally', expr: 'worried', at: 'left' }]);
     h.ex.destroy();
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// RULINGS 245 Q8: the prop carry (GM3b's executor items).
+
+test('executor: a prop moving to another anchor shows at its new key in the same batch', async () => {
+  // GM6a cut deviation 5 / fix_r1: a two-view anchor whose patch leaves to its own key; the target still names the
+  // old anchor, so nothing is taken over. The moved view is drawn at its new key from the live record, with no take.
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'])], NOW);
+  const loads = h.loadsOf('prop/glint');
+  await h.ex.apply([bg('room', 'crossfade', 300), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.glint'])], { instant: true });
+  expect(h.anchors('props').map((x) => x.key)).toEqual(['room.drawer', 'room.glint']);
+  const glint = one(h.anchors('props').filter((x) => x.key === 'room.glint'));
+  expect(h.drawOrder(h.contentOf(glint)).map((x) => x.key)).toEqual(['glint']);
+  expect(h.ex.propRects().map((r) => r.prop)).toEqual(['drawer', 'glint']);
+  expect(h.loadsOf('prop/glint')).toBe(loads);
+  expect(h.releasedOf('prop/glint')).toBe(0);
+  h.ex.destroy();
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+});
+
+test('executor: a restore re-keys a multi-view anchor without a new anchor', async () => {
+  // GM6a test_r2 TM5 / TM13: the take-over looks at every view of the anchor, not only at its first.
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'])], NOW);
+  const before = h.anchors('props');
+  h.log.length = 0;
+  await h.ex.restore({ bg: 'room' as BgId, cg: null, chars: [], props: [{ prop: 'drawer' as PropId, rect: DRAWER }] });
+  expect(h.anchors('props')).toEqual(before);
+  expect(h.log.filter((x) => /^(anchor|drop):/.test(x))).toEqual([]);
+  expect(h.log.filter((x) => /^(create|destroy):/.test(x))).toEqual(['destroy:props:glint']);
+  h.ex.destroy();
+});
+
+test('executor: one prop at two anchors keeps both', async () => {
+  // The logical stage keys a placement by its anchor (`at ?? prop`), so one prop id at two anchors is two placements.
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['lamp', LAMP, 'room.lamp'], ['lamp', KEY, 'room.key'])], NOW);
+  expect(h.ex.snapshot().props.map((p) => p.at)).toEqual(['room.lamp', 'room.key']);
+  expect(h.anchors('props').map((x) => x.key)).toEqual(['room.lamp', 'room.key']);
+  expect(h.live('props').map((x) => x.key)).toEqual(['lamp', 'lamp']);
+  h.ex.destroy();
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
 });
