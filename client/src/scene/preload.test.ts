@@ -740,6 +740,29 @@ test('preload: want releases what left the window', async () => {
   expect(h.log).toContain('release preload:win:prop/s1');
 });
 
+// An end step hands EMPTY_WINDOW and the ending card, "to be continued" or the paywall follow with no setChapter:
+// only want's own release frees the last line's holders there.
+test('preload: an empty window releases every window holder', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b'], hope: ['prop/s1'] }));
+  await h.settle();
+  // The warm file is held, then decoded under its window holder (step 3): two holders on cu_b.
+  expect([...h.acquired()].sort()).toEqual([
+    'preload:warm:bg/cu_b bg/cu_b',
+    'preload:win:bg/cu_a bg/cu_a',
+    'preload:win:bg/cu_b bg/cu_b',
+    'preload:win:prop/s1 prop/s1',
+  ]);
+  h.s.want(stage({}));
+  await h.settle();
+  expect(['bg/cu_a', 'bg/cu_b', 'prop/s1'].map(h.state)).toEqual(['none', 'none', 'none']);
+  expect(h.log).toContain('release preload:win:bg/cu_a');
+  expect(h.log).toContain('release preload:warm:bg/cu_b');
+  expect(h.log).toContain('release preload:win:bg/cu_b');
+  expect(h.log).toContain('release preload:win:prop/s1');
+});
+
 test('preload: a released in-flight fetch is aborted', () => {
   const h = harness('deferred', { hold: true });
   h.s.setChapter(wm);
