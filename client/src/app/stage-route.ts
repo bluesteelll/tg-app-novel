@@ -3,10 +3,13 @@
 import type { AudioCommand } from '../audio/manager.ts';
 import { reduce } from '../scene/executor.ts';
 import type { SceneSnapshot, VisualCommand } from '../scene/executor.ts';
+import { EMPTY_WINDOW } from '../scene/preload.ts';
+import type { StageWindow } from '../scene/preload.ts';
 import { chapterRigs, shotSlots } from '../scene/shot-view.ts';
-import type { AssetManifest } from '../story/catalog.ts';
-import { faceIndex } from '../story/shots.ts';
-import type { AssetId, AssetIndex, StagingCommand } from '../story/staging.ts';
+import type { AssetManifest, Result } from '../story/catalog.ts';
+import { decodeLook, faceIndex, stepWindow } from '../story/shots.ts';
+import type { LookIndex, ShotWindow } from '../story/shots.ts';
+import type { AssetId, AssetIndex, BgId, StagingCommand } from '../story/staging.ts';
 
 const IMAGE_ID = /^(?:bg|cg|char|prop)\//;
 
@@ -104,4 +107,70 @@ export function imageIds(cmds: readonly VisualCommand[], ctx?: { stage: SceneSna
 /** A knot's preload ids by consumer: images for the scene, the rest (bgm, sfx) for the audio. */
 export function knotAssets(ids: readonly AssetId[]): { images: AssetId[]; sounds: AssetId[] } {
   return { images: ids.filter((id) => IMAGE_ID.test(id)), sounds: ids.filter((id) => !IMAGE_ID.test(id)) };
+}
+
+/** Where a step stands in the explore world: the yields' world state's section and room, null outside a section. */
+export type WorldAt = { readonly section: string | null; readonly room: string | null };
+
+/** Each manifest's look, decoded once (shots §4.5); the manifest object is the chapter's for its whole life. */
+const looks = new WeakMap<AssetManifest, Result<LookIndex, string[]>>();
+
+/** The chapter's look; not ok when the manifest has none or it does not decode (a legacy step then holds today's preloads). */
+export function lookOf(m: AssetManifest): Result<LookIndex, string[]> {
+  const have = looks.get(m);
+  if (have !== undefined) {
+    return have;
+  }
+  const r: Result<LookIndex, string[]> = m.look === undefined ? { ok: false, error: ['look: absent'] } : decodeLook(m.look);
+  looks.set(m, r);
+  return r;
+}
+
+/**
+ * The event's room (shots §5.8): `w` with, as its own class `eventRoom`, the room window's need files that `w` lists in
+ * no class, in order; none without a room window.
+ */
+export function withEventRoom(w: ShotWindow, room: ShotWindow | null): StageWindow {
+  const listed = new Set([...w.need, ...w.warm, ...w.hope]);
+  return { ...w, eventRoom: room === null ? [] : room.need.filter((id) => !listed.has(id)) };
+}
+
+/**
+ * A presented step's window (shots §5.8, cut D1): its key's window in the chapter's look (a line's ID, a choice set's
+ * first choice ID, a room's `r:<room>`), else its knot's index `k:<knot>`, else the empty window; with the room as
+ * `eventRoom` when a section and room are current and the key is not that room's own.
+ */
+export function windowFor(m: AssetManifest | null, key: string | null, knot: string | null, at: WorldAt | null): StageWindow {
+  const look = m === null ? null : lookOf(m);
+  if (look === null || !look.ok) {
+    return EMPTY_WINDOW;
+  }
+  const w = (key === null ? null : stepWindow(look.value, key)) ?? (knot === null ? null : stepWindow(look.value, `k:${knot}`));
+  if (w === null) {
+    return EMPTY_WINDOW;
+  }
+  const own = at === null || at.section === null || at.room === null ? null : `r:${at.room}`;
+  return withEventRoom(w, own === null || own === key ? null : stepWindow(look.value, own));
+}
+
+/**
+ * A room batch's window key (shots §5.8 "At each room batch"): `r:<room>` while a section is current, the batch sets no
+ * CG (a close-up has none) and the look has the key; else null.
+ */
+export function roomWindowKey(visual: readonly VisualCommand[], at: WorldAt | null, look: LookIndex): string | null {
+  if (at === null || at.section === null || at.room === null || visual.some((c) => c.kind === 'cg' && c.cg !== null)) {
+    return null;
+  }
+  const key = `r:${at.room}`;
+  return Object.hasOwn(look.windows, key) ? key : null;
+}
+
+/**
+ * Room props on a story cut (shots §5.8, W8): a batch whose last `bg` / `scene` shows a room of the current section
+ * gets that room's state commands appended verbatim, as `roomFor` builds them from the world; else it is unchanged.
+ */
+export function withRoomProps(batch: readonly VisualCommand[], roomFor: (bg: BgId) => readonly VisualCommand[] | null): VisualCommand[] {
+  const cut = batch.findLast((c) => c.kind === 'bg' || c.kind === 'scene');
+  const props = cut?.kind === 'bg' || cut?.kind === 'scene' ? roomFor(cut.bg) : null;
+  return props === null ? [...batch] : [...batch, ...props];
 }
