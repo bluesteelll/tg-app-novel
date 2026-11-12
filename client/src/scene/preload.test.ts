@@ -2,7 +2,7 @@ import { expect, test, vi } from 'vitest';
 
 import type { AssetEntry, AssetManifest, ImageEntry, Result } from '../story/catalog.ts';
 import type { AssetId, ChapterId } from '../story/staging.ts';
-import { PRELOAD_IN_FLIGHT, createAssetScheduler } from './preload.ts';
+import { PRELOAD_IN_FLIGHT, createAssetScheduler, windowDeps } from './preload.ts';
 import type { StageWindow } from './preload.ts';
 import { HARD_CAP_BYTES, createAssetRegistry } from './registry.ts';
 import type { AcquireOptions, AssetError, AssetRegistry, Decoded, HeldFile, HoldImage, LoadError, LoadImage, SceneError, TextureHandle } from './registry.ts';
@@ -1188,4 +1188,27 @@ test("preload: ensure settles when a window item's fetch fails", async () => {
   expect(seen.value).toMatchObject({ ok: false, error: { kind: 'assets', errors: [{ kind: 'fetch', id: 'prop/s1' }] } });
   expect(h.state('prop/s1')).toBe('none');
   expect(h.errors).toMatchObject([{ kind: 'fetch', id: 'prop/s1' }]);
+});
+
+test('preload: the window seat forwards a swap to want and a release to retry', () => {
+  // The executor's two reports reach the scheduler through this seat alone (lane SH5a D12): a swap is exactly
+  // want(window), a release exactly retry().
+  const calls: string[] = [];
+  const asked: StageWindow[] = [];
+  const seat = windowDeps({
+    want: (w) => {
+      calls.push('want');
+      asked.push(w);
+    },
+    retry: () => {
+      calls.push('retry');
+    },
+  });
+  const w: StageWindow = { need: [asId('bg/a')], warm: [asId('bg/b')], near: 1, hope: [], eventRoom: [] };
+  seat.swapped(w);
+  expect(calls).toEqual(['want']);
+  expect(asked[0]).toBe(w);
+  seat.released();
+  expect(calls).toEqual(['want', 'retry']);
+  expect(asked).toEqual([w]);
 });

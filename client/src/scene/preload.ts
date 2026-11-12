@@ -55,6 +55,14 @@ export interface AssetScheduler {
   destroy(): void;
 }
 
+/** The executor's two reports (its `swapped` / `released` deps), as the scene controller wires them (D12). */
+export type WindowSeat = { swapped(w: StageWindow): void; released(): void };
+
+/** The seat: a swap is the step's `want`, a release a `retry`; nothing else. */
+export function windowDeps(s: Pick<AssetScheduler, 'want' | 'retry'>): WindowSeat {
+  return { swapped: (w) => s.want(w), released: () => s.retry() };
+}
+
 type Item = { readonly tag: string; readonly id: AssetId; readonly entry: ImageEntry; readonly rank: number };
 type Flight = Item & { readonly controller: AbortController };
 

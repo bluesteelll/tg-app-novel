@@ -11,6 +11,7 @@ import type { ImageEntry, Result } from '../story/catalog.ts';
 import type { Box as Box4, ShotRig } from '../story/shots.ts';
 import type { AssetId, BgId, CharId, ExprId, PropId, PropPlacement, PropsCommand, Rect, Slot, StagingCommand, StagingSnapshot } from '../story/staging.ts';
 import { backdropPlacement, charPlacement, propPlacement } from './layout.ts';
+import type { StageWindow } from './preload.ts';
 import type { AssetError, AssetRegistry, TextureHandle } from './registry.ts';
 import type { RenderLoop, Ticker } from './render-loop.ts';
 import { faceLayers, facesOf, restFraming, shotSlots } from './shot-view.ts';
@@ -78,11 +79,17 @@ export interface StageAdapter<T> {
 }
 
 export interface Executor<T> {
-  /** Resolves when the batch's transitions and wait have ended (or it was completed, or the executor destroyed). */
-  apply(b: readonly VisualCommand[], o: { instant: boolean }): Promise<void>;
+  /**
+   * Resolves when the batch's transitions and wait have ended (or it was completed, or the executor destroyed).
+   * `window`: the step's preload window, reported once at the batch's swap point (`ExecutorDeps.swapped`).
+   */
+  apply(b: readonly VisualCommand[], o: { instant: boolean; window?: StageWindow }): Promise<void>;
   /** A tap during a transition: every running batch jumps to its end state. */
   complete(): void;
-  /** Sets the stage to `s` instantly (load, chapter change). */
+  /**
+   * Sets the stage to `s` instantly (load, chapter change). With a CG it resolves once the CG shows: the covered slots
+   * are taken now and drawn by an instant batch chained behind it.
+   */
   restore(s: SceneSnapshot): Promise<void>;
   /** The logical stage: the end state of the last batch, from the moment it started. */
   snapshot(): SceneSnapshot;
@@ -128,6 +135,14 @@ export type ExecutorDeps<T> = {
    * tier (the overscan's k_dev). Absent: every chapter is legacy.
    */
   shots?: { rigs(): Rigs; half(): boolean };
+  /**
+   * A batch's window at its swap point (shots §5.8): the sweep that releases the old shot's holders has run. The swap
+   * point is at black for `scene:` and `bg t=fade`, when the old root retires for a `bg t=crossfade`, right after the
+   * build for any other batch, and at the batch's end when it settles first. Once per batch with a window.
+   */
+  swapped?(w: StageWindow): void;
+  /** A sweep outside a swap point released a holder: room a refused preload may now take. */
+  released?(): void;
 };
 type Rigs = ReadonlyMap<BgId, ShotRig> | null;
 
@@ -289,6 +304,8 @@ type Batch<T> = {
   instant: boolean;
   tl: Timeline | null;
   finished: boolean;
+  /** The window to report at the swap point; null once reported, or for a batch without one. */
+  window: StageWindow | null;
   readonly done: Promise<void>;
   readonly settle: () => void;
 };
@@ -380,8 +397,10 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   /**
    * Releases every held (holder, id) that the stage no longer shows and no batch still targets. A slot whose asset id
    * is unchanged is never released, so a command naming the asset already in its slot keeps its texture (critique W1).
+   * True when it released a holder.
    */
-  const sweep = (): void => {
+  const sweep = (): boolean => {
+    let freed = false;
     const keep = new Set<string>();
     const add = (slot: string, id: AssetId): void => {
       keep.add(`${holderOf(slot)}\n${id}`);
@@ -404,12 +423,34 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
           // An entry bound to an ended record holds nothing; a release by id would act on a newer record of the id.
           if (!deadBound(held)) {
             registry.release(id, holder);
+            freed = true;
           }
         }
       }
       if (byId.size === 0) {
         holds.delete(holder);
       }
+    }
+    return freed;
+  };
+  /**
+   * A sweep, then the batch's window reported once (its swap point, D9); without a window to report, a sweep that
+   * released a holder reports the release. The swap's own release is not reported: `want` plans the whole window.
+   */
+  const sweepFor = (b: Batch<T>): void => {
+    const w = b.window;
+    b.window = null;
+    const freed = sweep();
+    if (w !== null) {
+      deps.swapped?.(w);
+    } else if (freed) {
+      deps.released?.();
+    }
+  };
+  /** The swap point of a batch whose window is not reported yet. */
+  const swap = (b: Batch<T>): void => {
+    if (b.window !== null) {
+      sweepFor(b);
     }
   };
 
@@ -655,7 +696,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     if (i >= 0) {
       unfinished.splice(i, 1);
     }
-    sweep();
+    sweepFor(b);
     b.settle();
   };
 
@@ -664,6 +705,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     const target = b.target;
     const want = slotsOf(target, b.rigs);
     const sec = (ms: number): number => (b.instant ? 0 : Math.max(0, ms) / 1000);
+    /** The swap point comes later than the build: at black, or when the old root retires. */
+    let later = false;
     /**
      * The batch's handle for a slot only while its record is live, read in the same step as the sprite it makes,
      * also at a fade's midpoint (identity rule item 1). Else the slot is built as a skipped visual.
@@ -916,7 +959,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         }
         syncProps(0);
         orderChars(target);
+        swap(b);
       });
+      later = true;
     } else {
       // §7 step 3: bg, show, hide, cg (and props) start together.
       const bgCmd = find(b.cmds, 'bg');
@@ -925,7 +970,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
           swapBg();
           syncFaces(true);
           syncProps(0);
+          swap(b);
         });
+        later = true;
       } else if (bgCmd !== undefined && bgCmd.t === 'crossfade') {
         const id = want.get('bg') ?? null;
         const h = handleFor('bg');
@@ -934,7 +981,16 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
           // shot is the dissolve's fallback: the new root over the old, which retires whole (shots §5.5).
           const old = bg;
           bg = backdrop('bg', h, 0, shotOf());
-          fade(bg.node.anchor, 0, 1, bgCmd.ms, old === null ? undefined : retireBackdrop(old));
+          if (old === null) {
+            fade(bg.node.anchor, 0, 1, bgCmd.ms);
+          } else {
+            const retireOld = retireBackdrop(old);
+            later = true;
+            fade(bg.node.anchor, 0, 1, bgCmd.ms, () => {
+              retireOld();
+              swap(b);
+            });
+          }
         }
         syncFaces();
         syncProps(bgCmd.ms);
@@ -1001,6 +1057,10 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       }
     }
 
+    if (!later) {
+      swap(b);
+    }
+
     // §7 step 4: the wait pads the same timeline, so complete() ends it too; skip mode and loads ignore it.
     const wait = find(b.cmds, 'wait');
     if (wait !== undefined && !b.instant) {
@@ -1049,12 +1109,19 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   };
 
   /** Chains a batch with the textures it takes. */
-  const queue = (cmds: readonly VisualCommand[], target: SceneSnapshot, instant: boolean, takes: ReadonlyMap<string, Hold<T>>, rigs: Rigs): Promise<void> => {
+  const queue = (
+    cmds: readonly VisualCommand[],
+    target: SceneSnapshot,
+    instant: boolean,
+    takes: ReadonlyMap<string, Hold<T>>,
+    rigs: Rigs,
+    window: StageWindow | null = null,
+  ): Promise<void> => {
     let settle: () => void = () => {};
     const done = new Promise<void>((r) => {
       settle = r;
     });
-    const b: Batch<T> = { cmds, target, rigs, takes, instant, tl: null, finished: false, done, settle };
+    const b: Batch<T> = { cmds, target, rigs, takes, instant, tl: null, finished: false, window, done, settle };
     unfinished.push(b);
     // One batch builds at a time, after the previous one finished (complete() makes that immediate).
     chain = chain
@@ -1067,17 +1134,26 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     return done;
   };
 
-  const enqueue = (cmds: readonly VisualCommand[], target: SceneSnapshot, instant: boolean, rigs: Rigs): Promise<void> => {
+  /**
+   * The logical stage moves to `target`; every slot whose id changes is taken now. `covered`: the slots a CG covers are
+   * taken by a second instant batch chained behind this one, which this batch does not wait for (restore with a CG).
+   */
+  const enqueue = (cmds: readonly VisualCommand[], target: SceneSnapshot, instant: boolean, rigs: Rigs, window: StageWindow | null, covered = false): Promise<void> => {
     const before = slotsOf(logical, logicalRigs);
     logical = target;
     logicalRigs = rigs;
     const takes = new Map<string, Hold<T>>();
+    const under = new Map<string, Hold<T>>();
     for (const [slot, id] of slotsOf(target, rigs)) {
       if (before.get(slot) !== id) {
-        takeFor(takes, slot, id);
+        takeFor(covered && slot !== 'cg' ? under : takes, slot, id);
       }
     }
-    return queue(cmds, target, instant, takes, rigs);
+    const done = queue(cmds, target, instant, takes, rigs, window);
+    if (under.size > 0) {
+      void queue([], target, true, under, rigs);
+    }
+    return done;
   };
 
   const complete = (): void => {
@@ -1098,7 +1174,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       }
       complete();
       const rigs = deps.shots?.rigs() ?? null;
-      return enqueue(cmds, reduce(logical, cmds, rigs !== null), o.instant, rigs);
+      return enqueue(cmds, reduce(logical, cmds, rigs !== null), o.instant, rigs, o.window ?? null);
     },
     complete,
     restore(s) {
@@ -1106,7 +1182,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         return Promise.resolve();
       }
       complete();
-      return enqueue([], copy(s), true, deps.shots?.rigs() ?? null);
+      // A CG covers the stage: the restore waits for it alone (a covered plate loading late shows nothing new).
+      return enqueue([], copy(s), true, deps.shots?.rigs() ?? null, null, s.cg !== null);
     },
     snapshot() {
       return copy(logical);
