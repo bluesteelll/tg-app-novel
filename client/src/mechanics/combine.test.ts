@@ -471,6 +471,29 @@ test("story: a recipe outside one section's items is refused", () => {
   expect(lint(source(withChest([recipe('shard', 'glue', 'vase')], 'vase')))).toEqual([[SCOPE, 'recipes.0.gives']]);
 });
 
+test("story: a recipe's product has one giver", () => {
+  const SCOPE = 'world/recipe-scope';
+  // A gift fires once (`added` keeps one copy), so a second giver of a held product would consume its inputs for
+  // nothing. Two recipes of one section that give one product: each is refused.
+  expect(lint(source(twoSections([recipe('shard', 'glue', 'vase'), recipe('wire', 'fuse', 'vase')])))).toEqual([
+    [SCOPE, 'recipes.0.gives'],
+    [SCOPE, 'recipes.1.gives'],
+  ]);
+  // A recipe of no section still runs wherever its inputs are held ("combine anywhere"): another giver too.
+  expect(lint(source(twoSections([recipe('shard', 'bolt', 'vase'), recipe('shard', 'glue', 'vase')])))).toEqual([
+    [SCOPE, 'recipes.0'],
+    [SCOPE, 'recipes.1.gives'],
+  ]);
+  // A product its own section's `use` rule gives (the desk's fuse for the wire).
+  expect(lint(source(twoSections([recipe('shard', 'glue', 'fuse')])))).toEqual([[SCOPE, 'recipes.0.gives']]);
+  // A product its own section's trigger gives (a look's `then`).
+  const painting = { ...look('painting'), then: [{ give: 'vase' }] };
+  const triggered = rawWorld({ s: ['hall', { hall: room([take('shard', 'shard'), take('glue', 'glue'), painting, exit('out', { story: 'end' })]) }] }, ['shard', 'glue', 'vase'], [
+    recipe('shard', 'glue', 'vase'),
+  ]);
+  expect(lint(source(triggered))).toEqual([[SCOPE, 'recipes.0.gives']]);
+});
+
 test('story: a recipe naming an unknown item is refused', () => {
   const UNKNOWN = 'world/recipe-unknown-ref';
   // Each unknown id at its path (the kept input too); the recipe's scope checks are skipped.

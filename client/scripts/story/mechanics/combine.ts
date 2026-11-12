@@ -1,13 +1,14 @@
 // Module `combine`'s build half (engine plan §6.2): its text walker (each recipe's `say`, role toast) and its world lint,
 // with its own codes (both errors).
 // `world/recipe-unknown-ref`: a recipe names an item the world lacks. `world/recipe-scope` (R11's first condition): a
-// recipe's inputs belong to one section S (`recipeSections`: no one section gives both is refused), its product is given
-// only by recipes of S (never by a take, a trigger or a `use` rule of any section, nor by a recipe of another section),
-// and no lock of another section accepts its product (X15: the kernel's `world/cross-section-item` reads kernel gifts
-// only, so a recipe's gift needs this clause, as `use`'s gifts have theirs). Each `when` is a gating condition of S
-// through the condition lint (`world/cross-section-cond`, `world/cond-size`). Build only and pure, no node:*: world.ts
-// imports the registry and scan-dist.ts imports world.ts. Its imports from index.ts and lint.ts are `import type`; it
-// never imports world.ts (index.ts's header).
+// recipe's inputs belong to one section S (`recipeSections`: no one section gives both is refused), its product has no
+// other giver (no take, trigger or `use` rule of any section, no other recipe of any section, S included: a gift fires
+// once, so a second giver of a held product would consume its inputs for nothing), and no lock of another section
+// accepts its product (X15: the kernel's `world/cross-section-item` reads kernel gifts only, so a recipe's gift needs
+// this clause, as `use`'s gifts have theirs). Each `when` is a gating condition of S through the condition lint
+// (`world/cross-section-cond`, `world/cond-size`). Build only and pure, no node:*: world.ts imports the registry and
+// scan-dist.ts imports world.ts. Its imports from index.ts and lint.ts are `import type`; it never imports world.ts
+// (index.ts's header).
 import { sectionScope } from '../../../src/explore/reduce.ts';
 import type { CombineData } from '../../../src/mechanics/data/combine.ts';
 import { recipeSections } from '../../../src/mechanics/rules/combine.ts';
@@ -76,13 +77,13 @@ export function combineFindings(input: WorldLintInput): Finding[] {
     }
     for (const other of sections) {
       if (base.get(other)?.has(r.gives) === true) {
-        report('world/recipe-scope', `${at}.gives`, `item '${r.gives}' is given in section ${other}: a recipe's product is given only by recipes of its section (R11)`);
+        report('world/recipe-scope', `${at}.gives`, `item '${r.gives}' is given in section ${other}: a recipe's product has no other giver (R11)`);
       }
     }
     recipes.forEach((q, j) => {
       const by = of[j] ?? null;
-      if (j !== i && q.gives === r.gives && by !== null && by !== section) {
-        report('world/recipe-scope', `${at}.gives`, `item '${r.gives}' is also given by recipe ${j} of section ${by}: a recipe's product is given only by recipes of its section (R11)`);
+      if (j !== i && q.gives === r.gives) {
+        report('world/recipe-scope', `${at}.gives`, `item '${r.gives}' is also given by recipe ${j}${by === null ? '' : ` of section ${by}`}: a recipe's product has no other giver (R11)`);
       }
     });
     for (const other of sections.filter((x) => x !== section)) {
