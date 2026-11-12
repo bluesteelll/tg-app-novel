@@ -41,5 +41,30 @@
       "light": null
     }
   ],
-  "shots": []
+  "shots": [
+    {
+      "id": "lamp_wide",
+      "loc": "lamp_room",
+      "frame": "wide",
+      "cast": [
+        {
+          "char": "keeper",
+          "view": "face",
+          "rest": "worried"
+        }
+      ]
+    },
+    {
+      "id": "lamp_keeper_cu",
+      "loc": "lamp_room",
+      "frame": "close",
+      "cast": [
+        {
+          "char": "keeper",
+          "view": "face",
+          "rest": "worried"
+        }
+      ]
+    }
+  ]
 }

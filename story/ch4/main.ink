@@ -3,8 +3,7 @@ VAR held_crank = false
 -> lamp
 
 === lamp ===
-# scene: lamp_room
-# show: keeper worried at=center
+# scene: lamp_wide
 # bgm: storm
 Наверху, в фонарной, гудел ветер. Огромная линза стояла тёмной. #id:ch4.lamp.a001
 { g_tide_trust_keeper == 1:
@@ -12,6 +11,7 @@ VAR held_crank = false
 - else:
     keeper: Я знаю, ты мне не веришь. Но ты всё равно поднялась. Спасибо. #id:ch4.lamp.a003
 }
+# bg: lamp_keeper_cu
 keeper: Сгорел запальник. Я заменю его, но кто-то должен крутить ручку механизма. #id:ch4.lamp.a004
 keeper: Без неё линза не вращается, и с моря свет не увидят. #id:ch4.lamp.a005
 radio: Маяк, это «Чайка». Нас трое, мотор заглох. Нас несёт на скалы. #id:ch4.lamp.a006
@@ -28,14 +28,14 @@ keeper: «Чайка», слышу вас! Держитесь. Свет буде
     Матвей сам налёг на ручку механизма. #id:ch4.lamp.a014
 - Линза дрогнула и медленно пошла по кругу. #id:ch4.lamp.a015
 Яркий луч прорезал дождь и ушёл далеко в море. #id:ch4.lamp.a016
-# show: keeper smile
+# face: keeper smile
 radio: Вижу свет! Маяк, мы видим свет! Идём к бухте! #id:ch4.lamp.a017
 Матвей рассмеялся — впервые за эту ночь. #id:ch4.lamp.a018
 keeper: Ты слышала? Это не голоса в моей голове. Они настоящие. #id:ch4.lamp.a019
 -> lamp_dawn
 
 === lamp_dawn ===
-# show: keeper smile at=center
+# face: keeper smile
 # bgm: waves fade=3000
 К утру шторм выдохся. #id:ch4.lamp_dawn.b001
 Мы сидели на полу фонарной под одним пледом и смотрели, как светлеет небо. #id:ch4.lamp_dawn.b002
