@@ -4,6 +4,7 @@ import type { HalfFile, ImageEntry, Result, SizeTier, Trim } from '../story/cata
 import type { Box } from '../story/shots.ts';
 import type { AssetId } from '../story/staging.ts';
 import type { TextureGeometry } from './layout.ts';
+import { createImageLoader } from './loader.ts';
 import { createAssetRegistry, pixiFrames } from './registry.ts';
 import type { Decoded, FrameCut, HeldFile, HoldImage, LoadError, LoadImage } from './registry.ts';
 
@@ -1520,4 +1521,25 @@ test('registry: an undecodable half file leaves the full file free after demote'
   expect(h.fetches()).toBe(2);
   expect(h.fetchUrls()).toEqual(['/assets/a-half.avif', '/assets/a.avif']);
   expect(h.registry.state(asId('prop/a'))).toBe('pending');
+});
+
+test('registry: the real loader holds a file at its fetched size', async () => {
+  // loader.ts's hold form over a fake FetchAsset: no bitmap is made until a decode, so it runs here as in the WebView.
+  const hold = createImageLoader({ fetchAsset: async () => ({ ok: true, value: new Blob([new Uint8Array(1234)]) }), upload: () => null });
+  const got = await hold({ url: '/assets/x.avif', bytes: 999 }, noAbort());
+  if (!got.ok) {
+    throw new Error(`invariant: the fake fetch succeeds, got ${got.error.kind}`);
+  }
+  // The caps count the fetched Blob, never the manifest's bytes.
+  expect(got.value.bytes).toBe(1234);
+  // A dropped file has no Blob left: its decode settles aborted before any bitmap is asked for.
+  got.value.drop();
+  const geometry: TextureGeometry = { canvas: { w: 512, h: 512 }, orig: { x: 0, y: 0, w: 512, h: 512 }, trim: null, resolution: 1 };
+  expect(await got.value.decode(noAbort(), geometry)).toEqual({ ok: false, error: { kind: 'aborted' } });
+  // Through the registry, a warm record counts that size too.
+  const registry = createAssetRegistry({ hold, variant: 'avif', tier: 'full' });
+  const warm = seen(registry.acquire(asId('prop/x'), 'preload:warm:prop/x', { entry: prop('x'), priority: 'warm' }));
+  await flush();
+  expect(warm.value).toEqual({ ok: true, value: null });
+  expect(registry.warmStats()).toEqual({ warm: 1, warmBytes: 1234 });
 });
