@@ -1111,11 +1111,60 @@ function neighbourRoomsOf(rooms: AssetUsage['rooms'], room: RoomUsage): Result<A
   return { ok: true, value: out };
 }
 
+/** One neighbour room of R for the preload note: its key, the room keys its own exits lead to, its images img(n). */
+type PreloadNeighbour = { key: string; to: readonly string[]; ids: readonly AssetId[] };
+
+/**
+ * Engine plan §6.3 "Preload (m2)": how many of R's neighbour rooms the registry admits as preloads once R's own
+ * records are in (`roomShown` asks for R's bg and images, then each neighbour's bg). Each neighbour's img(n) is admitted
+ * first-fit while used + need <= `cap` (the registry refuses a preload over the steady cap, never evicts for one, and
+ * goes on), an id already in the set at no byte (a live or queued id joins). The order is the worst the runtime meets:
+ * plain exit order (a first entry), or, arrived from t, t and the neighbours R shares with t first (the move keeps R's
+ * neighbours, so they are live at arrival), then the rest in exit order. `onTap` lists, in exit order, the rooms the
+ * first order reaching the least count refuses. Characters on stage and a keep set wider than that are not modelled.
+ */
+function neighbourPreloads(own: ReadonlySet<AssetId>, near: readonly PreloadNeighbour[], bytes: ReadonlyMap<AssetId, number>, cap: number): { k: number; n: number; onTap: string[] } {
+  const refusedIn = (order: readonly PreloadNeighbour[]): ReadonlySet<string> => {
+    const live = new Set(own);
+    let used = [...live].reduce((s, id) => s + (bytes.get(id) ?? 0), 0);
+    const refused = new Set<string>();
+    for (const n of order) {
+      const need = [...new Set(n.ids)].filter((id) => !live.has(id)).reduce((s, id) => s + (bytes.get(id) ?? 0), 0);
+      if (used + need <= cap) {
+        n.ids.forEach((id) => live.add(id));
+        used += need;
+      } else {
+        refused.add(n.key);
+      }
+    }
+    return refused;
+  };
+  const arrivedFrom = (t: PreloadNeighbour): PreloadNeighbour[] => {
+    const first = [t, ...near.filter((n) => n !== t && t.to.includes(n.key))];
+    return [...first, ...near.filter((n) => !first.includes(n))];
+  };
+  let worst = refusedIn(near);
+  for (const t of near) {
+    const refused = refusedIn(arrivedFrom(t));
+    if (refused.size > worst.size) {
+      worst = refused;
+    }
+  }
+  return { k: near.length - worst.size, n: near.length, onTap: near.filter((n) => worst.has(n.key)).map((n) => n.key) };
+}
+
+/** `; preloads <k> of <n> neighbours`, and the rooms that load on tap by their last key segment. */
+function preloadNote(p: { k: number; n: number; onTap: readonly string[] }): string {
+  const onTap = p.onTap.map((key) => key.slice(key.lastIndexOf('/') + 1));
+  return `; preloads ${p.k} of ${p.n} neighbours${onTap.length > 0 ? ` (on tap: ${onTap.join(', ')})` : ''}`;
+}
+
 /**
  * PUZZLES-PLAN `budget/room-set`, engine plan §6.3 "Gates" (O5): per room R, img(R) + props(R) + max(the transition
  * pair, the largest close-up), the pair being the largest img(n) + props(n) over R's neighbour rooms n: a crossfade has
  * both rooms' sets on stage (`syncProps` fades both). Every image term goes through `imgIds` (reconcile r1); a close-up
- * is a CG, never a key of it. An id R and a neighbour share is counted in both terms: an upper bound.
+ * is a CG, never a key of it. An id R and a neighbour share is counted in both terms: an upper bound. A summed row
+ * notes how many neighbours preload (`neighbourPreloads`): a report, never a FAIL (decision table O5).
  */
 function roomRows(a: AssetInputs, limits: Limits): Row[] {
   const rows: Row[] = [];
@@ -1141,11 +1190,15 @@ function roomRows(a: AssetInputs, limits: Limits): Row[] {
     const total = sum(img(room.bg)) + sum(room.props) + Math.max(pair, max(room.closeups));
     const sheets = [room.bg, ...neighbourRooms.map((n) => n.bg)].some((bg) => img(bg).length > 1);
     const note = `bg + ${room.props.length} props + max(neighbour bg + props, close-up)${sheets ? ' (+ sheets)' : ''}`;
-    rows.push(
-      lacking.length > 0
-        ? failed(name, limits.roomSet, `not in ${ch}'s manifest: ${lacking.join(', ')}`, 'MiB')
-        : measured(name, total, limits.roomSet, note, 'MiB'),
-    );
+    if (lacking.length > 0) {
+      rows.push(failed(name, limits.roomSet, `not in ${ch}'s manifest: ${lacking.join(', ')}`, 'MiB'));
+      continue;
+    }
+    const own = new Set([...img(room.bg), ...room.props]);
+    const preloadNeighbours = near.value.map(([k, n]) => ({ key: k, to: n.neighbourRooms, ids: img(n.bg) }));
+    const bytes = decodedOf(manifest.value, [...own, ...preloadNeighbours.flatMap((n) => n.ids)], []); // every id summed above
+    const preloads = neighbourPreloads(own, preloadNeighbours, bytes, STEADY_CAP_BYTES);
+    rows.push(measured(name, total, limits.roomSet, `${note}${preloadNote(preloads)}`, 'MiB'));
   }
   const sectioned = a.chapters.filter((c) => c.world?.hasSections === true);
   for (const c of sectioned.filter((ch) => !Object.keys(a.rooms).some((key) => key.startsWith(`${ch.id}/`)))) {

@@ -1767,7 +1767,7 @@ describe('budget assets', () => {
     const sheet = fullOf(cuSheetOf('hall'));
     const row = roomRow(a);
     expect(row.valueBytes).toBe(plate + sheet + (plate + sheet));
-    expect(row).toMatchObject({ status: 'PASS', note: 'bg + 0 props + max(neighbour bg + props, close-up) (+ sheets)' });
+    expect(row).toMatchObject({ status: 'PASS', note: 'bg + 0 props + max(neighbour bg + props, close-up) (+ sheets); preloads 1 of 1 neighbours' });
     const manifest = chapterOf(a, 'ch1').manifest;
     if (manifest === null) {
       throw new Error('invariant: ch1 has a manifest');
@@ -1776,7 +1776,7 @@ describe('budget assets', () => {
     expect(imgIds(manifest.value, 'bg/cafe' as AssetId)).toEqual(['bg/cafe']);
     // Control: without sheets the room counts bg + max(neighbour bg + props, close-up), and its note has no sheets.
     const bare = roomRow(assetInputs(specsWith('ch1', (s) => Object.assign(s.assets, { 'bg/hall': bg('hall'), 'bg/yard': bg('yard'), 'cg/drawer': cg('drawer') }))));
-    expect(bare).toMatchObject({ status: 'PASS', valueBytes: 2 * plate, note: 'bg + 0 props + max(neighbour bg + props, close-up)' });
+    expect(bare).toMatchObject({ status: 'PASS', valueBytes: 2 * plate, note: 'bg + 0 props + max(neighbour bg + props, close-up); preloads 1 of 1 neighbours' });
   });
 
   test('budget: room-set counts the transition pair', () => {
@@ -1835,6 +1835,66 @@ describe('budget assets', () => {
     expect(row.valueBytes).toBe(plate + fullOf(cuSheetOf('hall')) + (plate + fullOf(roomSheetOf('yard')) + 4 * (512 * 512 * 4 + 30_000)));
     expect(row).toMatchObject({ status: 'PASS', valueBytes: 29_062_784 });
     expect(row.note).toContain('(+ sheets)');
+  });
+
+  test('budget: room-set notes how many neighbours preload', () => {
+    // Engine plan §6.3 "Preload (m2)", a report and never a FAIL: R's own images first, then each neighbour room's
+    // img(n) first-fit under the steady cap (a refused one is skipped, an id already in the set joins at no byte), in
+    // the worst order the runtime meets: plain exit order (a first entry), or, arrived from t, t and the neighbours R
+    // shares with t first (live at arrival), then the rest in exit order.
+    const m = (room: string): string => `ch1/manor/${room}`;
+    const back = (room: string): RoomSpec['to'] => [m(room)];
+    const inputsWith = (assets: Readonly<Record<string, AssetEntry>>): AssetInputs => assetInputs(specsWith('ch1', (s) => Object.assign(s.assets, assets)));
+    const propSet = (prefix: string, n: number): Record<string, AssetEntry> => Object.fromEntries(Array.from({ length: n }, (_, i) => [`prop/${prefix}${i}`, prop(`${prefix}${i}`)]));
+    const roomRow = (a: AssetInputs, spec: Readonly<Record<string, RoomSpec>>, room = 'hall'): Row => rowOf(assetRows({ ...a, rooms: usageRooms(spec) }), `room-set ${m(room)}`);
+    const formula = 'bg + 6 props + max(neighbour bg + props, close-up)';
+    const six = propSet('h', 6);
+    const hall = { bg: 'bg/hall', props: Object.keys(six) };
+    // (A) Own 15,468,816 B leaves 18,085,616: exit order admits a and b and refuses c (13,130,032 with its sheet);
+    // arrived from c, c is live and a and b load on tap. The worst order decides.
+    const worst = inputsWith({ 'bg/hall': bg('hall'), ...six, 'bg/a': bg('a'), 'bg/b': bg('b'), 'bg/c': bg('c'), 'sheet/c': cuSheetOf('c') });
+    const abc = { [m('hall')]: { ...hall, to: [m('a'), m('b'), m('c')] }, [m('a')]: { bg: 'bg/a', to: back('hall') }, [m('b')]: { bg: 'bg/b', to: back('hall') }, [m('c')]: { bg: 'bg/c', to: back('hall') } };
+    expect(roomRow(worst, abc)).toMatchObject({ status: 'PASS', valueBytes: 28_598_848, note: `${formula} (+ sheets); preloads 1 of 3 neighbours (on tap: a, b)` });
+    // (A') A refusal is skipped, not a stop: exit order admits x and z around y; arrived from y, x and z load on tap.
+    const skip = inputsWith({ 'bg/hall': bg('hall'), ...six, 'bg/x': bg('x'), 'bg/y': bg('y'), 'sheet/y': cuSheetOf('y'), 'bg/z': bg('z') });
+    const xyz = { [m('hall')]: { ...hall, to: [m('x'), m('y'), m('z')] }, [m('x')]: { bg: 'bg/x', to: back('hall') }, [m('y')]: { bg: 'bg/y', to: back('hall') }, [m('z')]: { bg: 'bg/z', to: back('hall') } };
+    expect(roomRow(skip, xyz).note).toBe(`${formula} (+ sheets); preloads 1 of 3 neighbours (on tap: x, z)`);
+    // (B) Two neighbour rooms on one plate: the second joins the first's bg at no byte, so every order admits all three.
+    const shared = inputsWith({ 'bg/hall': bg('hall'), ...six, 'bg/a': bg('a'), 'bg/c': bg('c') });
+    const onePlate = { [m('hall')]: { ...hall, to: [m('a'), m('b'), m('c')] }, [m('a')]: { bg: 'bg/a', to: back('hall') }, [m('b')]: { bg: 'bg/a', to: back('hall') }, [m('c')]: { bg: 'bg/c', to: back('hall') } };
+    expect(roomRow(shared, onePlate).note).toBe(`${formula}; preloads 3 of 3 neighbours`);
+    // (C) The registry admits a preload while used + need <= the cap: exactly the cap admits, one byte more refuses
+    // (and the row fails by that byte).
+    const fourteen = propSet('r', 14);
+    const edge = (webp: number): Row =>
+      roomRow(
+        inputsWith({ 'bg/r': img('bg-r-0a0a0a0a', 1080, 2048, 100_000, webp), ...fourteen, 'bg/a': img('bg-a-0a0a0a0a', 1080, 2048, 100_000, 450_000) }),
+        { [m('r')]: { bg: 'bg/r', props: Object.keys(fourteen), to: [m('a')] }, [m('a')]: { bg: 'bg/a', to: back('r') } },
+        'r',
+      );
+    const edgeFormula = 'bg + 14 props + max(neighbour bg + props, close-up)';
+    expect(edge(309_648)).toMatchObject({ status: 'PASS', valueBytes: STEADY_CAP_BYTES, note: `${edgeFormula}; preloads 1 of 1 neighbours` });
+    expect(edge(309_649)).toMatchObject({ status: 'FAIL', valueBytes: STEADY_CAP_BYTES + 1, note: `${edgeFormula}; preloads 0 of 1 neighbours (on tap: a)` });
+    // (D) No neighbour.
+    expect(roomRow(worst, { [m('hall')]: hall }).note).toBe(`${formula}; preloads 0 of 0 neighbours`);
+    // (E) The three-room cycle P <-> R <-> t2 <-> P (critique O2; u = 2,000,000 B, R's own set leaves 10u): from t1 (P),
+    // t1 and t2 (a neighbour R shares with t1) are live first and fill the space, so s1 and s2 load on tap; exit order
+    // and "t1, then exit order" would both admit three.
+    const u = 2_000_000;
+    const sized = (id: string, bytes: number): ImageEntry => img(`${id.replace('/', '-')}-0a0a0a0a`, 500, 500, bytes - 1_000_000, bytes - 1_000_000);
+    const cycle = inputsWith({ 'bg/r': sized('bg/r', STEADY_CAP_BYTES - 10 * u), 'bg/s1': sized('bg/s1', u), 'bg/s2': sized('bg/s2', u), 'bg/t1': sized('bg/t1', 5 * u), 'bg/t2': sized('bg/t2', 5 * u) });
+    const rooms = {
+      [m('r')]: { bg: 'bg/r', to: [m('s1'), m('s2'), m('t1'), m('t2')] },
+      [m('s1')]: { bg: 'bg/s1', to: back('r') },
+      [m('s2')]: { bg: 'bg/s2', to: back('r') },
+      [m('t1')]: { bg: 'bg/t1', to: [m('r'), m('t2')] },
+      [m('t2')]: { bg: 'bg/t2', to: [m('r'), m('t1')] },
+    };
+    expect(roomRow(cycle, rooms, 'r')).toMatchObject({
+      status: 'PASS',
+      valueBytes: STEADY_CAP_BYTES - 10 * u + 5 * u,
+      note: 'bg + 0 props + max(neighbour bg + props, close-up); preloads 2 of 4 neighbours (on tap: s1, s2)',
+    });
   });
 
   test('budget: a loop prop atlas is held to its own limits', () => {
