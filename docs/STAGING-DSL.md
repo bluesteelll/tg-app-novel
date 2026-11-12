@@ -1105,7 +1105,8 @@ be in effect after its batch's cut.
 
   The asset tool reads it with `decodeShotUsage` (`client/scripts/story/shots/usage.ts`), which checks every shot-file
   id against the chapter's needs. The build's budget gate reads it with the same decoder (`client/scripts/budget.ts`)
-  for its `step-window` and `entry step images` rows (§8).
+  for its `step-window` and `entry step images` rows, and its `sprites` flag decides which chapters keep the legacy
+  `knot-set` rows and whether `first-load` counts a chapter's first knot or its first step at the half tier (§8).
 - **`--art-list`** (`npm --prefix client run story -- --art-list`): a clean run also writes
   `target/art-list/<story>.md` and `.json` per story of `story/stories.json`. Per location: its light note and its
   shots in order of first use. Per shot: its cast and masks, the face states to draw (an expression's derived states
