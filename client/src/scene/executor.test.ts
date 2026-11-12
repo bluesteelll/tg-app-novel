@@ -2188,3 +2188,28 @@ test('executor: a talk file is taken without being awaited', async () => {
   h.ex.destroy();
   expect(h.registry.stats().live).toBe(0);
 });
+
+test('executor: a figure plane and a drawn face keep their sprites in their own groups', async () => {
+  // Triage r3 F1: a figured member whose face is drawn. The figure plane and the face's hair locks are both cut from
+  // the `sheet` slot; the plane lives only in its own group, under its member's face, and the expression group holds
+  // only that expression's layer and the member's hair locks (RULINGS 273 O2).
+  const at: Box4 = [100, 700, 400, 392];
+  const figured = (shot: string, c: string, head: Box4): CastRig & { char: CharId } => ({ ...castMember(shot, c, head), figure: mem(`sheet/${shot}`, [0, 120, 400, 392], at) });
+  const rigs: ReadonlyMap<BgId, ShotRig> = new Map([['lamp' as BgId, shotRig([figured('lamp', 'ally', ALLY_AT)])]]);
+  const h = harness(S390, quietLoop(), { rigs: () => rigs, half: () => false });
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  expect(drawLog(h)).toEqual(['anchor:bg:bg/lamp', 'create:bg:lamp', 'node:figure:ally', 'create:bg:sheet/lamp', 'node:face:ally', 'create:bg:face/lamp/ally/smile', 'create:bg:sheet/lamp']);
+  const parts = h.liveNodes().filter((x) => x.role === 'node');
+  expect(parts.map((x) => [x.key, h.drawOrder(x).map((s) => s.tex?.url)])).toEqual([
+    ['figure:ally', ['/assets/sheet_lamp.avif#0,120,400,392']],
+    ['face:ally', ['/assets/face_lamp_ally_smile.avif#0,40,160,200', '/assets/sheet_lamp.avif#0,0,200,120']],
+  ]);
+  // The figure plane draws under its member's face.
+  expect(parts.map((x) => [x.key, x.p.z])).toEqual([
+    ['figure:ally', 1],
+    ['face:ally', 2],
+  ]);
+  h.ex.destroy();
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+  expect(h.registry.stats().live).toBe(0);
+});
