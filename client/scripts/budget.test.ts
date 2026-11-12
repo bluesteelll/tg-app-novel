@@ -1259,6 +1259,25 @@ function assetRows(a: AssetInputs, dist: BudgetInputs = inputs()): Row[] {
   return evaluateAssets(dist, a, LIMITS);
 }
 
+/** One usage room of a fixture: its bg, props and close-ups (default none), and the room keys its exits lead to, in order. */
+type RoomSpec = { bg: string; props?: readonly string[]; closeups?: readonly string[]; to?: readonly string[] };
+
+/**
+ * The usage rooms of `spec` (`<ch>/<section>/<room>` keys), as emit.ts writes them: `neighbourRooms` the `to` keys in
+ * their order, `neighbours` the bgs of those of them `spec` holds, sorted and once each.
+ */
+function usageRooms(spec: Readonly<Record<string, RoomSpec>>): AssetInputs['rooms'] {
+  const bgOf = (key: string): string[] => (Object.hasOwn(spec, key) ? [spec[key]?.bg ?? ''] : []);
+  const rooms = Object.fromEntries(
+    Object.entries(spec).map(([key, r]) => {
+      const to = r.to ?? [];
+      const neighbours = [...new Set(to.flatMap(bgOf))].sort();
+      return [key, { bg: r.bg, props: r.props ?? [], closeups: r.closeups ?? [], neighbours, neighbourRooms: to }];
+    }),
+  );
+  return rooms as unknown as AssetInputs['rooms']; // ids are fixture literals
+}
+
 describe('budget assets', () => {
   test('budget: image over 2048 px fails', () => {
     const rows = assetRows(assetInputs(specsWith('ch1', (s) => (s.assets['bg/cafe'] = img('bg-cafe-0a0a0a0a', 4096, 2048)))));
@@ -1389,13 +1408,13 @@ describe('budget assets', () => {
         }
       }),
     );
-    const room = { bg: 'bg/hall', props, closeups: ['cg/drawer'], neighbours: [] };
-    const rows = assetRows({ ...a, rooms: { 'ch1/hall/main': room } as unknown as AssetInputs['rooms'] }); // ids are fixture literals
+    const room = { bg: 'bg/hall', props, closeups: ['cg/drawer'] };
+    const rows = assetRows({ ...a, rooms: usageRooms({ 'ch1/hall/main': room }) });
     const row = rowOf(rows, 'room-set ch1/hall/main');
     expect(row).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: 2 * (1080 * 2048 * 4 + 150_000) + 16 * (MIB + 30_000) });
     expect(((row.valueBytes ?? 0) / MIB).toFixed(1)).toBe('33.6');
     // Without the close-up the same room fits (25.0 MiB): the close-up term is what tips it.
-    const open = assetRows({ ...a, rooms: { 'ch1/hall/main': { ...room, closeups: [] } } as unknown as AssetInputs['rooms'] });
+    const open = assetRows({ ...a, rooms: usageRooms({ 'ch1/hall/main': { ...room, closeups: [] } }) });
     expect(rowOf(open, 'room-set ch1/hall/main').status).toBe('PASS');
     expect(rows.some((r) => r.name === 'room-set')).toBe(false); // no PENDING row once a room is measured
   });
@@ -1432,8 +1451,8 @@ describe('budget assets', () => {
     );
     const pixels = 2 * 1080 * 2048 * 4 + 15 * 512 * 512 * 4 + 256 * 128 * 4;
     expect(pixels, 'the decoded bytes alone are at the limit').toBe(32 * MIB);
-    const room = { bg: 'bg/hall', props, closeups: [], neighbours: ['bg/yard'] };
-    const rows = assetRows({ ...a, rooms: { 'ch1/hall/main': room } as unknown as AssetInputs['rooms'] }); // ids are fixture literals
+    const rooms = usageRooms({ 'ch1/hall/main': { bg: 'bg/hall', props, to: ['ch1/hall/yard'] }, 'ch1/hall/yard': { bg: 'bg/yard' } });
+    const rows = assetRows({ ...a, rooms });
     expect(rowOf(rows, 'room-set ch1/hall/main')).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: pixels + 18 });
   });
 
@@ -1476,6 +1495,43 @@ describe('budget assets', () => {
     ]);
     const ch3 = rowOf(rows, 'first-load ch3');
     expect(ch3.valueBytes ?? 0).toBeGreaterThan(870_000);
+  });
+
+  test("budget: first-load counts the head chapter's world", () => {
+    // RULINGS 172 (Q1): `loadFree` awaits the public world beside the story, meta, manifest and en table before the
+    // first line (client/src/story/chapters.ts), so a head chapter with a world source counts the world's br bytes.
+    const dist = withEngine(inputs(), 50_000, 150_000);
+    const a = assetInputs(specsWith('ch1', (s) => (s.assets['bg/cafe'] = bg('cafe', 446_000))));
+    const withWorld = (world: ChapterInputs['world']): AssetInputs => ({ ...a, chapters: a.chapters.map((c) => (c.id === 'ch1' ? { ...c, world } : c)) });
+    const firstLoad = (x: AssetInputs): Row => rowOf(assetRows(x, dist), 'first-load ch1');
+    const bare = firstLoad(withWorld(null));
+    const v = bare.valueBytes ?? 0;
+    expect(v, 'fixture: without a world the row is just under its limit').toBeGreaterThan(792_000);
+    expect(v).toBeLessThanOrEqual(800_000);
+    const w = 800_001 - v;
+    const worldIn = withWorld({ hasSections: false, public: { rawBytes: 4 * w, brBytes: w } });
+    expect(rowOf(assetRows(worldIn, dist), 'world json ch1').status, 'the world file itself passes').toBe('PASS');
+    expect(firstLoad(worldIn)).toMatchObject({ status: 'FAIL', valueBytes: v + w, note: 'JS + CSS + html + TWA + catalog + covers + chapter + world + en + first knot' });
+    expect(bare.note).toBe('JS + CSS + html + TWA + catalog + covers + chapter + en + first knot');
+    // A world source whose public output is missing cannot be summed: FAIL, not a smaller PASS.
+    expect(firstLoad(withWorld({ hasSections: false, public: null }))).toMatchObject({ status: 'FAIL', valueBytes: null, note: 'cannot sum: ch1 world missing' });
+  });
+
+  test('budget: first-load counts the en table', () => {
+    // RULINGS 172: an en-UI player's first line awaits the chapter's en table too (`withEn`), so the row always counts it.
+    const dist = withEngine(inputs(), 50_000, 150_000);
+    const a = assetInputs(specsWith('ch1', (s) => (s.assets['bg/cafe'] = bg('cafe', 446_000))));
+    const withEn = (brBytes: number | null): AssetInputs => ({
+      ...a,
+      chapters: a.chapters.map((c) => (c.id === 'ch1' ? { ...c, en: brBytes === null ? null : { rawBytes: 4 * brBytes, brBytes } } : c)),
+    });
+    const firstLoad = (x: AssetInputs): Row => rowOf(assetRows(x, dist), 'first-load ch1');
+    const base = firstLoad(withEn(500));
+    expect(base.status).toBe('PASS');
+    const v = base.valueBytes ?? 0;
+    expect(firstLoad(withEn(500 + 1_000)).valueBytes).toBe(v + 1_000);
+    expect(firstLoad(withEn(500 + 800_001 - v))).toMatchObject({ status: 'FAIL', valueBytes: 800_001 });
+    expect(firstLoad(withEn(null))).toMatchObject({ status: 'FAIL', valueBytes: null, note: 'cannot sum: ch1 en missing' });
   });
 
   test('budget: each asset row fails on its oversize input', () => {
@@ -1600,12 +1656,13 @@ describe('budget assets', () => {
     expect(knot.note).toContain("not in ch1's manifest: bg/ghost");
     // A room naming a close-up the manifest lacks, likewise.
     const a = assetInputs();
-    const room = { bg: 'bg/cafe', props: [], closeups: ['cg/drawer'], neighbours: ['bg/street'] };
-    const roomRow = rowOf(assetRows({ ...a, rooms: { 'ch1/hall/main': room } as unknown as AssetInputs['rooms'] }), 'room-set ch1/hall/main'); // ids are fixture literals
+    const room = { bg: 'bg/cafe', closeups: ['cg/drawer'], to: ['ch1/hall/street'] };
+    const street = { bg: 'bg/street' };
+    const roomRow = rowOf(assetRows({ ...a, rooms: usageRooms({ 'ch1/hall/main': room, 'ch1/hall/street': street }) }), 'room-set ch1/hall/main');
     expect(roomRow.status).toBe('FAIL');
     expect(roomRow.note).toContain("not in ch1's manifest: cg/drawer");
     const fits = { ...room, closeups: [] };
-    expect(rowOf(assetRows({ ...a, rooms: { 'ch1/hall/main': fits } as unknown as AssetInputs['rooms'] }), 'room-set ch1/hall/main').status).toBe('PASS');
+    expect(rowOf(assetRows({ ...a, rooms: usageRooms({ 'ch1/hall/main': fits, 'ch1/hall/street': street }) }), 'room-set ch1/hall/main').status).toBe('PASS');
   });
 
   // MEMORY-PLAN 4.C, §7: an image's half-tier file, exactly half its stored size, beside it under the same prefix.
@@ -1702,10 +1759,7 @@ describe('budget assets', () => {
     const a = assetInputs(specsWith('ch1', (s) => (s.assets['bg/hall'] = img('bg-hall-0a0a0a0a', 1440, 2048, 300_000, 450_000))));
     const shot = rowOf(assetRows(a), 'image bg/hall');
     expect(shot.status, shot.note).toBe('PASS');
-    const inRoom = (x: AssetInputs): Row => {
-      const room = { bg: 'bg/hall', props: [], closeups: [], neighbours: [] };
-      return rowOf(assetRows({ ...x, rooms: { 'ch1/manor/hall': room } as unknown as AssetInputs['rooms'] }), 'image bg/hall'); // ids are fixture literals
-    };
+    const inRoom = (x: AssetInputs): Row => rowOf(assetRows({ ...x, rooms: usageRooms({ 'ch1/manor/hall': { bg: 'bg/hall' } }) }), 'image bg/hall');
     const row = inRoom(a);
     expect(row.status).toBe('FAIL');
     expect(row.note).toBe('1440×2048, not exactly 1080×2048 (room plate ch1/manor/hall)');
@@ -1739,27 +1793,168 @@ describe('budget assets', () => {
 
   test("budget: room-set counts the room's sheet", () => {
     // Per-player §6.5 (Reconcile P2): img(n) = bg(n) + sheet(n), so room-set counts img(room) + props + max(the largest
-    // neighbour's img, the largest close-up).
+    // neighbour's img + props, the largest close-up).
     const sheeted = specsWith('ch1', (s) => {
       Object.assign(s.assets, { 'bg/hall': bg('hall'), 'sheet/hall': cuSheetOf('hall'), 'bg/yard': bg('yard'), 'sheet/yard': cuSheetOf('yard'), 'cg/drawer': cg('drawer') });
     });
-    const room = { bg: 'bg/hall', props: [], closeups: ['cg/drawer'], neighbours: ['bg/yard'] };
-    const roomRow = (a: AssetInputs): Row => rowOf(assetRows({ ...a, rooms: { 'ch1/manor/hall': room } as unknown as AssetInputs['rooms'] }), 'room-set ch1/manor/hall'); // ids are fixture literals
+    const rooms = usageRooms({ 'ch1/manor/hall': { bg: 'bg/hall', closeups: ['cg/drawer'], to: ['ch1/manor/yard'] }, 'ch1/manor/yard': { bg: 'bg/yard' } });
+    const roomRow = (a: AssetInputs): Row => rowOf(assetRows({ ...a, rooms }), 'room-set ch1/manor/hall');
     const a = assetInputs(sheeted);
     const plate = 1080 * 2048 * 4 + 150_000;
     const sheet = fullOf(cuSheetOf('hall'));
     const row = roomRow(a);
     expect(row.valueBytes).toBe(plate + sheet + (plate + sheet));
-    expect(row).toMatchObject({ status: 'PASS', note: 'bg + 0 props + max(neighbour bg, close-up) (+ sheets)' });
+    expect(row).toMatchObject({ status: 'PASS', note: 'bg + 0 props + max(neighbour bg + props, close-up) (+ sheets); preloads 1 of 1 neighbours' });
     const manifest = chapterOf(a, 'ch1').manifest;
     if (manifest === null) {
       throw new Error('invariant: ch1 has a manifest');
     }
     expect(imgIds(manifest.value, 'bg/hall' as AssetId)).toEqual(['bg/hall', 'sheet/hall']);
     expect(imgIds(manifest.value, 'bg/cafe' as AssetId)).toEqual(['bg/cafe']);
-    // Control: without sheets the room counts bg + max(neighbour bg, close-up), and its note is today's.
+    // Control: without sheets the room counts bg + max(neighbour bg + props, close-up), and its note has no sheets.
     const bare = roomRow(assetInputs(specsWith('ch1', (s) => Object.assign(s.assets, { 'bg/hall': bg('hall'), 'bg/yard': bg('yard'), 'cg/drawer': cg('drawer') }))));
-    expect(bare).toMatchObject({ status: 'PASS', valueBytes: 2 * plate, note: 'bg + 0 props + max(neighbour bg, close-up)' });
+    expect(bare).toMatchObject({ status: 'PASS', valueBytes: 2 * plate, note: 'bg + 0 props + max(neighbour bg + props, close-up); preloads 1 of 1 neighbours' });
+  });
+
+  test('budget: room-set counts the transition pair', () => {
+    // Engine plan §6.3 "Gates" (O5): a crossfade has both rooms' sets on stage (`syncProps` fades both), so the row is
+    // img(R) + props(R) + max over R's neighbour rooms n of (img(n) + props(n)), or the largest close-up. The hall has
+    // no prop of its own and fails on the study's 16.
+    const studyProps = Array.from({ length: 16 }, (_, i) => `prop/s${i}`);
+    const a = assetInputs(
+      specsWith('ch1', (s) => {
+        Object.assign(s.assets, { 'bg/hall': bg('hall'), 'bg/yard': bg('yard'), 'bg/study': bg('study'), 'cg/drawer': cg('drawer') });
+        for (const p of studyProps) {
+          s.assets[p] = prop(p.slice('prop/'.length));
+        }
+      }),
+    );
+    const plate = 1080 * 2048 * 4 + 150_000;
+    const one = 512 * 512 * 4 + 30_000;
+    const hall = (props: number, to: readonly string[] = ['ch1/manor/yard', 'ch1/manor/study']): Row => {
+      const rooms = usageRooms({
+        'ch1/manor/hall': { bg: 'bg/hall', closeups: ['cg/drawer'], to },
+        'ch1/manor/yard': { bg: 'bg/yard', to: ['ch1/manor/hall'] },
+        'ch1/manor/study': { bg: 'bg/study', props: studyProps.slice(0, props), to: ['ch1/manor/hall'] },
+      });
+      return rowOf(assetRows({ ...a, rooms }), 'room-set ch1/manor/hall');
+    };
+    const row = hall(16);
+    expect(row).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: plate + (plate + 16 * one) });
+    expect(row.valueBytes).toBe(35_251_936);
+    expect(row.note).toContain('max(neighbour bg + props, close-up)');
+    // The pair is the largest neighbour, wherever it stands in the exits: the study first and the yard last fail alike.
+    expect(hall(16, ['ch1/manor/study', 'ch1/manor/yard'])).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: 35_251_936 });
+    // Control: with 7 props on the study the pair fits.
+    expect(hall(7)).toMatchObject({ status: 'PASS', valueBytes: 25_544_752 });
+    // A neighbour room usage.json lacks cannot be summed: FAIL, not a smaller PASS.
+    const unknown = hall(7, ['ch1/manor/yard', 'ch1/manor/study', 'ch1/manor/attic']);
+    expect(unknown).toMatchObject({ status: 'FAIL', valueBytes: null });
+    expect(unknown.note).toContain('neighbour room ch1/manor/attic not in usage.json');
+  });
+
+  test("budget: the transition pair counts each room's sheet", () => {
+    // Reconcile r1 (design-shots I-3): every image term of the pair goes through `imgIds`, the neighbour's sheet beside
+    // its props: hall (plate + sheet) + yard (plate + room sheet + 4 props).
+    const yardProps = ['prop/y0', 'prop/y1', 'prop/y2', 'prop/y3'];
+    const a = assetInputs(
+      specsWith('ch1', (s) => {
+        Object.assign(s.assets, { 'bg/hall': bg('hall'), 'sheet/hall': cuSheetOf('hall'), 'bg/yard': bg('yard'), 'sheet/yard': roomSheetOf('yard') });
+        for (const p of yardProps) {
+          s.assets[p] = prop(p.slice('prop/'.length));
+        }
+      }),
+    );
+    const rooms = usageRooms({
+      'ch1/manor/hall': { bg: 'bg/hall', to: ['ch1/manor/yard'] },
+      'ch1/manor/yard': { bg: 'bg/yard', props: yardProps, to: ['ch1/manor/hall'] },
+    });
+    const plate = 1080 * 2048 * 4 + 150_000;
+    const row = rowOf(assetRows({ ...a, rooms }), 'room-set ch1/manor/hall');
+    expect(row.valueBytes).toBe(plate + fullOf(cuSheetOf('hall')) + (plate + fullOf(roomSheetOf('yard')) + 4 * (512 * 512 * 4 + 30_000)));
+    expect(row).toMatchObject({ status: 'PASS', valueBytes: 29_062_784 });
+    expect(row.note).toContain('(+ sheets)');
+  });
+
+  test('budget: room-set notes how many neighbours preload', () => {
+    // Engine plan §6.3 "Preload (m2)", a report and never a FAIL: R's own images first, then each neighbour room's
+    // img(n) first-fit under the steady cap (a refused one is skipped, an id already in the set joins at no byte), in
+    // the worst order the runtime meets: plain exit order (a first entry), or, arrived from t, t and the neighbours R
+    // shares with t first (live at arrival), then the rest in exit order.
+    const m = (room: string): string => `ch1/manor/${room}`;
+    const back = (room: string): RoomSpec['to'] => [m(room)];
+    const inputsWith = (assets: Readonly<Record<string, AssetEntry>>): AssetInputs => assetInputs(specsWith('ch1', (s) => Object.assign(s.assets, assets)));
+    const propSet = (prefix: string, n: number): Record<string, AssetEntry> => Object.fromEntries(Array.from({ length: n }, (_, i) => [`prop/${prefix}${i}`, prop(`${prefix}${i}`)]));
+    const roomRow = (a: AssetInputs, spec: Readonly<Record<string, RoomSpec>>, room = 'hall'): Row => rowOf(assetRows({ ...a, rooms: usageRooms(spec) }), `room-set ${m(room)}`);
+    const formula = 'bg + 6 props + max(neighbour bg + props, close-up)';
+    const six = propSet('h', 6);
+    const hall = { bg: 'bg/hall', props: Object.keys(six) };
+    // (A) Own 15,468,816 B leaves 18,085,616: exit order admits a and b and refuses c (13,130,032 with its sheet);
+    // arrived from c, c is live and a and b load on tap. The worst order decides.
+    const worst = inputsWith({ 'bg/hall': bg('hall'), ...six, 'bg/a': bg('a'), 'bg/b': bg('b'), 'bg/c': bg('c'), 'sheet/c': cuSheetOf('c') });
+    const abc = { [m('hall')]: { ...hall, to: [m('a'), m('b'), m('c')] }, [m('a')]: { bg: 'bg/a', to: back('hall') }, [m('b')]: { bg: 'bg/b', to: back('hall') }, [m('c')]: { bg: 'bg/c', to: back('hall') } };
+    expect(roomRow(worst, abc)).toMatchObject({ status: 'PASS', valueBytes: 28_598_848, note: `${formula} (+ sheets); preloads 1 of 3 neighbours (on tap: a, b)` });
+    // (A') A refusal is skipped, not a stop: exit order admits x and z around y; arrived from y, x and z load on tap.
+    const skip = inputsWith({ 'bg/hall': bg('hall'), ...six, 'bg/x': bg('x'), 'bg/y': bg('y'), 'sheet/y': cuSheetOf('y'), 'bg/z': bg('z') });
+    const xyz = { [m('hall')]: { ...hall, to: [m('x'), m('y'), m('z')] }, [m('x')]: { bg: 'bg/x', to: back('hall') }, [m('y')]: { bg: 'bg/y', to: back('hall') }, [m('z')]: { bg: 'bg/z', to: back('hall') } };
+    expect(roomRow(skip, xyz).note).toBe(`${formula} (+ sheets); preloads 1 of 3 neighbours (on tap: x, z)`);
+    // (B) Two neighbour rooms on one plate: the second joins the first's bg at no byte, so every order admits all three.
+    const shared = inputsWith({ 'bg/hall': bg('hall'), ...six, 'bg/a': bg('a'), 'bg/c': bg('c') });
+    const onePlate = { [m('hall')]: { ...hall, to: [m('a'), m('b'), m('c')] }, [m('a')]: { bg: 'bg/a', to: back('hall') }, [m('b')]: { bg: 'bg/a', to: back('hall') }, [m('c')]: { bg: 'bg/c', to: back('hall') } };
+    expect(roomRow(shared, onePlate).note).toBe(`${formula}; preloads 3 of 3 neighbours`);
+    // (C) The registry admits a preload while used + need <= the cap: exactly the cap admits, one byte more refuses
+    // (and the row fails by that byte).
+    const fourteen = propSet('r', 14);
+    const edge = (webp: number): Row =>
+      roomRow(
+        inputsWith({ 'bg/r': img('bg-r-0a0a0a0a', 1080, 2048, 100_000, webp), ...fourteen, 'bg/a': img('bg-a-0a0a0a0a', 1080, 2048, 100_000, 450_000) }),
+        { [m('r')]: { bg: 'bg/r', props: Object.keys(fourteen), to: [m('a')] }, [m('a')]: { bg: 'bg/a', to: back('r') } },
+        'r',
+      );
+    const edgeFormula = 'bg + 14 props + max(neighbour bg + props, close-up)';
+    expect(edge(309_648)).toMatchObject({ status: 'PASS', valueBytes: STEADY_CAP_BYTES, note: `${edgeFormula}; preloads 1 of 1 neighbours` });
+    expect(edge(309_649)).toMatchObject({ status: 'FAIL', valueBytes: STEADY_CAP_BYTES + 1, note: `${edgeFormula}; preloads 0 of 1 neighbours (on tap: a)` });
+    // (D) No neighbour.
+    expect(roomRow(worst, { [m('hall')]: hall }).note).toBe(`${formula}; preloads 0 of 0 neighbours`);
+    // (E) The three-room cycle P <-> R <-> t2 <-> P (critique O2; u = 2,000,000 B, R's own set leaves 10u): from t1 (P),
+    // t1 and t2 (a neighbour R shares with t1) are live first and fill the space, so s1 and s2 load on tap; exit order
+    // and "t1, then exit order" would both admit three.
+    const u = 2_000_000;
+    const sized = (id: string, bytes: number): ImageEntry => img(`${id.replace('/', '-')}-0a0a0a0a`, 500, 500, bytes - 1_000_000, bytes - 1_000_000);
+    const cycle = inputsWith({ 'bg/r': sized('bg/r', STEADY_CAP_BYTES - 10 * u), 'bg/s1': sized('bg/s1', u), 'bg/s2': sized('bg/s2', u), 'bg/t1': sized('bg/t1', 5 * u), 'bg/t2': sized('bg/t2', 5 * u) });
+    const rooms = {
+      [m('r')]: { bg: 'bg/r', to: [m('s1'), m('s2'), m('t1'), m('t2')] },
+      [m('s1')]: { bg: 'bg/s1', to: back('r') },
+      [m('s2')]: { bg: 'bg/s2', to: back('r') },
+      [m('t1')]: { bg: 'bg/t1', to: [m('r'), m('t2')] },
+      [m('t2')]: { bg: 'bg/t2', to: [m('r'), m('t1')] },
+    };
+    expect(roomRow(cycle, rooms, 'r')).toMatchObject({
+      status: 'PASS',
+      valueBytes: STEADY_CAP_BYTES - 10 * u + 5 * u,
+      note: 'bg + 0 props + max(neighbour bg + props, close-up); preloads 2 of 4 neighbours (on tap: s1, s2)',
+    });
+    // (F) Two orders reach the least count with different refusals (triage r1 F1; R's own set leaves 10u, exits c 3u,
+    // a 6u, b 6u): exit order, "from c" and "from a" refuse b, "from b" refuses a. The first order in enumeration (exit
+    // order, then arrived from each neighbour in exit order) that reaches the least count names the room on tap.
+    const tie = inputsWith({ 'bg/r': sized('bg/r', STEADY_CAP_BYTES - 10 * u), 'bg/c': sized('bg/c', 3 * u), 'bg/a': sized('bg/a', 6 * u), 'bg/b': sized('bg/b', 6 * u) });
+    const cab = { [m('r')]: { bg: 'bg/r', to: [m('c'), m('a'), m('b')] }, [m('c')]: { bg: 'bg/c', to: back('r') }, [m('a')]: { bg: 'bg/a', to: back('r') }, [m('b')]: { bg: 'bg/b', to: back('r') } };
+    expect(roomRow(tie, cab, 'r')).toMatchObject({
+      status: 'PASS',
+      valueBytes: STEADY_CAP_BYTES - 10 * u + 6 * u,
+      note: 'bg + 0 props + max(neighbour bg + props, close-up); preloads 2 of 3 neighbours (on tap: b)',
+    });
+    // (G) A preload charges a neighbour's img(n), never its props (triage r1 F2; the registry asks for a neighbour's bg,
+    // its props load when it is entered): with 10u left, n1 (a 4u plate and one prop) and n2 (a 6u plate) fill the cap
+    // exactly in every order; charging n1's prop as well would refuse one of them.
+    const nProp = propSet('n', 1);
+    const plates = inputsWith({ 'bg/r': sized('bg/r', STEADY_CAP_BYTES - 10 * u), 'bg/n1': sized('bg/n1', 4 * u), 'bg/n2': sized('bg/n2', 6 * u), ...nProp });
+    const n12 = { [m('r')]: { bg: 'bg/r', to: [m('n1'), m('n2')] }, [m('n1')]: { bg: 'bg/n1', props: Object.keys(nProp), to: back('r') }, [m('n2')]: { bg: 'bg/n2', to: back('r') } };
+    expect(roomRow(plates, n12, 'r')).toMatchObject({
+      status: 'PASS',
+      valueBytes: STEADY_CAP_BYTES - 10 * u + 6 * u,
+      note: 'bg + 0 props + max(neighbour bg + props, close-up); preloads 2 of 2 neighbours',
+    });
   });
 
   test('budget: a loop prop atlas is held to its own limits', () => {
@@ -2028,8 +2223,7 @@ const propsOf = (files: Readonly<Record<string, AssetEntry>>): string[] => ids(f
 /** One free chapter ch1 holding `assets`, its build/shots.json `c`, and the usage rooms `rooms` (`<ch>/<section>/<room>`). */
 function shotInputs(assets: Record<string, AssetEntry>, c: ShotChapterSpec, rooms: Readonly<Record<string, { bg: string; props: string[] }>> = {}): AssetInputs {
   const a = assetInputs([{ id: 'ch1', paid: false, next: null, assets, knots: { scene: { assets: [], next: [] } } }]);
-  const usageRooms = Object.fromEntries(Object.entries(rooms).map(([k, r]) => [k, { ...r, closeups: [], neighbours: [] }]));
-  return { ...a, shots: shotUsageOf({ ch1: c }), rooms: usageRooms as unknown as AssetInputs['rooms'] }; // ids are fixture literals
+  return { ...a, shots: shotUsageOf({ ch1: c }), rooms: usageRooms(rooms) };
 }
 
 /** `e` with its half-tier file (exactly half per side, MEMORY-PLAN 4.C) of `avif` and `webp` bytes, beside its own. */
@@ -2086,6 +2280,16 @@ describe('budget shots', () => {
     const lacking = rowOf(assetRows(shotInputs(two, { look: { [K1]: { cur: [...ids(two), 'cg/ghost'] } } })), 'step-window ch1');
     expect(lacking).toMatchObject({ status: 'FAIL', valueBytes: null });
     expect(lacking.note).toContain("not in ch1's manifest: cg/ghost");
+  });
+
+  test('budget: a step-window FAIL for a lacking id names the window that lists it', () => {
+    // SH3b review M2: the FAIL prints the terms of a window that lists the missing file, not the chapter's largest
+    // window (K1, complete and larger, names no missing file).
+    const two = { ...CU_A, ...CU_B };
+    const look = { [K1]: { cur: ids(two) }, [K2]: { cur: ['cg/ghost'] } };
+    const row = rowOf(assetRows(shotInputs(two, { look })), 'step-window ch1');
+    expect(row).toMatchObject({ status: 'FAIL', valueBytes: null });
+    expect(row.note).toBe(`budget/step-window: ${K2}: cur 0.00 + certain 0.00 (at 1) + possible 0.00 + labels 0.00 MiB; not in ch1's manifest: cg/ghost`);
   });
 
   test('budget: step window counts the current shot once', () => {
