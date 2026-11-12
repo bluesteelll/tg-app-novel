@@ -16,6 +16,8 @@ import { decodeUse, encodeUse, normalizeUse } from './use.ts';
 import type { UseData } from './use.ts';
 import { decodeVisual, encodeVisual, normalizeVisual } from './visual.ts';
 import type { VisualData } from './visual.ts';
+import { decodeView, encodeView, normalizeView } from './view.ts';
+import type { ViewData } from './view.ts';
 
 const use = {
   id: 'use',
@@ -38,7 +40,16 @@ const visual = {
   normalize: normalizeVisual,
 } satisfies MechanicData<'visual', VisualData>;
 
-export const MECHANIC_DATA = [core, use, visual] as const;
+const view = {
+  id: 'view',
+  rules: 'chunk',
+  owns: { room: ['view'], facts: [] },
+  decode: decodeView,
+  encode: encodeView as (d: unknown) => OwnedRaw,
+  normalize: normalizeView,
+} satisfies MechanicData<'view', ViewData>;
+
+export const MECHANIC_DATA = [core, use, visual, view] as const;
 
 /** A data registry as a decode takes it: `MECHANIC_DATA`, or a test's fixture modules beside it. */
 export type DataRegistry = readonly MechanicData<string, unknown, unknown>[];

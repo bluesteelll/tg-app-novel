@@ -327,7 +327,7 @@ test('lint: world/schema red on fixture', () => {
   const found = of(lint(w), 'world/schema');
   // Every issue, never the first only.
   expect(found.map((f) => f.message).sort()).toEqual([
-    'sections.manor.rooms.hall.onenter: unknown key (expected bg, title, onEnter, hotspots, refuse, decor)',
+    'sections.manor.rooms.hall.onenter: unknown key (expected bg, title, onEnter, hotspots, refuse, decor, view)',
     'sections.manor.rooms.study.title: missing',
   ]);
   expect(found.every((f) => f.severity === 'E' && f.file === FILE && f.line > 0)).toBe(true);
@@ -963,6 +963,10 @@ test('story: module and type lint codes are unique and none is a DSL code', () =
     'world/use-unknown-ref E',
     'world/use-cross-section E',
     'world/keep-consumed W',
+    'world/view-depth E',
+    'world/view-section E',
+    'world/view-entry E',
+    'world/view-exits E',
   ]);
   // The registry restates world.ts's VarLiteral (its types stay out of the app program): one type (tsc).
   type InputVar = WorldLintInput['declared'] extends ReadonlyMap<VarName, infer V> ? V : never;

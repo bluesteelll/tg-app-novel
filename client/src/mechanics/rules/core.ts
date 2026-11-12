@@ -22,6 +22,7 @@ import type { Hotspot, HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from 
 import type { ArrivalOut, Cause, CauseVerb, FactAtom, KernelWorld, RulesRegistry, SectionAction } from '../contract.ts';
 import { APPLY, MECHANIC_RULES } from './index.ts';
 import { keepsSlot } from './use.ts';
+import { moveHow } from './view.ts';
 import { added, arrivalOut, createWriter, fire, openKey } from './writer.ts';
 import type { KernelWriter } from './writer.ts';
 
@@ -67,7 +68,7 @@ function arrived(out: CoreWriter, room: RoomId): void {
 /** How a `room` effect enters its room: the move's sound, the room left, the exit taken, the kind of move. */
 type Move = Omit<Extract<ExploreEffect, { kind: 'room' }>, 'kind' | 'room'>;
 
-function arrive(out: CoreWriter, room: RoomId, move: Move, cause: Cause): void {
+export function arrive(out: KernelWriter, room: RoomId, move: Move, cause: Cause): void {
   const d = out.draft;
   const entry = d.ix.rooms.get(room);
   const section = d.s.section;
@@ -181,7 +182,7 @@ function tap(out: CoreWriter, key: HotspotKey, cause: Cause): void {
       if (h.lock !== null && !d.s.open.includes(key)) {
         lockTap(d, key, h.lock);
       } else if ('room' in h.to) {
-        arrive(out, h.to.room, { sfx: h.sfx, from: entry.room, via: key, how: 'walk' }, cause);
+        arrive(out, h.to.room, { sfx: h.sfx, from: entry.room, via: key, how: moveHow(out.world, entry.room, h.to.room) }, cause);
       } else {
         // I-W's re-entry rule: a leave changes only `section` (sectionKey ignores it and lastRoom).
         set(d, 'section', null);

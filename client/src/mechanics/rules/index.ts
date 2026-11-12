@@ -16,6 +16,8 @@ import { applyUse, useActions, useReads, useScope } from './use.ts';
 import type { UseAction, UseCue } from './use.ts';
 import { applyVisual, visualActions, visualReads, visuals } from './visual.ts';
 import type { VisualAction } from './visual.ts';
+import { applyView, viewActions, viewReads } from './view.ts';
+import type { ViewAction } from './view.ts';
 import type { KernelWriter } from './writer.ts';
 
 const core = {
@@ -44,7 +46,15 @@ const visual = {
   visuals,
 } satisfies MechanicRules<'visual', VisualAction, never>;
 
-export const MECHANIC_RULES = [core, use, visual] as const;
+const view = {
+  id: 'view',
+  actions: viewActions,
+  apply: applyView,
+  reads: viewReads,
+  cues: [] as const,
+} satisfies MechanicRules<'view', ViewAction, never>;
+
+export const MECHANIC_RULES = [core, use, visual, view] as const;
 
 /**
  * The dispatch (engine plan §3.2 "Exhaustiveness: dispatch is a typed map over the tuple"): one handler per action kind
@@ -60,4 +70,5 @@ export const APPLY: { readonly [K in SectionAction['kind']]: (w: KernelWorld, a:
   'hint-opened': applyCore,
   'puzzle-ended': applyCore,
   use: applyUse,
+  'leave-view': applyView,
 };
