@@ -301,6 +301,27 @@ export function canvasProblems(encoded: ReadonlyMap<AssetId, Encoded>): string[]
   return problems;
 }
 
+/**
+ * Principle 0 at the file level (fix3 I-0): each file planned under `ASSET_OUT.paid` whose bytes equal a file planned
+ * under `ASSET_OUT.public`, one line each, sorted by the gated path, naming the first public twin (sorted) by path;
+ * empty when none. Such a file ships publicly under its twin's name, and scan-dist's hash arm finds it there. The asset
+ * tool checks the plan before it sweeps or writes anything.
+ */
+export function gatedCopies(files: ReadonlyMap<string, Uint8Array>): string[] {
+  const under = (dir: string): [string, Uint8Array][] => [...files].filter(([p]) => p.startsWith(`${dir}/`)).sort(([a], [b]) => (a < b ? -1 : 1));
+  const publicBySha = new Map<string, string>();
+  for (const [p, bytes] of under(ASSET_OUT.public)) {
+    const sha = sha256Hex(bytes);
+    if (!publicBySha.has(sha)) {
+      publicBySha.set(sha, p);
+    }
+  }
+  return under(ASSET_OUT.paid).flatMap(([p, bytes]) => {
+    const twin = publicBySha.get(sha256Hex(bytes));
+    return twin === undefined ? [] : [`${p} has the bytes of ${twin} (principle 0: a gated file is never a public file's copy)`];
+  });
+}
+
 /** server/content/build/fingerprints.assets.json: one entry per paid file, sorted by name. */
 export type AssetFingerprint = { asset: AssetId; name: string; sha256: string };
 export type AssetFingerprints = { files: readonly AssetFingerprint[] };

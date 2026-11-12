@@ -26,6 +26,7 @@ import {
   catalogImage,
   decodeAssetCatalog,
   decodeWorldSource,
+  gatedCopies,
   halfAsk,
   isShotFile,
   planAssets,
@@ -545,8 +546,10 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
     if (raster !== undefined) {
       // A `src` shot's plate (opaque: its q exactly), its packed file or a `src` loop atlas (RULINGS 267: its AVIF q
       // searched against R6), then the tool's own R6 on the shipped bytes; never trimmed, its half pair like any bg (§4.4).
+      // A gated one carries its id (fix3 I1): its px may be a public file's (a copy of the rest, a reused source
+      // directory), its bytes never are (I-0, scan-dist's hash arm).
       const px = await raster.px();
-      const r = await toRaster(px, { id, half: halfAsk(id, tier), q: raster.q, search: raster.search });
+      const r = await toRaster(px, { id, half: halfAsk(id, tier), q: raster.q, search: raster.search, mark: tier === 'paid' });
       if (!r.ok) {
         rasterProblems.push(...r.error);
         continue;
@@ -591,7 +594,8 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
     }
     return 1;
   }
-  // 4. Plan, sweep, write.
+  // 4. Plan, check, sweep, write. Principle 0 at the file level (fix3 I-0): a gated file with a public file's bytes is
+  // reported by name and nothing is swept or written (a kind without its own mark reaches this from owner input).
   const plan = planAssets({
     chapters,
     usage,
@@ -600,6 +604,13 @@ export async function main(argv: readonly string[], root: string, encoders: Enco
     ...(shotUsage === null ? {} : { shots: chapterShotKeys(shotUsage, shots) }),
     loops: new Map([...loops].map(([id, l]) => [id, loopRig(l.atlas, l.fps)])),
   });
+  const copies = gatedCopies(plan.files);
+  if (copies.length > 0) {
+    for (const p of copies) {
+      console.error(`assets: ${p}`);
+    }
+    return 1;
+  }
   const swept = [...stale(root, ASSET_OUT.public, plan.files), ...stale(root, ASSET_OUT.paid, plan.files)];
   for (const rel of swept) {
     rmSync(path.join(root, ...rel.split('/')), { recursive: true, force: true });

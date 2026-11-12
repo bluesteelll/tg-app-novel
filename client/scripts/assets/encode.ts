@@ -206,17 +206,24 @@ export async function encodeImage(input: Uint8Array, o: { trim: boolean; half?: 
 // Rasters (shots §4.4, lane SH3c): a `src` shot's plate and packed files, a `src` loop's atlas
 
 /**
+ * What a raster's file carries besides its px (fix3 I1): `mark`, an id written as EXIF ImageDescription, so a gated
+ * file's bytes are never a public file's whatever its px (I-0; the decoded px are the unmarked encode's).
+ */
+export type CodecOptions = { readonly mark?: string };
+
+/**
  * What a raster encode runs on: one tier's AVIF at quality q, its WebP, and a decode back to RGBA. Injectable, so the
  * q search's tests run on a fake codec; R6's compare is always `alphaWorst`.
  */
 export type Codec = {
-  readonly avif: (px: Raster, q: number) => Promise<Uint8Array>;
-  readonly webp: (px: Raster) => Promise<Uint8Array>;
+  readonly avif: (px: Raster, q: number, o?: CodecOptions) => Promise<Uint8Array>;
+  readonly webp: (px: Raster, o?: CodecOptions) => Promise<Uint8Array>;
   readonly decode: (bytes: Uint8Array) => Promise<Raster>;
 };
 
-function rawInput(px: Raster): Sharp {
-  return sharp(px.data, { raw: { width: px.w, height: px.h, channels: 4 } });
+function rawInput(px: Raster, o: CodecOptions = {}): Sharp {
+  const input = sharp(px.data, { raw: { width: px.w, height: px.h, channels: 4 } });
+  return o.mark === undefined ? input : input.withExif({ IFD0: { ImageDescription: o.mark } });
 }
 
 /** sharp's output, checked against the input's size: a raster is never resized. */
@@ -227,14 +234,14 @@ function sameSize(out: { data: Uint8Array; info: { width: number; height: number
   return out.data;
 }
 
-/** One tier's AVIF at quality `q` (effort 4, as `encodeImage`'s), no resize, no trim. */
-export async function encodeAvif(px: Raster, q: number): Promise<Uint8Array> {
-  return sameSize(await rawInput(px).avif({ quality: q, effort: AVIF.effort }).toBuffer({ resolveWithObject: true }), px, 'AVIF');
+/** One tier's AVIF at quality `q` (effort 4, as `encodeImage`'s), no resize, no trim; `o` as `CodecOptions` says. */
+export async function encodeAvif(px: Raster, q: number, o?: CodecOptions): Promise<Uint8Array> {
+  return sameSize(await rawInput(px, o).avif({ quality: q, effort: AVIF.effort }).toBuffer({ resolveWithObject: true }), px, 'AVIF');
 }
 
-/** One tier's WebP at q80 (alpha lossless: sharp's `alphaQuality` default 100). */
-export async function encodeWebp(px: Raster): Promise<Uint8Array> {
-  return sameSize(await rawInput(px).webp(WEBP).toBuffer({ resolveWithObject: true }), px, 'WebP');
+/** One tier's WebP at q80 (alpha lossless: sharp's `alphaQuality` default 100); `o` as `CodecOptions` says. */
+export async function encodeWebp(px: Raster, o?: CodecOptions): Promise<Uint8Array> {
+  return sameSize(await rawInput(px, o).webp(WEBP).toBuffer({ resolveWithObject: true }), px, 'WebP');
 }
 
 /** A source file's header facts (cut D5, D12): its format, size, sample depth (`uchar`, `ushort`, ...) and channels. */
@@ -289,15 +296,15 @@ export type QSearch =
  * RULINGS 267, one tier's AVIF q: from `start`, coarse steps of 5 up to the ceiling (90, itself the last candidate; a
  * start above it is its own), stopping at the first candidate whose decoded alpha passes R6 at every px; then the four q
  * just below it (never below the start); the passing candidate with the fewest bytes ships (ties: the lower q). Passing
- * is not monotone in q, so nothing ships that was not decoded and measured.
+ * is not monotone in q, so nothing ships that was not decoded and measured. Every candidate is encoded with `o`.
  */
-export async function searchAvif(px: Raster, start: number, codec: Codec = SHARP_CODEC): Promise<QSearch> {
+export async function searchAvif(px: Raster, start: number, codec: Codec = SHARP_CODEC, o?: CodecOptions): Promise<QSearch> {
   const ceiling = Math.max(Q_CEILING, start);
   const tried = new Map<number, { readonly avif: Uint8Array; readonly worst: AlphaWorst }>();
   const passes = async (q: number): Promise<boolean> => {
     let t = tried.get(q);
     if (t === undefined) {
-      const avif = await codec.avif(px, q);
+      const avif = await codec.avif(px, q, o);
       t = { avif, worst: alphaWorst(await codec.decode(avif), px) };
       tried.set(q, t);
     }
@@ -339,23 +346,25 @@ export type EncodedRaster = { readonly image: EncodedImage; readonly q: { readon
  * `encodeImage`'s). `search: false` (a plate, opaque): AVIF at `q` exactly, both tiers. `search: true` (a file with
  * alpha): each tier's AVIF q is `searchAvif`'s from `q`; a tier with no passing candidate up to the ceiling is an error
  * line naming the file, the tier, the best candidate's q and its worst px, and nothing is returned to write. WebP: q80.
- * `id` names the file in those lines. Sides even and at most 2048: the callers' R5, packer and loop-frame checks.
+ * `id` names the file in those lines. `mark` (fix3 I1): every AVIF candidate and both WebP of both tiers carry `id`
+ * (`CodecOptions`). Sides even and at most 2048: the callers' R5, packer and loop-frame checks.
  */
 export async function encodeRaster(
   px: Raster,
-  o: { readonly id: AssetId; readonly half: HalfAsk; readonly q: number; readonly search: boolean },
+  o: { readonly id: AssetId; readonly half: HalfAsk; readonly q: number; readonly search: boolean; readonly mark?: boolean },
   codec: Codec = SHARP_CODEC,
 ): Promise<Result<EncodedRaster, string[]>> {
   if (px.w % 2 !== 0 || px.h % 2 !== 0 || px.w > MAX_SIDE || px.h > MAX_SIDE || px.data.length !== px.w * px.h * 4) {
     throw new Error(`invariant: ${o.id} is an even-sided RGBA raster of at most ${MAX_SIDE} px (${px.w}x${px.h}, ${px.data.length} bytes)`);
   }
+  const opts: CodecOptions = o.mark === true ? { mark: o.id } : {};
   const due = o.half === 'any' || (o.half !== 'none' && px.h === o.half.canvasH);
   const halfPx: Raster | null = due ? { data: halfRgba(px.data, px.w, px.h), w: px.w / 2, h: px.h / 2 } : null;
   const tier = async (t: Raster, name: 'full' | 'half'): Promise<Result<{ q: number; avif: Uint8Array }, string>> => {
     if (!o.search) {
-      return { ok: true, value: { q: o.q, avif: await codec.avif(t, o.q) } };
+      return { ok: true, value: { q: o.q, avif: await codec.avif(t, o.q, opts) } };
     }
-    const r = await searchAvif(t, o.q, codec);
+    const r = await searchAvif(t, o.q, codec, opts);
     if (r.ok) {
       return { ok: true, value: r };
     }
@@ -370,9 +379,9 @@ export async function encodeRaster(
   if (!full.ok || (half !== null && !half.ok)) {
     return { ok: false, error: [full, half].flatMap((r) => (r === null || r.ok ? [] : [r.error])) };
   }
-  const image: EncodedImage = { avif: full.value.avif, webp: await codec.webp(px), w: px.w, h: px.h };
+  const image: EncodedImage = { avif: full.value.avif, webp: await codec.webp(px, opts), w: px.w, h: px.h };
   if (halfPx !== null && half !== null) {
-    image.half = { avif: half.value.avif, webp: await codec.webp(halfPx), w: halfPx.w, h: halfPx.h };
+    image.half = { avif: half.value.avif, webp: await codec.webp(halfPx, opts), w: halfPx.w, h: halfPx.h };
   }
   return { ok: true, value: { image, q: { full: full.value.q, half: half === null ? null : half.value.q } } };
 }
