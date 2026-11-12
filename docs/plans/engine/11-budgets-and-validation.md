@@ -11,7 +11,7 @@
 | puzzle-type chunk (br, largest) | 1.6 / 8.0 KB (`:95`) | each new type <= 8.0 | row; GM7p derives roots by glob |
 | puzzle-host chunk (br) | 2.5 / 10.0 KB (`:96`) | + `cues/root.ts` ~0.2 and (round 7) the cue-target markers, the load-failed wrapper and Retry's `disabled` ~0.03 (GM3p; round 8: the `disabled={frame.retrying}` attribute lands in GM3w, the same bytes) + the reach `canTry` ~0.01 (GM7r, round 5) + the `room` / `ladder` places with the top bar, its Retry, (round 5) its Try, (round 6) its three-row CSS and (round 7) its 44 px / 18 px rules and markers ~0.52 (GM8h) -> ~3.26; round 9: the frame wrapper, the keyed root and the moved frame styles ~0.01 plus `cues/root.ts`'s `frameOut` ~0.01 (GM3p, GM3s) -> ~3.28 | row |
 | world json (per chapter) | ch1 1.7 KB br, 10.8 KB raw (`:120`); Changed by RULINGS 190 (as of `837b1ed`; docs lane `docs-errata-12`, group A, fix round 1): **MEASURED** at GM2b's merge (`1782d6d`, 4 builds per tree, identical): ch1 br 1,719 -> **1,506** B, raw 10,779 -> **5,253** B; ch2 br 286 -> 255 B, raw 569 -> 394 B | compact emission (merged, GM2b); indentation 51.3 % of raw (CLAIM 25-30 %), so the **br row binds first**: ~58 hotspots per chapter at 8 KB br against ~67 at 32 KB raw (ARITHMETIC on ch1's 11 hotspots, [§5.4](05-world-data-and-save-format.md#54-world-json-bytes-r6)); capacity with views and states MEASURED in GM4 | rows (8 KB br, 32 KB raw) |
-| room-set | 16.9-18.8 MiB (`:170-172`); Changed by RULINGS 258 (as of `a064399`; docs lane `docs-errata-16`, group A): the study **19.7** MiB MEASURED at GM3b's merge (`ac9cab1`; `drawer_open` joins its props) | transition-pair term; view pair 17.73 MiB + props + labels; Changed by RULINGS 246 (as of `a064399`; docs lane `docs-errata-16`, group A): the row bounds the current room's states; a kept room's `state:` set (a neighbour's) is admitted after the neighbour bgs, only into what they left under the 32 MiB steady cap, so a neighbour's background outranks it ([§6.4](06-mechanics-as-modules.md#64-visual-state-derived-room-pictures-gm3b-replaces-lfu3s-b-001-fix)) | row (32 MiB) |
+| room-set | 16.9-18.8 MiB (`:170-172`); Changed by RULINGS 258 (as of `a064399`; docs lane `docs-errata-16`, group A): the study **19.7** MiB MEASURED at GM3b's merge (`ac9cab1`; `drawer_open` joins its props); Changed by RULINGS 284 (as of `768fc9d`; docs lane `docs-errata-17`, group A): the hall **19.7** MiB (17,708,296 -> 20,666,516 B) MEASURED at GM4g's merge (`56cc302`: the transition pair), the cellar 17.8 (18,695,032 B) and the study 19.7 (20,668,128 B) unchanged, each noting `preloads 2 of 2` (the hall) or `1 of 1` | transition-pair term (Changed by RULINGS 284 (as of `768fc9d`; docs lane `docs-errata-17`, group A): built by GM4g, [§6.3](06-mechanics-as-modules.md#63-view-full-screen-zoom-views-gm4-o5) Gates, with the preload note); labels terms GM6d2's; view pair 17.73 MiB + props + labels; Changed by RULINGS 246 (as of `a064399`; docs lane `docs-errata-16`, group A): the row bounds the current room's states; a kept room's `state:` set (a neighbour's) is admitted after the neighbour bgs, only into what they left under the 32 MiB steady cap, so a neighbour's background outranks it ([§6.4](06-mechanics-as-modules.md#64-visual-state-derived-room-pictures-gm3b-replaces-lfu3s-b-001-fix)) | row (32 MiB) |
 | knot-set | <= 27.3 MiB (`:160`) | unchanged formula | row |
 | first-line latency | - | 0 added requests; the world is already fetched with the chapter; round 11: `prefetch()` runs at the first line as today, at a resume onto a yield and after a section's first room, never before a chapter's first line (D13 kept); round 12 (critique_engine_r11 m4, m5): and at every yield step between its pictures' loads and its transition (`ahead`); D13 holds on every path but one stated exception, a resume onto a yield, whose chunks (<= 29.3 KB br at the LIMITs) share the link with the resumed pictures (<= 0.12 s at 2 Mbit/s bandwidth-bound, ARITHMETIC), so "D13 kept" now reads "D13 kept, with that exception"; reconcile r1 (LFL merged, RULINGS 155): LFL requests the meta controller chunk at the first step shown (`GameMeta.stepShown`, from `present`), so at a resume onto a yield it joins those chunks: <= 29.3 + 6.0 (`metaControllerChunkBr`, `client/scripts/budget.ts:116` on `cec347c`) = 35.3 KB br, <= 0.14 s at 2 Mbit/s (ARITHMETIC: 35,300 x 8 / 2,000,000 = 0.141 s); its request still follows the resumed step, never precedes a chapter's first line (LFL's G2, `client/e2e/perf.spec.ts`); the first line of a chapter is never delayed (no prefetch runs before it on a path that has one); per first room entry the state images (`state:<room>`, each <= 60,000 B AVIF / 90,000 B WebP) follow the room's own bg, counted once by the chapter's `transfer` row; round 13 (critique_engine_r12 W2): a zoom round trip fetches none again, a return after the room left the keep set fetches its k images again (k x LIMIT, §6.4) | TTFL e2e as built |
 | story checks | - | new lints each seen red on a seeded world; line IDs for every new `WorldText`; scan-dist unchanged (no answer of a `secret` puzzle in `dist/`: `ritual` / `setting` solutions only in server content, proven by the emit tests, m3); round 3: `world/answer-len` with its server pin, `world/device-failed-state`, `world/attempts-without-wrong`; round 4: `world/view-type-site`, `world/device-type`, `world/device-parts-frame`; round 5: `world/device-closeup` (W2), `world/device-parts-frame` with the safe frame and the derived band (m5), `world/reach-solution`'s "not reached at `initial`" clause (W3); round 6: every module text a line of the walk (en checks, shipped en, `id/chapter-prefix`, needles) and `world/text-unwalked` (W1), the band 496 (m1), ch3's join at a knot top with no `graph/entry-below-top` (W2); every new code in a registered lint file's `codes`, unique across registries (GM1d's test), and `dsl-doc: lint table equals lint codes` pinned at 86 rows in every lane; round 7: `world/text-unwalked` fed by the walk's own per-module IDs (`WorldLintInput.moduleLines`), `texts.ts` value-importing nothing (a source test), `--fix-ids`' world-place skip pinned (GM5) | `story` gate; `test` |
@@ -22,6 +22,12 @@ Changed by RULINGS 201, 208 (as of `461424d`; docs lane `docs-errata-13`, group 
 **all JS** has LIMIT **365.0 KB br** (`allJsBr` 365,000, `client/scripts/budget.ts:132`; RULINGS 201 QS3, written by
 lane X; §11.1 Ledger 3), 284,488 B MEASURED at `597dded`; lever X moved the **first-load** rows ch1 306,278 -> 292,076 B
 and ch3 288,426 -> 274,224 B (-14,202 each, MEASURED at `597dded`), with the first line 256,519 -> 242,304 B (-14,215).
+
+Changed by RULINGS 172, 284 (as of `768fc9d`; docs lane `docs-errata-17`, group A): GM4g (`56cc302`) made the
+**first-load** rows count the head chapter's public world (a chapter with a world source) and its en table, the files
+`loadFree` awaits for an en-UI player (`firstLoadRows`, `client/scripts/budget.ts:1272`; §15 item 1): ch1 284,674 ->
+**288,371** B (+ world 1,554 + en 2,143), ch3 266,564 -> **267,886** B (+ en 1,322), MEASURED at the merge (RULINGS
+284); after SH4 (`768fc9d`, RULINGS 290) ch1 **292,787** and ch3 **272,302** B against 800,000.
 
 Changed by RULINGS 213, 224 (as of `52e328e`; docs lane `docs-errata-14`, group A): lever P added a lazy row this table does not
 list, **`purchase-flow chunk (br)`**, LIMIT **2.0 KB br** (`purchaseFlowChunkBr` 2,000, `client/scripts/budget.ts:141`;
@@ -271,6 +277,24 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   included, changes the build id (`client/scripts/build-id.ts:23` hashes every file under `src`, `vite-plugins` and
   `public`, tests excepted), which re-hashes the chunk names and moves brotli bytes; across a build-id change a lane's
   engine row is judged by module identity, with the existing STOPs unchanged.
+- **Main `768fc9d`, MEASURED** (Changed by RULINGS 277, 284, 290 (as of `768fc9d`; docs lane `docs-errata-17`, group
+  A); the orchestrator's merge checks, exact B br). Per lane, main -> merge:
+  - **SH3c** `5d3013e`: main's outputs byte-identical (no `src` entry in the catalog), so every row equals
+    `a064399`'s; no sample (RULINGS 277).
+  - **GM4g** `56cc302`: dist, dist-e2e and every output byte-identical except `build/usage.json`, so every JS row is
+    equal; room-set the hall 17,708,296 -> 20,666,516 B; first load ch1 284,674 -> 288,371, ch3 266,564 -> 267,886 (the
+    world and en terms); build-only, no sample (RULINGS 284).
+  - **SH4** `768fc9d`: entry 39,179 -> **39,164** (-15), engine 196,541 -> **200,969** (+4,428 against E 2.9, under
+    the +8.23 KB STOP; sample 4.428 / 2.9 = **1.527**), first line **240,133**, all JS **274,810**, explore-ui 10,446,
+    overlays 2,496, puzzle-host 2,542, cue-stage 6,070 (the lazy rows by module identity, build-id bytes only), CSS 4.0
+    KB, first load ch1 **292,787** / ch3 **272,302** (RULINGS 290).
+  **R** (the estimate policy below): engine **2.306** (n 15: -0.127, 0.123, 0.527, 1.009, 1.31, **1.527**, 1.700,
+  2.306, 3.025, 3.131, 3.513, 3.546, 4.000, 5.96, 11.1; SH4's sample moved the median back from 2.666; a lever or a fix
+  gives no sample). Remaining terms (ARITHMETIC): engine 10.46 - 2.9 (SH4) = **7.56**; entry **0**. Projection (RULINGS
+  290): **Ledger 4** 200.969 + 7.56 x 2.306 = **218.402 / 230.0 (11.598 left)**; **Ledger 2** **39.164 / 40.0 (0.836
+  left)**; **Ledger 1** 240.133 + 17.433 = **257.566 / 270.0 (12.434 left)**. The trigger does not hold: Y stays on the
+  shelf until a ledger is within 1.0 KB; the GM3b engine-lever candidate is measured once Ledger 4 or Ledger 1 is
+  within 2.0 KB (RULINGS 253). L2's return line (entry headroom under 0.5 KB) does not hold: 0.836 KB is left.
 - **The path rule (RULINGS 201; the union rule, budget round r198 design §3.1).** Ledgers 1 and 4 count every JS chunk
   that some supported WebView requests **automatically before its first line** on the boot -> chapter -> first-line
   path, a capability fallback included (Pixi's three renderer facades: a device requests one by what it is): the
@@ -320,6 +344,8 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   (Changed by RULINGS 243, 258, 269 (as of `a064399`; docs lane `docs-errata-16`, group A)) at GM3p's (RULINGS 243):
   engine **2.306** (n 13); at GM3b's (RULINGS 258): engine **2.666** (n 14); Q67's, SH3a's (its engine term deferred),
   SH3b's and Q69's merges gave no sample; at GM6t's (RULINGS 269): the entry sample 2.55, with no entry term left;
+  (Changed by RULINGS 290 (as of `768fc9d`; docs lane `docs-errata-17`, group A)) SH3c's and GM4g's merges gave no
+  sample (build tools); at SH4's (RULINGS 290): engine **2.306** (n 15; the sample 1.527);
   cue-stage and `scene-motion` use the all-JS R. **Stability note:** the engine sample is bimodal (1.009 | 3.025, SH1
   between), so each next sample moves the median toward its own ratio; this is why the trigger is evaluated at every
   merge, and why Ledger 3's one-time LIMIT is set on the upper quartile, not the median. **Booking:** (2a) the unit is
@@ -515,6 +541,15 @@ joined Y on the shelf. After GM6t (`a064399`, RULINGS 269): **Ledger 4 224.427 /
 trigger does not hold: Y stays on the shelf** until a ledger is within 1.0 KB at a merge; the GM3b candidate is
 measured once Ledger 4 or Ledger 1 is within 2.0 KB (RULINGS 253, 258). L2 stays shelved: its return line (entry
 headroom under 0.5 KB) does not hold. Per-merge rows: the `a064399` bullet above.
+
+**Ruled since: RULINGS 277, 284, 289, 290** — SH3c (`5d3013e`) and GM4g (`56cc302`) are build tools: every JS row
+equal, no sample. SH4 (`768fc9d`) took the engine to 200,969 B (+4,428 against E 2.9; sample 1.527), and **R is back to
+2.306** (n 15). After SH4: **Ledger 4 218.402 / 230.0** (11.598 left), **Ledger 2 39.164 / 40.0** (0.836 left),
+**Ledger 1 257.566 / 270.0** (12.434 left), with 7.56 KB of engine terms and no entry term left. **The trigger does
+not hold**; the GM3b candidate waits for a ledger within 2.0 KB (RULINGS 253); L2 stays shelved. SH4's merge was held
+once by the orchestrator's **pre-merge lens check** (RULINGS 289): three independent verifiers (paid content,
+lifetime, gate honesty), each finding sent to a refuter; it found one gate claim that could not fail (TM13), pinned
+test-only in fix2 before the merge. Per-merge rows: the `768fc9d` bullet above.
 
 **One owner per figure (reconcile r2, RC-W1).** This section owns the sums, headrooms and verdicts of the three
 designs; each design owns its own lane terms (EN §3.5, per-player §10 "Ledgers", the shots §9 / §10 with this

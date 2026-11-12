@@ -35,6 +35,8 @@ as of 0b91acc: no lane of this plan runs; engine E6 d5e04ef, GM3u 33b4f8d, lever
 as of a064399: GM6t merged a064399 (RULINGS 269; after O5, the Q64 fix and the Q67 fix 4f26e8e on App.svelte);
               engine GM3p d478384 and GM3b ac9cab1, shots SH3a efd3811 and SH3b e1e7637, the fix lanes Q67 4f26e8e and
               Q69 99be5c1 merged; shots SH3c running (lane A, RULINGS 263); no lane of this plan runs or is next
+as of 768fc9d: no lane of this plan runs or is next; shots SH3c 5d3013e and SH4 768fc9d, engine GM4g 56cc302 merged;
+              engine GM4 running (lane A, RULINGS 285-288), the world chain's predecessor of GM6c1a
 reconcile r2: (E-P26, engine.md §12 "Order and conflicts" engine §12 Order and conflicts owns every row below; mirrored)
 reconcile:    scene/*: M3c, LHJ (merged) -> GM2a's field -> GM6a -> SH1 -> SH4 -> SH5a -> SH5b -> SH6 -> SH7 -> SH8 ->
               {GM6d1, SH9, SH10, SH12a, SH12b, the carried preload-priority lane} one at a time by launch (GM6a before
@@ -143,6 +145,18 @@ holder is GM4g, after SH3c on `scripts/assets/manifest.ts` (engine §12's GM4g r
 265) followed GM3b on `yields.ts`, so GM6c2, GM6c4 and GM6d2 still take that file by launch. No lane of this plan runs
 or is next: GM6c1a waits for GM4 on the world chain, and every later lane of this plan follows it or GM4. Shots SH3c
 runs in lane A and the docs lane `docs-errata-16` in lane C (RULINGS 263, 270), two lanes at most (RULINGS 255).
+
+Changed by RULINGS 271-291 (as of `768fc9d`; docs lane `docs-errata-17`, group B): the block's `as of 768fc9d:` row is
+new (SHAs from `git log --first-parent main`). Shots SH3c (`5d3013e`, RULINGS 277), engine GM4g (`56cc302`, RULINGS
+284) and shots SH4 (`768fc9d`, RULINGS 290) merged. GM4g was the `budget.ts` row's holder after SH3b, so that row's
+next holder is engine GM7p, then GM6d2; on the `build.test.ts` row GM4g merged, and engine GM4 holds the file now
+(admitted for its emit red-first, RULINGS 286 Q1), before GM8a and GM6c1a / GM6c1b by launch. On the
+`explore/controller.ts` row engine GM4 is the running holder (RULINGS 285-288), then GM8i, GM6c4 and SH9; on the
+`scene/*` row SH4 merged, so SH5a is next there, ahead of every later holder of this design (GM6d1). On the `game.ts`
+row SH4 took one admitted line (RULINGS 275 Q1) between SH1 and SH5a, so GM6c2's place is unchanged. No lane of this
+plan runs or is next: GM6c1a waits for GM4 on the world chain (GM6s2 and GM3c merged), and every later lane of this
+plan follows it or GM4. Engine GM4 runs in lane A and the docs lane `docs-errata-17` in lane C (RULINGS 285, 291); two
+lanes at most (RULINGS 255, 276).
 
 Until GM6d2, per-player codes show in documents, item descriptions, ink lines, choices and the tier-3 hint (synthesis
 §6.4 item 4), which needs no label on the art.

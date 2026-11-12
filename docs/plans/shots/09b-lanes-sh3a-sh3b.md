@@ -198,6 +198,21 @@ as rectangles); each red on its named test as in round 3.
 **Order:** after SH3a (`shots.ts`, `assets.ts`, `assets.test.ts`); beside SH3b (disjoint: SH3b holds `budget.ts`,
 `budget.test.ts`, `shots/lint.ts`, `STAGING-DSL.md`); before GM4g (`assets.test.ts`, EN's A(`scripts/assets/**`)).
 
+**Ruled since: RULINGS 263, 264, 267, 271, 273, 277** — launched from `e1e7637` in lane A, terms 0; the plan's "e2e
+full (no visible change)" is met by byte identity (`dist` and `dist-e2e` equal to main's, so the e2e would run main's
+bytes). The cut (riders R-a `exprHue` and R-b the `src` loop prop around the plan's six) took
+`client/scripts/assets/manifest.ts` as the eighth lock file (O3: R8's world read through the one door); the fixture is a
+generator module with no binary in git (`client/scripts/assets/fixtures/shot/synthetic.ts`), its `q` 44 so the `q`
+test is not vacuous at the default (W3); R5 evens and refuses odd sides before `halfRgba`. P0 found AVIF alpha off R6
+at the shot's q in every kind, so each alpha file's tiers are q-searched (RULINGS 267, §4.1, §4.4). Before the merge
+an independent principle-0 verifier found I1 (a gated talk file byte-identical to a public one), F1 (a plate's lossy
+alpha unmeasured) and M1 (a paid-only expression changing how public rest states are cut); the fix design fix3 ruled
+(a2) the id mark with the guard I-0, F1's refusal with no alpha band, and per-file masking (RULINGS 271, 273; §2.5,
+§4.2 7b, §4.3, §4.4). Merged `5d3013e`: 8 files, all in the lock; 32 new vitest names (tag SH3C; 1678), the refusal
+test the cut replaced retired; main's outputs byte-identical (no `src` entry in the catalog), so no row moved. The
+`src` scope stops short of §4.1's ambient: RULINGS 264 accepted the cut's Q3 / Q4, so a `src` shot's ambient and a
+plane in a cast-less `src` shot are refused by name (D14) and carried to SH9 (§9.10).
+
 ### 9.4 SH3b `shot-budget` (client, budget)
 
 **Goal:** S22-S23 rows; the §4.4 guards; `room-set` counts the room's sheet; STAGING-DSL §8 rewritten for the step

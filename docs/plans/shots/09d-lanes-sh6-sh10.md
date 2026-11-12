@@ -260,6 +260,11 @@ round 3's moves did not yet fetch a sheet on tap; I-16.
   both the asset tool and scan-dist, so this lane, or a small shot-assets lane before it, also holds
   `client/src/story/catalog.ts`, `client/scripts/assets/shots.ts`, `client/scripts/assets/assets.test.ts` and
   `client/scripts/story/shots/usage.ts` (the lock count above predates them; the cut states the lock).
+- Changed by RULINGS 264 (as of `768fc9d`; docs lane `docs-errata-17`, group A): the SH3c cut's Q3 / Q4 join that
+  carry with the `src` side. SH3c refuses a `src` shot's non-empty `ambient` and a plane in a cast-less `src` shot by
+  name (`client/scripts/assets/extract.ts:109-113`, `:608-609`); lifting them needs the asset tool's `src` ambient
+  (flicker masks, ambient loop frames <= 256 x 256 and <= 8 frames, particles, sway) and the same widened
+  sheet-existence rule (`usage.ts:90-92`).
 
 **Commits:**
 1. Sources:

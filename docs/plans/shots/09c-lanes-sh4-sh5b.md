@@ -65,12 +65,45 @@ This lane then joins `graph.ts`'s order (SH2 -> GM9p -> SH12a).
 - M-SH4f (rev. 5, m1): `sweep` skips the `face:` and `talk:` slots' holders, round 4's state with no named release
   point (red: `executor: a face change releases the previous face and talk files after the transition`).
 
+**Ruled: RULINGS 275** — Q2: the stage-route tests are M-SH4b's and M-SH4e's designated reds; the e2e under each is
+reported as observed, not a designated red (the executor awaits its own takes; SH4's cut predicts M-SH4e's e2e red
+and M-SH4b's green, the ensure hold being on the face file only).
+
 **Gates:** check, test, story, build (engine row MEASURED; E +1.9 KB br, rev. 4: + face files 0.1), e2e full
 (`memory.spec.ts` untouched: ch1 is still legacy).
 
 **Order:**
 - After GM6a (`scene/*`, per-player.md GM6a's order, as read at [per-player GM6a `scene-anchors`](../per-player/09a-lanes-gm6a-gm6s2.md#gm6a-scene-anchors-client)), SH3a, SH1.
 - The strict `scene/*` chain runs SH1 -> SH4 -> ... (rev. 3, W7: it starts at SH1, which holds `executor.ts`; §9.14).
+
+**Ruled since: RULINGS 274, 275, 279, 280, 282, 289, 290** — launched from `1b85605` in lane C. SH4 is the first
+bundled importer of `story/shots.ts`'s decoders, so its engine term is E = 1.9 + 1.0 = 2.9 KB (RULINGS 256). The lock
+grew from the plan's 12 to 17:
+- one `app/game.ts` line, `imageIds`' context (Q1 (a); the plan's `speaker` argument dropped, §5.2);
+- `scripts/story/graph.ts` and `graph-shot.test.ts`, for SH2's cut Q4, taken as "nothing": a face on a shot chapter
+  names no knot asset (§3.1);
+- one `scripts/story.ts` hunk at `:684`, `buildGraph`'s `shots` input (Q5 (a));
+- `client/e2e/handover.spec.ts`, its fixture only: the close-up's gated plate `bg/lamp_keeper_cu`, which `next:ch4`
+  admits on the test's path.
+
+The critique added named pins (`registry.test.ts`'s `pixiFrames` box, M-SH4k's story-run red). Riders took SH1's cut Q5
+(a sprite build that throws drops its fresh group), SH1 review M2 / M3 (a `show` governs a `face`'s timing in its
+batch, STAGING-DSL §7) and RULINGS 245 Q8 (engine §6.4).
+
+Before the merge, three lens verifiers (paid content, lifetime, gate honesty) found one gate claim that could not fail
+(TM13), so fix2, test-only, pinned it with the shot paths of rebind and reacquire (RULINGS 289). Merged `768fc9d`:
+- 47 new vitest names (tag SH4; 1733) and the e2e `shots: the keeper's face changes in the lamp-room shot` and
+  `shots: a reload restores the keeper's face` (104);
+- engine +4,428 B (the R sample 1.527), entry -15 B;
+- ch4's 33 gated files (its two shots' 32 and `bgm/storm`; 49 gated files in all, ch2's 16 included) only in
+  `server/content`, behind the entitled asset route;
+- ch4's budget rows on the step model; budget 108 PASS, 0 FAIL, 1 PENDING.
+
+**Re-located on `768fc9d`** (SH4's cut §1a on `1b85605`, then this tree; docs lane `docs-errata-17`, group A):
+- `client/e2e/helpers.ts:313` `reachLine` -> `:329`; `:609` `grantChapter` -> `:625`.
+- Commit 6's `story/ch4/main.ink:9-14` / `:15`, as built: a001 `:8`; the conditional a002 / a003 `:9-13`; the cut
+  `# bg: lamp_keeper_cu` `:14`, before a004 `:15`; the keeper's `# face: keeper smile` `:31` (again at the dawn knot
+  `:37-38`).
 
 ### 9.6 SH5a `shot-preload` (client, runtime: windows, warm, rooms)
 

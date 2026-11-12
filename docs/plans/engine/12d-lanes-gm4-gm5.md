@@ -18,6 +18,25 @@
   that pushes the sum over).
 - **Gates:** story, build (room-set rows MEASURED before / after), test.
 - **Conflicts:** per-player GM6d2 adds the labels terms after GM4g (E-P2).
+- **Ruled since: RULINGS 278, 281, 283, 284** — launched from `5d3013e` in lane A (lock 6 as above), beside SH4.
+  **Re-located** (GM4g cut §1.1 on `5d3013e`, then on `768fc9d`): `roomRows` `budget.ts:869-899` -> `:1098-1131` ->
+  `client/scripts/budget.ts:1162-1211` (doc `:1162-1168`), with `neighbourRoomsOf` `:1102`, `neighbourPreloads`
+  `:1126`, `preloadNote` `:1157` and `imgIds` `:1093`; the usage reader `budget.ts:23` -> `:25` (types) and `:1852`
+  (`rooms: assetUsage(usage).rooms`); `emit.ts:546` -> `StoryRoomUsage` `client/scripts/story/emit.ts:93-99`,
+  `roomUsage` `:360-387`, `decodeRooms` `:585-624` (`keysExactly` itself `:549`); `manifest.ts:63-69` -> `RoomUsage`
+  `client/scripts/assets/manifest.ts:72` (now `= StoryRoomUsage`); `assets.test.ts:816-822` -> `decodedUsage()`
+  `client/scripts/assets/assets.test.ts:1332`, whose fixture has no `rooms`, so the file stayed untouched;
+  `firstLoadRows` `client/scripts/budget.ts:1266-1318`. Built as the plan's commits (1)-(3) in four (`70ca933` the
+  usage rooms' `neighbourRooms`, `52e008e` the pair, `2984225` the note, `88757fc` first-load), rider R1 `d5f3136` (a
+  step-window FAIL names the window that lacks a file, SH3b review M2) and rider R2 `53207f9` (`story: a played world
+  crosses its use edge with the world's mods`, the (b1) call-site pin); the note's model is the critique's O2 (the
+  room arrived from and the neighbours it shares with R live first; a three-room cycle fixture, `2 of 4`). Round 1's
+  two surviving mutations (the on-tap tie rule; a neighbour preload charging its props) were pinned (`77d4a78`,
+  `b230f25`). The merge was held once for a pin gap (V-1: the pair's max pinned only where the largest neighbour is
+  the last exit; fix2 `a0c298e`, test-only). Merged
+  `56cc302`: 5 files, 8 new vitest names (tag GM4G; 1686); every JS row and every output byte-identical except
+  `build/usage.json`; the room-set and first-load rows as [§11](11-budgets-and-validation.md#11-budgets-and-validation)
+  quotes them ([§6.3](06-mechanics-as-modules.md#63-view-full-screen-zoom-views-gm4-o5) as built).
 
 ### GM4 `mech-views`
 - **Goal:** §6.3 rules, navigation (W1), preload order (m2), zoom moves.

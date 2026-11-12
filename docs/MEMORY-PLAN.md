@@ -689,6 +689,12 @@ Changed by the shots and engine plans (adopted 2026-11-09, RULINGS 158; planned,
 `budget/step-window` and `budget/entry-step`; GM4g adds the room-set's transition-pair term —
 [shots §9.4 SH3b `shot-budget`](plans/shots/09b-lanes-sh3a-sh3b.md#94-sh3b-shot-budget-client-budget),
 [engine §12 GM4g `mech-room-set-pair`](plans/engine/12d-lanes-gm4-gm5.md#gm4g-mech-room-set-pair-new).
+Changed by RULINGS 262, 284 (as of `768fc9d`; docs lane `docs-errata-17`, group A): both are built. SH3b (`e1e7637`)
+added `budget/step-window` (`client/scripts/budget.ts:1415`, the `step-window <ch>` and `step-window <ch>/r:<room>`
+rows against `STEADY_CAP_BYTES`, `:183`) and `budget/entry-step` (`:1489`, the `entry step images <ch>` rows, 279,000 B);
+GM4g (`56cc302`) made `room-set` count the transition pair, img(R) + props(R) + max(the largest neighbour room's img +
+props, the largest close-up), every image through `imgIds` (`roomRows` `:1169`), and note "preloads k of n neighbours"
+(a report, never a FAIL). The step model's runtime (§8 below) is still planned (SH5a, SH5b).
 
 | | Registry (runtime invariant) | `budget/knot-set` (static gate) | Equivalence (I2) |
 |---|---|---|---|

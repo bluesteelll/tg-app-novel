@@ -22,6 +22,8 @@ mask.hair.<char>.<n>.png, mask.plane.<n>.png   soft masks (2-4 px feather) of cu
 <char>.half.png, <char>.closed.png             rest blink
 <char>.talk1.png, <char>.talk2.png             rest talk mouths, where the char speaks at rest
 <char>.accent.png                              rest brow target
+<char>.accent.half.png, .accent.closed.png     the rest's joint blink-under-accent states (base: the rest accent state),
+                                               only when the asset tool reports touching rest blink and accent diffs (R2)
 -- per needed non-rest expression x --
 <char>.<x>.png                                 the expression (base: plate.png)
 <char>.<x>.half.png, <char>.<x>.closed.png     its blink (base: <char>.<x>.png), only if x changes the rest blink box
@@ -35,6 +37,28 @@ loop.<n>.<i>.png      ambient frame loops (crops, <= 256 x 256 each, <= 8 frames
 `"q"` (rev. 2, W5 / m10): the shot's AVIF quality, default 50 (`encode.ts:15`), floor 40, for both tiers; the lever
 the `entry step images` row names first when a shot's half-tier bytes exceed its share (rev. 3: no lever of that row
 touches face states or framings).
+
+Changed by RULINGS 264, 277 (as of `768fc9d`; docs lane `docs-errata-17`, group A; the SH3c cut's Q7, D3 and D7): as
+built (SH3c `5d3013e`). `crop`, `focus` and every `pivot` are in original px, inside the crop (`decodeShotSource`,
+`client/scripts/assets/extract.ts:71`; its contract `:64-68`); `q` is an integer in 40..100, absent 50 (`DEFAULT_Q`,
+`MIN_Q` `:40-41`). The rest's own joint states are `<c>.accent.half.png` / `<c>.accent.closed.png`, cut against the rest
+accent state (`<c>[.<x>].accent.half|closed.png`, `extract.ts:835-849`); an x reusing both rest states reuses the rest's
+joint. An expression id is never a face state's name (`half`, `closed`, `accent`, `talk1`, `talk2`): such an
+expression is refused by name (`STATE_NAMES`, `extract.ts:359`, `:888-889`).
+
+**Ruled: RULINGS 264** — the SH3c cut's Q3 / Q4: a `src` shot's non-empty `ambient` is refused by name
+(`decodeShotSource`, `extract.ts:68`, `:109-113`), and so is a plane in a cast-less `src` shot
+(`declarationProblems`, `extract.ts:608-609`; `usage.ts:90-92` lists a sheet only for a cast). Both are D14's
+refusals, carried with SH3a's placeholder-ambient carry to SH9 or a small shot-assets lane before it (§9.10), which
+gains the `src` side: flicker masks, ambient loop frames <= 256 x 256 and <= 8 frames, particles, sway.
+
+**Ruled: RULINGS 267** — `q` is the plate's AVIF quality (both tiers, exactly) and the alpha files' **starting**
+quality: each alpha file's full and half tier (the sheet, each face and talk file, a `src` loop atlas) is searched from
+`q` up, coarse steps of 5 to the first candidate whose decoded alpha passes R6, then the four q below it; the passing
+candidate with the fewest bytes ships, and reaching the ceiling 90 with no pass fails the build by name (`searchAvif`,
+`client/scripts/assets/encode.ts:303`; `Q_CEILING` `:288`; `encodeRaster` `:355`). So R6 decides the alpha files'
+final q, and the `entry step images` lever `q` (SH3b, `client/scripts/budget.ts:1468`) acts on a shot's plates exactly
+and on its alpha files as the search's start.
 
 **The one transform:** every full-frame file is cropped by `shot.json.crop` (integer, the plate canvas size, S11),
 with no resampling. Masks and variants share the original's geometry. Rev. 3 (m6): `original.png` is the image
@@ -92,6 +116,19 @@ VAE round trip, S2 [I1], so an exact pipeline has none outside its mask).
    the base composites identical pixels (exact). R2 then tests the dilated **diffs** for disjointness; if those still
    touch, the asset tool names the joint states `x.accent.half` / `x.accent.closed` (blink drawn on the accent state)
    for the owner, and the animator draws the joint layer whenever blink and accent coincide.
+   **Ruled: RULINGS 273** — per-file masking (SH3c fix3 M1; supersedes RULINGS 264's O4, "a reused rest motion
+   layer masked anywhere is masked everywhere"): a state is masked only in the files of an expression whose own R2
+   overlaps it (the rest's R2 for the sheet and `talk/<rest>`, x's for `face/<s>/<c>/<x>` and `talk/<s>/<c>/<x>`),
+   else a rectangle, so another expression's needs never change how a file is cut; a reused rest state is the same
+   state cut in x's form, exact in either (`maskedIn`, `client/scripts/assets/extract.ts:818-830`; the cut per form
+   `:923-944`). Three residual channels stay, accepted under principle 0 (no paid-only pixel; one bit of geometry or a
+   mouth source each): the **shared silent / speaking file** (one `face/x`, or the sheet for the rest, serves a silent
+   free use and a speaking paid use, so it is masked for the speaking one); the **plateau union** (step 5's plateau,
+   head and group take every expression's boxes, a paid-only one's included); the **speech union** (whether the rest
+   is spoken in any chapter decides whether a free speaking x's public talk file takes the rest's mouths or x's own;
+   critique m1). Closing them needs per-tier variants of one file id (§2.6, `usage.ts`) and per-chapter plateaus: a
+   question for SH6's and SH12a's cuts ([§9.7 SH6](09d-lanes-sh6-sh10.md#97-sh6-shot-cuts-client-runtime),
+   [§9.13 SH12a](09e-lanes-sh11-sh12b.md#913-sh12a-sprites-out-client-the-kinds-atomic-rev-4-split-w6)).
 8. **Placeholders** (no `src`; SH3a implements this form, including the optional
    `bg.<id>.placeholder.ambient: ("flicker" | "loop" | "particles")[]` that SH9 turns on in the catalog):
    - the plate is a vertical gradient in the bg hue;
@@ -135,10 +172,33 @@ case.
 The **opaque base under face layers** holds by construction (the plate is opaque; CH D4's P4b becomes trivial). The
 "face under hair" ordering is fixed by z (hair locks above that character's face layers) and needs no check.
 
+Changed by RULINGS 264, 277 (as of `768fc9d`; docs lane `docs-errata-17`, group A; the SH3c cut's Q7, D6 and D9): as
+built. **R2** splits by pair: touching blink x accent diffs ask for the joint states by file and line IDs (an error
+until drawn), while a talk x blink or talk x accent pair has no joint form and fails outright, naming the pair and the
+lines (`client/scripts/assets/extract.ts:854`, `:870`). **R6** compares every px of the decoded file against its
+source (`alphaWorst` `:458`, the tolerance `:452`). **R8** reads each room's prop rects from `story/<ch>/world.json`
+(`roomPropRects` `:560`; the tool's world read, `client/scripts/assets.ts:252`), a warning as above.
+
+**Ruled: RULINGS 273** — the opaque base is now checked, not assumed (SH3c fix3 F1): `plate.png` or `original.png`
+with alpha below 255 at any px inside the crop is refused by name before any variant loads, one line per file
+(`extractShot`, `client/scripts/assets/extract.ts:670-680`). Only px inside the crop reach a file, so transparency
+outside the crop is legal when every source (`original.png`, `plate.png` and every variant) shares it; otherwise R1
+refuses it, since a variant equal to the plate there differs from it in alpha (critique W1).
+
 ### 4.4 Encoding, half tier, file limits
 
 - **Encoding:** AVIF q50 effort 4 and WebP q80 (`encode.ts:14-16`) for plates; sheets the same with alpha (`sharp`'s
   AVIF alpha quality is not separately settable — verify; R6 is the guard).
+  **Ruled: RULINGS 267** — confirmed: sharp 0.35.5 exposes no separate AVIF alpha quality, and at the shot's q AVIF
+  alpha missed R6 in every kind, so each alpha file's tiers are q-searched (§4.1). Frozen with return conditions:
+  **WebP for the alpha kinds**, and **a separate AVIF alpha quality** (when sharp / libvips expose it, or when the
+  sheet's search costs more than x1.2 on S-A's real art).
+  **Ruled: RULINGS 273** — two encoding rules for `src` files (SH3c fix3): every **gated** `src` raster carries its id
+  as EXIF ImageDescription (+281 B AVIF / +250 B WebP per gated file, the same px and q, Orientation 1; public bytes
+  unchanged), so a gated file's bytes are never a public file's whatever its px (`CodecOptions` `mark`,
+  `client/scripts/assets/encode.ts:209-228`; set for the paid tier, `client/scripts/assets.ts:552`); and a `src`
+  **plate ships without an alpha band** in either tier (`opaque`, `encode.ts:227`; -281 / -253 B AVIF per plate), since
+  §4.3 refuses a plate that is not opaque.
 - **Half tier:** plate 540 x 1024 and the sheet at half (M3c's rule); the LOW perf class loads half files for the
   session (`layout.ts:72-82`), and (rev. 3, C1) every class loads the entry step's half files first (S23). Half
   bytes are E at **0.375 of the full AVIF** (a quarter of the pixels at ~1.5x the bytes per pixel; the measured

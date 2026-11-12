@@ -147,6 +147,13 @@ per chapter, `assets` = every shot-family file that chapter needs (§2.6, §3.6)
   free); `scan-dist: a paid-only face file that the asset tool tiered public fails` runs the real `planAssets` over a
   fixture usage, writes the plan's public files into a fixture `dist/`, and scans: red by (b) and (c), green on the
   parent of the mutation.
+- **Ruled: RULINGS 273** — **I-0: no gated file may equal a public file's bytes** (SH3c fix3 I1). A gated file may
+  hold a public file's px (a §2.6 copy of the rest, or a reused source directory: px a free chapter already shows;
+  RULINGS 273 Q2), but never its bytes, which would ship publicly under the twin's name. Every gated `src` raster carries
+  its id as EXIF ImageDescription (§4.4), and the asset tool's guard `gatedCopies`
+  (`client/scripts/assets/manifest.ts:305`) checks the whole plan before it sweeps or writes anything: each gated file
+  with a public twin is reported by name and the tool exits 1 (`client/scripts/assets.ts:607-613`), general over every
+  kind, so a kind without its own mark fails by name.
 
 ### 2.6 Files per shot (rev. 4: W4, W3; replaces rounds 1-3's one sheet per shot plus `gsheet`)
 
