@@ -1349,6 +1349,7 @@ export function createYields(h: YieldsHost): Yields {
         await dispatchNow({ kind: 'use', item, target });
       }); // the outcome is on screen
     },
+    onleaveview: back, // the BackButton's own press (§6.3): one level up in a view, Back's walk elsewhere
   };
 
   const disposeController = (): void => {

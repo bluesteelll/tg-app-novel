@@ -1323,6 +1323,34 @@ test("yields: a zoom-out by no exit lands on the parent's exit into the view", a
   z.yields.dispose();
 });
 
+test("yields: the leave control is Back's own press, with the root back gone", async () => {
+  const r = rig({ world: viewWorld() });
+  expect(typeof r.yields.layer.onleaveview).toBe('function');
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.to_study'));
+  await settle();
+  const desk = boxOf(r, 'study.to_desk');
+  r.yields.layer.ontap(key('study.to_desk'));
+  await settle();
+  expect(roomOf(r)).toBe('desk');
+  // A regression in the root-back registration: the leave control is still a way out (engine plan §6.3).
+  r.screens.setRootBack(null);
+  expect(r.vm.screens.backVisible).toBe(false);
+  const at = r.batches.length;
+  const mark = r.cues.length;
+  r.yields.layer.onleaveview();
+  await settle();
+  expect(roomOf(r)).toBe('study');
+  expect(r.batches.slice(at)).toEqual([[{ kind: 'bg', bg: 'study', t: 'crossfade', ms: VIEW_FADE_MS }, { kind: 'props', props: [] }]]);
+  // The BackButton's move, and its landing: the study's exit into the desk (W1).
+  expect(movesOf(r, mark)).toEqual([{ cue: { kind: 'move', from: 'desk', to: 'study', via: null, how: 'zoom-out' }, box: desk }]);
+  // In a plain room with a path (the hall) the action is Back's walk too.
+  r.yields.layer.onleaveview();
+  await settle();
+  expect(roomOf(r)).toBe('hall');
+  r.yields.dispose();
+});
+
 test('yields: a take emits exactly one held cue', async () => {
   // The writer's `held` alone: the `got` effect keeps its toast and batch, and no cue of its own.
   const r = rig({ world: cueWorld() });

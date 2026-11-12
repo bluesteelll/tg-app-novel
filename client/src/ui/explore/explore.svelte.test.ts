@@ -30,7 +30,7 @@ import type {
   ItemView,
   LockView,
 } from '../explore-view.svelte.ts';
-import { GLYPH_PATHS } from '../glyphs.ts';
+import { EXIT_PATH, GLYPH_PATHS } from '../glyphs.ts';
 import { createPuzzleView } from '../puzzle-view.svelte.ts';
 import type { PuzzleHostCallbacks } from '../puzzle-view.svelte.ts';
 import type { CueStageProps } from '../state.svelte.ts';
@@ -57,7 +57,7 @@ function spots(lang: Lang): HotspotView[] {
 }
 
 /** What a test sets: the language, the view store's fields and the layer's callbacks, each by name. */
-type LayerOver = { lang?: Lang } & Partial<Pick<ExploreViewStore, 'hotspots' | 'reveal' | 'items' | 'docs' | 'lock' | 'panel' | 'selected'>> &
+type LayerOver = { lang?: Lang } & Partial<Pick<ExploreViewStore, 'hotspots' | 'reveal' | 'items' | 'docs' | 'lock' | 'panel' | 'selected' | 'inView'>> &
   Partial<ExploreLayerActions>;
 
 /** The layer's props over a new view store with `over` written into it; a test writes the store as GameSession does. */
@@ -71,6 +71,7 @@ function layerProps(over: LayerOver = {}): ExploreLayerProps {
   view.lock = over.lock ?? null;
   view.panel = over.panel ?? null;
   view.selected = over.selected ?? null;
+  view.inView = over.inView ?? false;
   const puzzleActions: PuzzleHostCallbacks = {
     item: () => null,
     onchange: () => {},
@@ -94,6 +95,7 @@ function layerProps(over: LayerOver = {}): ExploreLayerProps {
       onselect: over.onselect ?? (() => {}),
       ondeselect: over.ondeselect ?? (() => {}),
       onuse: over.onuse ?? (() => {}),
+      onleaveview: over.onleaveview ?? (() => {}),
     },
     puzzle: createPuzzleView(),
     puzzleActions,
@@ -177,6 +179,34 @@ test('explore view: hotspot buttons have labels', async () => {
   expect([hotspot.get('touch-action'), hotspot.get('-webkit-user-select'), hotspot.get('user-select')]).toEqual(['manipulation', 'none', 'none']);
   const layer = declarationsFor(exploreViewSource, 'layer');
   expect([layer.get('position'), layer.get('inset')]).toEqual(['absolute', '0']);
+});
+
+test("explore: the view bar's leave control leaves the view", async () => {
+  for (const lang of LANGS) {
+    const name = t(lang, 'explore.room_back');
+    // Not in a view (the store's default): no leave control.
+    const out = render(ExploreView, layerProps({ lang }));
+    expect(out.queryByRole('button', { name }), lang).toBeNull();
+    out.unmount();
+    // In a view: the bar's first control, the exit arrow turned down, and a click is the leave action only.
+    const onleaveview = vi.fn();
+    const onreveal = vi.fn();
+    const inside = render(ExploreView, layerProps({ lang, inView: true, onleaveview, onreveal }));
+    const leave = inside.getByRole('button', { name });
+    expect(leave.dataset['cue'], lang).toBe('view-leave');
+    expect(inside.container.querySelector('.bar')?.firstElementChild, lang).toBe(leave);
+    expect(leave.querySelector('svg')?.getAttribute('aria-hidden'), lang).toBe('true');
+    expect(leave.querySelector('svg path')?.getAttribute('d'), lang).toBe(EXIT_PATH);
+    await fireEvent.click(leave);
+    expect([onleaveview.mock.calls.length, onreveal.mock.calls.length], lang).toEqual([1, 0]);
+    inside.unmount();
+    // Under a sheet the rooms are inert, the leave control with them.
+    const covered = render(ExploreView, layerProps({ lang, inView: true, panel: { kind: 'inventory' } }));
+    expect(covered.container.querySelector('[data-cue="view-leave"]')?.closest('[inert]'), lang).not.toBeNull();
+    covered.unmount();
+  }
+  // Owner Q15f: a down arrow (the exit glyph turned a quarter, read from the source: happy-dom computes no cascade).
+  expect(declarationsFor(exploreViewSource, 'leave-glyph').get('transform')).toBe('rotate(90deg)');
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -306,6 +336,9 @@ function recordingLayer(tag: string, calls: unknown[][]): ExploreLayerActions {
     onuse: (item, target) => {
       calls.push([tag, 'onuse', item, target]);
     },
+    onleaveview: () => {
+      calls.push([tag, 'onleaveview']);
+    },
   };
 }
 
@@ -320,6 +353,7 @@ function callEveryAction(a: ExploreLayerActions): void {
   a.onselect('coin' as ItemId);
   a.ondeselect();
   a.onuse('coin' as ItemId, k('hall.gate'));
+  a.onleaveview();
 }
 
 /** What `callEveryAction` records on a layer tagged `tag`. */
@@ -333,6 +367,7 @@ const everyActionOn = (tag: string): unknown[][] => [
   [tag, 'onselect', 'coin'],
   [tag, 'ondeselect'],
   [tag, 'onuse', 'coin', 'hall.gate'],
+  [tag, 'onleaveview'],
 ];
 
 test("explore-view: forwardLayer reaches the current session's layer and nothing after it ends", () => {
@@ -340,7 +375,7 @@ test("explore-view: forwardLayer reaches the current session's layer and nothing
   let current: ExploreLayerActions | undefined = recordingLayer('a', calls);
   const forward = forwardLayer(() => current);
   // One forwarder per action, no more: a lane adding an action edits the forwarder and this list.
-  expect(Object.keys(forward).sort()).toEqual(['onclose', 'ondeselect', 'oninsert', 'oninventory', 'onread', 'onreveal', 'onselect', 'ontap', 'onuse']);
+  expect(Object.keys(forward).sort()).toEqual(['onclose', 'ondeselect', 'oninsert', 'oninventory', 'onleaveview', 'onread', 'onreveal', 'onselect', 'ontap', 'onuse']);
   callEveryAction(forward);
   expect(calls).toEqual(everyActionOn('a'));
   // A later session: the same forwarders reach its layer only (the getter runs at each call, never at creation).
@@ -735,6 +770,7 @@ type ControlState = { readonly name: string; readonly over: LayerOver; readonly 
 const GATE: LockView = { key: k('hall.gate'), title: 'The gate', locked: 'Three hollows in the iron', slots: [null, null, null], refused: false };
 const CONTROL_STATES: readonly ControlState[] = [
   { name: 'rooms', over: { items: [SUN] } },
+  { name: 'view', over: { items: [SUN], inView: true } },
   { name: 'inventory items', over: { items: [SUN], docs: [LETTER, DIARY], panel: { kind: 'inventory' } } },
   {
     name: 'inventory files',
@@ -755,6 +791,14 @@ const EXPECTED_CONTROLS: readonly Fired[] = [
   ['rooms', 'ribbon-item', null, 'medal_sun'],
   ['rooms', 'bar-inventory', null, null],
   ['rooms', 'bar-reveal', null, null],
+  ['view', 'bare-art', null, null],
+  ['view', 'hotspot', null, null],
+  ['view', 'hotspot', null, null],
+  ['view', 'hotspot', null, null],
+  ['view', 'ribbon-item', null, 'medal_sun'],
+  ['view', 'view-leave', null, null],
+  ['view', 'bar-inventory', null, null],
+  ['view', 'bar-reveal', null, null],
   ['inventory items', 'inventory-tab', 0, null],
   ['inventory items', 'inventory-tab', 1, null],
   ['inventory files', 'inventory-tab', 0, null],
