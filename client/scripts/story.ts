@@ -681,7 +681,7 @@ export function main(argv: readonly string[], repoRoot: string): number {
       found.push(...inStory(r.findings));
       if (r.compiled !== null) {
         compiled.set(ch.id, r.compiled);
-        const g = buildGraph({ chapter: ch, files: r.compiled.files, sources: files, assets, world: worldRef(worlds.get(ch.id)) });
+        const g = buildGraph({ chapter: ch, files: r.compiled.files, sources: files, assets, world: worldRef(worlds.get(ch.id)), shots: shotList?.shots ?? [] });
         found.push(...inStory(g.findings));
         graphs.set(ch.id, g.graph);
         facts.set(ch.id, g.facts);

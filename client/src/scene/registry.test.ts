@@ -1,10 +1,11 @@
 import { expect, test, vi } from 'vitest';
 
 import type { HalfFile, ImageEntry, Result, SizeTier, Trim } from '../story/catalog.ts';
+import type { Box } from '../story/shots.ts';
 import type { AssetId } from '../story/staging.ts';
 import type { TextureGeometry } from './layout.ts';
-import { createAssetRegistry } from './registry.ts';
-import type { Decoded, LoadError, LoadImage } from './registry.ts';
+import { createAssetRegistry, pixiFrames } from './registry.ts';
+import type { Decoded, FrameCut, LoadError, LoadImage } from './registry.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // A fake loader with deferred results: every call is recorded with its URL, file bytes, signal and geometry, and every
@@ -886,4 +887,186 @@ test('registry: demote applies to records started later', async () => {
   expect(join.ok && first.ok ? join.value === first.value : join).toBe(true);
   expect(h.registry.stats()).toMatchObject({ live: 2, bytes: 540 * 1024 * 4 + 40 + BG + F });
   expect(h.released.get('/assets/a-half.avif') ?? 0, 'the live half record is not ended').toBe(0);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Frames (docs/plans/shots §5.1 "Ownership", lane SH4): sub-textures cut from a record's texture, owned by the record.
+// A stand-in texture mimics Pixi's (Texture.mjs:145-157): `destroy(s)` destroys its source only when `s` is true.
+
+type Source = { readonly resolution: number; alive: boolean; readonly log: string[] };
+type FTex = { readonly source: Source; readonly frame: unknown; destroy(destroySource?: boolean): void };
+
+/** A registry over a loader that decodes at once; every Decoded.release() logs whether its source was still alive. */
+function framed(frames: FrameCut<FTex> | undefined, tier: SizeTier = 'full') {
+  const log: string[] = [];
+  const load: LoadImage<FTex> = (ref, _signal, geometry) => {
+    const source: Source = { resolution: geometry.resolution, alive: true, log };
+    const texture: FTex = {
+      source,
+      frame: null,
+      destroy(s) {
+        if (s === true) {
+          source.alive = false;
+          log.push(`source destroyed by ${ref.url}`);
+        }
+      },
+    };
+    const d: Decoded<FTex> = {
+      texture,
+      w: geometry.resolution === 0.5 ? 540 : 1080,
+      h: geometry.resolution === 0.5 ? 1024 : 2048,
+      keptBytes: ref.bytes,
+      gen: 1,
+      open: () => false,
+      revive: () => Promise.resolve({ ok: true, value: undefined }),
+      release: () => {
+        log.push(`release ${ref.url} (source ${source.alive ? 'alive' : 'destroyed'})`);
+        texture.destroy(true);
+      },
+    };
+    return Promise.resolve({ ok: true, value: d });
+  };
+  const registry = createAssetRegistry<FTex>({ load, variant: 'avif', tier, ...(frames === undefined ? {} : { frames }) });
+  const sheet = halved('sheet_s', bg('sheet_s'));
+  const take = async (holder = 'scene:sheet') => {
+    const r = await registry.acquire(asId('sheet/s'), holder, { entry: sheet, priority: 'visible' });
+    if (!r.ok) {
+      throw new Error(`invariant: the fixture sheet loads (${r.error.kind})`);
+    }
+    return r.value;
+  };
+  return { registry, log, take };
+}
+
+/** A recording cut: each frame is a stand-in over the base's source; dispose logs its box. */
+function recordingCut(log: string[]): FrameCut<FTex> & { readonly cuts: Box[] } {
+  const cuts: Box[] = [];
+  return {
+    cuts,
+    cut(base, box) {
+      cuts.push(box);
+      return { source: base.source, frame: box, destroy: () => {} };
+    },
+    dispose(frame) {
+      log.push(`dispose ${JSON.stringify(frame.frame)}`);
+    },
+  };
+}
+
+const B1: Box = [0, 0, 200, 120];
+const B2: Box = [200, 0, 160, 200];
+
+test("registry: a sheet's frames die with its record", async () => {
+  const log: string[] = [];
+  const f = framed(recordingCut(log));
+  const h = await f.take();
+  const made = f.registry.frames(h, [B1, B2]);
+  expect(made.ok ? made.value.map((t) => t.frame) : made.error).toEqual([B1, B2]);
+  // A second holder keeps the record and its frames.
+  await f.take('preload:k');
+  f.registry.release(asId('sheet/s'), 'scene:sheet');
+  expect(log).toEqual([]);
+  // The last release: every frame disposed exactly once, before the record's texture is released.
+  f.registry.release(asId('sheet/s'), 'preload:k');
+  expect([...log, ...f.log]).toEqual([
+    'dispose [0,0,200,120]',
+    'dispose [200,0,160,200]',
+    'release /assets/sheet_s.avif (source alive)',
+    'source destroyed by /assets/sheet_s.avif',
+  ]);
+  // destroy() ends a live record the same way.
+  log.length = 0;
+  f.log.length = 0;
+  const again = await f.take();
+  expect(f.registry.frames(again, [B1]).ok).toBe(true);
+  f.registry.destroy();
+  expect([...log, ...f.log.slice(0, 1)]).toEqual(['dispose [0,0,200,120]', 'release /assets/sheet_s.avif (source alive)']);
+});
+
+test('registry: a frame of an ended record is refused', async () => {
+  const f = framed(recordingCut([]));
+  const h = await f.take();
+  f.registry.release(asId('sheet/s'), 'scene:sheet');
+  expect(f.registry.frames(h, [B1])).toEqual({ ok: false, error: { kind: 'decode', id: 'sheet/s', detail: 'frames of a record that is not current' } });
+  // A newer record of the id: the old handle is still refused, the new one cuts.
+  const fresh = await f.take();
+  expect(fresh).not.toBe(h);
+  expect(f.registry.frames(h, [B1]).ok).toBe(false);
+  expect(f.registry.frames(fresh, [B1]).ok).toBe(true);
+  // A registry without a cut refuses every frame.
+  const bare = framed(undefined);
+  const b = await bare.take();
+  expect(bare.registry.frames(b, [B1])).toEqual({ ok: false, error: { kind: 'decode', id: 'sheet/s', detail: 'no frame cut' } });
+});
+
+test('registry: a frame is cut once per box', async () => {
+  const log: string[] = [];
+  const cut = recordingCut(log);
+  const f = framed(cut);
+  const h = await f.take();
+  const first = f.registry.frames(h, [B1]);
+  const second = f.registry.frames(h, [B1, B2]);
+  expect(cut.cuts).toEqual([B1, B2]);
+  expect(first.ok && second.ok ? first.value[0] === second.value[0] : 'refused').toBe(true);
+  f.registry.release(asId('sheet/s'), 'scene:sheet');
+  expect(log).toEqual(['dispose [0,0,200,120]', 'dispose [200,0,160,200]']);
+});
+
+// W1 (RULINGS 279): pixiFrames over recording Texture / Rectangle stand-ins.
+type Rect4 = { readonly x: number; readonly y: number; readonly w: number; readonly h: number };
+function standIns() {
+  const rects: Rect4[] = [];
+  const textures: Array<{ source: Source; frame: Rect4 }> = [];
+  class Rectangle {
+    readonly x: number;
+    readonly y: number;
+    readonly w: number;
+    readonly h: number;
+    constructor(x: number, y: number, w: number, h: number) {
+      this.x = x;
+      this.y = y;
+      this.w = w;
+      this.h = h;
+      rects.push({ x, y, w, h });
+    }
+  }
+  class Texture {
+    readonly source: Source;
+    readonly frame: Rectangle;
+    constructor(o: { source: Source; frame: Rectangle }) {
+      this.source = o.source;
+      this.frame = o.frame;
+      textures.push({ source: o.source, frame: { x: o.frame.x, y: o.frame.y, w: o.frame.w, h: o.frame.h } });
+    }
+    /** As Pixi's: the source goes only with `destroy(true)`. */
+    destroy(destroySource = false): void {
+      if (destroySource) {
+        this.source.alive = false;
+        this.source.log.push('source destroyed by a frame');
+      }
+    }
+  }
+  return { rects, textures, cut: pixiFrames({ Texture, Rectangle }) };
+}
+
+test("registry: a half record's frame is cut at the member's full-px box", async () => {
+  const pixi = standIns();
+  const f = framed(pixi.cut, 'half');
+  const h = await f.take();
+  // The record loaded the half file: its source has resolution 0.5, so its width is already in full px (Pixi).
+  expect(h.texture.source.resolution).toBe(0.5);
+  expect(f.registry.frames(h, [[300, 400, 160, 200]]).ok).toBe(true);
+  expect(pixi.rects).toEqual([{ x: 300, y: 400, w: 160, h: 200 }]);
+  expect(pixi.textures).toEqual([{ source: h.texture.source, frame: { x: 300, y: 400, w: 160, h: 200 } }]);
+  expect(pixi.textures[0]?.source).toBe(h.texture.source);
+});
+
+test("registry: a frame's dispose leaves its record's source alive", async () => {
+  const pixi = standIns();
+  const f = framed(pixi.cut);
+  const h = await f.take();
+  expect(f.registry.frames(h, [B1, B2]).ok).toBe(true);
+  f.registry.release(asId('sheet/s'), 'scene:sheet');
+  // No frame destroyed the shared source; the record's own release did, after them.
+  expect(f.log).toEqual(['release /assets/sheet_s.avif (source alive)', 'source destroyed by /assets/sheet_s.avif']);
 });
