@@ -790,6 +790,17 @@ test('preload: a held-only warm file and a hoped file kept across a swap are fet
 });
 
 // A queued item has no holder yet, so step 1's drop never sees it: only the queue filter takes a leaver out.
+test('preload: a tag released while its items are still queued never fetches them', async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  // Two of the four take the slots; the other two wait in the queue when the tag goes.
+  h.s.preload('preload:k1', ['prop/s1', 'prop/s2', 'prop/s3', 'prop/h'].map(asId));
+  expect([h.fetchesOf('prop/s1'), h.fetchesOf('prop/s3')]).toEqual([1, 0]);
+  h.s.releasePreload('preload:k1');
+  await h.settle();
+  expect([h.fetchesOf('prop/s3'), h.fetchesOf('prop/h')]).toEqual([0, 0]);
+});
+
 test('preload: a window item still queued when the window swaps is never fetched', async () => {
   const h = harness('deferred', { hold: true });
   h.s.setChapter(wm);
@@ -1322,6 +1333,19 @@ test('preload: a held record is queued as a decode and never joined', async () =
   expect(h.acquired().filter((a) => a.startsWith('room:x'))).toEqual(['room:x prop/big']);
 });
 
+test('preload: a warm id another holder decodes is joined and stays decoded when that holder leaves', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/street', 'scene:s');
+  // The street is on stage when it becomes the window's warm opener: step 3 joins its decode as it is.
+  h.s.want(stage({ warm: ['bg/street'], near: 1 }));
+  await h.settle();
+  h.registry.release(asId('bg/street'), 'scene:s');
+  await h.settle();
+  expect(h.state('bg/street')).toBe('live');
+  expect([h.fetchesOf('bg/street'), h.decodesOf('bg/street')]).toEqual([1, 1]);
+});
+
 test('preload: a join that carries a fetch in flight holds one of the two slots', async () => {
   const h = harness('deferred', { hold: true });
   h.s.setChapter(wm);
@@ -1364,6 +1388,19 @@ test("preload: window stats count every need item not live and list the window's
   h.decoded('prop/s1');
   await micro();
   expect(h.s.stats().window.pending).toBe(1);
+});
+
+test('preload: stats list no room tag whose preload was refused', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/cu_a', 'scene:a');
+  await h.visible('bg/cu_b', 'scene:b');
+  // 25.406 MiB: the lobby (16.562) is refused at STEADY; the study's prop (0.1) is held.
+  h.s.preload('room:lobby', [asId('bg/lobby')]);
+  h.s.preload('room:study', [asId('prop/s3')]);
+  await h.settle();
+  expect(['bg/lobby', 'prop/s3'].map(h.state)).toEqual(['none', 'live']);
+  expect(h.s.stats().rooms).toEqual(['room:study']);
 });
 
 test("preload: ensure settles when a window item's fetch fails", async () => {
