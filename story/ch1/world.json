@@ -117,7 +117,10 @@
               "is": [ { "when": { "open": "study.drawer" }, "state": "open" } ] },
             { "id": "letter", "kind": "take", "rect": [150, 600, 250, 250],
               "label": { "id": "ch1.manor.l008", "ru": "Конверт на столе" },
-              "gives": { "doc": "letter" }, "prop": "note" }
+              "gives": { "doc": "letter" }, "prop": "note" },
+            { "id": "to_desk", "kind": "exit", "rect": [450, 700, 400, 250],
+              "label": { "id": "ch1.manor.l012", "ru": "Осмотреть стол" },
+              "to": { "room": "desk_view" }, "lock": null, "sfx": null }
           ]
         },
         "cellar": {
@@ -135,6 +138,13 @@
               "label": { "id": "ch1.manor.l011", "ru": "Старый дневник" },
               "gives": { "doc": "diary" }, "prop": null }
           ]
+        },
+        "desk_view": {
+          "bg": "room",
+          "title": { "id": "ch1.manor.r004", "ru": "Письменный стол" },
+          "onEnter": [],
+          "hotspots": [],
+          "view": { "of": "study" }
         }
       }
     }
