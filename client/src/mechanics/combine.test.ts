@@ -9,12 +9,15 @@
 // exists.
 import { expect, test } from 'vitest';
 
+import { MECHANIC_LINTS } from '../../scripts/story/mechanics/index.ts';
+import type { WorldLintInput } from '../../scripts/story/mechanics/index.ts';
 import { checkWorld } from '../../scripts/story/softlock.ts';
 import { RESUME_STATE_CAP, sectionScope } from '../explore/reduce.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
-import type { KnotName, SectionId } from '../story/staging.ts';
+import type { AssetCatalog } from '../story/catalog.ts';
+import type { ChapterId, KnotName, SectionId } from '../story/staging.ts';
 import { decodeWorldPublic, decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { WorldIssue } from '../world/decode.ts';
 import type { HotspotKey, ItemId, RoomId, WorldSource } from '../world/types.ts';
@@ -391,4 +394,90 @@ test("combine: the section key reads a recipe's when", () => {
   expect(edges).toBeGreaterThan(0);
   // The look is a state of its own for S's key.
   expect(sectionKey(w, reduce(w, start, tap('hall.painting')).state, S)).not.toBe(sectionKey(w, start, S));
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The story gate: R11's first two conditions
+
+const CATALOG: AssetCatalog = { bg: {}, chars: {}, cg: {}, bgm: {}, sfx: {}, prop: {}, cover: {} };
+
+/** The registry's `combine` lint over `src` (found by id, so a missing entry fails an assertion): each finding as its
+ *  code and its path (a finding's line is its path's index in `paths` + 1). */
+function lint(src: WorldSource): Array<[string, string]> {
+  const entry = MECHANIC_LINTS.find((l) => l.id === 'combine');
+  expect(entry).toBeDefined();
+  if (entry === undefined || !('lint' in entry)) {
+    return [];
+  }
+  const paths: string[] = [];
+  const input: WorldLintInput = {
+    chapter: { id: 'ch1' as ChapterId, paid: false, entry: 'ch1/main.ink' },
+    file: FILE,
+    text: '',
+    world: src,
+    catalog: CATALOG,
+    knots: null,
+    yielded: null,
+    declared: new Map(),
+    line: (path) => (paths.includes(path) ? paths.indexOf(path) : paths.push(path) - 1) + 1,
+    moduleLines: new Map(),
+  };
+  return entry.lint(input).map((f) => [f.code, paths[f.line - 1] ?? '']);
+}
+
+/** `twoSections` with the yard's chest, a lock of section `t` whose one slot accepts `accepts`. */
+const withChest = (recipes: readonly Json[], accepts: string): Json => {
+  const raw = twoSections(recipes);
+  const yard = (((raw['sections'] as Json)['t'] as Json)['rooms'] as Json)['yard'] as Json;
+  yard['hotspots'] = [...(yard['hotspots'] as Json[]), object('chest', { lock: lock([accepts]) })];
+  return raw;
+};
+
+test("story: a recipe outside one section's items is refused", () => {
+  const SCOPE = 'world/recipe-scope';
+  // Inputs of two sections: no one section gives both.
+  expect(lint(source(twoSections([recipe('shard', 'bolt', 'junk')])))).toEqual([[SCOPE, 'recipes.0']]);
+  // A product a take gives (the hall's wire): a recipe's product is given only by recipes of its section.
+  expect(lint(source(twoSections([recipe('shard', 'glue', 'wire')])))).toEqual([[SCOPE, 'recipes.0.gives']]);
+  // A product another section's recipe gives: each recipe is refused.
+  expect(lint(source(twoSections([recipe('shard', 'glue', 'gear'), recipe('bolt', 'nut', 'gear')])))).toEqual([
+    [SCOPE, 'recipes.0.gives'],
+    [SCOPE, 'recipes.1.gives'],
+  ]);
+  // A product another section's lock accepts (the commutation's mutant world): t's lock reads it (X15).
+  expect(lint(source(withChest([recipe('shard', 'glue', 'vase')], 'vase')))).toEqual([[SCOPE, 'recipes.0.gives']]);
+});
+
+test('story: a recipe naming an unknown item is refused', () => {
+  const UNKNOWN = 'world/recipe-unknown-ref';
+  // Each unknown id at its path (the kept input too); the recipe's scope checks are skipped.
+  expect(lint(source(twoSections([recipe('shard', 'ghost', 'vase', { keep: ['ghost'] }), recipe('shard', 'glue', 'phantom')])))).toEqual([
+    [UNKNOWN, 'recipes.0.b'],
+    [UNKNOWN, 'recipes.0.keep.0'],
+    [UNKNOWN, 'recipes.1.gives'],
+  ]);
+});
+
+test("story: a recipe's when reads only its own section", () => {
+  // A `when` on another section's item is a gating condition outside its section; one on its own section's product (a
+  // recipe's gift, through `combine`'s scope) passes.
+  expect(lint(source(twoSections([recipe('shard', 'glue', 'vase', { when: { held: 'bolt' } }), recipe('vase', 'wire', 'lamp', { when: { held: 'vase' } })])))).toEqual([
+    ['world/cross-section-cond', 'recipes.0.when'],
+  ]);
+});
+
+test('story: recipes of one section lint clean, a chain included', () => {
+  // The positive control: a chain in reverse source order, a `use` gift as an input, a recipe in each section, a tool.
+  expect(
+    lint(
+      source(
+        twoSections([
+          recipe('vase', 'wire', 'lamp', { when: { used: 'shard' } }),
+          recipe('shard', 'glue', 'vase', { keep: ['glue'] }),
+          recipe('fuse', 'glue', 'torch'),
+          recipe('bolt', 'nut', 'gear'),
+        ]),
+      ),
+    ),
+  ).toEqual([]);
 });
