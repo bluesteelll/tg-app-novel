@@ -1942,6 +1942,17 @@ describe('budget assets', () => {
       valueBytes: STEADY_CAP_BYTES - 10 * u + 6 * u,
       note: 'bg + 0 props + max(neighbour bg + props, close-up); preloads 2 of 3 neighbours (on tap: b)',
     });
+    // (G) A preload charges a neighbour's img(n), never its props (triage r1 F2; the registry asks for a neighbour's bg,
+    // its props load when it is entered): with 10u left, n1 (a 4u plate and one prop) and n2 (a 6u plate) fill the cap
+    // exactly in every order; charging n1's prop as well would refuse one of them.
+    const nProp = propSet('n', 1);
+    const plates = inputsWith({ 'bg/r': sized('bg/r', STEADY_CAP_BYTES - 10 * u), 'bg/n1': sized('bg/n1', 4 * u), 'bg/n2': sized('bg/n2', 6 * u), ...nProp });
+    const n12 = { [m('r')]: { bg: 'bg/r', to: [m('n1'), m('n2')] }, [m('n1')]: { bg: 'bg/n1', props: Object.keys(nProp), to: back('r') }, [m('n2')]: { bg: 'bg/n2', to: back('r') } };
+    expect(roomRow(plates, n12, 'r')).toMatchObject({
+      status: 'PASS',
+      valueBytes: STEADY_CAP_BYTES - 10 * u + 6 * u,
+      note: 'bg + 0 props + max(neighbour bg + props, close-up); preloads 2 of 2 neighbours',
+    });
   });
 
   test('budget: a loop prop atlas is held to its own limits', () => {
