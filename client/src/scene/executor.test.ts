@@ -1715,3 +1715,33 @@ test('executor: a rebind whose prop sprite throws leaves no anchor in its layer'
   expect(fresh.anchors('props')).toEqual([]);
   expect(fresh.live('props')).toEqual([]);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// SH1 review M2 / M3: a show and a face of one character in one batch.
+
+test('executor: a show governs the timing of a face of the same character in its batch', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut'), show('ally', 'neutral', 'left', 'cut')], NOW);
+  // The face asks for 1000 ms, the show for a cut: the show governs, so the expression changes at once.
+  const both = track(h.ex.apply([face('ally', 'worried', 1000), show('ally', 'neutral', null, 'cut')], NOW));
+  await flush();
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  expect(both.done).toBe(true);
+  expect(h.ex.snapshot().chars).toEqual([{ char: 'ally', expr: 'worried', at: 'left' }]);
+  expect(h.inGroup('ally').length).toBe(1);
+  expect(h.releasedOf('char/ally/neutral')).toBe(1);
+  h.ex.destroy();
+});
+
+test("executor: a face applies after the batch's show", async () => {
+  // STAGING-DSL §7's order: shows, then faces; the tag order in the batch does not matter.
+  for (const batch of [
+    [show('ally', 'neutral', 'left', 'cut'), face('ally', 'worried')],
+    [face('ally', 'worried'), show('ally', 'neutral', 'left', 'cut')],
+  ]) {
+    const h = harness();
+    await h.ex.apply([bg('cafe', 'cut'), ...batch], { instant: true });
+    expect(h.ex.snapshot().chars).toEqual([{ char: 'ally', expr: 'worried', at: 'left' }]);
+    h.ex.destroy();
+  }
+});

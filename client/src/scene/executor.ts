@@ -754,10 +754,11 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         }
       }
       for (const c of target.chars) {
-        // A face is a show without `at` or `t`: the expression crossfade, 200 ms by default.
-        const show = b.cmds.find(
-          (x): x is Extract<VisualCommand, { kind: 'show' | 'face' }> => (x.kind === 'show' || x.kind === 'face') && x.char === c.char,
-        );
+        // A face is a show without `at` or `t`: the expression crossfade, 200 ms by default. A show of the same
+        // character in the batch governs the timing (SH1 review M2); the state keeps §7's order (reduce).
+        const of = (kind: 'show' | 'face'): Extract<VisualCommand, { kind: 'show' | 'face' }> | undefined =>
+          b.cmds.find((x): x is Extract<VisualCommand, { kind: 'show' | 'face' }> => (x.kind === 'show' || x.kind === 'face') && x.kind === kind && x.char === c.char);
+        const show = of('show') ?? of('face');
         const ms = (byDefault: number): number => (show === undefined || (show.kind === 'show' && show.t === 'cut') ? 0 : (show.ms ?? byDefault));
         const cv = chars.get(c.char);
         const id = want.get(charSlot(c.char));
