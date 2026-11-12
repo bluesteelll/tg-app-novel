@@ -20,6 +20,7 @@ import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { ManualSlot, SaveService, SaveState, SaveWrite } from '../saves/service.ts';
 import type { SceneController } from '../scene/controller.ts';
 import type { SceneSnapshot, VisualCommand } from '../scene/executor.ts';
+import type { StageWindow } from '../scene/preload.ts';
 import { createSettingsStore } from '../settings/store.ts';
 import type { CloudPort, SettingsStore } from '../settings/store.ts';
 import type { StatEvent } from '../stats/reporter.ts';
@@ -291,12 +292,17 @@ type FakeScene = SceneController & {
   /** Holder tag → asset ids, as the registry keeps them (a trailing `:` releases a family). */
   readonly holders: Map<string, Set<string>>;
   readonly calls: string[];
+  /** Each apply that carried a window (shots §5.8), with its batch's command kinds. */
+  readonly windows: Array<{ batch: string; window: StageWindow }>;
 };
 
 function fakeScene(): FakeScene {
   const holders = new Map<string, Set<string>>();
   const calls: string[] = [];
+  const windows: Array<{ batch: string; window: StageWindow }> = [];
   let stage = EMPTY_STAGE;
+  /** The tag setChapter kept, which the first window ends (the scheduler's step 1c). */
+  let entry: string | null = null;
   const matches = (tag: string, pattern: string): boolean => (pattern.endsWith(':') ? tag.startsWith(pattern) : tag === pattern);
   const release = (pattern: string, keep?: string): void => {
     for (const tag of [...holders.keys()]) {
@@ -315,6 +321,7 @@ function fakeScene(): FakeScene {
   return {
     holders,
     calls,
+    windows,
     mount: async () => {
       calls.push('mount');
       return { ok: true, value: undefined };
@@ -324,9 +331,28 @@ function fakeScene(): FakeScene {
       release('preload:');
       release('next:', `next:${m.chapterId}`);
       release('ensure');
+      entry = `next:${m.chapterId}`;
     },
-    apply: async (batch) => {
-      calls.push(`apply:${batch.map((c) => c.kind).join(',')}`);
+    apply: async (batch, o) => {
+      const kinds = batch.map((c) => c.kind).join(',');
+      calls.push(`apply:${kinds}`);
+      if (o.window !== undefined) {
+        // The scheduler's steps 1 and 1c, as holders: the window's holders follow it, and the entry tag ends.
+        windows.push({ batch: kinds, window: o.window });
+        release('preload:win:');
+        release('preload:warm:');
+        for (const id of [...o.window.need, ...o.window.hope, ...o.window.eventRoom]) {
+          holders.set(`preload:win:${id}`, new Set([id]));
+        }
+        for (const id of o.window.warm) {
+          holders.set(`preload:warm:${id}`, new Set([id]));
+        }
+        if (entry !== null && holders.has(entry)) {
+          calls.push(`entry:${entry}`);
+          release(entry);
+        }
+        entry = null;
+      }
       restage(reduceStage(stage, batch));
     },
     complete() {
@@ -5724,5 +5750,282 @@ test("game: a resume of another save or an exit to the stories withdraws the sta
   expect(h.vm.stageTap, 'pending again').toBe(true);
   await h.game.exitToStories();
   expect([h.exits(), h.vm.stageTap], 'an exit to the stories').toEqual([1, false]);
+  h.game.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// SH5a: the step windows (shots §5.8). Each presented step hands the scene its window with its batch, a room batch its
+// room's, a step inside a room event its room as eventRoom; a yield keeps the previous window. With a decoding `look`
+// a knot hold keeps only its sprites and sounds (L3), and an ending knot asks the next chapter's first window.
+
+type LookSpec = Readonly<Record<string, readonly [readonly string[], readonly string[], number, readonly string[]]>>;
+
+/** `ch` with a `look` built from `windows` (ids by key as [need, warm, near, hope]); the manifest names every id. */
+function withLook(ch: LoadedChapter, windows: LookSpec): LoadedChapter {
+  const images = [...new Set(Object.values(windows).flatMap(([n, w, , h]) => [...n, ...w, ...h]))];
+  const at = (ids: readonly string[]): number[] => ids.map((id) => images.indexOf(id));
+  const look = { images, windows: Object.fromEntries(Object.entries(windows).map(([k, [n, w, near, h]]) => [k, [at(n), at(w), near, at(h)]])) };
+  return { ...ch, assets: { ...ch.assets, assets: { ...manifest(ch.id, images).assets, ...ch.assets.assets }, look } };
+}
+
+/** A step's window as the scene gets it: the look's, with `eventRoom`. */
+const winOf = (spec: LookSpec, key: string, eventRoom: readonly string[] = []): StageWindow => {
+  const w = spec[key];
+  if (w === undefined) {
+    throw new Error(`invariant: ${key} is a fixture window`);
+  }
+  const ids = (xs: readonly string[]): AssetId[] => xs.map((x) => x as AssetId);
+  return { need: ids(w[0]), warm: ids(w[1]), near: w[2], hope: ids(w[3]), eventRoom: ids(eventRoom) };
+};
+const NO_WINDOW: StageWindow = { need: [], warm: [], near: 0, hope: [], eventRoom: [] };
+
+const MANOR_LOOK: LookSpec = {
+  'ch1.arrival.l001': [['bg/hall'], [], 0, ['bg/garden']],
+  'ch1.arrival.l002': [['bg/hall'], ['bg/garden'], 1, []],
+  'ch1.arrival.c001': [['bg/hall'], ['bg/garden', 'cg/note'], 1, []],
+  'ch1.arrival.l003': [['bg/hall'], ['bg/garden'], 0, []],
+  'ch1.garden.l005': [['bg/garden'], [], 0, []],
+  'k:arrival': [['bg/hall'], [], 0, ['bg/garden']],
+  'k:garden': [['bg/garden'], [], 0, []],
+};
+
+/** manor ch1 whose garden knot also has a sprite and a sound; with MANOR_LOOK unless `look` is false. */
+function lookedCh1(look = true): LoadedChapter {
+  const ch = chapter('ch1', MANOR_CH1, {
+    arrival: { assets: ['bg/hall', 'char/ally/neutral', 'bgm/calm'], next: ['garden'] },
+    garden: { assets: ['bg/garden', 'char/ally/worried', 'sfx/door'], ending: true },
+  });
+  return look ? withLook(ch, MANOR_LOOK) : ch;
+}
+
+const STUDY_LOOK: LookSpec = {
+  'ch2.study.l001': [['bg/study'], ['cg/letter'], 0, ['bg/yard']],
+  'ch2.study.l002': [['bg/study'], [], 0, []],
+  'k:study': [['bg/study'], ['cg/letter'], 0, ['bg/yard']],
+};
+
+/** manor ch2 (as manorCh2) with a sprite in its first knot and STUDY_LOOK. */
+function lookedCh2(): LoadedChapter {
+  return withLook(
+    chapter('ch2', ['-> study', '=== study ===', '# bg: study', 'Two begins. #id:ch2.study.l001', 'Two ends. #id:ch2.study.l002', '-> END'], {
+      study: { assets: ['bg/study', 'char/ally/neutral'], ending: true },
+    }),
+    STUDY_LOOK,
+  );
+}
+
+const ROOMS_LOOK: LookSpec = {
+  'ch1.start.l001': [['bg/hall'], [], 0, []],
+  'ch1.study_event.l004': [['bg/hall', 'prop/medal'], [], 0, ['bg/study']],
+  'r:hall': [['bg/hall', 'prop/medal'], ['bg/study'], 1, []],
+  'r:study': [['bg/study', 'sheet/study'], [], 0, []],
+};
+
+/** gameWorld's manor with a look; the study's onEnter event cuts to the hall's bg. */
+function roomsCh1(): LoadedChapter {
+  return withLook(
+    chapter(
+      'ch1',
+      [
+        ...WORLD_INK_VARS,
+        '-> start',
+        '=== start ===',
+        '# scene: hall',
+        'Start. #id:ch1.start.l001',
+        '# explore: manor',
+        '-> DONE',
+        '=== study_event ===',
+        '# bg: hall',
+        'Event. #id:ch1.study_event.l004',
+        '# explore: manor',
+        '-> DONE',
+      ],
+      { start: { assets: ['bg/hall'] }, study_event: {} },
+      { assets: ['bg/study', 'prop/medal', 'cg/drawer_close'], vars: WORLD_VARS, world: gameWorld() },
+    ),
+    ROOMS_LOOK,
+  );
+}
+
+/** The window holders the fake scene keeps (the scheduler's step 1), as `holder=id`. */
+const windowHeld = (h: Harness): string[] => held(h).filter((x) => x.startsWith('preload:win:') || x.startsWith('preload:warm:'));
+
+/** Starts roomsCh1 and walks into the rooms: the hall's room batch is the last thing staged. */
+async function intoTheHall(): Promise<{ h: Harness; done(): void }> {
+  stubObserver();
+  const w = worldChunks();
+  const h = harness({ chapters: [roomsCh1()], chunks: w.chunks });
+  await startManor(h);
+  await h.game.advance(); // the explore yield: the rooms open on the hall
+  await settle();
+  return {
+    h,
+    done: () => {
+      h.game.dispose();
+      vi.unstubAllGlobals();
+    },
+  };
+}
+
+test('game: each presented step hands its window to the scene with its batch', async () => {
+  const h = harness({ chapters: [lookedCh1()] });
+  await playManorCh1(h);
+  expect(lineOf(h.vm)).toBe('ch1.garden.l005');
+  // A line by its ID, the choice set by its first choice's ID; each with the batch it came with.
+  expect(h.scene.windows).toEqual([
+    { batch: 'scene,show', window: winOf(MANOR_LOOK, 'ch1.arrival.l001') },
+    { batch: '', window: winOf(MANOR_LOOK, 'ch1.arrival.l002') },
+    { batch: '', window: winOf(MANOR_LOOK, 'ch1.arrival.c001') },
+    { batch: '', window: winOf(MANOR_LOOK, 'ch1.arrival.l003') },
+    { batch: 'bg', window: winOf(MANOR_LOOK, 'ch1.garden.l005') },
+  ]);
+  h.game.dispose();
+});
+
+test("game: a resume asks for the resumed line's window", async () => {
+  const h = harness({ chapters: [lookedCh1()] });
+  await startManor(h); // l001: the start knot's entry autosave
+  await h.game.advance(); // l002
+  const before = h.scene.windows.length;
+  await h.game.load('auto');
+  await settle();
+  expect(lineOf(h.vm)).toBe('ch1.arrival.l001');
+  expect(h.scene.windows.slice(before).map((w) => w.window)).toEqual([winOf(MANOR_LOOK, 'ch1.arrival.l001')]);
+  h.game.dispose();
+});
+
+test("game: the first knot's later shots are preloaded before they are needed", async () => {
+  const h = harness({ chapters: [lookedCh1()] });
+  await startManor(h);
+  expect(lineOf(h.vm)).toBe('ch1.arrival.l001');
+  // The garden's plate is shown four steps on; at the first line the window already asks for it (its hope), and the
+  // garden's knot hold no longer does (L3).
+  expect(held(h).filter((x) => x.endsWith('=bg/garden'))).toEqual(['preload:win:bg/garden=bg/garden']);
+  expect(h.scene.calls.filter((c) => c.startsWith('apply:')), 'the garden is not staged yet').toEqual(['apply:scene,show']);
+  h.game.dispose();
+});
+
+test('game: a cut back to the room inside an event shows its props', async () => {
+  const { h, done } = await intoTheHall();
+  h.game.exploreActions.ontap(hk('hall.to_study')); // the study's onEnter event
+  await settle();
+  expect(lineOf(h.vm)).toBe('ch1.study_event.l004');
+  // The event's `# bg: hall` shows the hall's shot: its props come with the cut, from the world.
+  expect(h.scene.windows.at(-1)?.batch).toBe('bg,props');
+  expect(h.scene.snapshot().bg).toBe('hall');
+  expect(h.scene.snapshot().props.map((p) => p.prop)).toEqual(['medal']);
+  done();
+});
+
+test("game: a room batch hands its room's window", async () => {
+  const { h, done } = await intoTheHall();
+  expect(h.scene.windows.at(-1)?.window).toEqual(winOf(ROOMS_LOOK, 'r:hall'));
+  done();
+});
+
+test("game: a move releases the previous room's window holders", async () => {
+  const { h, done } = await intoTheHall();
+  h.game.exploreActions.ontap(hk('hall.to_study')); // the study, its onEnter event
+  await settle();
+  await h.game.advance(); // the event's explore yield: back to the study
+  await settle();
+  expect(h.scene.windows.at(-1)?.window).toEqual(winOf(ROOMS_LOOK, 'r:study'));
+  expect(windowHeld(h)).toEqual(['preload:win:bg/study=bg/study', 'preload:win:sheet/study=sheet/study']);
+  h.game.exploreActions.ontap(hk('study.to_hall'));
+  await settle();
+  // The move hands the hall's window: the study's sheet goes, its plate stays as the hall's warm file.
+  expect(h.scene.windows.at(-1)?.window).toEqual(winOf(ROOMS_LOOK, 'r:hall'));
+  expect(windowHeld(h)).toEqual(['preload:warm:bg/study=bg/study', 'preload:win:bg/hall=bg/hall', 'preload:win:prop/medal=prop/medal']);
+  done();
+});
+
+test('game: a story step inside a room event passes its room as eventRoom', async () => {
+  const { h, done } = await intoTheHall();
+  h.game.exploreActions.ontap(hk('hall.to_study'));
+  await settle();
+  expect(lineOf(h.vm)).toBe('ch1.study_event.l004');
+  // The study's need files the line lists in no class: its plate is the line's hope, so only the sheet.
+  expect(h.scene.windows.at(-1)?.window).toEqual(winOf(ROOMS_LOOK, 'ch1.study_event.l004', ['sheet/study']));
+  done();
+});
+
+test("game: a handover leaves the next chapter's tag to the scheduler", async () => {
+  const h = harness({ chapters: [manorCh1(), lookedCh2()], owned: ['ch2'] });
+  await playManorCh1(h);
+  expect(h.scene.holders.has('next:ch2')).toBe(true);
+  await h.game.advance(); // END: the change, then ch2's first line
+  expect(lineOf(h.vm)).toBe('ch2.study.l001');
+  // No release of the entry tag by the game: the first window ends it, after its batch was handed.
+  const since = h.scene.calls.slice(h.scene.calls.indexOf('setChapter:ch2'));
+  expect(since.filter((c) => c.includes('next:ch2'))).toEqual(['entry:next:ch2']);
+  expect(since.indexOf('entry:next:ch2')).toBe(since.indexOf('apply:bg') + 1);
+  expect(h.scene.windows.at(-1)).toEqual({ batch: 'bg', window: winOf(STUDY_LOOK, 'ch2.study.l001') });
+  expect(held(h).filter((x) => x.startsWith('next:'))).toEqual([]);
+  h.game.dispose();
+});
+
+test("game: an ending knot preloads the next chapter's first window", async () => {
+  const h = harness({ chapters: [manorCh1(), lookedCh2()], owned: ['ch2'] });
+  await playManorCh1(h);
+  // k:study's need, then warm, then hope, each once, then the first knot's sprites (never appearances).
+  expect([...(h.scene.holders.get('next:ch2') ?? [])]).toEqual(['bg/study', 'cg/letter', 'bg/yard', 'char/ally/neutral']);
+  h.game.dispose();
+});
+
+test('game: knot audio is still preloaded per knot', async () => {
+  const h = harness({ chapters: [lookedCh1()] });
+  const asked: string[][] = [];
+  h.audio.preload = (ids) => {
+    asked.push([...ids]);
+  };
+  await startManor(h);
+  // The arrival's entry holds the garden: with a look its images come from the windows, its sounds still from here.
+  expect(asked).toEqual([['sfx/door']]);
+  h.game.dispose();
+});
+
+test('game: in a chapter with look a knot hold keeps only its sprites and sounds', async () => {
+  const garden = async (ch: LoadedChapter): Promise<string[]> => {
+    const h = harness({ chapters: [ch] });
+    await startManor(h);
+    const ids = [...(h.scene.holders.get('preload:garden') ?? [])];
+    h.game.dispose();
+    return ids;
+  };
+  expect(await garden(lookedCh1())).toEqual(['char/ally/worried']);
+  // A look that does not decode loses no preload: every knot image, as without one.
+  const bad = lookedCh1(false);
+  expect(await garden({ ...bad, assets: { ...bad.assets, look: { images: 'bg/hall' } } })).toEqual(['bg/garden', 'char/ally/worried']);
+  expect(await garden(bad)).toEqual(['bg/garden', 'char/ally/worried']);
+});
+
+test('game: a chapter without look still ends the entry tag at its first step', async () => {
+  const h = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'] });
+  await playManorCh1(h);
+  await h.game.advance(); // END: the change, then ch2's first line
+  expect(lineOf(h.vm)).toBe('ch2.study.l001');
+  const since = h.scene.calls.slice(h.scene.calls.indexOf('setChapter:ch2'));
+  expect(since.filter((c) => c.includes('next:ch2'))).toEqual(['entry:next:ch2']);
+  expect(h.scene.windows.at(-1)).toEqual({ batch: 'bg', window: NO_WINDOW });
+  h.game.dispose();
+});
+
+test('game: a yield step hands no window and the previous window stays', async () => {
+  const spec: LookSpec = {
+    'ch1.start.l001': [['bg/hall'], [], 0, []],
+    'ch1.cabinet.l002': [['bg/hall'], ['cg/drawer_close'], 1, []],
+    'k:cabinet': [['bg/study'], [], 0, []],
+  };
+  const w = worldChunks();
+  const h = harness({ chapters: [withLook(worldCh1('puzzle'), spec)], chunks: w.chunks });
+  await startManor(h);
+  await h.game.advance(); // l002, the cabinet
+  const applies = h.scene.calls.filter((c) => c.startsWith('apply:')).length;
+  await h.game.advance(); // the puzzle yield
+  await settle();
+  expect(h.puzzle.frame?.mode).toBe('linear');
+  expect(h.scene.calls.filter((c) => c.startsWith('apply:')).length).toBeGreaterThan(applies);
+  // The yield's batch carries no window: the line's stays, with its warm close-up.
+  expect(h.scene.windows.map((x) => x.window)).toEqual([winOf(spec, 'ch1.start.l001'), winOf(spec, 'ch1.cabinet.l002')]);
   h.game.dispose();
 });
