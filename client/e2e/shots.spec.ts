@@ -24,6 +24,8 @@ const LINE_MS = 30_000;
 /** Fresh dev users (no other spec names them): saves and purchases are server state for the whole run. */
 const UID_FACE = 1201;
 const UID_RELOAD = 1202;
+/** Never granted ch4: no spec grants it (principle 0's non-owner). */
+const UID_NON_OWNER = 1205;
 const CLOSE_UP = 'lamp_keeper_cu' as BgId; // a shot id of story/shots.json
 const KEEPER = 'keeper' as CharId; // a cast id of story/cast.json
 const SMILE = 'smile' as ExprId; // an expression of assets/catalog.json
@@ -218,4 +220,23 @@ test("shots: a reload restores the keeper's face", async ({ page, request }) => 
   await atRest(page);
   const restored = await stagePixel(page, x, y);
   expect(within(restored, smile, 10), `the restored smile at ${x}, ${y}: ${restored.join(', ')} against ${smile.join(', ')}`).toBe(true);
+});
+
+test('shots: a player without ch4 gets 403 for its sheet, face and talk files', async ({ request }) => {
+  // Principle 0 for the shot kinds a window may fetch (the scene's other 403 pin is a ch2 bg half, memory.spec.ts).
+  const manifest = ch4Manifest();
+  const ids = Object.keys(manifest.assets) as AssetId[]; // the manifest decoder's keys are asset ids
+  const urls = ['sheet/', 'face/', 'talk/'].flatMap((kind) => {
+    const id = ids.find((x) => x.startsWith(kind) && manifest.assets[x]?.kind === 'image');
+    const e = id === undefined ? undefined : manifest.assets[id];
+    if (e?.kind !== 'image') {
+      throw new Error(`fixture shape absent: ch4 has no ${kind.slice(0, -1)} file`);
+    }
+    return [e, ...(e.half === undefined ? [] : [e.half])].flatMap((f) => [f.avif.url, f.webp.url]);
+  });
+  const token = await devToken(request, UID_NON_OWNER);
+  for (const url of urls) {
+    const res = await request.get(url, { headers: { Authorization: `Bearer ${token}` } });
+    expect(res.status(), `GET ${url} without the entitlement`).toBe(403);
+  }
 });
