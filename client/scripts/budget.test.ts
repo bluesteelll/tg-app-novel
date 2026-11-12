@@ -1497,6 +1497,43 @@ describe('budget assets', () => {
     expect(ch3.valueBytes ?? 0).toBeGreaterThan(870_000);
   });
 
+  test("budget: first-load counts the head chapter's world", () => {
+    // RULINGS 172 (Q1): `loadFree` awaits the public world beside the story, meta, manifest and en table before the
+    // first line (client/src/story/chapters.ts), so a head chapter with a world source counts the world's br bytes.
+    const dist = withEngine(inputs(), 50_000, 150_000);
+    const a = assetInputs(specsWith('ch1', (s) => (s.assets['bg/cafe'] = bg('cafe', 446_000))));
+    const withWorld = (world: ChapterInputs['world']): AssetInputs => ({ ...a, chapters: a.chapters.map((c) => (c.id === 'ch1' ? { ...c, world } : c)) });
+    const firstLoad = (x: AssetInputs): Row => rowOf(assetRows(x, dist), 'first-load ch1');
+    const bare = firstLoad(withWorld(null));
+    const v = bare.valueBytes ?? 0;
+    expect(v, 'fixture: without a world the row is just under its limit').toBeGreaterThan(792_000);
+    expect(v).toBeLessThanOrEqual(800_000);
+    const w = 800_001 - v;
+    const worldIn = withWorld({ hasSections: false, public: { rawBytes: 4 * w, brBytes: w } });
+    expect(rowOf(assetRows(worldIn, dist), 'world json ch1').status, 'the world file itself passes').toBe('PASS');
+    expect(firstLoad(worldIn)).toMatchObject({ status: 'FAIL', valueBytes: v + w, note: 'JS + CSS + html + TWA + catalog + covers + chapter + world + en + first knot' });
+    expect(bare.note).toBe('JS + CSS + html + TWA + catalog + covers + chapter + en + first knot');
+    // A world source whose public output is missing cannot be summed: FAIL, not a smaller PASS.
+    expect(firstLoad(withWorld({ hasSections: false, public: null }))).toMatchObject({ status: 'FAIL', valueBytes: null, note: 'cannot sum: ch1 world missing' });
+  });
+
+  test('budget: first-load counts the en table', () => {
+    // RULINGS 172: an en-UI player's first line awaits the chapter's en table too (`withEn`), so the row always counts it.
+    const dist = withEngine(inputs(), 50_000, 150_000);
+    const a = assetInputs(specsWith('ch1', (s) => (s.assets['bg/cafe'] = bg('cafe', 446_000))));
+    const withEn = (brBytes: number | null): AssetInputs => ({
+      ...a,
+      chapters: a.chapters.map((c) => (c.id === 'ch1' ? { ...c, en: brBytes === null ? null : { rawBytes: 4 * brBytes, brBytes } } : c)),
+    });
+    const firstLoad = (x: AssetInputs): Row => rowOf(assetRows(x, dist), 'first-load ch1');
+    const base = firstLoad(withEn(500));
+    expect(base.status).toBe('PASS');
+    const v = base.valueBytes ?? 0;
+    expect(firstLoad(withEn(500 + 1_000)).valueBytes).toBe(v + 1_000);
+    expect(firstLoad(withEn(500 + 800_001 - v))).toMatchObject({ status: 'FAIL', valueBytes: 800_001 });
+    expect(firstLoad(withEn(null))).toMatchObject({ status: 'FAIL', valueBytes: null, note: 'cannot sum: ch1 en missing' });
+  });
+
   test('budget: each asset row fails on its oversize input', () => {
     type Case = readonly [string, () => AssetInputs, string, string?];
     const sized = (c: string, field: 'story' | 'en', s: { rawBytes: number; brBytes: number }) => (): AssetInputs => {

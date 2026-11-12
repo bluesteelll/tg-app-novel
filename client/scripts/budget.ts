@@ -1265,7 +1265,9 @@ function transferHalfRow(c: ChapterInputs, limits: Limits): Row {
 
 /**
  * First-load to the first line, per story (STORIES-PLAN "Budgets and validation"): the head of every chain (a free
- * chapter that no `next` names). The JS is entry + engine closures; PENDING while the engine source is absent.
+ * chapter that no `next` names). The JS is entry + engine closures; PENDING while the engine source is absent. The
+ * chapter's files are those `loadFree` awaits (`client/src/story/chapters.ts`): story, meta, manifest, the public world
+ * when the chapter has one, and the en table (RULINGS 172).
  */
 function firstLoadRows(dist: BudgetInputs, a: AssetInputs, limits: Limits): Row[] {
   const sizes = new Map(dist.files.map((f) => [f.path, f.brBytes]));
@@ -1290,6 +1292,9 @@ function firstLoadRows(dist: BudgetInputs, a: AssetInputs, limits: Limits): Row[
     const cs = c === undefined || isLegacy(a, c.id) || a.shots === null ? undefined : a.shots.chapters[c.id];
     const first = c === undefined ? null : cs === undefined ? firstKnotAvif(c) : firstStepHalf(c, cs);
     const label = cs === undefined ? 'first knot images' : 'first step images (half)';
+    // RULINGS 172 (Q1): the first line also awaits the public world (a chapter with a world source) and the en table,
+    // which `loadFree` fetches for an en-UI player (`withEn`); the row counts that case, both files.
+    const world = c !== undefined && c.world !== null;
     const parts: ReadonlyArray<readonly [string, number | null]> = [
       [js.ok ? 'JS' : `JS (${js.problem})`, js.ok ? js.bytes : null],
       ['index.html', html ?? null],
@@ -1298,6 +1303,8 @@ function firstLoadRows(dist: BudgetInputs, a: AssetInputs, limits: Limits): Row[
       [`${head.id} story`, c?.story?.brBytes ?? null],
       [`${head.id} meta`, c?.meta?.brBytes ?? null],
       [`${head.id} manifest`, c?.manifest?.brBytes ?? null],
+      ...(world ? [[`${head.id} world`, c?.world?.public?.brBytes ?? null] as const] : []),
+      [`${head.id} en`, c?.en?.brBytes ?? null],
       [first?.ok === false ? `${label} (${first.problem})` : label, first?.ok === true ? first.bytes : null],
     ];
     const missing = parts.filter(([, bytes]) => bytes === null).map(([part]) => part);
@@ -1305,7 +1312,7 @@ function firstLoadRows(dist: BudgetInputs, a: AssetInputs, limits: Limits): Row[
       return failed(name, limits.firstLoad, `cannot sum: ${missing.join(', ')} missing`);
     }
     const bytes = parts.reduce((s, [, b]) => s + (b ?? 0), 0) + css + TWA_BYTES + coverAvifs;
-    const note = `JS + CSS + html + TWA + catalog + covers + chapter + ${cs === undefined ? 'first knot' : 'first step (half)'}`;
+    const note = `JS + CSS + html + TWA + catalog + covers + chapter + ${world ? 'world + ' : ''}en + ${cs === undefined ? 'first knot' : 'first step (half)'}`;
     return partialRow(name, bytes, limits.firstLoad, js.ok && js.partial, note);
   });
 }
