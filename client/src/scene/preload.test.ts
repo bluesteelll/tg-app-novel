@@ -1085,6 +1085,23 @@ test('preload: a warm decode that does not fit evicts nothing', async () => {
   expect(h.log).not.toContain('release room:study');
 });
 
+test('preload: retry() starts the decode of a held warm file stopped for room', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/cu_a', 'scene:a');
+  await h.visible('bg/cu_b', 'scene:b');
+  // 25.883 MiB with the street's file held; its decode (12.226) does not fit and stops.
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/street'], near: 1 }));
+  await h.settle();
+  expect([h.state('bg/street'), h.decodesOf('bg/street')]).toEqual(['held', 0]);
+  // A sweep released CU B: step 3 runs again at the retry, from the held file.
+  h.registry.release(asId('bg/cu_b'), 'scene:b');
+  h.s.retry();
+  await h.settle();
+  expect(h.state('bg/street')).toBe('live');
+  expect([h.fetchesOf('bg/street'), h.decodesOf('bg/street')]).toEqual([1, 1]);
+});
+
 test('preload: joining a record that exists takes no slot', async () => {
   const h = harness('deferred', { hold: true });
   h.s.setChapter(wm);
