@@ -272,10 +272,12 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop(), shots?: { ri
   const heldRevives = new Map<string, Array<(r: Result<void, LoadError>) => void>>();
   /** Per URL: the next load waits until the test lets it settle. */
   const deferred = new Map<string, { ready: boolean; go: (() => void) | null }>();
+  /** URLs whose every load fails to decode. */
+  const broken = new Set([urlOf('bg/broken')]);
   const load: LoadImage<Tex> = (ref) => {
     loads.set(ref.url, (loads.get(ref.url) ?? 0) + 1);
     const e = byUrl.get(ref.url);
-    if (e === undefined || ref.url === urlOf('bg/broken')) {
+    if (e === undefined || broken.has(ref.url)) {
       return Promise.resolve({ ok: false, error: { kind: 'decode', detail: 'no such fixture' } });
     }
     const decode = (): Result<Decoded<Tex>, LoadError> => {
@@ -370,6 +372,10 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop(), shots?: { ri
         succeed: () => settle({ ok: true, value: undefined }),
         fail: () => settle({ ok: false, error: { kind: 'decode', detail: 'revive failed' } }),
       };
+    },
+    /** Every later load of `id` fails to decode (a manifest file whose bytes are broken). */
+    failLoad: (id: string): void => {
+      broken.add(urlOf(id));
     },
     /** The next load of `id` waits (a stalled fetch) until the returned function is called. */
     deferLoad: (id: string): (() => void) => {
@@ -2021,4 +2027,80 @@ test('executor: a bg without a rig is drawn as before', async () => {
   const legacy = await run(harness());
   expect(legacy).toContain('create:chars:ally');
   expect(await run(harness(S390, quietLoop(), { rigs: () => null, half: () => false }))).toEqual(legacy);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The face lifecycle (docs/plans/shots §5.2, lane SH4 C5): a failed file draws the rest; talk files held, never awaited.
+
+/** Whether the registry still has a live record of `id` (the executor is its only holder in these tests). */
+const liveIn = (h: ReturnType<typeof harness>, ids: readonly string[]): boolean[] => ids.map((id) => h.registry.current(asId(id)) !== null);
+
+test('executor: a face state whose sheet failed shows the rest face and logs a skip', async () => {
+  const h = shotHarness();
+  h.failLoad('sheet/lamp');
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  // The logical stage keeps the face; the stage shows the plate alone, which draws every face at rest: no group, and
+  // no layer without the hair locks the sheet carries.
+  expect(h.ex.snapshot().chars).toEqual([{ char: 'ally', expr: 'smile', at: 'center' }]);
+  expect(partNodes(h)).toEqual([]);
+  expect(drawLog(h)).toEqual(['anchor:bg:bg/lamp', 'create:bg:lamp']);
+  expect(h.skipped.map((e) => `${e.kind}:${e.id}`)).toEqual(['decode:sheet/lamp']);
+  // The same for a face file that failed: the stranger's smile is skipped, ally's (sheet and file live) is drawn.
+  const g = shotHarness();
+  g.failLoad('face/lamp/stranger/smile');
+  await g.ex.apply([scene('lamp', 'cut'), face('ally', 'smile'), face('stranger', 'smile')], NOW);
+  expect(partNodes(g)).toEqual(['face:ally']);
+  expect(g.skipped.map((e) => `${e.kind}:${e.id}`)).toEqual(['decode:face/lamp/stranger/smile']);
+  for (const x of [h, g]) {
+    x.ex.destroy();
+    expect(x.liveNodes()).toEqual([]);
+    expect(x.registry.stats().live).toBe(0);
+  }
+});
+
+test('executor: a face change releases the previous face and talk files after the transition', async () => {
+  const h = shotHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  const smile = ['face/lamp/ally/smile', 'talk/lamp/ally/smile'];
+  const worried = ['face/lamp/ally/worried', 'talk/lamp/ally/worried'];
+  // The face on stage holds its face file and its talk file (SH7 draws talk; SH4 draws no talk sprite).
+  expect(liveIn(h, smile)).toEqual([true, true]);
+  expect(h.live('bg').filter((x) => x.tex?.url.includes('/talk_') === true)).toEqual([]);
+  const swap = track(h.ex.apply([face('ally', 'worried')], NOW));
+  await flush();
+  advance(100);
+  await flush();
+  // K7 mid-way: the old group still shows, and the old files are still held beside the new ones.
+  expect(swap.done).toBe(false);
+  expect(liveIn(h, [...smile, ...worried])).toEqual([true, true, true, true]);
+  advance(150);
+  await flush();
+  expect(swap.done).toBe(true);
+  // After the K7 phases only the new expression's files are held; the old ones were released once each.
+  expect(liveIn(h, [...smile, ...worried])).toEqual([false, false, true, true]);
+  expect(smile.map((id) => h.releasedOf(id))).toEqual([1, 1]);
+  // Back to the rest: the face file goes, the rest's talk file is held in its place.
+  await h.ex.apply([face('ally', 'neutral')], { instant: true });
+  expect(liveIn(h, [...worried, 'talk/lamp/ally/neutral'])).toEqual([false, false, true]);
+  h.ex.destroy();
+  expect(h.registry.stats().live).toBe(0);
+});
+
+test('executor: a talk file is taken without being awaited', async () => {
+  const h = shotHarness();
+  const go = h.deferLoad('talk/lamp/ally/smile');
+  const b = track(h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW));
+  await flush();
+  // The batch finished with its talk file still loading: it was requested, never awaited.
+  expect(b.done).toBe(true);
+  expect(h.loadsOf('talk/lamp/ally/smile')).toBe(1);
+  expect(partNodes(h)).toEqual(['face:ally']);
+  expect(h.skipped).toEqual([]);
+  // Settling later draws nothing and holds it for the stage.
+  go();
+  await flush();
+  expect(liveIn(h, ['talk/lamp/ally/smile'])).toEqual([true]);
+  expect(h.live('bg').filter((x) => x.tex?.url.includes('/talk_') === true)).toEqual([]);
+  h.ex.destroy();
+  expect(h.registry.stats().live).toBe(0);
 });

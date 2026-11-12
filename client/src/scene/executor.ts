@@ -148,8 +148,7 @@ const slotOf = (holder: string): string => holder.slice('scene:'.length);
 function slotsOf(s: SceneSnapshot, rigs: Rigs): Map<string, AssetId> {
   // The brands are earned upstream: parseTags and the world decoder accept only ids the catalog lists.
   const rig = s.bg === null ? undefined : rigs?.get(s.bg);
-  // Talk files are not taken until the face lifecycle lands.
-  const out = rig === undefined ? new Map<string, AssetId>() : new Map([...shotSlots(rig, s)].filter(([k]) => !k.startsWith('talk:')));
+  const out = rig === undefined ? new Map<string, AssetId>() : shotSlots(rig, s);
   if (rig === undefined && s.bg !== null) {
     out.set('bg', `bg/${s.bg}` as AssetId);
   }
@@ -345,6 +344,16 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     byId.set(id, held);
     return hold;
   };
+  /**
+   * Takes a slot for a batch. A talk file is motion (SH7 draws it), never awaited (shots §5.2): it is held under its
+   * `scene:talk:<c>` holder from the batch on, and kept out of `takes`, so its load never delays a line.
+   */
+  const takeFor = (takes: Map<string, Hold<T>>, slot: string, id: AssetId): void => {
+    const hold = take(slot, id);
+    if (!slot.startsWith('talk:')) {
+      takes.set(slot, hold);
+    }
+  };
 
   /** A shot root's part views (none for a legacy backdrop). */
   const partViews = (v: BackdropView<T>): View<T>[] => [...(v.shot?.parts.values() ?? [])].flatMap((p) => p.views);
@@ -483,10 +492,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       const h = handleOf(slot);
       const f = h === undefined ? null : registry.frames(h, [p.frame]);
       const frame = f?.ok === true ? f.value[0] : undefined;
+      // A face state whose face file or sheet failed is drawn at rest: a layer without its hair locks is no face.
       if (h === undefined || frame === undefined) {
-        if (p.kind === 'hair') {
-          continue;
-        }
         return undefined;
       }
       drawn.push({ slot, h, frame, at: p.at });
@@ -1063,7 +1070,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     const takes = new Map<string, Hold<T>>();
     for (const [slot, id] of slotsOf(target, rigs)) {
       if (before.get(slot) !== id) {
-        takes.set(slot, take(slot, id));
+        takeFor(takes, slot, id);
       }
     }
     return queue(cmds, target, instant, takes, rigs);
@@ -1241,7 +1248,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         }
       }
       for (const [slot, id] of again) {
-        takes.set(slot, take(slot, id));
+        takeFor(takes, slot, id);
       }
       if (takes.size > 0) {
         // The logical stage is unchanged: the batch only shows those slots again, on new records.
