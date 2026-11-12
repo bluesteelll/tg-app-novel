@@ -1201,6 +1201,33 @@ test('preload: retry() starts the decode of a held warm file stopped for room', 
   expect([h.fetchesOf('bg/street'), h.decodesOf('bg/street')]).toEqual([1, 1]);
 });
 
+// A second queued decode of one file would join the first once it starts and hold a slot its own flight covers.
+test('preload: a warm decode still queued for a slot is not queued again by retry()', async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ warm: ['prop/s1', 'prop/s2', 'prop/s3'] }));
+  h.land('prop/s1');
+  await flush();
+  h.land('prop/s2');
+  await flush();
+  h.land('prop/s3');
+  await flush();
+  // PRELOAD_IN_FLIGHT = 2: the decodes of s1 and s2 are in flight and s3's waits; the next chapter's file queues
+  // behind it.
+  expect([h.decodesOf('prop/s1'), h.decodesOf('prop/s2'), h.decodesOf('prop/s3')]).toEqual([1, 1, 0]);
+  h.s.preload('next:ch7', [asId('prop/n1')], nx);
+  h.s.retry();
+  await flush();
+  h.decoded('prop/s1');
+  await flush();
+  expect(h.decodesOf('prop/s3')).toBe(1);
+  // The second freed slot goes to the next chapter's file, and s3's decode was asked for once.
+  h.decoded('prop/s2');
+  await flush();
+  expect(h.fetchesOf('prop/n1')).toBe(1);
+  expect(h.acquired().filter((a) => a.startsWith('preload:win:prop/s3'))).toHaveLength(1);
+});
+
 test('preload: joining a record that exists takes no slot', async () => {
   const h = harness('deferred', { hold: true });
   h.s.setChapter(wm);
