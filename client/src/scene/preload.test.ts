@@ -978,6 +978,21 @@ test('preload: a refused need sheds a decoded warm file back to its bytes', asyn
   expect(h.fetchesOf('bg/cu_b')).toBe(1);
 });
 
+// Step 6 (a) goes by rank: a warm decode (an opener of the coming cut) outranks a best-effort hope.
+test('preload: step 6 (a) releases resident hope before it sheds a warm decode', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/cu_a', 'scene:a');
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b'], hope: ['prop/x6'] }));
+  await h.settle();
+  expect(['bg/cu_a', 'bg/cu_b', 'prop/x6'].map(h.state)).toEqual(['live', 'live', 'live']);
+  // 31.883 MiB: CU A on stage, CU B decoded, x6 hoped. The hall's prop (3.3) is refused; the hope alone makes room,
+  // and it queues again but no longer fits.
+  h.s.want(stage({ need: ['bg/cu_a', 'prop/hall'], warm: ['bg/cu_b'], hope: ['prop/x6'] }));
+  await h.settle();
+  expect(['prop/hall', 'bg/cu_b', 'prop/x6'].map(h.state)).toEqual(['live', 'live', 'none']);
+});
+
 test('preload: want keeps the held warm files of the new window', async () => {
   const h = harness('auto', { hold: true });
   h.s.setChapter(wm);
