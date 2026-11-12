@@ -249,3 +249,27 @@ test('cues: a declared control resolves its motion', () => {
   // pins which controls the registries declare: a type or module lane adds its own without touching this file.
   expect(uiMotion('ribbon-item')).toBe(UI_MOTIONS.overrides['ribbon-item']);
 });
+
+test('motions: a refused combine shakes both ribbon items with ONE error haptic', () => {
+  const rows: Readonly<Record<string, MotionSpec>> = CUE_MOTIONS;
+  // The module's keys from the rules registry (never from the table), so the check is not vacuous.
+  const keys = MECHANIC_RULES.flatMap((r) => {
+    const names: readonly string[] = r.cues;
+    return r.id === 'combine' ? names.map((c) => `module:${r.id}:${c}`) : [];
+  });
+  expect(keys).toEqual(['module:combine:refused', 'module:combine:refused-with']);
+  const specs = keys.map((key) => rows[key]);
+  // Each shakes its own ribbon item: an element-site preset on the ribbon target (08b: both ribbon items shake).
+  expect(specs.map((s) => [s?.preset, s?.target, s === undefined ? null : PRESET_SITE[s.preset]])).toEqual([
+    ['shake', 'ribbon', 'element'],
+    ['shake', 'ribbon', 'element'],
+  ]);
+  // One refusal, one error haptic (RULINGS 306): the player fires a haptic per cue, so only the selected item's cue,
+  // emitted first, carries it.
+  expect(specs.map((s) => s?.haptic)).toEqual(['error', null]);
+  // No second motion and no cause variant that could carry another haptic.
+  expect(specs.map((s) => [s?.with, s?.byCause])).toEqual([
+    [undefined, undefined],
+    [undefined, undefined],
+  ]);
+});

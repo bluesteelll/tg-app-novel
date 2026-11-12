@@ -10,6 +10,8 @@
 // and in vitest's module runner (`mechanics: the rules registry loads from either module first` compares every member).
 import type { ExploreAction } from '../../explore/reduce.ts';
 import type { KernelWorld, MechanicRules, SectionAction } from '../contract.ts';
+import { applyCombine, combineActions, combineReads, combineScope } from './combine.ts';
+import type { CombineAction, CombineCue } from './combine.ts';
 import { actions, applyCore, reads } from './core.ts';
 import type { CoreCue } from './core.ts';
 import { applyUse, useActions, useReads, useScope } from './use.ts';
@@ -54,7 +56,16 @@ const view = {
   cues: [] as const,
 } satisfies MechanicRules<'view', ViewAction, never>;
 
-export const MECHANIC_RULES = [core, use, visual, view] as const;
+const combine = {
+  id: 'combine',
+  actions: combineActions,
+  apply: applyCombine,
+  reads: combineReads,
+  scope: combineScope,
+  cues: ['refused', 'refused-with'] as const,
+} satisfies MechanicRules<'combine', CombineAction, CombineCue>;
+
+export const MECHANIC_RULES = [core, use, visual, view, combine] as const;
 
 /**
  * The dispatch (engine plan §3.2 "Exhaustiveness: dispatch is a typed map over the tuple"): one handler per action kind
@@ -71,4 +82,5 @@ export const APPLY: { readonly [K in SectionAction['kind']]: (w: KernelWorld, a:
   'puzzle-ended': applyCore,
   use: applyUse,
   'leave-view': applyView,
+  combine: applyCombine,
 };

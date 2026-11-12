@@ -234,17 +234,19 @@ test('mechanics: the rules registry loads from either module first', async () =>
     use: typeof import('./rules/use.ts'),
     visual: typeof import('./rules/visual.ts'),
     view: typeof import('./rules/view.ts'),
+    combine: typeof import('./rules/combine.ts'),
   ): void => {
     expect(index.MECHANIC_RULES).toStrictEqual([
       { id: 'core', actions: core.actions, apply: core.applyCore, reads: core.reads, cues: ['look', 'locked', 'refused', 'reset'] },
       { id: 'use', actions: use.useActions, apply: use.applyUse, reads: use.useReads, scope: use.useScope, cues: ['refused', 'said'] },
       { id: 'visual', actions: visual.visualActions, apply: visual.applyVisual, reads: visual.visualReads, cues: [], visuals: visual.visuals },
       { id: 'view', actions: view.viewActions, apply: view.applyView, reads: view.viewReads, cues: [] },
+      { id: 'combine', actions: combine.combineActions, apply: combine.applyCombine, reads: combine.combineReads, scope: combine.combineScope, cues: ['refused', 'refused-with'] },
     ]);
     expect(core.reduce(w, at('hall'), tap('hall.statue')).effects.map((e) => e.kind)).toEqual(['look', 'cue', 'cue', 'dirty']);
   };
-  // rules/use.ts, rules/visual.ts, rules/conditions.ts and rules/view.ts sit on the cycle too (use.ts <-> core.ts,
-  // visual.ts -> conditions.ts -> index.ts, view.ts <-> core.ts).
+  // rules/use.ts, rules/visual.ts, rules/conditions.ts, rules/view.ts and rules/combine.ts sit on the cycle too (use.ts
+  // <-> core.ts, visual.ts -> conditions.ts -> index.ts, view.ts <-> core.ts, combine.ts -> conditions.ts and use.ts).
   const firsts = [
     () => import('./rules/core.ts'),
     () => import('./rules/index.ts'),
@@ -252,11 +254,19 @@ test('mechanics: the rules registry loads from either module first', async () =>
     () => import('./rules/conditions.ts'),
     () => import('./rules/visual.ts'),
     () => import('./rules/view.ts'),
+    () => import('./rules/combine.ts'),
   ];
   for (const first of firsts) {
     vi.resetModules();
     await first();
-    checkGraph(await import('./rules/index.ts'), await import('./rules/core.ts'), await import('./rules/use.ts'), await import('./rules/visual.ts'), await import('./rules/view.ts'));
+    checkGraph(
+      await import('./rules/index.ts'),
+      await import('./rules/core.ts'),
+      await import('./rules/use.ts'),
+      await import('./rules/visual.ts'),
+      await import('./rules/view.ts'),
+      await import('./rules/combine.ts'),
+    );
   }
 });
 
@@ -277,16 +287,18 @@ function useSource(): Json {
 }
 
 test('mechanics: the data registry loads from any module first', async () => {
-  // data/use.ts and data/visual.ts import data/conditions.ts (`decodeCond`), which imports data/index.ts (its default
-  // registry), which holds their entries: the same cycle as the rules registry's. index.ts builds each entry from its
-  // module's function declarations, so each load order leaves the registry whole (every member compared: vitest's
-  // runner reads an uninitialized `const` as undefined), and a decode through the freshly loaded graph reads a `when`.
+  // data/use.ts, data/visual.ts and data/combine.ts import data/conditions.ts (`decodeCond`), which imports
+  // data/index.ts (its default registry), which holds their entries: the same cycle as the rules registry's. index.ts
+  // builds each entry from its module's function declarations, so each load order leaves the registry whole (every
+  // member compared: vitest's runner reads an uninitialized `const` as undefined), and a decode through the freshly
+  // loaded graph reads a `when`.
   const checkData = (
     index: typeof import('./data/index.ts'),
     core: typeof import('./data/core.ts'),
     use: typeof import('./data/use.ts'),
     visual: typeof import('./data/visual.ts'),
     view: typeof import('./data/view.ts'),
+    combine: typeof import('./data/combine.ts'),
   ): void => {
     expect(index.MECHANIC_DATA).toStrictEqual([
       core.core,
@@ -314,6 +326,14 @@ test('mechanics: the data registry loads from any module first', async () => {
         encode: view.encodeView,
         normalize: view.normalizeView,
       },
+      {
+        id: 'combine',
+        rules: 'chunk',
+        owns: { world: ['recipes'], facts: [] },
+        decode: combine.decodeCombine,
+        encode: combine.encodeCombine,
+        normalize: combine.normalizeCombine,
+      },
     ]);
   };
   const firsts = [
@@ -323,11 +343,19 @@ test('mechanics: the data registry loads from any module first', async () => {
     () => import('./data/core.ts'),
     () => import('./data/visual.ts'),
     () => import('./data/view.ts'),
+    () => import('./data/combine.ts'),
   ];
   for (const first of firsts) {
     vi.resetModules();
     await first();
-    checkData(await import('./data/index.ts'), await import('./data/core.ts'), await import('./data/use.ts'), await import('./data/visual.ts'), await import('./data/view.ts'));
+    checkData(
+      await import('./data/index.ts'),
+      await import('./data/core.ts'),
+      await import('./data/use.ts'),
+      await import('./data/visual.ts'),
+      await import('./data/view.ts'),
+      await import('./data/combine.ts'),
+    );
     const decoded = (await import('../world/decode.ts')).decodeWorldSource(useSource());
     expect(decoded.ok ? decoded.value.mods.use.uses[k('hall.box')]?.[0]?.when : decoded.error).toEqual({ all: [{ held: 'lens' }, { not: { open: 'hall.box' } }] });
   }
@@ -435,6 +463,7 @@ test('mechanics: every action kind has one handler', () => {
     'puzzle-ended': true,
     use: true,
     'leave-view': true,
+    combine: true,
   } satisfies Record<SectionAction['kind'], true>;
   expect(Object.keys(APPLY).sort()).toEqual(Object.keys(kinds).sort());
   expect(Object.values(APPLY).every((handler) => typeof handler === 'function')).toBe(true);

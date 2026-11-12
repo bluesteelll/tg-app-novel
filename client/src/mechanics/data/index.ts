@@ -11,6 +11,8 @@
 //   (`world/text-unwalked`) and the version hash read it as data (`mechanics: every module's decoded data is plain
 //   JSON`).
 import type { MechanicData, OwnedRaw } from '../contract.ts';
+import { decodeCombine, encodeCombine, normalizeCombine } from './combine.ts';
+import type { CombineData } from './combine.ts';
 import { core } from './core.ts';
 import { decodeUse, encodeUse, normalizeUse } from './use.ts';
 import type { UseData } from './use.ts';
@@ -49,7 +51,16 @@ const view = {
   normalize: normalizeView,
 } satisfies MechanicData<'view', ViewData>;
 
-export const MECHANIC_DATA = [core, use, visual, view] as const;
+const combine = {
+  id: 'combine',
+  rules: 'chunk',
+  owns: { world: ['recipes'], facts: [] },
+  decode: decodeCombine,
+  encode: encodeCombine as (d: unknown) => OwnedRaw,
+  normalize: normalizeCombine,
+} satisfies MechanicData<'combine', CombineData>;
+
+export const MECHANIC_DATA = [core, use, visual, view, combine] as const;
 
 /** A data registry as a decode takes it: `MECHANIC_DATA`, or a test's fixture modules beside it. */
 export type DataRegistry = readonly MechanicData<string, unknown, unknown>[];
