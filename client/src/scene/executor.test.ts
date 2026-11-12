@@ -2213,3 +2213,50 @@ test('executor: a figure plane and a drawn face keep their sprites in their own 
   expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
   expect(h.registry.stats().live).toBe(0);
 });
+
+test('executor: members draw back to front across members', async () => {
+  // Triage r4 M4b: a shot's cast is listed back to front, and every member's parts are siblings in the root's content,
+  // so the member term of the z alone keeps the back member's face under the front member's figure plane, and a back
+  // member's new expression group under the front member's face after a swap (a z tie falls back to creation order).
+  const at: Box4 = [100, 700, 400, 392];
+  const figured = (shot: string, c: string, head: Box4): CastRig & { char: CharId } => ({ ...castMember(shot, c, head), figure: mem(`sheet/${shot}`, [0, 120, 400, 392], at) });
+  const rigs: ReadonlyMap<BgId, ShotRig> = new Map([['lamp' as BgId, shotRig([figured('lamp', 'ally', ALLY_AT), figured('lamp', 'stranger', [700, 500, 160, 200])])]]);
+  const h = harness(S390, quietLoop(), { rigs: () => rigs, half: () => false });
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile'), face('stranger', 'smile')], NOW);
+  const parts = h.liveNodes().filter((x) => x.role === 'node');
+  expect(parts.map((x) => [x.key, x.p.z])).toEqual([
+    ['figure:ally', 1],
+    ['face:ally', 2],
+    ['figure:stranger', 3],
+    ['face:stranger', 4],
+  ]);
+  // What draws: the root's content in z order.
+  const [root] = h.anchors('bg');
+  expect(root === undefined ? [] : h.drawOrder(h.contentOf(root)).map((x) => `${x.role}:${x.key}`)).toEqual([
+    'sprite:lamp',
+    'node:figure:ally',
+    'node:face:ally',
+    'node:figure:stranger',
+    'node:face:stranger',
+  ]);
+  h.ex.destroy();
+  expect(h.liveNodes()).toEqual([]);
+  expect(h.registry.stats().live).toBe(0);
+  // The back member swaps its face (K7): its new group is created last and still draws under the front member's face.
+  const s = shotHarness();
+  await s.ex.apply([scene('lamp', 'cut'), face('ally', 'smile'), face('stranger', 'smile')], NOW);
+  const swap = track(s.ex.apply([face('ally', 'worried')], NOW));
+  await flush();
+  advance(250);
+  await flush();
+  expect(swap.done).toBe(true);
+  const [kept] = s.anchors('bg');
+  expect(kept === undefined ? [] : s.drawOrder(s.contentOf(kept)).map((x) => `${x.role}:${x.key}`)).toEqual([
+    'sprite:lamp',
+    'node:face:ally',
+    'node:face:stranger',
+  ]);
+  s.ex.destroy();
+  expect(s.liveNodes()).toEqual([]);
+  expect(s.registry.stats().live).toBe(0);
+});
