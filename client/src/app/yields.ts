@@ -16,7 +16,7 @@ import type { CueBus } from '../cues/bus.ts';
 import type { Cue, CueEvent, MoveHow, PuzzleCue, VisualDiff } from '../cues/types.ts';
 import type { ExploreController, createExploreController } from '../explore/controller.ts';
 import { project } from '../explore/project.ts';
-import { runReduce, worldIndex } from '../explore/reduce.ts';
+import { own, runReduce, worldIndex } from '../explore/reduce.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { PuzzleOutcome, PuzzleRun, WorldState } from '../explore/state.ts';
@@ -501,6 +501,15 @@ export function createYields(h: YieldsHost): Yields {
     return index.ix;
   };
   const inEvent = (): boolean => world.pendingStory.length > 0;
+  /**
+   * W1 (RULINGS 298): the drawn box of the first shown exit into `view`, in world order, from the hotspots the
+   * controller has just written for the room it settled in; null when none is shown.
+   */
+  const exitBoxInto = (w: WorldPublic, view: RoomId | null): Box | null =>
+    explore.hotspots.find((v) => {
+      const x = indexOf(w).hotspots.get(v.key)?.hotspot;
+      return x?.kind === 'exit' && 'room' in x.to && x.to.room === view;
+    })?.css ?? null;
 
   // -------------------------------------------------------------------------------------------------------------
   // The root-back (X12, K50, D4)
@@ -567,9 +576,12 @@ export function createYields(h: YieldsHost): Yields {
     switch (e.kind) {
       case 'room': {
         // D9: from the room the last batch showed, by the entry's hotspot (an exit) or by its kind (Back: none). A zoom
-        // says so itself (§6.3: core's `moveHow`, `leave-view` included); any other move is the entry's kind.
+        // says so itself (§6.3: core's `moveHow`, `leave-view` included); any other move is the entry's kind. A zoom-out
+        // by no exit (`leave-view`: the leave control or Back) lands on the parent's first shown exit into the view just
+        // left, the zoom-in's box read backwards (W1, RULINGS 298); `settle` wrote the parent's hotspots before this.
         const how: MoveHow = e.how === 'zoom-in' || e.how === 'zoom-out' ? e.how : scope.how;
-        const move = cueEvent({ kind: 'move', from: shown, to: e.room, via: scope.cause.at, how }, scope.box);
+        const box = e.how === 'zoom-out' && e.via === null && w !== null ? exitBoxInto(w, e.from) : scope.box;
+        const move = cueEvent({ kind: 'move', from: shown, to: e.room, via: scope.cause.at, how }, box);
         const job: RoomJob = { room: e.room, sfx: e.sfx, how, move, cues: [] };
         if (scope.cues !== null) {
           scope.job ??= job;
@@ -736,6 +748,9 @@ export function createYields(h: YieldsHost): Yields {
       audio.push({ kind: 'sfx', sfx, vol: 1 });
     }
     shown = room;
+    // §6.3 (GM4u): the bar's leave control shows in a view, by the controller's own rule over its state (`inView`), in
+    // the same flush as the layer and the room's hotspots, so it never shows over a room the layer is not showing.
+    explore.inView = world.section !== null && world.room !== null && own(w.mods.view.of, world.room) !== undefined;
     explore.layer = inEvent() ? null : layerComponent; // an onEnter event hides the rooms it moved into
     await held(visual, audio, { box: j.move.box, atStart });
     if (dead) {
@@ -1334,6 +1349,7 @@ export function createYields(h: YieldsHost): Yields {
         await dispatchNow({ kind: 'use', item, target });
       }); // the outcome is on screen
     },
+    onleaveview: back, // the BackButton's own press (§6.3): one level up in a view, Back's walk elsewhere
   };
 
   const disposeController = (): void => {
@@ -1347,6 +1363,7 @@ export function createYields(h: YieldsHost): Yields {
     explore.layer = null;
     explore.panel = null;
     explore.selected = null;
+    explore.inView = false;
   };
 
   return {

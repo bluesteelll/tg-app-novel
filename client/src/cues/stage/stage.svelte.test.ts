@@ -697,7 +697,7 @@ function layerProps(): ExploreLayerProps {
   return {
     lang: 'en',
     view,
-    actions: { ontap: no, oninventory: no, onreveal: no, onread: no, oninsert: no, onclose: no, onselect: no, ondeselect: no, onuse: no },
+    actions: { ontap: no, oninventory: no, onreveal: no, onread: no, oninsert: no, onclose: no, onselect: no, ondeselect: no, onuse: no, onleaveview: no },
     puzzle: createPuzzleView(),
     puzzleActions: { item: () => null, onchange: no, ontry: no, ongiveup: no, onhint: no, onretry: no, onusehint: no, ongetmore: no },
   };
