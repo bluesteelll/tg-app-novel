@@ -466,6 +466,21 @@ test("story: a recipe's when reads only its own section", () => {
   ]);
 });
 
+/**
+ * The commutation fixture (R11's property): section `s`'s hall gives the shard and the glue and leaves by a story exit;
+ * section `t`'s yard gives the bolt, whose chest is a lock of one slot that accepts it, and leaves by its own story
+ * exit; the recipe of `s` makes the vase.
+ */
+const commuteWorld = (): Json =>
+  rawWorld(
+    {
+      s: ['hall', { hall: room([take('shard', 'shard'), take('glue', 'glue'), exit('out', { story: 'end' })]) }],
+      t: ['yard', { yard: room([take('bolt', 'bolt'), object('chest', { lock: lock(['bolt']) }), exit('away', { story: 'after' })]) }],
+    },
+    ['shard', 'glue', 'vase', 'bolt'],
+    [recipe('shard', 'glue', 'vase')],
+  );
+
 test('story: recipes of one section lint clean, a chain included', () => {
   // The positive control: a chain in reverse source order, a `use` gift as an input, a recipe in each section, a tool.
   expect(
@@ -480,4 +495,102 @@ test('story: recipes of one section lint clean, a chain included', () => {
       ),
     ),
   ).toEqual([]);
+  // The commutation fixture lints clean: the property below runs on a world the gate accepts, with no lint in its path.
+  expect(lint(source(commuteWorld()))).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// "Combine anywhere" (R11): a combine in another section commutes with leaving the recipe's section
+
+/** The list fields of a state, sorted, so two states that differ only in the order play added members compare equal
+ *  (`pendingStory` is an ordered queue and the slots' cells are positional: kept as they are). */
+function canon(s: WorldState): string {
+  const sorted = (l: readonly string[]): string[] => [...l].sort();
+  return JSON.stringify({
+    ...s,
+    visited: sorted(s.visited),
+    held: sorted(s.held),
+    used: sorted(s.used),
+    docs: sorted(s.docs),
+    taken: sorted(s.taken),
+    examined: sorted(s.examined),
+    open: sorted(s.open),
+    fired: sorted(s.fired),
+    unproved: sorted(s.unproved),
+  });
+}
+
+/** Every state of `section`'s search from `start`: a BFS over `successors` deduplicated by the section key, a `leaves`
+ *  successor never followed (`searchSection`'s rule). */
+function searched(w: KernelWorld, start: WorldState, section: SectionId): WorldState[] {
+  const seen = new Set([sectionKey(w, start, section)]);
+  const out = [start];
+  for (let i = 0; i < out.length; i++) {
+    for (const succ of successors(w, out[i] ?? start)) {
+      const key = sectionKey(w, succ.state, section);
+      if (!succ.leaves && !seen.has(key)) {
+        seen.add(key);
+        out.push(succ.state);
+      }
+    }
+  }
+  return out;
+}
+
+test("combine: combining in another section equals combining before leaving the recipe's section", () => {
+  const src = source(commuteWorld());
+  const w = kernel(src);
+  /** The combine of `a` and `b` in `s` when it runs (its product's `got`); else null. */
+  const combined = (s: WorldState, a: string, b: string, gives: string): WorldState | null => {
+    const r = reduce(w, s, combine(a, b));
+    return r.effects.some((e) => e.kind === 'got' && 'item' in e.gift && e.gift.item === gives) ? r.state : null;
+  };
+  const leave = (s: WorldState): WorldState => reduce(w, s, tap('hall.out')).state;
+  const enterB = (s: WorldState): WorldState => reduce(w, s, { kind: 'enter-section', section: T }).state;
+  const stepsOf = (z: WorldState): string[] => successors(w, z).map((n) => JSON.stringify(n.step)).sort();
+  const keyB = (z: WorldState): string => sectionKey(w, z, T);
+  const pair = (a: string, b: string): string => [a, b].sort().join('+');
+  const count = { s0: 0, x: 0, e: 0, f: 0, insertBolt: 0, leaving: 0 };
+  for (const r of src.mods.combine.recipes) {
+    for (const s0 of searched(w, sectionEntry(w, EMPTY_WORLD_STATE, S), S)) {
+      const done = combined(s0, r.a, r.b, r.gives);
+      if (done === null) {
+        continue;
+      }
+      count.s0 += 1;
+      // (a) combining before leaving S equals combining after entering B; (c) S's search takes the combine.
+      const after = combined(enterB(leave(s0)), r.a, r.b, r.gives);
+      expect(after === null ? null : canon(after), 'S: the combine then the leave, against the leave then the combine').toBe(canon(enterB(leave(done))));
+      const inS = successors(w, s0).some((n) => n.step.kind === 'combine' && pair(n.step.a, n.step.b) === pair(r.a, r.b));
+      expect(inS, "S's search takes the combine").toBe(true);
+      for (const x of searched(w, enterB(leave(s0)), T)) {
+        const y = combined(x, r.a, r.b, r.gives);
+        if (y === null) {
+          continue;
+        }
+        count.x += 1;
+        const steps = stepsOf(x);
+        count.insertBolt += steps.includes('{"kind":"insert","hotspot":"yard.chest","item":"bolt"}') ? 1 : 0;
+        // (b) B's key cannot tell y from x; (d) neither can B's enabled steps.
+        expect(keyB(y), "B's key after the combine").toBe(keyB(x));
+        expect(stepsOf(y), "B's steps after the combine").toEqual(steps);
+        // (e) one edge later B still cannot tell them apart; (f) where the combine still runs, it commutes with the edge.
+        const ys = new Map(successors(w, y).map((n) => [JSON.stringify(n.step), n]));
+        for (const n of successors(w, x)) {
+          const m = ys.get(JSON.stringify(n.step));
+          count.e += 1;
+          count.leaving += n.leaves ? 1 : 0;
+          expect(m === undefined ? null : [keyB(m.state), m.leaves], `B's successor by ${JSON.stringify(n.step)}`).toEqual([keyB(n.state), n.leaves]);
+          const later = combined(n.state, r.a, r.b, r.gives);
+          if (later !== null && m !== undefined) {
+            count.f += 1;
+            expect(canon(m.state), `the combine after ${JSON.stringify(n.step)}`).toBe(canon(later));
+          }
+        }
+      }
+    }
+  }
+  // Non-vacuity: S's states with the combine enabled, B's states holding the pair, edges compared by (e) and (f), B's
+  // lock live (an insert of the bolt listed) and a leaving edge of B compared.
+  expect(Object.values(count).every((n) => n > 0), JSON.stringify(count)).toBe(true);
 });
