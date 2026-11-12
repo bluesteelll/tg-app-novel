@@ -3,15 +3,18 @@
 // `data-cues-played` (the last keys played), `data-cue-orphans` (cues no stage played) and `data-cue-fallbacks`
 // (cues whose target was missing). The room layer's exit is RULINGS 195's fallback: the live root leaves the document
 // at once and the stage plays its exit on the root's ghost, so the evidence is the order of the DOM records.
-import type { Locator, Page } from '@playwright/test';
+import type { APIRequestContext, Locator, Page } from '@playwright/test';
 
 import { t } from '../src/i18n/index.ts';
+import { decodeSave } from '../src/story/save-codec.ts';
 import {
   atRest,
   catalogTitle,
   chunkFile,
   debugStats,
+  devToken,
   enterManor,
+  events,
   expect,
   grantChapter,
   holdRequests,
@@ -439,4 +442,124 @@ test("mechanics: the cellar's background is preloaded in the hall after the stud
   await tapHotspot(page, 'hall', 'to_cellar'); // the cellar's onEnter: the voice
   await reachLine(page, 'ch1.manor_cellar_voice.v007');
   expect(cellar.count(), 'the cellar joined the live record').toBe(inHall);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM4u (engine plan §6.3): ch1's study zooms into its desk, a view left by the BackButton or the bar's leave control.
+// On committed content the zoom-in loads bg/room on tap and the next Back loads bg/hall on tap (the study preloads 1 of
+// 2 neighbours while the legacy characters are on stage), so every move waits on two rendered signals before any
+// assertion or the next press: the target room's own control shown, then the move's cue played (its batch started, so
+// `ensure` of its images has resolved) and the scene at rest (its transition over).
+
+/** The bar's leave control, shown only in a view. */
+const leave = (page: Page): Locator => page.getByRole('button', { name: t('ru', 'explore.room_back'), exact: true });
+
+/** The last `move:*` key the stage played, or null. */
+async function lastMove(page: Page): Promise<string | null> {
+  return (await played(page)).filter((k) => k.startsWith('move:')).at(-1) ?? null;
+}
+
+/** The move's scene signal: its cue played (the batch started), then the scene at rest; the live texture bytes logged. */
+async function moved(page: Page, key: string, live: number[]): Promise<void> {
+  await expect.poll(() => lastMove(page), { timeout: CUE_MS, message: `${key} played` }).toBe(key);
+  await atRest(page);
+  live.push((await debugStats(page)).scene.liveBytes);
+}
+
+/** Whether the BackButton shows: its last `web_app_setup_back_button` call (none yet: hidden). */
+async function backShown(page: Page): Promise<boolean> {
+  const last = (await events(page)).filter((e) => e.type === 'web_app_setup_back_button').at(-1);
+  const data: unknown = last?.data;
+  return typeof data === 'object' && data !== null && Reflect.get(data, 'is_visible') === true;
+}
+
+function tgMock(page: Page, action: 'minimize' | 'restore'): Promise<void> {
+  return page.evaluate((a) => (window as unknown as E2eWindow).__tgMock[a](), action);
+}
+
+/** The room of the server's `auto` of manor for this user, or null while there is none. */
+async function autoRoom(request: APIRequestContext, token: string): Promise<string | null> {
+  const res = await request.get('/api/saves/manor/auto', { headers: { Authorization: `Bearer ${token}` } });
+  if (res.status() === 404) {
+    return null;
+  }
+  expect(res.status(), 'GET /api/saves/manor/auto').toBe(200);
+  const full = (await res.json()) as { body: string };
+  const body = decodeSave(full.body);
+  if (!body.ok) {
+    throw new Error(`the server's auto does not decode: ${body.error.detail}`);
+  }
+  return body.value.world.room;
+}
+
+/** The study from the hall, then the desk by its exit, each with both signals. */
+async function intoDesk(page: Page, live: number[]): Promise<void> {
+  await walk(page, 'hall', 'to_study', 'study', 'to_hall');
+  await moved(page, 'move:walk', live);
+  await expect(leave(page), 'no leave control in a plain room').toBeHidden();
+  await expect.poll(() => backShown(page), { timeout: CUE_MS, message: 'Back walks to the hall' }).toBe(true);
+  await tapHotspot(page, 'study', 'to_desk');
+  await expect(leave(page)).toBeVisible({ timeout: STEP_MS });
+  await moved(page, 'move:zoom-in', live);
+  await expect(hotspot(page, 'study', 'drawer'), "the study's hotspots leave with it").toBeHidden();
+  await expect.poll(() => backShown(page), { timeout: CUE_MS, message: 'Back is offered in the view' }).toBe(true);
+}
+
+test('mechanics: zoom into the desk and back with the BackButton and with the leave control', async ({ page }) => {
+  test.setTimeout(180_000);
+  const live: number[] = [];
+  await launch(page, 9713);
+  await startManor(page);
+  await enterManor(page);
+  await intoDesk(page, live);
+  // The BackButton leaves the view: one level up, to the study.
+  await pressBack(page);
+  await expect(hotspot(page, 'study', 'to_desk')).toBeVisible({ timeout: STEP_MS });
+  await moved(page, 'move:zoom-out', live);
+  await expect(leave(page)).toBeHidden();
+  // The leave control makes the same move.
+  await tapHotspot(page, 'study', 'to_desk');
+  await expect(leave(page)).toBeVisible({ timeout: STEP_MS });
+  await moved(page, 'move:zoom-in', live);
+  await leave(page).tap();
+  await expect(hotspot(page, 'study', 'to_desk')).toBeVisible({ timeout: STEP_MS });
+  await moved(page, 'move:zoom-out', live);
+  expect(await played(page), 'the press of the leave control').toContain('ui:view-leave');
+  await expect(leave(page)).toBeHidden();
+  // Back walks the path, not into the view: the hall, and no Back there.
+  await pressBack(page);
+  await expect(hotspot(page, 'hall', 'to_study')).toBeVisible({ timeout: STEP_MS });
+  await moved(page, 'move:walk', live);
+  await expect.poll(() => backShown(page), { timeout: CUE_MS, message: 'no Back in the hall' }).toBe(false);
+  console.log(`live texture bytes after each move: ${live.join(', ')}`);
+  // Each zoom-out by no exit lands on the study's exit into the desk (W1): no cue lost its target.
+  expect([await counter(page, 'data-cue-orphans'), await counter(page, 'data-cue-fallbacks')], 'orphans, fallbacks').toEqual([0, 0]);
+});
+
+test('mechanics: a reload inside a view resumes there and offers Back', async ({ page, request }) => {
+  test.setTimeout(180_000);
+  const live: number[] = [];
+  await launch(page, 9714);
+  await startManor(page);
+  await enterManor(page);
+  await intoDesk(page, live);
+  const token = await devToken(request, 9714);
+  await tgMock(page, 'minimize'); // `deactivated` writes the autosave
+  await expect.poll(() => autoRoom(request, token), { timeout: 10_000, message: "the server's auto: the desk" }).toBe('desk_view');
+  await tgMock(page, 'restore');
+
+  await page.reload();
+  await page.getByRole('button', { name: t('ru', 'tap.continue_story', { story: catalogTitle('manor') }) }).tap();
+  // The reload cleared the stage's ring: the resume's move is the page's first.
+  await expect(leave(page)).toBeVisible({ timeout: LINE_MS });
+  await moved(page, 'move:resume', live);
+  await expect(hotspot(page, 'study', 'drawer')).toBeHidden();
+  await expect.poll(() => backShown(page), { timeout: CUE_MS, message: 'Back is offered in the resumed view' }).toBe(true);
+  // Back leaves the view; the walked path is not saved, so the study offers no Back.
+  await pressBack(page);
+  await expect(hotspot(page, 'study', 'to_desk')).toBeVisible({ timeout: STEP_MS });
+  await moved(page, 'move:zoom-out', live);
+  await expect.poll(() => backShown(page), { timeout: CUE_MS, message: 'no Back at the study after the resume' }).toBe(false);
+  await expect(leave(page)).toBeHidden();
+  console.log(`live texture bytes after each move: ${live.join(', ')}`);
 });

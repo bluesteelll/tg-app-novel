@@ -308,6 +308,23 @@ test('story: an exit into a view from another room is refused', () => {
   expect(lint(src)).toEqual([['world/view-entry', 'sections.s.rooms.study.hotspots.0.to.room', 'E']]);
 });
 
+test('story: a section that starts in a view is refused', () => {
+  const src = source(
+    rawWorld({
+      s: [
+        'desk',
+        {
+          hall: room([exit('to_desk', 'desk'), exit('out', { story: 'end' })]),
+          desk: view('hall', [exit('back', 'hall')]),
+        },
+      ],
+    }),
+  );
+  // A start is an entry that is no exit of the parent, on the section's `start` line; the parent's exit into the view
+  // and the view's exit back both pass.
+  expect(lint(src)).toEqual([['world/view-entry', 'sections.s.start', 'E']]);
+});
+
 test('story: a view exit to a sibling room is refused', () => {
   const src = source(
     rawWorld({

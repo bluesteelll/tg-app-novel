@@ -98,5 +98,7 @@
   "ch1.manor.r003": { "ru": "Подвал", "en": "Cellar" },
   "ch1.manor.l009": { "ru": "Наверх, в зал", "en": "Up to the hall" },
   "ch1.manor.l010": { "ru": "Что-то блестит", "en": "Something glints" },
-  "ch1.manor.l011": { "ru": "Старый дневник", "en": "An old diary" }
+  "ch1.manor.l011": { "ru": "Старый дневник", "en": "An old diary" },
+  "ch1.manor.l012": { "ru": "Осмотреть стол", "en": "Look over the desk" },
+  "ch1.manor.r004": { "ru": "Письменный стол", "en": "Writing desk" }
 }

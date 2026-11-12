@@ -1145,7 +1145,8 @@ test('yields: a zoom move crossfades the bg', async () => {
   expect(roomOf(r)).toBe('desk');
   expect(r.batches.slice(at)).toEqual([[{ kind: 'bg', bg: 'cellar', t: 'crossfade', ms: VIEW_FADE_MS }, { kind: 'props', props: [] }]]);
   expect(moves(mark)).toEqual([{ cue: { kind: 'move', from: 'hall', to: 'desk', via: 'hall.to_desk', how: 'zoom-in' }, box: door }]);
-  // The root back leaves the view by `leave-view`: a zoom-out by no exit, so its cue has no box.
+  // The root back leaves the view by `leave-view`: a zoom-out by no exit, whose cue lands on the hall's exit into the
+  // desk (W1, RULINGS 298: the zoom-in's box read backwards).
   expect(r.vm.screens.backVisible).toBe(true);
   at = r.batches.length;
   mark = r.cues.length;
@@ -1153,7 +1154,200 @@ test('yields: a zoom move crossfades the bg', async () => {
   await settle();
   expect(roomOf(r)).toBe('hall');
   expect(r.batches.slice(at)).toEqual([[{ kind: 'bg', bg: 'hall', t: 'crossfade', ms: VIEW_FADE_MS }, { kind: 'props', props: [{ prop: 'medal', rect: RECT, at: 'hall.medal' }] }]]);
-  expect(moves(mark)).toEqual([{ cue: { kind: 'move', from: 'desk', to: 'hall', via: null, how: 'zoom-out' }, box: null }]);
+  expect(moves(mark)).toEqual([{ cue: { kind: 'move', from: 'desk', to: 'hall', via: null, how: 'zoom-out' }, box: door }]);
+  r.yields.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM4u: the view bar (engine plan §6.3; the leave control, `inView`, the box of a zoom-out by no exit)
+
+const DESK_RECT: Rect = [500, 900, 300, 300];
+const SHELF_RECT: Rect = [150, 1300, 250, 250];
+const NOOK_RECT: Rect = [600, 400, 200, 200];
+const BACK_RECT: Rect = [400, 1500, 300, 200];
+const exitAt = (id: string, to: string, rect: Rect): Json => ({ ...exit(id, to), rect });
+
+/**
+ * hall <-> study; the study zooms into `desk` (bg cellar) by two exits, and the desk has no exit back (the demo's
+ * shape: `leave-view` is its way out); the hall zooms into `nook`, which has an exit back and an onEnter event. Every
+ * rect but the plain walk's differs, so each hotspot's drawn box differs. Without `entry` no hall exit enters the
+ * nook: a synthetic world for the null box. At runtime a save standing in such a view restarts its section on load
+ * (`reconcile` -> `unproved` -> `admitSection` from the start room); the rig's `restore` takes the state directly.
+ */
+function viewWorld(entry = true): WorldPublic {
+  const raw = {
+    format: 1,
+    items: {},
+    docs: {},
+    puzzles: {},
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: { bg: 'hall', title: txt('Hall'), onEnter: [], hotspots: [exit('to_study', 'study'), ...(entry ? [exitAt('to_nook', 'nook', NOOK_RECT)] : [])] },
+          study: {
+            bg: 'study',
+            title: txt('Study'),
+            onEnter: [],
+            hotspots: [exit('to_hall', 'hall'), exitAt('to_desk', 'desk', DESK_RECT), exitAt('to_desk_too', 'desk', SHELF_RECT)],
+          },
+          desk: { bg: 'cellar', title: txt('Desk'), onEnter: [], hotspots: [], view: { of: 'study' } },
+          nook: { bg: 'cellar', title: txt('Nook'), onEnter: [{ story: 'study_event' }], hotspots: [exitAt('to_hall', 'hall', BACK_RECT)], view: { of: 'hall' } },
+        },
+      },
+    },
+  };
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the view fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods, version: '7777777777777777' };
+}
+
+test('yields: the explore view is in a view exactly while the room is one', async () => {
+  const r = rig({ world: viewWorld() });
+  await inHall(r);
+  expect(r.explore.inView).toBe(false);
+  r.yields.layer.ontap(key('hall.to_study'));
+  await settle();
+  // A walked plain room has a Back target, and is no view.
+  expect([roomOf(r), r.vm.screens.backVisible, r.explore.inView]).toEqual(['study', true, false]);
+  r.yields.layer.ontap(key('study.to_desk'));
+  await settle();
+  expect([roomOf(r), r.explore.inView]).toEqual(['desk', true]);
+  const inDesk = r.yields.world();
+  r.screens.back(); // a zoom-out by `leave-view`
+  await settle();
+  expect([roomOf(r), r.explore.inView]).toEqual(['study', false]);
+  r.yields.layer.ontap(key('study.to_desk'));
+  await settle();
+  expect(r.explore.inView).toBe(true);
+  r.yields.dispose();
+  expect(r.explore.inView).toBe(false);
+  // A resume inside the view: the room effect is a resume, and the flag is written with its batch.
+  const x = rig({ world: viewWorld() });
+  x.yields.restore(inDesk, null, { kind: 'explore', section: MANOR });
+  expect(x.explore.inView).toBe(false);
+  await x.yields.onYield({ kind: 'explore', section: MANOR });
+  expect([roomOf(x), x.explore.inView, x.vm.screens.backVisible]).toEqual(['desk', true, true]);
+  x.yields.dispose();
+  // An event return into a view, in a fresh session (a reload inside the nook's knot): in one session the zoom-in's
+  // batch has already written the flag, so a return there could not tell a rewrite from a stale value.
+  const y = rig({ world: viewWorld() });
+  await inHall(y);
+  y.yields.layer.ontap(key('hall.to_nook'));
+  await settle();
+  expect([roomOf(y), y.explore.layer, y.vm.screens.backVisible]).toEqual(['nook', null, false]);
+  const mid = y.yields.world();
+  expect(mid.pendingStory).toEqual(['study_event']);
+  y.yields.dispose();
+  const e = rig({ world: viewWorld() });
+  e.yields.restore(mid, null, null);
+  expect(e.explore.inView).toBe(false);
+  await e.yields.onYield({ kind: 'explore', section: MANOR }); // the knot's own yield: an event return
+  expect([roomOf(e), e.explore.inView, e.vm.screens.backVisible]).toEqual(['nook', true, true]);
+  e.yields.dispose();
+});
+
+/** The move cues the bus carried since `from`, with their boxes. */
+const movesOf = (r: Rig, from: number): Array<Pick<CueEvent, 'cue' | 'box'>> =>
+  r.cues
+    .slice(from)
+    .filter((e) => e.cue.kind === 'move')
+    .map((e) => ({ cue: e.cue, box: e.box }));
+
+test("yields: a zoom-out by no exit lands on the parent's exit into the view", async () => {
+  const r = rig({ world: viewWorld() });
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.to_study'));
+  await settle();
+  const desk = boxOf(r, 'study.to_desk');
+  const shelf = boxOf(r, 'study.to_desk_too');
+  const door = boxOf(r, 'study.to_hall');
+  // Non-vacuity: the stage has a size, so each hotspot is drawn, and the three boxes differ.
+  expect([desk, shelf, door].every((b) => b !== null)).toBe(true);
+  expect(new Set([desk, shelf, door].map((b) => JSON.stringify(b))).size).toBe(3);
+  // Into the desk by the study's second exit into it, then Back: the iris closes onto the first exit into the view
+  // (W1, RULINGS 298), not the one taken; the batch's hold breathes on the same box.
+  r.yields.layer.ontap(key('study.to_desk_too'));
+  await settle();
+  expect(roomOf(r)).toBe('desk');
+  const inDesk = r.yields.world();
+  let mark = r.cues.length;
+  r.screens.back();
+  await settle();
+  expect(roomOf(r)).toBe('study');
+  expect(movesOf(r, mark)).toEqual([{ cue: { kind: 'move', from: 'desk', to: 'study', via: null, how: 'zoom-out' }, box: desk }]);
+  expect(waitsOf(r, mark)).toEqual([waitAt('waiting', desk), waitAt('waited', desk)]);
+  // A zoom-out by an exit keeps its own box: the nook's exit back, not the hall's exit into the nook.
+  r.screens.back(); // a walk to the hall
+  await settle();
+  expect(roomOf(r)).toBe('hall');
+  const into = boxOf(r, 'hall.to_nook');
+  r.yields.layer.ontap(key('hall.to_nook'));
+  await settle(); // the nook's knot runs
+  await r.yields.onYield({ kind: 'explore', section: MANOR }); // and returns
+  expect(roomOf(r)).toBe('nook');
+  const inNook = r.yields.world();
+  const out = boxOf(r, 'nook.to_hall');
+  expect(out).not.toBeNull();
+  expect(out).not.toEqual(into);
+  mark = r.cues.length;
+  r.yields.layer.ontap(key('nook.to_hall'));
+  await settle();
+  expect(movesOf(r, mark)).toEqual([{ cue: { kind: 'move', from: 'nook', to: 'hall', via: 'nook.to_hall', how: 'zoom-out' }, box: out }]);
+  r.yields.dispose();
+  // In a session that never zoomed in (a resume inside the desk): the box is read at the leave.
+  const x = rig({ world: viewWorld() });
+  x.yields.restore(inDesk, null, { kind: 'explore', section: MANOR });
+  await x.yields.onYield({ kind: 'explore', section: MANOR });
+  expect(roomOf(x)).toBe('desk');
+  mark = x.cues.length;
+  x.screens.back();
+  await settle();
+  expect(roomOf(x)).toBe('study');
+  expect(movesOf(x, mark)).toEqual([{ cue: { kind: 'move', from: 'desk', to: 'study', via: null, how: 'zoom-out' }, box: boxOf(x, 'study.to_desk') }]);
+  x.yields.dispose();
+  // No exit of the parent enters the view: the cue has no box (the stage's counted centre fallback). A defensive pin
+  // on a synthetic state: at runtime such a save restarts its section on load (`admitSection`, `admitEvent`).
+  const z = rig({ world: viewWorld(false) });
+  z.yields.restore(inNook, null, { kind: 'explore', section: MANOR });
+  await z.yields.onYield({ kind: 'explore', section: MANOR });
+  expect(roomOf(z)).toBe('nook');
+  mark = z.cues.length;
+  z.screens.back();
+  await settle();
+  expect(roomOf(z)).toBe('hall');
+  expect(movesOf(z, mark)).toEqual([{ cue: { kind: 'move', from: 'nook', to: 'hall', via: null, how: 'zoom-out' }, box: null }]);
+  z.yields.dispose();
+});
+
+test("yields: the leave control is Back's own press, with the root back gone", async () => {
+  const r = rig({ world: viewWorld() });
+  expect(typeof r.yields.layer.onleaveview).toBe('function');
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.to_study'));
+  await settle();
+  const desk = boxOf(r, 'study.to_desk');
+  r.yields.layer.ontap(key('study.to_desk'));
+  await settle();
+  expect(roomOf(r)).toBe('desk');
+  // A regression in the root-back registration: the leave control is still a way out (engine plan §6.3).
+  r.screens.setRootBack(null);
+  expect(r.vm.screens.backVisible).toBe(false);
+  const at = r.batches.length;
+  const mark = r.cues.length;
+  r.yields.layer.onleaveview();
+  await settle();
+  expect(roomOf(r)).toBe('study');
+  expect(r.batches.slice(at)).toEqual([[{ kind: 'bg', bg: 'study', t: 'crossfade', ms: VIEW_FADE_MS }, { kind: 'props', props: [] }]]);
+  // The BackButton's move, and its landing: the study's exit into the desk (W1).
+  expect(movesOf(r, mark)).toEqual([{ cue: { kind: 'move', from: 'desk', to: 'study', via: null, how: 'zoom-out' }, box: desk }]);
+  // In a plain room with a path (the hall) the action is Back's walk too.
+  r.yields.layer.onleaveview();
+  await settle();
+  expect(roomOf(r)).toBe('hall');
   r.yields.dispose();
 });
 

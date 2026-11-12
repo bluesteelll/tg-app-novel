@@ -1,8 +1,9 @@
 // Module `view`'s build half (engine plan §6.3 "Lints"): its world lint, with its own codes (all errors). A view's
 // `of` chain is at most two long and never a cycle (`world/view-depth`); its parent is a room of its own section
-// (`world/view-section`); it is entered only by an exit of its parent (`world/view-entry`), and its exits lead only back
-// to its parent or into its own child views (`world/view-exits`; a story exit is allowed). A parent that names no room is
-// the DSL's `world/unknown-ref`. A view's hotspots sit inside the safe frame by `world/hotspot-frame`, which runs on
+// (`world/view-section`); it is entered only by an exit of its parent (`world/view-entry`; a section's start is an entry
+// that is no such exit, so a section never starts in a view), and its exits lead only back to its parent or into its
+// own child views (`world/view-exits`; a story exit is allowed). A parent that names no room is the DSL's
+// `world/unknown-ref`. A view's hotspots sit inside the safe frame by `world/hotspot-frame`, which runs on
 // every room. A view carries no text and enters no knot, so the module has no text or story walker. Build only and
 // pure, no node:*: world.ts imports the registry and scan-dist.ts imports world.ts. Its imports from index.ts and
 // lint.ts are `import type`; it never imports world.ts (index.ts's header).
@@ -24,10 +25,10 @@ type ViewCode = keyof typeof VIEW_CODES;
 export const VIEW_MAX_DEPTH = 2;
 
 /**
- * `view`'s lint of one world, in source order per room: the room's own `view` (an unknown parent, else another
- * section's, else a chain too long or a cycle), then each of its exits to a room (an entry into a view from a room
- * other than its parent, and a view's exit to a room other than its parent or its own child view). An exit to a room
- * the world lacks is the kernel's to report.
+ * `view`'s lint of one world, per section its start (a view refused), then in source order per room: the room's own
+ * `view` (an unknown parent, else another section's, else a chain too long or a cycle), then each of its exits to a
+ * room (an entry into a view from a room other than its parent, and a view's exit to a room other than its parent or
+ * its own child view). An exit to a room the world lacks is the kernel's to report.
  */
 export function viewFindings(input: WorldLintInput): Finding[] {
   const out: Finding[] = [];
@@ -45,6 +46,10 @@ export function viewFindings(input: WorldLintInput): Finding[] {
   }
   const parent = (room: RoomId): RoomId | undefined => (Object.hasOwn(d.of, room) ? d.of[room] : undefined);
   for (const [sid, s] of Object.entries(input.world.sections)) {
+    const startOf = parent(s.start);
+    if (startOf !== undefined) {
+      report('world/view-entry', `sections.${sid}.start`, `section ${sid} starts in view '${s.start}': a view is entered only by an exit of its parent '${startOf}' (§6.3)`);
+    }
     for (const [rid, r] of Object.entries(s.rooms)) {
       const room = rid as RoomId; // a key of a decoded section's rooms
       const base = `sections.${sid}.rooms.${rid}`;

@@ -402,6 +402,18 @@ test('lint: world/one-way-exit red on fixture', () => {
   expect(of(lint(w), 'world/one-way-exit')).toEqual([expect.objectContaining({ message: 'exit hall.to_cellar leads to room cellar, which has no exit back to hall' })]);
 });
 
+test('lint: world/one-way-exit spares an exit into a view at either depth', () => {
+  const w = base();
+  // The study zooms into its desk, and the desk into its drawer: a depth-2 tree whose views have no exit back. A view
+  // leaves by `leave-view` (always open), and a view of a view cannot have an exit back to its parent view
+  // (`world/view-entry`), so neither exit is one-way.
+  hotspots(w, 'study').push(demoExit('to_desk', [400, 600, 300, 300], { room: 'desk' }));
+  const rooms = at(w, 'sections.manor.rooms');
+  rooms['desk'] = { bg: 'room', title: t('manor', 'Стол'), onEnter: [], hotspots: [demoExit('to_drawer', [400, 600, 300, 300], { room: 'drawer' })], view: { of: 'study' } };
+  rooms['drawer'] = { bg: 'room', title: t('manor', 'Ящик'), onEnter: [], hotspots: [], view: { of: 'desk' } };
+  expect(errors(lint(w))).toEqual([]);
+});
+
 test('lint: world/hotspot-frame red on fixture', () => {
   const w = base();
   spot(w, 'hall', 'inscription')['rect'] = [0, 100, 280, 200];

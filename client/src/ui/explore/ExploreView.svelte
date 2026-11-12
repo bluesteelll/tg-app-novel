@@ -11,7 +11,8 @@
   // declares the cue it emits (`cues/controls.test.ts`), a hotspot that paints nothing is a hit area, and the item
   // ribbon sits over the rooms while no panel covers them; a hotspot tapped while an item is selected uses that item.
   // Under the hotspots, the bare-art catcher (§8.3 "The catcher") answers a tap on the art itself: its cue ripples at the
-  // finger, and it puts a selected item back.
+  // finger, and it puts a selected item back. GM4u (§6.3): in a view the bar's first control leaves it, the exit arrow
+  // turned down (owner Q15f), and calls the root back's own press.
   import { cueRoot, SHEET_PANELS } from '../../cues/root.ts';
   import { t } from '../../i18n/index.ts';
   import type { ExploreLayerProps } from '../explore-view.svelte.ts';
@@ -91,6 +92,11 @@
       <Ribbon {lang} items={view.items} selected={view.selected ?? null} onselect={actions.onselect} ondeselect={actions.ondeselect} />
     {/if}
     <div class="bar">
+      {#if view.inView}
+        <button type="button" class="bar-button leave" data-cue="view-leave" aria-label={t(lang, 'explore.room_back')} onclick={actions.onleaveview}>
+          <svg class="leave-glyph" viewBox={GLYPH_VIEWBOX} aria-hidden="true"><path d={EXIT_PATH} /></svg>
+        </button>
+      {/if}
       <button type="button" class="bar-button" data-cue="bar-inventory" onclick={actions.oninventory}>{t(lang, 'explore.bar_inventory')}</button>
       <button type="button" class="bar-button" data-cue="bar-reveal" onclick={actions.onreveal}>{t(lang, 'explore.bar_reveal')}</button>
     </div>
@@ -194,5 +200,22 @@
     font: inherit;
     font-size: 15px;
     touch-action: manipulation;
+  }
+
+  /* The leave control: the glyph alone, a 44 px target. */
+  .bar-button.leave {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    padding: 8px 10px;
+  }
+
+  .leave-glyph {
+    width: 24px;
+    height: 24px;
+    fill: currentColor;
+    fill-rule: evenodd;
+    transform: rotate(90deg);
   }
 </style>

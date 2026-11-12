@@ -598,8 +598,10 @@ export function lintWorld(
     if (target.section !== s.section) {
       report('world/cross-section-exit', `${s.spath}.to.room`, `exit ${s.key} leads to room ${h.to.room} of section ${target.section}, not of its own section ${s.section} (X15)`);
     }
+    // An exit into a view needs no exit back, at any depth: `leave-view` is a view's way out and is always open (§6.3),
+    // and a view of a view cannot have an exit back to its parent view (`world/view-entry`).
     const back = target.value.hotspots.some((o) => o.kind === 'exit' && 'room' in o.to && o.to.room === s.room);
-    if (!back) {
+    if (!back && !Object.hasOwn(w.mods.view.of, h.to.room)) {
       report('world/one-way-exit', `${s.spath}.to.room`, `exit ${s.key} leads to room ${h.to.room}, which has no exit back to ${s.room}`);
     }
   }
