@@ -606,11 +606,18 @@ function decodeRooms(raw: unknown, chapters: Readonly<Record<string, unknown>>, 
       neighbourRooms: list(room['neighbourRooms'], `${path}.neighbourRooms`, issues, (s) => ROOM_KEY_RE.exec(s)?.[1] === ch, `a room key of ${ch}`),
     };
   }
-  // Once every room is known: a neighbour room names a room of this very file (the budget reads its images there).
+  // Once every room is known: a neighbour room names a room of this very file (the budget reads its images there),
+  // once, and never the room itself (`nearRooms`' rule: distinct, R not), so the budget never counts one room twice.
   for (const [key, room] of Object.entries(rooms)) {
     room.neighbourRooms.forEach((n, i) => {
       if (!Object.hasOwn(rooms, n)) {
         issues.push(`rooms.${key}.neighbourRooms.${i}: ${JSON.stringify(n)} is not a room of usage.json`);
+      }
+      if (n === key) {
+        issues.push(`rooms.${key}.neighbourRooms.${i}: ${JSON.stringify(n)} is the room itself`);
+      }
+      if (room.neighbourRooms.indexOf(n) !== i) {
+        issues.push(`rooms.${key}.neighbourRooms.${i}: ${JSON.stringify(n)} is listed twice`);
       }
     });
   }

@@ -1352,8 +1352,8 @@ test('emit: usage holds world assets and rooms', () => {
   const pre = decodeStoryUsage({ chapters: { ch1: { assets: ['bg/cafe'], knots: {} } } });
   expect(pre.ok && assetUsage(pre.value)).toEqual({ chapters: { ch1: { ink: ['bg/cafe'], world: [] } }, rooms: {} });
   // A bad room key, a room of a chapter usage.json lacks, a value of the wrong namespace: each refused. So is a room
-  // without its neighbour rooms (a usage.json written before them: no silent smaller room-set), and a neighbour room
-  // of another chapter or of no room of the file.
+  // without its neighbour rooms (a usage.json written before them: no silent smaller room-set), a neighbour room of
+  // another chapter or of no room of the file, one listed twice, and the room itself (GM4g review M1).
   const hall = rooms['ch1/manor/hall'];
   const lacksNeighbourRooms = Object.fromEntries(Object.entries(hall).filter(([k]) => k !== 'neighbourRooms'));
   const refused: Array<readonly [string, unknown]> = [
@@ -1364,6 +1364,8 @@ test('emit: usage holds world assets and rooms', () => {
     ['rooms.ch1/manor/hall.neighbourRooms: missing', { 'ch1/manor/hall': lacksNeighbourRooms }],
     ['rooms.ch1/manor/hall.neighbourRooms.0: "ch2/manor/hall" is not a room key of ch1', { 'ch1/manor/hall': { ...hall, neighbourRooms: ['ch2/manor/hall'] } }],
     ['rooms.ch1/manor/hall.neighbourRooms.0: "ch1/manor/attic" is not a room of usage.json', { 'ch1/manor/hall': { ...hall, neighbourRooms: ['ch1/manor/attic'] } }],
+    ['rooms.ch1/manor/hall.neighbourRooms.1: "ch1/manor/study" is listed twice', { ...rooms, 'ch1/manor/hall': { ...hall, neighbourRooms: ['ch1/manor/study', 'ch1/manor/study'] } }],
+    ['rooms.ch1/manor/hall.neighbourRooms.0: "ch1/manor/hall" is the room itself', { ...rooms, 'ch1/manor/hall': { ...hall, neighbourRooms: ['ch1/manor/hall'] } }],
   ];
   for (const [path, bad] of refused) {
     const d = decodeStoryUsage({ ...raw, rooms: bad });
