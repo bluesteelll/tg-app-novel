@@ -5,15 +5,17 @@ import { ROOM_SOURCE } from '../geom/cover.ts';
 import type { Size } from '../geom/cover.ts';
 import type { AnchorKey } from '../mechanics/contract.ts';
 import type { ImageEntry, Result } from '../story/catalog.ts';
+import type { Box as Box4, CastRig, Member, ShotRig } from '../story/shots.ts';
 import type { AssetId, BgId, CgId, CharId, ExprId, PropId, Rect, Slot } from '../story/staging.ts';
 import { createExecutor } from './executor.ts';
 import type { Layer, Placement, StageAdapter, VisualCommand } from './executor.ts';
 import { backdropPlacement, propPlacement } from './layout.ts';
 import { REVIVE_DEADLINE_MS, createAssetRegistry } from './registry.ts';
-import type { AssetError, Decoded, LoadError, LoadImage } from './registry.ts';
+import type { AssetError, Decoded, FrameCut, LoadError, LoadImage } from './registry.ts';
 import { createRenderLoop } from './render-loop.ts';
 import type { RenderLoop, Ticker } from './render-loop.ts';
 import { createReviveFlow } from './revive-flow.ts';
+import { restFraming } from './shot-view.ts';
 
 // GSAP reads the clock through `Date.now`, captured when its module loads: fake timers installed before every import
 // (vi.hoisted runs first) make its ticker deterministic. advance() moves the fake clock and runs one manual tick (V6).
@@ -47,7 +49,7 @@ const track = (p: Promise<void>): { done: boolean } => {
 // crash, or draw a dead texture, there) and on a drop over a live sprite (the executor destroys the art first).
 
 type Tex = { readonly url: string };
-type Role = 'char' | 'anchor' | 'depth' | 'motion' | 'content' | 'sprite';
+type Role = 'char' | 'anchor' | 'depth' | 'motion' | 'content' | 'node' | 'sprite';
 /** `parent`: null for a node at the top of its layer. */
 type Node = {
   readonly id: number;
@@ -91,8 +93,9 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
   };
   const below = (x: Node): Node[] => (kids.get(x.id) ?? []).map(node).flatMap((c) => [c, ...below(c)]);
   const up = (x: Node): Node[] => (x.parent === null ? [] : [node(x.parent), ...up(node(x.parent))]);
-  // chars sprites log their character, every other sprite its asset name.
-  const keyOf = (layer: Layer, id: AssetId): string => (layer === 'chars' ? (id.split('/')[1] ?? id) : (id.split('/').pop() ?? id));
+  // chars sprites log their character, a shot file's frame its id, every other sprite its asset name.
+  const keyOf = (layer: Layer, id: AssetId): string =>
+    layer === 'chars' ? (id.split('/')[1] ?? id) : /^(?:sheet|face|talk)\//.test(id) ? id : (id.split('/').pop() ?? id);
   const adapter: StageAdapter<Tex> = {
     size: () => stage.size,
     group(char) {
@@ -106,9 +109,13 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
       const motion = add('motion', layer, label, depth, null);
       return { anchor: { group: anchor }, depth: { group: depth }, motion: { group: motion }, content: { group: add('content', layer, label, motion, null) } };
     },
+    node(parent, label) {
+      log.push(`node:${label}`);
+      return { group: add('node', node(parent.group).layer, label, parent.group, null) };
+    },
     dropGroup(g) {
       const x = node(g.group);
-      if (x.role !== 'char' && x.role !== 'anchor') {
+      if (x.role !== 'char' && x.role !== 'anchor' && x.role !== 'node') {
         throw new Error(`stage: drop of an anchor's inner ${x.role} node`);
       }
       const art = below(x).find((d) => d.role === 'sprite');
@@ -227,13 +234,33 @@ const ENTRIES: Readonly<Record<string, ImageEntry>> = {
   'prop/drawer': image('prop_drawer', 300, 200),
   'prop/drawer_open': image('prop_drawer_open', 300, 260),
   'prop/glint': image('prop_glint', 100, 100),
+  // Two shots of one place (the shots plan's SH4): plates, sheets, face files and talk files.
+  'bg/lamp': image('bg_lamp', 1080, 2048),
+  'bg/lamp_cu': image('bg_lamp_cu', 1080, 2048),
+  'sheet/lamp': image('sheet_lamp', 512, 512),
+  'sheet/lamp_cu': image('sheet_lamp_cu', 512, 512),
+  'face/lamp/ally/smile': image('face_lamp_ally_smile', 256, 256),
+  'face/lamp/ally/worried': image('face_lamp_ally_worried', 256, 256),
+  'face/lamp/stranger/smile': image('face_lamp_stranger_smile', 256, 256),
+  'face/lamp_cu/ally/smile': image('face_lamp_cu_ally_smile', 256, 256),
+  'talk/lamp/ally/neutral': image('talk_lamp_ally_neutral', 128, 64),
+  'talk/lamp/ally/smile': image('talk_lamp_ally_smile', 128, 64),
+  'talk/lamp/ally/worried': image('talk_lamp_ally_worried', 128, 64),
+  'talk/lamp/stranger/neutral': image('talk_lamp_stranger_neutral', 128, 64),
+  'talk/lamp/stranger/smile': image('talk_lamp_stranger_smile', 128, 64),
+  'talk/lamp_cu/ally/neutral': image('talk_lamp_cu_ally_neutral', 128, 64),
+  'talk/lamp_cu/ally/smile': image('talk_lamp_cu_ally_smile', 128, 64),
 };
 const urlOf = (id: string): string => ENTRIES[id]?.avif.url ?? `missing:${id}`;
 
 /** A loop on a ticker that never ticks: these tests watch the stage, not the frames. */
 const quietLoop = (): RenderLoop => createRenderLoop({ ticker: { add: () => {}, remove: () => {} }, render: () => {} });
 
-function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
+/**
+ * `shots`: the executor's shot dep (absent: none). The registry cuts frames as stand-ins named `<file url>#<box>`; a
+ * disposed frame joins `freed`, so a sprite drawn on it throws like one on a released texture.
+ */
+function harness(size: Size = S390, loop: RenderLoop = quietLoop(), shots?: { rigs(): ReadonlyMap<BgId, ShotRig> | null; half(): boolean }) {
   const freed = new Set<Tex>();
   const stage = recordingStage(size, freed);
   const loads = new Map<string, number>();
@@ -298,7 +325,13 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
       }
     });
   };
-  const registry = createAssetRegistry<Tex>({ load, variant: 'avif', tier: 'full' });
+  const frames: FrameCut<Tex> = {
+    cut: (base, box) => ({ url: `${base.url}#${box.join(',')}` }),
+    dispose: (frame) => {
+      freed.add(frame);
+    },
+  };
+  const registry = createAssetRegistry<Tex>({ load, variant: 'avif', tier: 'full', frames });
   const resolve = (id: AssetId): Result<ImageEntry, AssetError> => {
     const e = Object.hasOwn(ENTRIES, id) ? ENTRIES[id] : undefined;
     return e === undefined ? { ok: false, error: { kind: 'missing-id', id } } : { ok: true, value: e };
@@ -307,7 +340,7 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
   const onSkip = (e: AssetError): void => {
     skipped.push(e);
   };
-  const ex = createExecutor<Tex>({ adapter: stage.adapter, registry, resolve, loop, resolution: 2, onSkip });
+  const ex = createExecutor<Tex>({ adapter: stage.adapter, registry, resolve, loop, resolution: 2, onSkip, ...(shots === undefined ? {} : { shots }) });
   return {
     ...stage,
     freed,
@@ -1790,4 +1823,202 @@ test('executor: one prop at two anchors keeps both', async () => {
   expect(h.live('props').map((x) => x.key)).toEqual(['lamp', 'lamp']);
   h.ex.destroy();
   expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Shots drawn from rigs (docs/plans/shots §5.1-5.2, §5.5, lane SH4): the plate and the drawn faces in the bg anchor.
+
+const mem = (file: string, frame: Box4, at: Box4): Member => ({ file: asId(file), frame, at });
+/** A face member of `shot` at `at`: rest `neutral` (talk), `smile` and `worried` (each a layer; talk where the shot has it). */
+function castMember(shot: string, c: string, at: Box4): CastRig & { char: CharId } {
+  const talkOf = (x: string): Member[] => (Object.hasOwn(ENTRIES, `talk/${shot}/${c}/${x}`) ? [mem(`talk/${shot}/${c}/${x}`, [0, 0, 40, 20], [at[0] + 40, at[1] + 140, 40, 20])] : []);
+  const motion = (x: string) => {
+    const f = `face/${shot}/${c}/${x}`;
+    return { blink: { half: mem(f, [0, 0, 1, 1], at), closed: mem(f, [1, 0, 1, 1], at) }, talk: talkOf(x), accent: mem(f, [2, 0, 1, 1], at) };
+  };
+  const expr = (x: string) => (Object.hasOwn(ENTRIES, `face/${shot}/${c}/${x}`) ? { [x]: { layer: mem(`face/${shot}/${c}/${x}`, [0, 40, at[2], at[3]], at), motion: motion(x) } } : {});
+  return {
+    char: c as CharId,
+    view: 'face',
+    face: { rest: 'neutral' as ExprId, exprs: { ['neutral' as ExprId]: { layer: null, motion: motion('neutral') }, ...expr('smile'), ...expr('worried') }, head: at },
+    body: { cx: 540, cy: 1300, rx: 200, ry: 600, rot: 0, feet: [540, 1900] },
+    headDepth: 0.5,
+    plateau: '',
+    plateauCoarse: '',
+    band: 40,
+    group: 0,
+    figure: null,
+    hair: [{ member: mem(`sheet/${shot}`, [0, 0, 200, 120], [at[0], at[1] - 60, 200, 120]), pivot: [at[0] + 100, at[1]] }],
+  };
+}
+const shotRig = (cast: ShotRig['cast']): ShotRig => ({ w: 1080, h: 2048, frame: 'two', focus: [540, 1024], cast, planes: [], ambient: [], depth: '' });
+const ALLY_AT: Box4 = [200, 520, 160, 200];
+const LAMP_RIG = shotRig([castMember('lamp', 'ally', ALLY_AT), castMember('lamp', 'stranger', [700, 500, 160, 200])]);
+const LAMP_RIGS: ReadonlyMap<BgId, ShotRig> = new Map([
+  ['lamp' as BgId, LAMP_RIG],
+  ['lamp_cu' as BgId, shotRig([castMember('lamp_cu', 'ally', [400, 600, 300, 380])])],
+]);
+const shotHarness = (): ReturnType<typeof harness> => harness(S390, quietLoop(), { rigs: () => LAMP_RIGS, half: () => false });
+/** The shot parts' nodes alive, in creation order. */
+const partNodes = (h: ReturnType<typeof harness>): string[] => h.liveNodes().filter((x) => x.role === 'node').map((x) => x.key);
+const drawLog = (h: ReturnType<typeof harness>): string[] => h.log.filter((x) => /^(anchor|node|create|destroy|drop):/.test(x));
+
+test("executor: a shot draws its plate and its cast's drawn faces in the bg anchor", async () => {
+  const h = shotHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  // The face of a shot chapter is in the snapshot without a show.
+  expect(h.ex.snapshot().chars).toEqual([{ char: 'ally', expr: 'smile', at: 'center' }]);
+  expect(drawLog(h)).toEqual(['anchor:bg:bg/lamp', 'create:bg:lamp', 'node:face:ally', 'create:bg:face/lamp/ally/smile', 'create:bg:sheet/lamp']);
+  // The stranger is at rest: the plate shows it, no group.
+  expect(partNodes(h)).toEqual(['face:ally']);
+  // The bg anchor sits at the rest framing, scaled; the plate and the members are in plate px inside it.
+  const f = restFraming(LAMP_RIG, S390, 2, false);
+  expect(one(h.anchors('bg')).p).toMatchObject({ x: f.x, y: f.y, scale: f.k, alpha: 1 });
+  const [plate, layer, hair] = h.live('bg');
+  expect(plate?.p).toMatchObject({ w: 1080, h: 2048 });
+  expect(layer?.p).toMatchObject({ x: 200, y: 520, w: 160, h: 200 });
+  expect(hair?.p).toMatchObject({ x: 200, y: 460, w: 200, h: 120 });
+  // Each member draws a frame of its record, not the whole file.
+  expect([layer?.tex, hair?.tex]).toEqual([{ url: '/assets/face_lamp_ally_smile.avif#0,40,160,200' }, { url: '/assets/sheet_lamp.avif#0,0,200,120' }]);
+  for (const x of [layer, hair]) {
+    expect(x === undefined ? [] : h.rolesAbove(x)).toEqual(['node', 'content', 'motion', 'depth', 'anchor', 'layer']);
+  }
+  expect(plate === undefined ? [] : h.rolesAbove(plate)).toEqual(['content', 'motion', 'depth', 'anchor', 'layer']);
+  h.ex.destroy();
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+  expect(h.registry.stats().live).toBe(0);
+});
+
+test("executor: a face change swaps only that character's groups", async () => {
+  const h = shotHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile'), face('stranger', 'smile')], NOW);
+  const stranger = h.liveNodes().filter((x) => x.key === 'face:stranger' || x.key === 'face/lamp/stranger/smile');
+  h.log.length = 0;
+  h.alphas.length = 0;
+  const swap = track(h.ex.apply([face('ally', 'worried')], NOW));
+  await flush();
+  advance(100);
+  await flush();
+  // K7: the new expression group fades in over the old one, which stays opaque; the stranger is not touched.
+  expect(partNodes(h)).toEqual(['face:ally', 'face:stranger', 'face:ally']);
+  const [, , fresh] = h.liveNodes().filter((x) => x.role === 'node');
+  expect(fresh?.p.alpha).toBeGreaterThan(0);
+  expect(fresh?.p.alpha).toBeLessThan(1);
+  advance(150);
+  await flush();
+  expect(swap.done).toBe(true);
+  // The old group left whole with all its sprites; the new one holds only the new expression's own set (O2).
+  expect(drawLog(h)).toEqual([
+    'node:face:ally',
+    'create:bg:face/lamp/ally/worried',
+    'create:bg:sheet/lamp',
+    'destroy:bg:face/lamp/ally/smile',
+    'destroy:bg:sheet/lamp',
+    'drop:face:ally',
+  ]);
+  expect(partNodes(h)).toEqual(['face:stranger', 'face:ally']);
+  expect(stranger.every((x) => x.alive)).toBe(true);
+  expect(h.alphas.filter((w) => w.key.includes('stranger'))).toEqual([]);
+  expect(h.releasedOf('face/lamp/ally/smile')).toBe(1);
+  expect(h.releasedOf('sheet/lamp')).toBe(0);
+  // Back to the rest: the group fades out and leaves; the plate shows the face.
+  await h.ex.apply([face('ally', 'neutral')], { instant: true });
+  expect(partNodes(h)).toEqual(['face:stranger']);
+  h.ex.destroy();
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+});
+
+test("executor: a cut destroys the old shot's layers", async () => {
+  const h = shotHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  h.log.length = 0;
+  const cut = track(h.ex.apply([bg('lamp_cu', 'cut')], NOW));
+  await flush();
+  // At once: the old root's parts, its plate and its anchor go; the new shot is built with the faces a bg keeps.
+  expect(cut.done).toBe(true);
+  expect(drawLog(h)).toEqual([
+    'destroy:bg:face/lamp/ally/smile',
+    'destroy:bg:sheet/lamp',
+    'drop:face:ally',
+    'destroy:bg:lamp',
+    'drop:bg/lamp',
+    'anchor:bg:bg/lamp_cu',
+    'create:bg:lamp_cu',
+    'node:face:ally',
+    'create:bg:face/lamp_cu/ally/smile',
+    'create:bg:sheet/lamp_cu',
+  ]);
+  expect(['bg/lamp', 'sheet/lamp', 'face/lamp/ally/smile'].map(h.releasedOf)).toEqual([1, 1, 1]);
+  // A dissolve to another shot: the new root over the old, which retires whole at the end.
+  h.log.length = 0;
+  const dissolve = track(h.ex.apply([bg('lamp', 'crossfade', 300)], NOW));
+  await flush();
+  advance(150);
+  expect(h.anchors('bg').map((x) => x.key)).toEqual(['bg/lamp_cu', 'bg/lamp']);
+  advance(200);
+  await flush();
+  expect(dissolve.done).toBe(true);
+  expect(h.anchors('bg').map((x) => x.key)).toEqual(['bg/lamp']);
+  expect(drawLog(h).filter((x) => /^(destroy|drop):/.test(x))).toEqual([
+    'destroy:bg:face/lamp_cu/ally/smile',
+    'destroy:bg:sheet/lamp_cu',
+    'drop:face:ally',
+    'destroy:bg:lamp_cu',
+    'drop:bg/lamp_cu',
+  ]);
+  h.ex.destroy();
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+});
+
+test("executor: restore draws the snapshot's faces", async () => {
+  const h = shotHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('stranger', 'smile')], NOW);
+  h.log.length = 0;
+  await h.ex.restore({ bg: 'lamp' as BgId, cg: null, chars: [{ char: 'ally' as CharId, expr: 'smile' as ExprId, at: 'center' }], props: [] });
+  // Instantly: the snapshot's face drawn, the stranger back at rest; the plate kept.
+  expect(partNodes(h)).toEqual(['face:ally']);
+  expect(drawLog(h)).toEqual([
+    'node:face:ally',
+    'create:bg:face/lamp/ally/smile',
+    'create:bg:sheet/lamp',
+    'destroy:bg:face/lamp/stranger/smile',
+    'destroy:bg:sheet/lamp',
+    'drop:face:stranger',
+  ]);
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  // A fresh executor restores the shot whole.
+  const r = shotHarness();
+  await r.ex.restore({ bg: 'lamp' as BgId, cg: null, chars: [{ char: 'ally' as CharId, expr: 'smile' as ExprId, at: 'center' }], props: [] });
+  expect(drawLog(r)).toEqual(['anchor:bg:bg/lamp', 'create:bg:lamp', 'node:face:ally', 'create:bg:face/lamp/ally/smile', 'create:bg:sheet/lamp']);
+  h.ex.destroy();
+  r.ex.destroy();
+});
+
+test('executor: a shot whose member sprite throws leaves no shot root', async () => {
+  // (a) The face layer throws; (b) the hair lock after it throws: neither the part nor the root stays.
+  for (const id of ['face/lamp/ally/smile', 'sheet/lamp']) {
+    const h = shotHarness();
+    throwOn(h, id);
+    await applyFailing(h, [scene('lamp', 'cut'), face('ally', 'smile')]);
+    expect(h.anchors('bg'), id).toEqual([]);
+    expect(h.liveNodes().map((x) => `${x.role}:${x.key}`), id).toEqual([]);
+    h.ex.destroy();
+    expect(h.liveNodes()).toEqual([]);
+  }
+});
+
+test('executor: a bg without a rig is drawn as before', async () => {
+  // The legacy pin: a shots dep whose rigs() is null draws exactly what no dep draws (ch1-ch3).
+  const run = async (h: ReturnType<typeof harness>): Promise<string[]> => {
+    await h.ex.apply([scene('cafe', 'cut'), show('ally', 'neutral', 'left', 'cut'), face('stranger', 'serious')], NOW);
+    await h.ex.apply([face('ally', 'worried'), props(['lamp', LAMP])], { instant: true });
+    await h.ex.apply([bg('street', 'crossfade', 300)], { instant: true });
+    await h.ex.restore({ ...h.ex.snapshot(), bg: 'cafe' as BgId });
+    const out = [...h.log, JSON.stringify(h.ex.snapshot())];
+    h.ex.destroy();
+    return out;
+  };
+  const legacy = await run(harness());
+  expect(legacy).toContain('create:chars:ally');
+  expect(await run(harness(S390, quietLoop(), { rigs: () => null, half: () => false }))).toEqual(legacy);
 });

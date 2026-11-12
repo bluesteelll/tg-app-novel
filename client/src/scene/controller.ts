@@ -3,12 +3,13 @@
 // registry, loader, scheduler, executor, revive flow and render loop. It reads staging commands only, never story state
 // (principle 7); input belongs to the DOM overlay (`stage.eventMode = 'none'`). After a GPU context change it drives
 // the revive (MEMORY-PLAN M2, section 8): frames are drawn only while the context is live and the flow lets them.
-import { Application, Container, Graphics, Sprite } from 'pixi.js';
-import type { ApplicationOptions, ImageSource, Texture } from 'pixi.js';
+import { Application, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
+import type { ApplicationOptions, ImageSource } from 'pixi.js';
 
 import type { Size } from '../geom/cover.ts';
 import type { AssetManifest, FetchAsset, Result, SizeTier } from '../story/catalog.ts';
-import type { AssetId, PropId } from '../story/staging.ts';
+import type { ShotRig } from '../story/shots.ts';
+import type { AssetId, BgId, PropId } from '../story/staging.ts';
 import { createExecutor, gsapTicker, pauseAll, resumeAll } from './executor.ts';
 import type { Executor, GroupRef, Layer, SceneSnapshot, SpriteRef, StageAdapter, VisualCommand } from './executor.ts';
 import { halfFits, renderResolution, stageBound, tierFor } from './layout.ts';
@@ -17,12 +18,13 @@ import { createImageLoader, probeAvif } from './loader.ts';
 import { SKIP_PIXI_ENV } from './pixi-env.ts';
 import { ENSURE_HOLDER, createAssetScheduler } from './preload.ts';
 import type { AssetScheduler } from './preload.ts';
-import { createAssetRegistry } from './registry.ts';
+import { createAssetRegistry, pixiFrames } from './registry.ts';
 import type { AssetError, AssetRegistry, ReviveEnd, SceneError } from './registry.ts';
 import { createRenderLoop } from './render-loop.ts';
 import type { RenderLoop } from './render-loop.ts';
 import { createReviveFlow } from './revive-flow.ts';
 import type { ReviveFlow } from './revive-flow.ts';
+import { chapterRigs } from './shot-view.ts';
 
 /** `__novelDebug.stats().scene` under `__TG_MOCK__` (perf and memory e2e); every field is always reported. */
 export type SceneStats = {
@@ -181,6 +183,11 @@ export function pixiAdapter(app: Pick<Application, 'screen'>, layers: Layers): S
       inner.set(ref.anchor.group, [ref.depth.group, ref.motion.group, ref.content.group]);
       return ref;
     },
+    node(parent, label) {
+      const c = new Container({ label });
+      groups.get(parent.group)?.addChild(c);
+      return add(c);
+    },
     dropGroup(g) {
       const c = groups.get(g.group);
       for (const k of [g.group, ...(inner.get(g.group) ?? [])]) {
@@ -228,6 +235,9 @@ export function pixiAdapter(app: Pick<Application, 'screen'>, layers: Layers): S
       if (p.z !== undefined) {
         c.zIndex = p.z;
       }
+      if (p.scale !== undefined) {
+        c.scale.set(p.scale);
+      }
     },
     fx(alpha) {
       layers.fx.alpha = alpha;
@@ -245,6 +255,8 @@ export function createSceneController(): SceneController {
   let state: 'idle' | 'mounting' | 'mounted' | 'destroyed' = 'idle';
   let core: Mounted | null = null;
   let pendingManifest: AssetManifest | null = null;
+  /** The current chapter's shot rigs (shot-view.ts); null on a legacy chapter. */
+  let rigs: ReadonlyMap<BgId, ShotRig> | null = null;
   let paused = false;
   /** The canvas reported webglcontextlost and no webglcontextrestored since. */
   let lost = false;
@@ -444,6 +456,7 @@ export function createSceneController(): SceneController {
         load: createImageLoader({ fetchAsset: o.fetchAsset, upload }),
         variant: avif ? 'avif' : 'webp',
         tier,
+        frames: pixiFrames({ Texture, Rectangle }),
       });
       const scheduler = createAssetScheduler({ registry, onError: report });
       // The current Application (the rebuild replaces it), and the only path to a frame: none while the context is lost
@@ -468,6 +481,8 @@ export function createSceneController(): SceneController {
         loop,
         resolution,
         onSkip: report,
+        // A demoted session's new records are full (MEMORY-PLAN 4.C), so the overscan reads the tier as it is now.
+        shots: { rigs: () => rigs, half: () => core?.tier === 'half' },
       });
       const flow = createReviveFlow({
         revive: reviveWith(registry),
@@ -488,6 +503,9 @@ export function createSceneController(): SceneController {
       return { ok: true, value: undefined };
     },
     setChapter(m) {
+      if (state !== 'destroyed') {
+        rigs = chapterRigs(m);
+      }
       if (core !== null) {
         core.scheduler.setChapter(m);
       } else if (state !== 'destroyed') {
@@ -602,7 +620,9 @@ export function createSceneController(): SceneController {
       if (c === null) {
         return [];
       }
-      // Sprites are drawn in the canvas box; page px = the canvas origin in the page + stage px.
+      // The canvas origin in the page plus stage px, unscaled: page px only while the stage is not scaled. Where Q67's
+      // phone column scales it, a stage px is k page px (k = the canvas's client width / its layout width), and the e2e
+      // converts by k itself.
       const box = c.app.canvas.getBoundingClientRect();
       const x0 = box.left + window.scrollX;
       const y0 = box.top + window.scrollY;

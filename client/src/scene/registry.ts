@@ -99,8 +99,8 @@ export type FrameCut<T> = { cut(base: T, box: Box): T; dispose(frame: T): void }
  * tier as the rig gives it. Its dispose leaves the source, which is the record's and dies with `release()`. Structural,
  * so this file keeps type-only Pixi imports and the scene suites pass stand-ins.
  */
-export function pixiFrames<T extends { source: S; destroy(destroySource?: boolean): void }, S, R>(pixi: {
-  Texture: new (o: { source: S; frame: R }) => T;
+export function pixiFrames<T extends { readonly source: unknown; destroy(destroySource?: boolean): void }, R>(pixi: {
+  Texture: new (o: { source: T['source']; frame: R }) => T;
   Rectangle: new (x: number, y: number, w: number, h: number) => R;
 }): FrameCut<T> {
   return {

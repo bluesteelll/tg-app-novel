@@ -8,10 +8,12 @@ import { gsap } from 'gsap/gsap-core';
 import { ROOM_SOURCE } from '../geom/cover.ts';
 import type { Box, Size } from '../geom/cover.ts';
 import type { ImageEntry, Result } from '../story/catalog.ts';
-import type { AssetId, CharId, PropId, PropPlacement, PropsCommand, Rect, Slot, StagingCommand, StagingSnapshot } from '../story/staging.ts';
+import type { Box as Box4, ShotRig } from '../story/shots.ts';
+import type { AssetId, BgId, CharId, ExprId, PropId, PropPlacement, PropsCommand, Rect, Slot, StagingCommand, StagingSnapshot } from '../story/staging.ts';
 import { backdropPlacement, charPlacement, propPlacement } from './layout.ts';
 import type { AssetError, AssetRegistry, TextureHandle } from './registry.ts';
 import type { RenderLoop, Ticker } from './render-loop.ts';
+import { faceLayers, facesOf, restFraming, shotSlots } from './shot-view.ts';
 
 /** GSAP's ticker for the render loop: one clock for tweens and frames (K6); tweens update before the frame draws. */
 export const gsapTicker: Ticker = {
@@ -55,7 +57,7 @@ export type Layer = 'bg' | 'props' | 'chars' | 'cg';
  * Stage px, from the parent's origin. A `chars` sprite is anchored at its bottom centre, every other sprite at its top
  * left; `z` orders a node among its siblings (char groups, prop anchors, the sprites in a `content`).
  */
-export type Placement = { x?: number; y?: number; w?: number; h?: number; alpha?: number; z?: number };
+export type Placement = { x?: number; y?: number; w?: number; h?: number; alpha?: number; z?: number; scale?: number };
 
 /** The stage the executor drives; GSAP tweens plain proxies and writes them through `set` (K7). */
 export interface StageAdapter<T> {
@@ -63,6 +65,8 @@ export interface StageAdapter<T> {
   group(char: CharId): GroupRef;
   /** A new anchor on top of its layer; its art goes in `content`. */
   anchor(layer: 'bg' | 'props' | 'cg', label: string): AnchorRef;
+  /** A new container on top of `parent` (a part of a shot root: a face's expression group, a figure plane). */
+  node(parent: GroupRef, label: string): GroupRef;
   /** Destroys the container (a char group, or an anchor with its three inner nodes); its sprites were destroyed before. */
   dropGroup(g: GroupRef): void;
   /** A new sprite on top of its layer (or of the group: a char group, an anchor's `content`); the texture stays the registry's. */
@@ -119,7 +123,13 @@ export type ExecutorDeps<T> = {
   resolution: number;
   /** A visual skipped because its texture could not be had: logged by the caller, the story continues. */
   onSkip(e: AssetError): void;
+  /**
+   * A shot chapter's rigs (shots §5.1; null: a legacy chapter, drawn on sprites) and whether new records load the half
+   * tier (the overscan's k_dev). Absent: every chapter is legacy.
+   */
+  shots?: { rigs(): Rigs; half(): boolean };
 };
+type Rigs = ReadonlyMap<BgId, ShotRig> | null;
 
 // ---------------------------------------------------------------------------------------------------------------
 // The logical stage
@@ -131,17 +141,22 @@ const propSlot = (p: PropId): string => `prop:${p}`;
 const holderOf = (slot: string): string => `scene:${slot}`;
 const slotOf = (holder: string): string => holder.slice('scene:'.length);
 
-/** Slot → asset id of a snapshot (STAGING-DSL §8 ids, as scripts/story/graph.ts maps commands). */
-function slotsOf(s: SceneSnapshot): Map<string, AssetId> {
+/**
+ * Slot → asset id of a snapshot (STAGING-DSL §8 ids, as scripts/story/graph.ts maps commands). On a shot (its bg has a
+ * rig) the plate, sheet and face slots are the shot view's (§5.2) and no character has a sprite slot.
+ */
+function slotsOf(s: SceneSnapshot, rigs: Rigs): Map<string, AssetId> {
   // The brands are earned upstream: parseTags and the world decoder accept only ids the catalog lists.
-  const out = new Map<string, AssetId>();
-  if (s.bg !== null) {
+  const rig = s.bg === null ? undefined : rigs?.get(s.bg);
+  // Talk files are not taken until the face lifecycle lands.
+  const out = rig === undefined ? new Map<string, AssetId>() : new Map([...shotSlots(rig, s)].filter(([k]) => !k.startsWith('talk:')));
+  if (rig === undefined && s.bg !== null) {
     out.set('bg', `bg/${s.bg}` as AssetId);
   }
   if (s.cg !== null) {
     out.set('cg', `cg/${s.cg}` as AssetId);
   }
-  for (const c of s.chars) {
+  for (const c of rig === undefined ? s.chars : []) {
     out.set(charSlot(c.char), `char/${c.char}/${c.expr}` as AssetId);
   }
   for (const p of s.props) {
@@ -160,9 +175,10 @@ function find<K extends VisualCommand['kind']>(
 /**
  * The end state of a batch (§7 order): scene clears, bg replaces (and clears props), hides, shows, faces, cam, cg,
  * props. The camera holds until the next cut: a scene or a bg resets it to rest, the absent key (a stage without a
- * move stays byte-identical in snapshots and saves); then the batch's cam sets it, a pull back to rest.
+ * move stays byte-identical in snapshots and saves); then the batch's cam sets it, a pull back to rest. On a shot
+ * chapter (`shot`) `chars` holds the faces: a face sets its character's expression, on stage or not (STAGING-DSL §14.2).
  */
-function reduce(s: SceneSnapshot, cmds: readonly VisualCommand[]): SceneSnapshot {
+export function reduce(s: SceneSnapshot, cmds: readonly VisualCommand[], shot = false): SceneSnapshot {
   let { bg, cg, cam } = s;
   let chars = [...s.chars];
   let props = [...s.props];
@@ -198,10 +214,11 @@ function reduce(s: SceneSnapshot, cmds: readonly VisualCommand[]): SceneSnapshot
     }
   }
   // Shots plan §3.1 step 3: a face changes the expression of a character on stage (slot and z-order kept); a face
-  // of a character not on stage changes nothing.
+  // of a character not on stage changes nothing, except on a shot chapter, where it adds the face.
   for (const c of cmds) {
     if (c.kind === 'face') {
-      chars = chars.map((x) => (x.char === c.char ? { ...x, expr: c.expr } : x));
+      const on = chars.some((x) => x.char === c.char);
+      chars = on || !shot ? chars.map((x) => (x.char === c.char ? { ...x, expr: c.expr } : x)) : [...chars, { char: c.char, expr: c.expr, at: 'center' }];
     }
   }
   const camCmd = find(cmds, 'cam');
@@ -242,8 +259,16 @@ type Hold<T> = Promise<Result<TextureHandle<T>, AssetError>>;
  */
 type Held<T> = { readonly hold: Hold<T>; bound: TextureHandle<T> | null };
 type View<T> = { readonly slot: string; readonly handle: TextureHandle<T>; readonly sprite: SpriteRef };
-/** A bg or a CG in its own anchor (a crossfade holds two). */
-type BackdropView<T> = View<T> & { readonly node: AnchorRef };
+/**
+ * A part of a shot root (shots §5.1): a face's expression group (`expr`) or a member's figure plane (null), one node
+ * over the plate whose sprites draw frames of the records their views hold (the sheet, the face file).
+ */
+type Part<T> = { readonly char: CharId; readonly expr: ExprId | null; readonly group: GroupRef; readonly views: readonly View<T>[] };
+/** A bg or a CG in its own anchor (a crossfade holds two); a shot's bg is its root, with its parts by key. */
+type BackdropView<T> = View<T> & { readonly node: AnchorRef; readonly shot?: { readonly rig: ShotRig; readonly parts: Map<string, Part<T>> } };
+/** The slot's live handle for a shot part, or undefined (its record is not live: the part is not drawn). */
+type HandleOf<T> = (slot: string) => TextureHandle<T> | undefined;
+type Fade = (on: GroupRef, from: number, to: number, ms: number, onEnd?: () => void) => void;
 type CharView<T> = { readonly char: CharId; readonly group: GroupRef; at: Slot; view: View<T> };
 /** `box`: where the sprite was last placed, in stage px (propRects). */
 type PropView<T> = View<T> & { readonly prop: PropId; readonly part: 'base' | 'patch'; rect: Rect; box: Box };
@@ -258,6 +283,8 @@ type Timeline = ReturnType<typeof gsap.timeline>;
 type Batch<T> = {
   readonly cmds: readonly VisualCommand[];
   readonly target: SceneSnapshot;
+  /** The rigs the batch was reduced under, so it builds with them across a setChapter. */
+  readonly rigs: Rigs;
   /** The textures this batch takes: slots whose asset id differs from the previous logical stage. */
   readonly takes: ReadonlyMap<string, Hold<T>>;
   instant: boolean;
@@ -271,6 +298,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   const { registry, resolve, loop, resolution, onSkip } = deps;
   let adapter = deps.adapter;
   let logical: SceneSnapshot = EMPTY;
+  /** The rigs `logical` was reduced under. */
+  let logicalRigs: Rigs = null;
   /** holder → asset id → the acquire, for every texture the executor holds (one release per (holder, id)). */
   const holds = new Map<string, Map<AssetId, Held<T>>>();
   const unfinished: Batch<T>[] = [];
@@ -317,10 +346,12 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     return hold;
   };
 
+  /** A shot root's part views (none for a legacy backdrop). */
+  const partViews = (v: BackdropView<T>): View<T>[] => [...(v.shot?.parts.values() ?? [])].flatMap((p) => p.views);
   const shownViews = (): View<T>[] => {
     const out: View<T>[] = [];
     if (bg !== null) {
-      out.push(bg);
+      out.push(bg, ...partViews(bg));
     }
     if (cg !== null) {
       out.push(cg);
@@ -346,11 +377,11 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     const add = (slot: string, id: AssetId): void => {
       keep.add(`${holderOf(slot)}\n${id}`);
     };
-    for (const [slot, id] of slotsOf(logical)) {
+    for (const [slot, id] of slotsOf(logical, logicalRigs)) {
       add(slot, id);
     }
     for (const b of unfinished) {
-      for (const [slot, id] of slotsOf(b.target)) {
+      for (const [slot, id] of slotsOf(b.target, b.rigs)) {
         add(slot, id);
       }
     }
@@ -377,8 +408,15 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   const destroyView = (v: View<T>): void => {
     adapter.destroy(v.sprite);
   };
-  /** The sprite, then its anchor (dropGroup's order). */
+  /** A part's sprites, then its node. */
+  const destroyPart = (p: Part<T>): void => {
+    p.views.forEach(destroyView);
+    adapter.dropGroup(p.group);
+  };
+  /** A shot root's parts first, then the sprite, then its anchor (dropGroup's order). */
   const destroyBackdrop = (v: BackdropView<T>): void => {
+    v.shot?.parts.forEach(destroyPart);
+    v.shot?.parts.clear();
     destroyView(v);
     adapter.dropGroup(v.node.anchor);
   };
@@ -404,19 +442,124 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     retiring.add(r);
     return () => retireNow(r);
   };
+  /** A backdrop with its shot's parts (each part before the root, so no node is dropped over a live sprite). */
+  const retireBackdrop = (v: BackdropView<T>): (() => void) => {
+    const parts = [...(v.shot?.parts.values() ?? [])].map((p) => retire(p.views, p.group));
+    const root = retire([v], v.node.anchor);
+    return () => {
+      parts.forEach((f) => f());
+      root();
+    };
+  };
 
   // Placement in the current stage size (layout.ts): backdrops cover ROOM_SOURCE, props take the same transform. An
-  // anchor sits at its art's origin and the art at (0, 0) of `content` with its size, so the art's box is unchanged.
+  // anchor sits at its art's origin and the art at (0, 0) of `content` with its size, so the art's box is unchanged. A
+  // shot root's anchor sits at the rest framing, scaled, over its plate and parts in plate px (shots §5.1).
   const placeBackdrop = (v: BackdropView<T>): void => {
+    const rig = v.shot?.rig;
+    if (rig !== undefined) {
+      const f = restFraming(rig, adapter.size(), resolution, deps.shots?.half() ?? false);
+      adapter.set(v.node.anchor, { x: f.x, y: f.y, scale: f.k });
+      adapter.set(v.sprite, { w: rig.w, h: rig.h });
+      return;
+    }
     const c = backdropPlacement(adapter.size());
     adapter.set(v.node.anchor, { x: c.offsetX, y: c.offsetY });
     adapter.set(v.sprite, { w: ROOM_SOURCE.w * c.scale, h: ROOM_SOURCE.h * c.scale });
   };
   /**
-   * A bg or a CG: its anchor on top of the layer, at `alpha`, then the art in its `content`. A sprite that throws takes
-   * its fresh anchor with it, so a failed build leaves no anchor in the layer (the shots plan's SH1 item 2 (b)).
+   * One part of a shot root (shots §5.1): `char`'s figure plane (`expr` null), or its expression group at `expr` (the
+   * layer, then the member's hair locks: `faceLayers`, so only that expression's own set, RULINGS 273 O2), on top of the
+   * root's content at its member's z. Each sprite draws a frame of the record its slot holds, sized to its plate box;
+   * the view keeps the record's handle (identity rule). Undefined when the face file is not live or nothing is drawn.
    */
-  const backdrop = (layer: 'bg' | 'cg', h: TextureHandle<T>, alpha: number): BackdropView<T> => {
+  const part = (root: BackdropView<T>, rig: ShotRig, char: CharId, expr: ExprId | null, handleOf: HandleOf<T>): Part<T> | undefined => {
+    const drawn: Array<{ slot: string; h: TextureHandle<T>; frame: T; at: Box4 }> = [];
+    for (const p of faceLayers(rig, new Map(expr === null ? [] : [[char, expr]]))) {
+      if (p.char !== char || (p.kind === 'figure') !== (expr === null)) {
+        continue;
+      }
+      const slot = p.kind === 'layer' ? `face:${char}` : 'sheet';
+      const h = handleOf(slot);
+      const f = h === undefined ? null : registry.frames(h, [p.frame]);
+      const frame = f?.ok === true ? f.value[0] : undefined;
+      if (h === undefined || frame === undefined) {
+        if (p.kind === 'hair') {
+          continue;
+        }
+        return undefined;
+      }
+      drawn.push({ slot, h, frame, at: p.at });
+    }
+    if (drawn.length === 0) {
+      return undefined;
+    }
+    const group = adapter.node(root.node.content, expr === null ? `figure:${char}` : `face:${char}`);
+    const views: View<T>[] = [];
+    try {
+      for (const d of drawn) {
+        const [x, y, w, ht] = d.at;
+        const sprite = adapter.sprite('bg', { id: d.h.id, texture: d.frame, w, h: ht }, group);
+        views.push({ slot: d.slot, handle: d.h, sprite });
+        adapter.set(sprite, { x, y, w, h: ht });
+      }
+    } catch (e) {
+      destroyPart({ char, expr, group, views });
+      throw e;
+    }
+    // Members back to front; a figure plane under its member's face.
+    adapter.set(group, { z: 2 * rig.cast.findIndex((m) => m.char === char) + (expr === null ? 1 : 2) });
+    return { char, expr, group, views };
+  };
+  /**
+   * A shot root's parts to `faces` (K7): a missing figure plane is drawn; per face whose expression changed, the new
+   * group fades in over the old one, which retires whole at the fade's end; a face back to its rest (the plate shows
+   * it) or whose file is not live fades its group out. Only a changed face's groups are touched.
+   */
+  const drawFaces = (v: BackdropView<T>, faces: ReadonlyMap<CharId, ExprId>, handleOf: HandleOf<T>, fade: Fade, msOf: (c: CharId) => number): void => {
+    const shot = v.shot;
+    if (shot === undefined) {
+      return;
+    }
+    for (const m of shot.rig.cast) {
+      const fig = `figure:${m.char}`;
+      const plane = m.figure === null || shot.parts.has(fig) ? undefined : part(v, shot.rig, m.char, null, handleOf);
+      if (plane !== undefined) {
+        shot.parts.set(fig, plane);
+      }
+      const key = `face:${m.char}`;
+      const old = shot.parts.get(key);
+      const want = faces.get(m.char);
+      const x = m.face !== null && want !== undefined && want !== m.face.rest && Object.hasOwn(m.face.exprs, want) ? want : null;
+      if ((old?.expr ?? null) === x) {
+        continue;
+      }
+      const next = x === null ? undefined : part(v, shot.rig, m.char, x, handleOf);
+      const out = old === undefined ? undefined : retire(old.views, old.group);
+      if (next !== undefined) {
+        shot.parts.set(key, next);
+        fade(next.group, 0, 1, msOf(m.char), out);
+      } else if (old !== undefined) {
+        shot.parts.delete(key);
+        fade(old.group, 1, 0, msOf(m.char), out);
+      }
+    }
+  };
+  const setNow: Fade = (on, _from, to, _ms, onEnd) => {
+    adapter.set(on, { alpha: to });
+    onEnd?.();
+  };
+  /**
+   * A bg or a CG: its anchor on top of the layer, at `alpha`, then the art in its `content`; a shot's root also draws its
+   * parts for `shot.faces`. A sprite that throws takes its fresh anchor (and the root's parts) with it, so a failed build
+   * leaves no anchor in the layer (the shots plan's SH1 item 2 (b)).
+   */
+  const backdrop = (
+    layer: 'bg' | 'cg',
+    h: TextureHandle<T>,
+    alpha: number,
+    shot?: { rig: ShotRig; faces: ReadonlyMap<CharId, ExprId>; handleOf: HandleOf<T> },
+  ): BackdropView<T> => {
     const node = adapter.anchor(layer, h.id);
     let sprite: SpriteRef;
     try {
@@ -425,7 +568,15 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       adapter.dropGroup(node.anchor);
       throw e;
     }
-    const v: BackdropView<T> = { slot: layer, handle: h, node, sprite };
+    const v: BackdropView<T> = { slot: layer, handle: h, node, sprite, ...(shot && { shot: { rig: shot.rig, parts: new Map() } }) };
+    try {
+      if (shot !== undefined) {
+        drawFaces(v, shot.faces, shot.handleOf, setNow, () => 0);
+      }
+    } catch (e) {
+      destroyBackdrop(v);
+      throw e;
+    }
     placeBackdrop(v);
     adapter.set(node.anchor, { alpha });
     return v;
@@ -500,7 +651,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   /** Builds the batch's stage changes on `tl` and hands it to the batch (or ends the batch when it has no time). */
   const compose = (b: Batch<T>, got: ReadonlyMap<string, TextureHandle<T>>, tl: Timeline): void => {
     const target = b.target;
-    const want = slotsOf(target);
+    const want = slotsOf(target, b.rigs);
     const sec = (ms: number): number => (b.instant ? 0 : Math.max(0, ms) / 1000);
     /**
      * The batch's handle for a slot only while its record is live, read in the same step as the sprite it makes,
@@ -509,6 +660,25 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     const handleFor = (slot: string): TextureHandle<T> | undefined => {
       const h = got.get(slot);
       return h === undefined || ended(h) ? undefined : h;
+    };
+    /** A shot part's slot: the batch's take, else the live record an earlier batch's take holds for the target's id. */
+    const shotHandle: HandleOf<T> = (slot) => {
+      const id = want.get(slot);
+      const h = handleFor(slot) ?? (id === undefined ? null : holds.get(holderOf(slot))?.get(id)?.bound);
+      return h === null || h === undefined || ended(h) ? undefined : h;
+    };
+    /** The target's shot, when its bg has a rig: the root draws its faces. */
+    const shotOf = (): Parameters<typeof backdrop>[3] => {
+      const rig = target.bg === null ? undefined : b.rigs?.get(target.bg);
+      return rig && { rig, faces: facesOf(target), handleOf: shotHandle };
+    };
+    /** The faces of the shot on stage to the target's, over each face command's time (200 ms by default). */
+    const syncFaces = (now = false): void => {
+      if (bg !== null) {
+        const msOf = (c: CharId): number =>
+          now ? 0 : (b.cmds.find((x): x is Extract<VisualCommand, { kind: 'face' }> => x.kind === 'face' && x.char === c)?.ms ?? 200);
+        drawFaces(bg, facesOf(target), shotHandle, fade, msOf);
+      }
     };
 
     /** Tweens an alpha from → to from t = 0; with no time it is set at once and `onEnd` runs now. */
@@ -582,7 +752,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         bg = null;
       }
       if (h !== undefined) {
-        bg = backdrop('bg', h, 1);
+        bg = backdrop('bg', h, 1, shotOf());
       }
     };
     /**
@@ -722,6 +892,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
           }
         }
         swapBg();
+        syncFaces(true);
         for (const c of target.chars) {
           const cv = chars.get(c.char);
           const h = handleFor(charSlot(c.char));
@@ -741,20 +912,24 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       if (bgCmd !== undefined && bgCmd.t === 'fade') {
         dip(bgCmd.ms, () => {
           swapBg();
+          syncFaces(true);
           syncProps(0);
         });
       } else if (bgCmd !== undefined && bgCmd.t === 'crossfade') {
         const id = want.get('bg') ?? null;
         const h = handleFor('bg');
         if ((bg?.handle.id ?? null) !== id && h !== undefined) {
-          // New over old, never a symmetric fade (K7); the old one is destroyed when the new one is opaque.
+          // New over old, never a symmetric fade (K7); the old one is destroyed when the new one is opaque. Another
+          // shot is the dissolve's fallback: the new root over the old, which retires whole (shots §5.5).
           const old = bg;
-          bg = backdrop('bg', h, 0);
-          fade(bg.node.anchor, 0, 1, bgCmd.ms, old === null ? undefined : retire([old], old.node.anchor));
+          bg = backdrop('bg', h, 0, shotOf());
+          fade(bg.node.anchor, 0, 1, bgCmd.ms, old === null ? undefined : retireBackdrop(old));
         }
+        syncFaces();
         syncProps(bgCmd.ms);
       } else {
         swapBg();
+        syncFaces();
         syncProps(0);
       }
 
@@ -863,12 +1038,12 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   };
 
   /** Chains a batch with the textures it takes. */
-  const queue = (cmds: readonly VisualCommand[], target: SceneSnapshot, instant: boolean, takes: ReadonlyMap<string, Hold<T>>): Promise<void> => {
+  const queue = (cmds: readonly VisualCommand[], target: SceneSnapshot, instant: boolean, takes: ReadonlyMap<string, Hold<T>>, rigs: Rigs): Promise<void> => {
     let settle: () => void = () => {};
     const done = new Promise<void>((r) => {
       settle = r;
     });
-    const b: Batch<T> = { cmds, target, takes, instant, tl: null, finished: false, done, settle };
+    const b: Batch<T> = { cmds, target, rigs, takes, instant, tl: null, finished: false, done, settle };
     unfinished.push(b);
     // One batch builds at a time, after the previous one finished (complete() makes that immediate).
     chain = chain
@@ -881,16 +1056,17 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     return done;
   };
 
-  const enqueue = (cmds: readonly VisualCommand[], target: SceneSnapshot, instant: boolean): Promise<void> => {
-    const before = slotsOf(logical);
+  const enqueue = (cmds: readonly VisualCommand[], target: SceneSnapshot, instant: boolean, rigs: Rigs): Promise<void> => {
+    const before = slotsOf(logical, logicalRigs);
     logical = target;
+    logicalRigs = rigs;
     const takes = new Map<string, Hold<T>>();
-    for (const [slot, id] of slotsOf(target)) {
+    for (const [slot, id] of slotsOf(target, rigs)) {
       if (before.get(slot) !== id) {
         takes.set(slot, take(slot, id));
       }
     }
-    return queue(cmds, target, instant, takes);
+    return queue(cmds, target, instant, takes, rigs);
   };
 
   const complete = (): void => {
@@ -910,7 +1086,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         return Promise.resolve();
       }
       complete();
-      return enqueue(cmds, reduce(logical, cmds), o.instant);
+      const rigs = deps.shots?.rigs() ?? null;
+      return enqueue(cmds, reduce(logical, cmds, rigs !== null), o.instant, rigs);
     },
     complete,
     restore(s) {
@@ -918,7 +1095,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         return Promise.resolve();
       }
       complete();
-      return enqueue([], copy(s), true);
+      return enqueue([], copy(s), true, deps.shots?.rigs() ?? null);
     },
     snapshot() {
       return copy(logical);
@@ -959,7 +1136,12 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       };
       // Each view's anchor first, then its art in it.
       if (bg !== null) {
-        bg = ended(bg.handle) ? null : backdrop('bg', bg.handle, 1);
+        // A shot root again with its parts, from the frames its records keep (no load); a part whose record ended is not.
+        const old = bg;
+        const views = partViews(old);
+        const handleOf: HandleOf<T> = (slot) => views.find((v) => v.slot === slot && !ended(v.handle))?.handle;
+        const faces = new Map([...(old.shot?.parts.values() ?? [])].flatMap((p) => (p.expr === null ? [] : [[p.char, p.expr] as const])));
+        bg = ended(old.handle) ? null : backdrop('bg', old.handle, 1, old.shot && { rig: old.shot.rig, faces, handleOf });
       }
       if (cg !== null) {
         cg = ended(cg.handle) ? null : backdrop('cg', cg.handle, 1);
@@ -1014,6 +1196,13 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
           destroyBackdrop(bg);
           bg = null;
         }
+        // A shot part over an ended record leaves the root; the re-take below draws it again.
+        for (const [k, p] of [...(bg?.shot?.parts ?? [])]) {
+          if (p.views.some((v) => ended(v.handle))) {
+            destroyPart(p);
+            bg?.shot?.parts.delete(k);
+          }
+        }
         if (cg !== null && ended(cg.handle)) {
           destroyBackdrop(cg);
           cg = null;
@@ -1034,7 +1223,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         }
         loop.requestRender();
       }
-      const want = slotsOf(logical);
+      const want = slotsOf(logical, logicalRigs);
       const takes = new Map<string, Hold<T>>();
       const again: Array<[string, AssetId]> = [];
       for (const [holder, byId] of holds) {
@@ -1056,7 +1245,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       }
       if (takes.size > 0) {
         // The logical stage is unchanged: the batch only shows those slots again, on new records.
-        void queue([], logical, true, takes);
+        void queue([], logical, true, takes, logicalRigs);
       }
     },
     propRects() {
