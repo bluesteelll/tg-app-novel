@@ -120,11 +120,17 @@ test('shot-view: the zoom range never falls below the overscan', () => {
 test('shot-view: a face member sits at its plate box', () => {
   const [layer] = faceLayers(CU, faces(['ally', 'smile']));
   expect(layer).toEqual({ char: 'ally', expr: 'smile', kind: 'layer', file: 'face/cu/ally/smile', frame: [0, 40, 160, 200], at: [480, 520, 160, 200] });
-  // On the stage it is the plate box under the shot's framing.
-  const stage = { w: 390, h: 844 };
-  const x = restFraming(CU, stage, 2, false);
+  // On the stage it is the plate box under the shot's framing (stage = plate × k + (x, y)), the numbers by hand:
+  // cover() of 390 x 844 is 844 / 2048 = 0.412109375 (the height decides); k_dev 0.82421875 < 1 / 1.03, so the overscan
+  // is 1.03 and k = 0.42447265625; the plate, 458.43046875 x 869.32, centres at (-34.215234375, -12.66), where the
+  // focus (540, 1024) already sits at the stage's centre (195, 422), so the crop does not move.
+  const x = restFraming(CU, { w: 390, h: 844 }, 2, false);
   const [px, py, pw, ph] = layer?.at ?? [0, 0, 0, 0];
-  expect({ x: x.x + px * x.k, y: x.y + py * x.k, w: pw * x.k, h: ph * x.k }).toEqual({ x: x.x + 480 * x.k, y: x.y + 520 * x.k, w: 160 * x.k, h: 200 * x.k });
+  const box = { x: x.x + px * x.k, y: x.y + py * x.k, w: pw * x.k, h: ph * x.k };
+  const want = { x: 169.531640625, y: 208.06578125, w: 67.915625, h: 84.89453125 };
+  for (const k of ['x', 'y', 'w', 'h'] as const) {
+    expect(box[k], k).toBeCloseTo(want[k], 9);
+  }
 });
 
 test("shot-view: a shot's rest framing moves toward its focus inside the slack", () => {
