@@ -1277,6 +1277,25 @@ test('registry: a visible admission evicts warm holders of other records after p
   expect(k.registry.stats().overCap).toBe(0);
 });
 
+test('registry: a visible ask of a held record over the hard cap never evicts its own warm holder', async () => {
+  // A held file of 7,000,000 B + four visible bgs = 42,389,840; its decode needs 8,847,360 more (51,237,200 > HARD).
+  // Without its own file it would fit (44,237,200), but the ask would then wait on an ended record and never settle.
+  const fat: ImageEntry = { ...bg('fat'), avif: { url: '/assets/fat.avif', bytes: 7_000_000 } };
+  const h = holding();
+  void h.warm('bg/fat', fat);
+  const four = ['v1', 'v2', 'v3', 'v4'].map((n) => h.acquire(`bg/${n}`, bg(n), `scene:${n}`, 'visible'));
+  await h.settleAll();
+  for (const r of await Promise.all(four)) {
+    expect(r.ok).toBe(true);
+  }
+  expect(h.registry.stats().bytes).toBe(42_389_840);
+  const ask = seen(h.acquire('bg/fat', fat, 'scene:fat', 'visible'));
+  await flush();
+  expect(ask.value).toEqual({ ok: false, error: { kind: 'over-cap', id: 'bg/fat', needBytes: BG, liveBytes: 42_389_840, capBytes: 50_331_648 } });
+  expect([h.registry.state(asId('bg/fat')), h.dropped('fat'), h.fetches('fat'), h.decodes('fat')]).toEqual(['held', 0, 1, 0]);
+  expect(h.registry.stats()).toMatchObject({ bytes: 42_389_840, overCap: 1 });
+});
+
 test('registry: a context loss revives no warm record', async () => {
   const h = holding();
   void h.warm('prop/w', prop('w'));
