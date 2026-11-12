@@ -2058,6 +2058,51 @@ test('executor: a face state whose sheet failed shows the rest face and logs a s
   }
 });
 
+test('executor: a cut whose plate fails draws no file of the new shot on the kept root', async () => {
+  // Review r1 I1: the new shot's plate fails, so the old root stays (the story goes on). Its rig also has the face's
+  // expression, but the slots hold the new shot's face file and sheet: another shot's files are not live on this root,
+  // so the face is drawn at rest. The cut, the dissolve and the dip share it.
+  for (const cmd of [bg('lamp_cu', 'cut'), bg('lamp_cu', 'crossfade', 300), bg('lamp_cu', 'fade', 300)]) {
+    const h = shotHarness();
+    await h.ex.apply([scene('lamp', 'cut')], NOW);
+    h.failLoad('bg/lamp_cu');
+    h.log.length = 0;
+    const b = track(h.ex.apply([cmd, face('ally', 'smile')], NOW));
+    for (let i = 0; i < 4; i += 1) {
+      await flush();
+      advance(200);
+    }
+    await flush();
+    const t = JSON.stringify(cmd);
+    expect(b.done, t).toBe(true);
+    expect(h.anchors('bg').map((x) => x.key), t).toEqual(['bg/lamp']);
+    expect(h.live('bg').map((x) => x.tex?.url), t).toEqual(['/assets/bg_lamp.avif']);
+    expect(partNodes(h), t).toEqual([]);
+    expect(drawLog(h), t).toEqual([]);
+    expect(h.skipped.map((e) => `${e.kind}:${e.id}`), t).toEqual(['decode:bg/lamp_cu']);
+    // The logical stage keeps the face and holds the target's files, so a later batch can retry the plate.
+    expect(h.ex.snapshot().chars, t).toEqual([{ char: 'ally', expr: 'smile', at: 'center' }]);
+    h.ex.destroy();
+    expect(h.liveNodes(), t).toEqual([]);
+    expect(h.registry.stats().live, t).toBe(0);
+  }
+  // The pin: a face the kept root already draws keeps its own files.
+  const g = shotHarness();
+  await g.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  g.failLoad('bg/lamp_cu');
+  g.log.length = 0;
+  await g.ex.apply([bg('lamp_cu', 'cut')], NOW);
+  expect(g.live('bg').map((x) => x.tex?.url)).toEqual([
+    '/assets/bg_lamp.avif',
+    '/assets/face_lamp_ally_smile.avif#0,40,160,200',
+    '/assets/sheet_lamp.avif#0,0,200,120',
+  ]);
+  expect(drawLog(g)).toEqual([]);
+  g.ex.destroy();
+  expect(g.liveNodes()).toEqual([]);
+  expect(g.registry.stats().live).toBe(0);
+});
+
 test('executor: a face change releases the previous face and talk files after the transition', async () => {
   const h = shotHarness();
   await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);

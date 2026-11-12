@@ -480,7 +480,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
    * One part of a shot root (shots §5.1): `char`'s figure plane (`expr` null), or its expression group at `expr` (the
    * layer, then the member's hair locks: `faceLayers`, so only that expression's own set, RULINGS 273 O2), on top of the
    * root's content at its member's z. Each sprite draws a frame of the record its slot holds, sized to its plate box;
-   * the view keeps the record's handle (identity rule). Undefined when the face file is not live or nothing is drawn.
+   * the view keeps the record's handle (identity rule). Undefined when the face file is not live (no live record, or
+   * the slot's record is another file than the member's) or nothing is drawn.
    */
   const part = (root: BackdropView<T>, rig: ShotRig, char: CharId, expr: ExprId | null, handleOf: HandleOf<T>): Part<T> | undefined => {
     const drawn: Array<{ slot: string; h: TextureHandle<T>; frame: T; at: Box4 }> = [];
@@ -489,7 +490,10 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         continue;
       }
       const slot = p.kind === 'layer' ? `face:${char}` : 'sheet';
-      const h = handleOf(slot);
+      // The slot resolves for the target's shot; a kept root (its new plate failed) is another shot, whose member
+      // file is not the one held, so it is not live here: the face is drawn at rest (review r1 I1).
+      const held = handleOf(slot);
+      const h = held !== undefined && held.id === p.file ? held : undefined;
       const f = h === undefined ? null : registry.frames(h, [p.frame]);
       const frame = f?.ok === true ? f.value[0] : undefined;
       // A face state whose face file or sheet failed is drawn at rest: a layer without its hair locks is no face.
