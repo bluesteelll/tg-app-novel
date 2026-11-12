@@ -453,7 +453,7 @@ export function createSceneController(): SceneController {
       // MEMORY-PLAN 4.C: the half files only on a LOW device whose largest reachable stage passes halfFits.
       const tier = tierFor(o.perfClass, stageBound(screenSize(), { w: host.clientWidth, h: host.clientHeight }), resolution);
       const registry = createAssetRegistry<Texture>({
-        load: createImageLoader({ fetchAsset: o.fetchAsset, upload }),
+        hold: createImageLoader({ fetchAsset: o.fetchAsset, upload }),
         variant: avif ? 'avif' : 'webp',
         tier,
         frames: pixiFrames({ Texture, Rectangle }),

@@ -2,9 +2,10 @@
 // empties; admission under the 32 MiB steady (preload) and 48 MiB hard (visible) caps, counting the decoded bytes and
 // the kept encoded file of every record, in flight included; the AVIF / WebP variant fixed at creation, and the size
 // tier (MEMORY-PLAN 4.C: an entry's half file on a LOW phone) fixed at creation until a one-way demotion; after a GPU
-// context change, the revive that brings every live texture to the current renderer (MEMORY-PLAN M2, 4.A, section 8).
-// Generic over the texture type, so it holds no Pixi value and is tested in node over a fake loader;
-// `scene/loader.ts` is the real `LoadImage`.
+// context change, the revive that brings every live texture to the current renderer (MEMORY-PLAN M2, 4.A, section 8);
+// the warm form (shots §5.8): a record held as its fetched file, decoded only for a non-warm holder, shed back to the
+// file when the last of those leaves. Generic over the texture type, so it holds no Pixi value and is tested in node
+// over a fake loader; `scene/loader.ts` is the real `HoldImage`.
 import type { AssetFetchError, AssetRef, ImageEntry, ImageFile, Result, SizeTier } from '../story/catalog.ts';
 import type { Box } from '../story/shots.ts';
 import type { AssetId } from '../story/staging.ts';
@@ -38,8 +39,8 @@ export type SceneError = { kind: 'mount'; detail: string } | { kind: 'assets'; e
 /** A loader failure; the loader sees a file reference, not an asset id, so the registry names the id. */
 export type LoadError = { kind: 'fetch'; error: AssetFetchError } | { kind: 'decode'; detail: string } | { kind: 'aborted' };
 /**
- * A decoded image; `release()` frees the GPU texture, the CPU bitmap and the kept file (`texture.destroy(true)` +
- * `bitmap.close()` + the Blob dropped).
+ * A decoded image; `release()` frees the GPU texture and the CPU bitmap (`texture.destroy(true)` + `bitmap.close()`); a
+ * texture decoded from a held file borrows its Blob, which only the file's `drop()` frees.
  * `w`, `h`: the bitmap's stored px, checked against the entry's.
  * `keptBytes`: the size of the encoded file the loader keeps (the fetched Blob), counted by the caps once live.
  * `gen`: the GPU generation the texture was last uploaded under, or null while its bitmap is kept open (not uploaded:
@@ -63,13 +64,28 @@ export type Decoded<T> = {
  * still type-checks (the scene suites' fakes).
  */
 export type LoadImage<T> = (ref: AssetRef, signal: AbortSignal, geometry: TextureGeometry) => Promise<Result<Decoded<T>, LoadError>>;
+/**
+ * A fetched file kept as its bytes (shots §5.8 "The warm form"). `bytes`: its real size, what the caps count while no
+ * texture is decoded from it. `decode` makes a texture from it with no fetch, as often as asked; `drop()` frees the
+ * bytes, once, when the record ends.
+ */
+export type HeldFile<T> = {
+  readonly bytes: number;
+  decode(signal: AbortSignal, geometry: TextureGeometry): Promise<Result<Decoded<T>, LoadError>>;
+  drop(): void;
+};
+/** Fetches a file and keeps it: `scene/loader.ts`. */
+export type HoldImage<T> = (ref: AssetRef, signal: AbortSignal) => Promise<Result<HeldFile<T>, LoadError>>;
 /** `w`, `h`: the canvas (a trimmed file's full image), what charPlacement sizes on (RULINGS 35). */
 export type TextureHandle<T> = { readonly id: AssetId; readonly texture: T; readonly w: number; readonly h: number };
-export type Priority = 'visible' | 'preload';
+/** `warm`: the file only, never decoded for this holder (shots §5.8 step 3). */
+export type Priority = 'visible' | 'preload' | 'warm';
 export type AcquireOptions = { entry: ImageEntry; priority: Priority; signal?: AbortSignal };
 /**
- * `bytes` = what the caps count: decoded bytes + kept file bytes of live entries, plus the reservations (decoded +
- * the manifest's file bytes) of loads in flight. `keptBytes`: the kept files of live entries (inside `bytes`).
+ * `bytes` = what the caps count: every record's file (the manifest's bytes while it is fetched, its real size once
+ * held) plus the decoded bytes of each record with a non-warm holder, decoded or in flight. `keptBytes`: the files of
+ * live records and of records with warm holders only (inside `bytes`), so `bytes - keptBytes` is texture bytes plus
+ * the decodes in flight. `pending`: records with a fetch or a decode in flight, warm ones included.
  * `keptMismatch` (cumulative, like `overCap`): entries that went live keeping another size than the manifest's file.
  * `openBitmaps`: live entries whose decoded bitmap is open. `stale`: live entries not yet brought to the generation of
  * the latest `revive` (0 before the first). `reviveFailed` (cumulative): entries ended by a failed or late revive.
@@ -85,8 +101,13 @@ export type RegistryStats = {
   stale: number;
   reviveFailed: number;
 };
-/** An id's record as `state(id)` reports it: decoded (revived or not), its load in flight, or no record. */
-export type RecordState = 'live' | 'pending' | 'none';
+/** The warm form's counts (shots §5.8): records with a warm holder, and the file bytes of those held with no texture. */
+export type WarmStats = { warm: number; warmBytes: number };
+/**
+ * An id's record as `state(id)` reports it: decoded (revived or not); a non-warm holder waiting for its texture; warm
+ * holders only (the file fetched or in flight); or no record.
+ */
+export type RecordState = 'live' | 'pending' | 'held' | 'none';
 /**
  * How a record's texture is cut into frames (shots §5.1 "Ownership": a shot file's packed members): `cut` makes a
  * frame over the record's own source at a box in the file's full px, `dispose` destroys it and never that source.
@@ -111,12 +132,20 @@ export function pixiFrames<T extends { readonly source: unknown; destroy(destroy
 
 export interface AssetRegistry<T> {
   /**
-   * Adds `holder` to the id's holder set and resolves with the texture once it is decoded. Joining an entry that is
-   * live or in flight costs no bytes and is never refused. A new entry is admitted only under its cap; the caller's
-   * `signal` withdraws this holder (the load is aborted when no holder is left). Joining an entry not yet revived waits
-   * for its revive, which takes that entry first; a revive that fails it answers `decode`.
+   * A `warm` holder: resolves once the id's file is held (no texture). It joins a record in any state at no byte and is
+   * never refused; a new record is admitted for its file under the steady cap. Refused `decode` at once by a registry
+   * with no `hold`, and for a file marked undecodable.
    */
-  acquire(id: AssetId, holder: string, o: AcquireOptions): Promise<Result<TextureHandle<T>, AssetError>>;
+  acquire(id: AssetId, holder: string, o: AcquireOptions & { priority: 'warm' }): Promise<Result<null, AssetError>>;
+  /**
+   * Adds `holder` to the id's holder set and resolves with the texture once it is decoded. Joining an entry that is
+   * live or in flight to be decoded costs no bytes and is never refused; joining a held one decodes its file (no
+   * fetch), admitted for the decoded bytes. A new entry is admitted only under its cap; the caller's `signal` withdraws
+   * this holder (the load is aborted when no holder is left). Joining an entry not yet revived waits for its revive,
+   * which takes that entry first; a revive that fails it answers `decode`. A `preload` of a file marked undecodable is
+   * refused `decode` at once; a `visible` one tries it again, and its success lifts the mark.
+   */
+  acquire(id: AssetId, holder: string, o: AcquireOptions & { priority: 'visible' | 'preload' }): Promise<Result<TextureHandle<T>, AssetError>>;
   /** Removes one holder; idempotent. */
   release(id: AssetId, holder: string): void;
   /** `'preload:'` (a trailing `:`) releases that family; any other name is that exact holder only. */
@@ -127,11 +156,13 @@ export interface AssetRegistry<T> {
    */
   current(id: AssetId): TextureHandle<T> | null;
   /**
-   * The id's entry: `'live'` while decoded (revived or not), `'pending'` while its load is in flight, else `'none'` (never
-   * acquired, ended, refused). An acquire of an id that is not `'none'` joins its entry: no bytes, never refused. A pure
-   * read: it adds no holder and moves no byte.
+   * The id's entry: `'live'` while decoded (revived or not), `'pending'` while a non-warm holder waits for its texture,
+   * `'held'` while it has warm holders only, else `'none'` (never acquired, ended, refused). An acquire of a live or
+   * pending entry joins it: no bytes, never refused. A pure read: it adds no holder and moves no byte.
    */
   state(id: AssetId): RecordState;
+  /** The id's record has a fetch or a decode in flight (what `stats().pending` sums). */
+  loading(id: AssetId): boolean;
   /**
    * Brings every live entry not at `gen` to it, one at a time: entries with a visible holder first (`visible` settles
    * `'done'` once each is revived or ended, at the latest REVIVE_DEADLINE_MS after the pass started), then the rest
@@ -145,6 +176,7 @@ export interface AssetRegistry<T> {
    */
   demote(): void;
   stats(): RegistryStats;
+  warmStats(): WarmStats;
   /**
    * Frames cut from the live record behind `h` at `boxes` (file px), once per box, owned by that record: disposed when
    * it ends, before its texture is released. Refused (`decode`) for a handle that is not the id's current record, and
@@ -165,18 +197,25 @@ type Rec<T> = {
   /** The file's texture geometry (its tier's resolution on the entry's canvas), computed once when the record starts. */
   readonly geometry: TextureGeometry;
   readonly holders: Map<string, Priority>;
+  /** The fetch stage's: aborted only when the record ends, so a shed never refetches. */
   readonly controller: AbortController;
-  /** Settles once, when the record leaves `pending`. */
-  readonly outcome: Promise<Result<TextureHandle<T>, AssetError>>;
-  readonly settle: (r: Result<TextureHandle<T>, AssetError>) => void;
-  /** Acquires waiting for this live record's revive; told once it is revived or ends. */
-  readonly waiting: Set<(r: Result<TextureHandle<T>, AssetError>) => void>;
-  state: 'pending' | 'live' | 'dead';
+  /** The fetched file; null while the fetch is in flight. */
+  held: HeldFile<T> | null;
+  /** The decode in flight, under its own controller (a shed aborts it and keeps the file); null when none is. */
+  attempt: AbortController | null;
+  /** Acquires waiting for a texture (its decode, or the revive of a live one); told once it is there or ends. */
+  readonly waiting: Set<Told<T>>;
+  /** Warm acquires waiting for the file. */
+  readonly files: Set<Told<T>>;
+  dead: boolean;
+  /** Its first decode is done: `keptMismatch` counts a record once. */
+  decodedOnce: boolean;
   decoded: Decoded<T> | null;
   handle: TextureHandle<T> | null;
   /** The frames cut from this record's texture, by box. */
   readonly frames: Map<string, T>;
 };
+type Told<T> = (r: Result<TextureHandle<T> | null, AssetError>) => void;
 
 const fail = <E>(error: E): { ok: false; error: E } => ({ ok: false, error });
 
@@ -206,12 +245,18 @@ function deadline(): { late: Promise<'late'>; clear(): void } {
 
 /**
  * `tier` is required (critique_r2 W6): a caller that forgets it would load the full tier silently. `'half'` loads each
- * entry's half file where it has one (MEMORY-PLAN 4.C), until `demote()`.
+ * entry's half file where it has one (MEMORY-PLAN 4.C), until `demote()`. The image dep is `hold` (production) or
+ * `load` (the scene suites' fakes): a `load`-only registry runs the same record stages, its file held at once as a name
+ * for its load, so it holds no bytes and refuses `warm`.
  */
-export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avif' | 'webp'; tier: SizeTier; frames?: FrameCut<T> }): AssetRegistry<T> {
-  // Every record in the map is pending or live and counts its decodedBytes; a record leaves the map exactly once,
-  // so a reservation is returned exactly once whatever order abort, release and a late settle come in.
+export function createAssetRegistry<T>(
+  deps: { variant: 'avif' | 'webp'; tier: SizeTier; frames?: FrameCut<T> } & ({ hold: HoldImage<T> } | { load: LoadImage<T> }),
+): AssetRegistry<T> {
+  // Every record in the map is fetching, held, decoding or live; a record leaves the map exactly once, so its bytes
+  // are returned exactly once whatever order abort, release, a shed and a late settle come in.
   const records = new Map<AssetId, Rec<T>>();
+  /** URLs whose file failed to decode: a background ask of one is refused, a visible ask tries it again. */
+  const undecodable = new Set<string>();
   /** The tier of records started from now on; only `demote()` changes it, to 'full'. */
   let tier = deps.tier;
   let overCap = 0;
@@ -224,118 +269,169 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
   let destroyed = false;
 
   const refOf = (file: ImageFile): AssetRef => (deps.variant === 'avif' ? file.avif : file.webp);
-  /** A pending record reserves the manifest's file; a live one counts the file its loader kept, at its real size. */
+  /** A record decodes for its non-warm holders only; with warm ones alone it is its file. */
+  const decodes = (rec: Rec<T>): boolean => [...rec.holders.values()].some((p) => p !== 'warm');
+  /** A fetch or a decode in flight. */
+  const loading = (rec: Rec<T>): boolean => rec.held === null || rec.attempt !== null;
+  /** Each record's file (the manifest's bytes in flight, its real size once kept), plus its decode if it has one. */
   const counted = (): number => {
     let bytes = 0;
     for (const rec of records.values()) {
-      bytes += rec.file.decodedBytes + (rec.decoded === null ? rec.ref.bytes : rec.decoded.keptBytes);
+      bytes += (rec.decoded?.keptBytes ?? rec.held?.bytes ?? rec.ref.bytes) + (decodes(rec) ? rec.file.decodedBytes : 0);
     }
     return bytes;
   };
   /** A live record whose texture is not at `gen`: kept open (never uploaded) or uploaded under an older generation. */
   const isStale = (rec: Rec<T>, gen: number | null): boolean => {
     const g = rec.decoded?.gen;
-    return rec.state === 'live' && gen !== null && g !== undefined && (g === null || g < gen);
+    return gen !== null && g !== undefined && (g === null || g < gen);
   };
   const hasVisibleHolder = (rec: Rec<T>): boolean => [...rec.holders.values()].includes('visible');
+  const aborted = (id: AssetId): { ok: false; error: AssetError } => fail({ kind: 'aborted', id });
 
-  /** Tells every acquire waiting on this record's revive. */
-  const wake = (rec: Rec<T>, r: Result<TextureHandle<T>, AssetError>): void => {
-    const waiting = [...rec.waiting];
-    rec.waiting.clear();
+  /** Tells every acquire of the set. */
+  const tell = (set: Set<Told<T>>, r: Result<TextureHandle<T> | null, AssetError>): void => {
+    const waiting = [...set];
+    set.clear();
     for (const w of waiting) {
       w(r);
     }
   };
 
-  /** Ends a record that is still pending: the load is aborted, the reservation returned, the waiters told. */
-  const kill = (rec: Rec<T>, error: AssetError): void => {
-    if (rec.state !== 'pending') {
-      return;
-    }
-    rec.state = 'dead';
-    if (records.get(rec.id) === rec) {
-      records.delete(rec.id);
-    }
-    rec.controller.abort();
-    rec.settle(fail(error));
-  };
-
-  /** Ends a live record: it leaves the map, its texture and kept file are freed, its waiting acquires told `error`. */
-  const end = (rec: Rec<T>, error: AssetError): void => {
-    if (rec.state !== 'live') {
-      return;
-    }
-    rec.state = 'dead';
-    if (records.get(rec.id) === rec) {
-      records.delete(rec.id);
-    }
-    // Its frames go first: each is a view of the source that release() destroys.
+  /** The texture leaves the record (its frames first: each is a view of the source that release() destroys); a decode in flight is aborted. */
+  const undecode = (rec: Rec<T>): void => {
     for (const f of rec.frames.values()) {
       deps.frames?.dispose(f);
     }
     rec.frames.clear();
     rec.decoded?.release();
     rec.decoded = null;
-    wake(rec, fail(error));
+    rec.handle = null;
+    rec.attempt?.abort();
+    rec.attempt = null;
+  };
+
+  /** Ends a record whatever its holders: it leaves the map, its fetch and decode are aborted, its texture and file freed, every waiter told. */
+  const end = (rec: Rec<T>, error: AssetError): void => {
+    if (rec.dead) {
+      return;
+    }
+    rec.dead = true;
+    if (records.get(rec.id) === rec) {
+      records.delete(rec.id);
+    }
+    rec.controller.abort();
+    undecode(rec);
+    rec.held?.drop();
+    rec.held = null;
+    tell(rec.waiting, fail(error));
+    tell(rec.files, fail(error));
   };
 
   /** Section 8 "Revive failure": the record ends whatever its holders, so no later acquire can join it. */
   const failRevive = (rec: Rec<T>, detail: string): void => {
-    if (rec.state !== 'live') {
+    if (rec.decoded === null) {
       return;
     }
     reviveFailed += 1;
     end(rec, { kind: 'decode', id: rec.id, detail });
   };
 
-  /** Removes one holder of this record (never of a later record for the same id); an empty set ends the record. */
+  /**
+   * Removes one holder of this record (never of a later record for the same id): an empty set ends the record; the last
+   * non-warm holder leaving sheds it to its file in this turn (texture or decode gone, reservation returned).
+   */
   const drop = (rec: Rec<T>, holder: string): void => {
-    if (!rec.holders.delete(holder) || rec.holders.size > 0) {
+    const was = rec.holders.get(holder);
+    if (!rec.holders.delete(holder)) {
       return;
     }
-    if (rec.state === 'pending') {
-      kill(rec, { kind: 'aborted', id: rec.id });
-    } else {
+    if (rec.holders.size === 0) {
       end(rec, { kind: 'aborted', id: rec.id });
+    } else if (was !== 'warm' && !decodes(rec)) {
+      undecode(rec);
+      tell(rec.waiting, aborted(rec.id));
     }
   };
 
-  /** A load's result acts only on the record that started it (the PP's generation rule, by identity). */
-  const onLoaded = (rec: Rec<T>, r: Result<Decoded<T>, LoadError>): void => {
-    if (rec.state !== 'pending') {
-      // Released, evicted or destroyed while in flight: a decoded result is destroyed at once.
+  /** A file that fails to decode ends its record and is marked, so no step asks for it again in the background. */
+  const failDecode = (rec: Rec<T>, detail: string): void => {
+    undecodable.add(rec.ref.url);
+    end(rec, { kind: 'decode', id: rec.id, detail });
+  };
+
+  /** A decode's result acts only on the attempt that is the record's own (by identity): a shed or ended one is ignored. */
+  const onDecoded = (rec: Rec<T>, attempt: AbortController, r: Result<Decoded<T>, LoadError>): void => {
+    if (rec.attempt !== attempt) {
+      // Shed, released or destroyed while in flight: a texture is released at once, a failure ends nothing.
       if (r.ok) {
         r.value.release();
       }
       return;
     }
+    rec.attempt = null;
     if (!r.ok) {
-      kill(rec, assetError(rec.id, r.error));
+      if (r.error.kind === 'decode') {
+        failDecode(rec, r.error.detail);
+      } else {
+        end(rec, assetError(rec.id, r.error));
+      }
       return;
     }
     const d = r.value;
     if (d.w !== rec.file.w || d.h !== rec.file.h) {
       // The caps counted the manifest's w × h × 4; a different decode would make them a fiction.
       d.release();
-      kill(rec, { kind: 'decode', id: rec.id, detail: `decoded ${d.w}x${d.h}, manifest ${rec.file.w}x${rec.file.h}` });
+      failDecode(rec, `decoded ${d.w}x${d.h}, manifest ${rec.file.w}x${rec.file.h}`);
       return;
     }
-    rec.state = 'live';
+    undecodable.delete(rec.ref.url);
     rec.decoded = d;
-    if (d.keptBytes !== rec.ref.bytes) {
+    if (!rec.decodedOnce && d.keptBytes !== rec.ref.bytes) {
       // A host that rewrites images: counted as it is (above), never refused, so it cannot black the stage.
       keptMismatch += 1;
     }
+    rec.decodedOnce = true;
     rec.handle = { id: rec.id, texture: d.texture, w: rec.geometry.canvas.w, h: rec.geometry.canvas.h };
-    rec.settle({ ok: true, value: rec.handle });
+    tell(rec.waiting, { ok: true, value: rec.handle });
+  };
+
+  const decode = (rec: Rec<T>, held: HeldFile<T>): void => {
+    const attempt = new AbortController();
+    rec.attempt = attempt;
+    let decoding: Promise<Result<Decoded<T>, LoadError>>;
+    try {
+      decoding = held.decode(attempt.signal, rec.geometry);
+    } catch (e) {
+      decoding = Promise.resolve(fail({ kind: 'decode', detail: String(e) }));
+    }
+    // Not awaited: the result is delivered to this attempt by onDecoded, whenever it comes.
+    void decoding.then(
+      (r) => onDecoded(rec, attempt, r),
+      (e: unknown) => onDecoded(rec, attempt, fail({ kind: 'decode', detail: String(e) })),
+    );
+  };
+
+  /** The fetch stage's end: a failure ends the record and marks nothing (a later ask fetches again). */
+  const onFetched = (rec: Rec<T>, r: Result<HeldFile<T>, LoadError>): void => {
+    if (rec.dead) {
+      if (r.ok) {
+        r.value.drop();
+      }
+      return;
+    }
+    if (!r.ok) {
+      end(rec, assetError(rec.id, r.error));
+      return;
+    }
+    rec.held = r.value;
+    tell(rec.files, { ok: true, value: null });
+    if (decodes(rec)) {
+      decode(rec, r.value);
+    }
   };
 
   const start = (id: AssetId, entry: ImageEntry, file: ImageFile, ref: AssetRef, holder: string, priority: Priority): Rec<T> => {
-    let settle: (r: Result<TextureHandle<T>, AssetError>) => void = () => {};
-    const outcome = new Promise<Result<TextureHandle<T>, AssetError>>((resolve) => {
-      settle = resolve;
-    });
     const rec: Rec<T> = {
       id,
       entry,
@@ -344,83 +440,129 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
       geometry: textureGeometry(entry, file === entry ? 'full' : 'half'),
       holders: new Map([[holder, priority]]),
       controller: new AbortController(),
-      outcome,
-      settle,
+      held: null,
+      attempt: null,
       waiting: new Set(),
-      state: 'pending',
+      files: new Set(),
+      dead: false,
+      decodedOnce: false,
       decoded: null,
       handle: null,
       frames: new Map(),
     };
     records.set(id, rec);
-    let loading: Promise<Result<Decoded<T>, LoadError>>;
-    try {
-      loading = deps.load(ref, rec.controller.signal, rec.geometry);
-    } catch (e) {
-      loading = Promise.resolve(fail({ kind: 'decode', detail: String(e) }));
+    if ('load' in deps) {
+      // In this turn, so the load starts inside acquire's call, as a one-stage loader's does.
+      const { load } = deps;
+      onFetched(rec, { ok: true, value: { bytes: ref.bytes, decode: (s, g) => load(ref, s, g), drop: () => {} } });
+    } else {
+      void deps.hold(ref, rec.controller.signal).then(
+        (r) => onFetched(rec, r),
+        (e: unknown) => onFetched(rec, fail({ kind: 'decode', detail: String(e) })),
+      );
     }
-    // Not awaited: the result is delivered to this record by onLoaded, whenever it comes.
-    void loading.then(
-      (r) => onLoaded(rec, r),
-      (e: unknown) => onLoaded(rec, fail({ kind: 'decode', detail: String(e) })),
-    );
     return rec;
   };
 
-  const evictPreloads = (): void => {
+  /** Drops every holder of `priority`, on every record but `self`. */
+  const evict = (priority: Priority, self: Rec<T> | undefined): void => {
     for (const rec of [...records.values()]) {
-      for (const [holder, priority] of [...rec.holders]) {
-        if (priority === 'preload') {
+      for (const [holder, p] of [...rec.holders]) {
+        if (p === priority && rec !== self) {
           drop(rec, holder);
         }
       }
     }
   };
 
-  /** K5: a preload must fit the steady cap; a visible load the hard cap, after evicting every preload holder. */
-  const admit = (id: AssetId, need: number, priority: Priority): AssetError | null => {
-    if (priority === 'preload') {
+  /**
+   * K5: a preload or warm file must fit the steady cap; a visible load the hard cap, after evicting every preload
+   * holder, then the warm holders of other records.
+   */
+  const admit = (id: AssetId, need: number, priority: Priority, self?: Rec<T>): AssetError | null => {
+    if (priority !== 'visible') {
       const used = counted();
       return used + need <= STEADY_CAP_BYTES
         ? null
         : { kind: 'over-cap', id, needBytes: need, liveBytes: used, capBytes: STEADY_CAP_BYTES };
     }
-    if (counted() + need <= HARD_CAP_BYTES) {
-      return null;
-    }
-    evictPreloads();
-    const used = counted();
-    if (used + need <= HARD_CAP_BYTES) {
-      return null;
+    for (const p of [null, 'preload', 'warm'] as const) {
+      if (p !== null) {
+        evict(p, self);
+      }
+      if (counted() + need <= HARD_CAP_BYTES) {
+        return null;
+      }
     }
     overCap += 1;
-    return { kind: 'over-cap', id, needBytes: need, liveBytes: used, capBytes: HARD_CAP_BYTES };
+    return { kind: 'over-cap', id, needBytes: need, liveBytes: counted(), capBytes: HARD_CAP_BYTES };
   };
 
-  const waitFor = (rec: Rec<T>, holder: string, signal: AbortSignal | undefined): Promise<Result<TextureHandle<T>, AssetError>> => {
-    if (rec.state === 'live' && rec.handle !== null && !isStale(rec, reviveGen)) {
-      return Promise.resolve({ ok: true, value: rec.handle });
+  /** Resolves once the record has what `holder` waits for: its texture (live and current), or for a warm one its file. */
+  const waitFor = (rec: Rec<T>, holder: string, signal: AbortSignal | undefined, warm: boolean): Promise<Result<TextureHandle<T> | null, AssetError>> => {
+    if (warm ? rec.held !== null : rec.handle !== null && !isStale(rec, reviveGen)) {
+      return Promise.resolve({ ok: true, value: warm ? null : rec.handle });
     }
     return new Promise((resolve) => {
-      // A holder released while the record was in flight or stale never receives a texture it does not hold.
-      const told = (r: Result<TextureHandle<T>, AssetError>): void => {
+      const set = warm ? rec.files : rec.waiting;
+      // A holder released while it waited never receives what it does not hold.
+      const told: Told<T> = (r) => {
         signal?.removeEventListener('abort', onAbort);
-        resolve(r.ok && !rec.holders.has(holder) ? fail({ kind: 'aborted', id: rec.id }) : r);
+        resolve(r.ok && !rec.holders.has(holder) ? aborted(rec.id) : r);
       };
       const onAbort = (): void => {
-        rec.waiting.delete(told);
+        set.delete(told);
         drop(rec, holder);
-        resolve(fail({ kind: 'aborted', id: rec.id }));
+        resolve(aborted(rec.id));
       };
       signal?.addEventListener('abort', onAbort, { once: true });
-      if (rec.state === 'live') {
-        // Not yet revived: the revive takes this record first (`next`) and tells it.
-        rec.waiting.add(told);
-      } else {
-        void rec.outcome.then(told);
-      }
+      // A live record not yet revived: the revive takes it first (`next`) and tells it.
+      set.add(told);
     });
   };
+
+  function acquire(id: AssetId, holder: string, o: AcquireOptions & { priority: 'warm' }): Promise<Result<null, AssetError>>;
+  function acquire(id: AssetId, holder: string, o: AcquireOptions & { priority: 'visible' | 'preload' }): Promise<Result<TextureHandle<T>, AssetError>>;
+  function acquire(id: AssetId, holder: string, o: AcquireOptions): Promise<Result<TextureHandle<T> | null, AssetError>> {
+    if (destroyed || o.signal?.aborted === true) {
+      return Promise.resolve(aborted(id));
+    }
+    const warm = o.priority === 'warm';
+    const have = records.get(id);
+    if (have !== undefined) {
+      const was = have.holders.get(holder);
+      // A held record decodes for its first non-warm holder: from its file, admitted for the decoded bytes.
+      const decodeNow = !warm && !decodes(have);
+      if (decodeNow) {
+        const refused = admit(id, have.file.decodedBytes, o.priority, have);
+        if (refused !== null) {
+          return Promise.resolve(fail(refused));
+        }
+      }
+      if (was !== 'visible' && (was === undefined || !warm)) {
+        have.holders.set(holder, o.priority);
+      }
+      if (decodeNow && have.held !== null) {
+        decode(have, have.held);
+      }
+      return waitFor(have, holder, o.signal, warm);
+    }
+    const { entry } = o;
+    if (entry.w > MAX_TEXTURE_PX || entry.h > MAX_TEXTURE_PX) {
+      return Promise.resolve(fail({ kind: 'too-large', id, w: entry.w, h: entry.h }));
+    }
+    // The record's file is resolved once, here: a demotion later never moves a record that has started.
+    const file = tier === 'half' && entry.half !== undefined ? entry.half : entry;
+    const ref = refOf(file);
+    if (o.priority !== 'visible' && (undecodable.has(ref.url) || (warm && 'load' in deps))) {
+      return Promise.resolve(fail({ kind: 'decode', id, detail: `no file to hold: ${ref.url}` }));
+    }
+    const refused = admit(id, ref.bytes + (warm ? 0 : file.decodedBytes), o.priority);
+    if (refused !== null) {
+      return Promise.resolve(fail(refused));
+    }
+    return waitFor(start(id, entry, file, ref, holder, o.priority), holder, o.signal, warm);
+  }
 
   /** The next record a revive to `gen` takes: one an acquire waits on first, then by insertion; visible ones only. */
   const next = (gen: number, tried: ReadonlySet<Rec<T>>, visibleOnly: boolean): Rec<T> | null => {
@@ -455,8 +597,8 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
     }
     const r = await Promise.race([attempt.catch((e: unknown) => fail({ kind: 'decode' as const, detail: String(e) })), late]);
     signal.removeEventListener('abort', stop);
-    if (signal.aborted || rec.state !== 'live' || rec.decoded !== d) {
-      // Aborted (records stay stale for the next revive), or released meanwhile (its late bitmap is the loader's).
+    if (signal.aborted || rec.decoded !== d) {
+      // Aborted (records stay stale for the next revive), or released or shed meanwhile (its late bitmap is the loader's).
       own.abort();
       return;
     }
@@ -466,7 +608,7 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
     } else if (!r.ok) {
       failRevive(rec, r.error.kind === 'decode' ? r.error.detail : `revive ${r.error.kind}`);
     } else if (!isStale(rec, gen) && rec.handle !== null) {
-      wake(rec, { ok: true, value: rec.handle });
+      tell(rec.waiting, { ok: true, value: rec.handle });
     }
   };
 
@@ -512,30 +654,7 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
   };
 
   return {
-    acquire(id, holder, o) {
-      if (destroyed || o.signal?.aborted === true) {
-        return Promise.resolve(fail({ kind: 'aborted', id }));
-      }
-      const have = records.get(id);
-      if (have !== undefined) {
-        if (have.holders.get(holder) !== 'visible') {
-          have.holders.set(holder, o.priority);
-        }
-        return waitFor(have, holder, o.signal);
-      }
-      const { entry } = o;
-      if (entry.w > MAX_TEXTURE_PX || entry.h > MAX_TEXTURE_PX) {
-        return Promise.resolve(fail({ kind: 'too-large', id, w: entry.w, h: entry.h }));
-      }
-      // The record's file is resolved once, here: a demotion later never moves a record that has started.
-      const file = tier === 'half' && entry.half !== undefined ? entry.half : entry;
-      const ref = refOf(file);
-      const refused = admit(id, file.decodedBytes + ref.bytes, o.priority);
-      if (refused !== null) {
-        return Promise.resolve(fail(refused));
-      }
-      return waitFor(start(id, entry, file, ref, holder, o.priority), holder, o.signal);
-    },
+    acquire,
     release(id, holder) {
       const rec = records.get(id);
       if (rec !== undefined) {
@@ -553,13 +672,16 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
       }
     },
     current(id) {
-      const rec = records.get(id);
-      return rec?.state === 'live' ? rec.handle : null;
+      return records.get(id)?.handle ?? null;
     },
     state(id) {
-      // The map holds pending and live records only (kill / end delete), so a dead one is never reported.
-      const s = records.get(id)?.state;
-      return s === 'live' || s === 'pending' ? s : 'none';
+      // The map holds no dead record (end deletes), so an ended one is never reported.
+      const rec = records.get(id);
+      return rec === undefined ? 'none' : rec.decoded !== null ? 'live' : decodes(rec) ? 'pending' : 'held';
+    },
+    loading(id) {
+      const rec = records.get(id);
+      return rec !== undefined && loading(rec);
     },
     revive(gen, signal) {
       reviving?.abort();
@@ -625,7 +747,7 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
     frames(h, boxes) {
       const rec = records.get(h.id);
       const cut = deps.frames;
-      if (rec?.state !== 'live' || rec.handle !== h) {
+      if (rec?.handle !== h) {
         return fail({ kind: 'decode', id: h.id, detail: 'frames of a record that is not current' });
       }
       if (cut === undefined) {
@@ -652,24 +774,36 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
       let openBitmaps = 0;
       let stale = 0;
       for (const rec of records.values()) {
-        if (rec.state === 'live') {
+        const d = rec.decoded;
+        if (d !== null) {
           live += 1;
-          keptBytes += rec.decoded?.keptBytes ?? 0;
-          openBitmaps += rec.decoded?.open() === true ? 1 : 0;
+          keptBytes += d.keptBytes;
+          openBitmaps += d.open() ? 1 : 0;
           stale += isStale(rec, reviveGen) ? 1 : 0;
-        } else {
-          pending += 1;
+        } else if (!decodes(rec)) {
+          // Its file alone, held or in flight: kept bytes, never texture bytes.
+          keptBytes += rec.held?.bytes ?? rec.ref.bytes;
         }
+        pending += loading(rec) ? 1 : 0;
       }
       return { live, bytes: counted(), pending, overCap, keptBytes, keptMismatch, openBitmaps, stale, reviveFailed };
+    },
+    warmStats() {
+      let warm = 0;
+      let warmBytes = 0;
+      for (const rec of records.values()) {
+        if ([...rec.holders.values()].includes('warm')) {
+          warm += 1;
+          warmBytes += decodes(rec) ? 0 : (rec.held?.bytes ?? 0);
+        }
+      }
+      return { warm, warmBytes };
     },
     destroy() {
       destroyed = true;
       reviving?.abort();
       for (const rec of [...records.values()]) {
-        for (const holder of [...rec.holders.keys()]) {
-          drop(rec, holder);
-        }
+        end(rec, { kind: 'aborted', id: rec.id });
       }
       records.clear();
     },

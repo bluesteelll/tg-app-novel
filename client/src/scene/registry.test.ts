@@ -5,7 +5,7 @@ import type { Box } from '../story/shots.ts';
 import type { AssetId } from '../story/staging.ts';
 import type { TextureGeometry } from './layout.ts';
 import { createAssetRegistry, pixiFrames } from './registry.ts';
-import type { Decoded, FrameCut, LoadError, LoadImage } from './registry.ts';
+import type { Decoded, FrameCut, HeldFile, HoldImage, LoadError, LoadImage } from './registry.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // A fake loader with deferred results: every call is recorded with its URL, file bytes, signal and geometry, and every
@@ -1069,4 +1069,455 @@ test("registry: a frame's dispose leaves its record's source alive", async () =>
   f.registry.release(asId('sheet/s'), 'scene:sheet');
   // No frame destroyed the shared source; the record's own release did, after them.
   expect(f.log).toEqual(['release /assets/sheet_s.avif (source alive)', 'source destroyed by /assets/sheet_s.avif']);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The warm form (docs/plans/shots §5.8, lane SH5a): a registry over a fake `hold` whose fetches and held-file decodes
+// are deferreds recording their signals; fetches, decodes, every Decoded's release() and every held file's drop() are
+// counted by URL. A decode keeps its held file's bytes, as the real one keeps the Blob it borrows.
+
+type HoldCall = { url: string; bytes: number; signal: AbortSignal; resolve(r: Result<HeldFile<Tex>, LoadError>): void; done: boolean };
+type DecodeCall = { url: string; bytes: number; signal: AbortSignal; resolve(r: Result<Decoded<Tex>, LoadError>): void; done: boolean };
+
+function holding(tier: SizeTier = 'full') {
+  const fetches: HoldCall[] = [];
+  const decodes: DecodeCall[] = [];
+  const released = new Map<string, number>();
+  const dropped = new Map<string, number>();
+  const revived: string[] = [];
+  const sizes = new Map<string, { w: number; h: number }>();
+  const bump = (m: Map<string, number>, url: string): void => {
+    m.set(url, (m.get(url) ?? 0) + 1);
+  };
+  const hold: HoldImage<Tex> = (ref, signal) =>
+    new Promise((resolve) => {
+      fetches.push({ url: ref.url, bytes: ref.bytes, signal, resolve, done: false });
+    });
+  const registry = createAssetRegistry<Tex>({ hold, variant: 'avif', tier });
+  const held = (url: string, bytes: number): HeldFile<Tex> => ({
+    bytes,
+    decode: (signal) =>
+      new Promise((resolve) => {
+        decodes.push({ url, bytes, signal, resolve, done: false });
+      }),
+    drop: () => bump(dropped, url),
+  });
+  const texture = (url: string, w: number, h: number, keptBytes: number): Decoded<Tex> => {
+    const d: Decoded<Tex> = {
+      texture: { url },
+      w,
+      h,
+      keptBytes,
+      gen: 1,
+      open: () => false,
+      revive: (to) => {
+        revived.push(`${url}@${to}`);
+        d.gen = to;
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+      release: () => bump(released, url),
+    };
+    return d;
+  };
+  const url = (name: string): string => `/assets/${name}.avif`;
+  /** The first unsettled call of `name`, marked settled. */
+  const open = <C extends { url: string; done: boolean }>(list: C[], name: string): C => {
+    const c = list.find((x) => x.url === url(name) && !x.done);
+    if (c === undefined) {
+      throw new Error(`invariant: ${name} has a call in flight`);
+    }
+    c.done = true;
+    return c;
+  };
+  const note = (entry: ImageEntry): ImageEntry => {
+    for (const f of entry.half === undefined ? [entry] : [entry, entry.half]) {
+      sizes.set(f.avif.url, { w: f.w, h: f.h });
+    }
+    return entry;
+  };
+  return {
+    registry,
+    fetches: (name?: string): number => fetches.filter((c) => name === undefined || c.url === url(name)).length,
+    fetchUrls: (): string[] => fetches.map((c) => c.url),
+    decodes: (name: string): number => decodes.filter((c) => c.url === url(name)).length,
+    released: (name: string): number => released.get(url(name)) ?? 0,
+    dropped: (name: string): number => dropped.get(url(name)) ?? 0,
+    revived,
+    fetchSignal: (name: string): AbortSignal | undefined => fetches.filter((c) => c.url === url(name)).at(-1)?.signal,
+    decodeSignal: (name: string): AbortSignal | undefined => decodes.filter((c) => c.url === url(name)).at(-1)?.signal,
+    acquire: (id: string, entry: ImageEntry, holder: string, priority: 'visible' | 'preload') => registry.acquire(asId(id), holder, { entry: note(entry), priority }),
+    warm: (id: string, entry: ImageEntry, holder = `preload:warm:${id}`) => registry.acquire(asId(id), holder, { entry: note(entry), priority: 'warm' }),
+    /** The fetch of `name` lands: its file held at the manifest's bytes, or at `bytes`. */
+    land: (name: string, bytes?: number): void => {
+      const c = open(fetches, name);
+      c.resolve({ ok: true, value: held(c.url, bytes ?? c.bytes) });
+    },
+    fetchFails: (name: string): void => open(fetches, name).resolve({ ok: false, error: { kind: 'fetch', error: { kind: 'http', status: 500 } } }),
+    /** The decode of `name` settles: a texture of its manifest size (or `size`) keeping the held file's bytes. */
+    decoded: (name: string, size?: { w: number; h: number }): void => {
+      const c = open(decodes, name);
+      const s = size ?? sizes.get(c.url) ?? { w: 0, h: 0 };
+      c.resolve({ ok: true, value: texture(c.url, s.w, s.h, c.bytes) });
+    },
+    decodeFails: (name: string): void => open(decodes, name).resolve({ ok: false, error: { kind: 'decode', detail: 'corrupt file' } }),
+    /** Lands every fetch and settles every decode in flight, until none is left. */
+    settleAll: async (): Promise<void> => {
+      for (let i = 0; i < 4; i += 1) {
+        for (const c of fetches.filter((x) => !x.done)) {
+          c.done = true;
+          c.resolve({ ok: true, value: held(c.url, c.bytes) });
+        }
+        await flush();
+        for (const c of decodes.filter((x) => !x.done)) {
+          const s = sizes.get(c.url) ?? { w: 0, h: 0 };
+          c.done = true;
+          c.resolve({ ok: true, value: texture(c.url, s.w, s.h, c.bytes) });
+        }
+        await flush();
+      }
+    },
+  };
+}
+
+const W = 'preload:warm:prop/w';
+const P = 'preload:win:prop/w';
+
+test('registry: a warm record keeps the file and no texture', async () => {
+  const h = holding();
+  const got = seen(h.warm('prop/w', prop('w')));
+  expect(h.fetches('w')).toBe(1);
+  // In flight it reserves its file only: a warm holder never decodes.
+  expect(h.registry.stats().bytes).toBe(F);
+  h.land('w');
+  await flush();
+  expect(got.value).toEqual({ ok: true, value: null });
+  expect(h.decodes('w')).toBe(0);
+  expect(h.registry.state(asId('prop/w'))).toBe('held');
+  expect(h.registry.current(asId('prop/w'))).toBe(null);
+  expect(h.registry.stats()).toEqual({ ...ZERO, bytes: F, keptBytes: F });
+});
+
+test('registry: a visible join decodes a warm record without a fetch', async () => {
+  const h = holding();
+  void h.warm('prop/w', prop('w'));
+  expect(h.fetches('w')).toBe(1);
+  h.land('w');
+  await flush();
+  const v = h.acquire('prop/w', prop('w'), 'scene:prop', 'visible');
+  expect([h.fetches('w'), h.decodes('w')]).toEqual([1, 1]);
+  expect(h.registry.state(asId('prop/w'))).toBe('pending');
+  h.decoded('w');
+  expect((await v).ok).toBe(true);
+  expect(h.registry.state(asId('prop/w'))).toBe('live');
+  expect(h.registry.stats()).toEqual({ ...ZERO, live: 1, bytes: PROP + F, keptBytes: F });
+});
+
+test('registry: a live record sheds to warm when only warm holders remain', async () => {
+  const h = holding();
+  void h.warm('prop/w', prop('w'), W);
+  expect(h.fetches('w')).toBe(1);
+  h.land('w');
+  await flush();
+  const p = h.acquire('prop/w', prop('w'), P, 'preload');
+  h.decoded('w');
+  expect((await p).ok).toBe(true);
+  h.registry.release(asId('prop/w'), P);
+  // The texture goes and the file stays, counted at its bytes again: nothing fetched, nothing dropped.
+  expect(h.registry.state(asId('prop/w'))).toBe('held');
+  expect([h.released('w'), h.dropped('w')]).toEqual([1, 0]);
+  expect(h.registry.current(asId('prop/w'))).toBe(null);
+  expect(h.registry.stats()).toEqual({ ...ZERO, bytes: F, keptBytes: F });
+  // The next ask decodes the held file again.
+  const v = h.acquire('prop/w', prop('w'), 'scene:prop', 'visible');
+  h.decoded('w');
+  expect((await v).ok).toBe(true);
+  expect([h.fetches('w'), h.decodes('w')]).toEqual([1, 2]);
+  // The last holder drops the file.
+  h.registry.release(asId('prop/w'), 'scene:prop');
+  h.registry.release(asId('prop/w'), W);
+  expect([h.released('w'), h.dropped('w')]).toEqual([2, 1]);
+  expect(h.registry.stats()).toEqual(ZERO);
+});
+
+test('registry: a visible admission evicts warm holders of other records after preloads', async () => {
+  // A warm file of 7,000,000 B: a preload prop + it (under STEADY) + four visible bgs = 43,438,516; a fifth bg needs
+  // 8,847,460 more (52,285,976 > HARD); the preload's eviction leaves 51,237,300, still over; the warm holder's 44,237,300.
+  const fat = (bytes: number): ImageEntry => ({ ...bg('fat'), avif: { url: '/assets/fat.avif', bytes } });
+  const h = holding();
+  const pre = h.acquire('prop/p', prop('p'), 'preload:k', 'preload');
+  void h.warm('bg/fat', fat(7_000_000));
+  const four = ['v1', 'v2', 'v3', 'v4'].map((n) => h.acquire(`bg/${n}`, bg(n), `scene:${n}`, 'visible'));
+  expect(h.fetches()).toBe(6);
+  await h.settleAll();
+  for (const r of await Promise.all([...four, pre])) {
+    expect(r.ok).toBe(true);
+  }
+  expect(h.registry.stats().bytes).toBe(43_438_516);
+  const fifth = h.acquire('bg/v5', bg('v5'), 'scene:v5', 'visible');
+  expect([h.released('p'), h.dropped('fat'), h.registry.state(asId('bg/fat'))]).toEqual([1, 1, 'none']);
+  await h.settleAll();
+  expect((await fifth).ok).toBe(true);
+  expect(h.registry.stats()).toEqual({ ...ZERO, live: 5, bytes: 5 * (BG + F), keptBytes: 5 * F });
+
+  // Preloads first: when their eviction is enough, the warm file stays held.
+  const k = holding();
+  const pre2 = k.acquire('bg/p', bg('p'), 'preload:k', 'preload');
+  void k.warm('bg/fat', fat(1_000_000));
+  const four2 = ['v1', 'v2', 'v3', 'v4'].map((n) => k.acquire(`bg/${n}`, bg(n), `scene:${n}`, 'visible'));
+  await k.settleAll();
+  for (const r of await Promise.all([...four2, pre2])) {
+    expect(r.ok).toBe(true);
+  }
+  // 45,237,300 + 8,847,460 = 54,084,760 > HARD; without the preload bg 45,237,300 fits.
+  const fifth2 = k.acquire('bg/v5', bg('v5'), 'scene:v5', 'visible');
+  expect([k.released('p'), k.dropped('fat'), k.registry.state(asId('bg/fat'))]).toEqual([1, 0, 'held']);
+  await k.settleAll();
+  expect((await fifth2).ok).toBe(true);
+  expect(k.registry.stats().overCap).toBe(0);
+});
+
+test('registry: a context loss revives no warm record', async () => {
+  const h = holding();
+  void h.warm('prop/w', prop('w'));
+  const v = h.acquire('bg/a', bg('a'), 'scene:a', 'visible');
+  expect(h.fetches()).toBe(2);
+  await h.settleAll();
+  expect((await v).ok).toBe(true);
+  expect(await h.registry.revive(2, noAbort()).all).toBe('done');
+  // The held file has no texture to bring to the new generation.
+  expect(h.revived).toEqual(['/assets/a.avif@2']);
+  expect(h.registry.state(asId('prop/w'))).toBe('held');
+  expect(h.registry.stats()).toMatchObject({ live: 1, stale: 0 });
+});
+
+test('registry: state reports live, pending, held and none', async () => {
+  const h = holding();
+  const state = (id: string): string => h.registry.state(asId(id));
+  expect(state('prop/w')).toBe('none');
+  void h.warm('prop/w', prop('w'));
+  expect(h.fetches('w')).toBe(1);
+  // Warm holders only: held, its fetch in flight or its file at rest.
+  expect(state('prop/w')).toBe('held');
+  void h.acquire('prop/p', prop('p'), 'preload:k', 'preload');
+  expect(state('prop/p')).toBe('pending');
+  h.land('w');
+  h.land('p');
+  await flush();
+  // A non-warm holder whose decode is in flight: pending.
+  expect([state('prop/w'), state('prop/p')]).toEqual(['held', 'pending']);
+  void h.acquire('prop/w', prop('w'), P, 'preload');
+  expect(state('prop/w')).toBe('pending');
+  h.decoded('w');
+  h.decoded('p');
+  await flush();
+  expect([state('prop/w'), state('prop/p')]).toEqual(['live', 'live']);
+  h.registry.releaseHolder('preload:');
+  expect([state('prop/w'), state('prop/p')]).toEqual(['none', 'none']);
+});
+
+test('registry: stats count a warm fetch in flight as pending and a held file at rest as kept and warm only', async () => {
+  const h = holding();
+  void h.warm('prop/w', prop('w'));
+  expect(h.fetches('w')).toBe(1);
+  // A warm fetch in flight is a load in flight; its file is reserved as kept bytes (no texture, no decode).
+  expect(h.registry.stats().pending).toBe(1);
+  expect(h.registry.stats()).toEqual({ ...ZERO, bytes: F, pending: 1, keptBytes: F });
+  h.land('w', 150);
+  await flush();
+  // At rest: no load in flight, the file counted at the Blob's size, as kept bytes and as warm; no texture bytes.
+  const s = h.registry.stats();
+  expect(s.pending).toBe(0);
+  expect(s.keptBytes).toBe(150);
+  expect(s.bytes - s.keptBytes).toBe(0);
+  expect(h.registry.warmStats()).toEqual({ warm: 1, warmBytes: 150 });
+});
+
+test('registry: a shed while the decode is in flight returns its reservation at once and keeps the bytes held', async () => {
+  const h = holding();
+  void h.warm('prop/w', prop('w'), W);
+  expect(h.fetches('w')).toBe(1);
+  h.land('w');
+  await flush();
+  const p = seen(h.acquire('prop/w', prop('w'), P, 'preload'));
+  expect(h.registry.stats().bytes).toBe(F + PROP);
+  const signal = h.decodeSignal('w');
+  h.registry.release(asId('prop/w'), P);
+  // The same turn: the decode aborted, its reservation returned, the file held.
+  expect(signal?.aborted).toBe(true);
+  expect(h.registry.stats().bytes).toBe(F);
+  expect(h.registry.state(asId('prop/w'))).toBe('held');
+  expect(h.registry.stats().pending).toBe(0);
+  await flush();
+  expect(p.value).toMatchObject({ ok: false, error: { kind: 'aborted' } });
+  // The aborted decode settles late: its texture is released at once, the record stays held.
+  h.decoded('w');
+  await flush();
+  expect(h.released('w')).toBe(1);
+  expect(h.registry.state(asId('prop/w'))).toBe('held');
+  // A visible ask decodes the held file: no second fetch.
+  const v = h.acquire('prop/w', prop('w'), 'scene:prop', 'visible');
+  h.decoded('w');
+  expect((await v).ok).toBe(true);
+  expect([h.fetches('w'), h.decodes('w'), h.registry.state(asId('prop/w'))]).toEqual([1, 2, 'live']);
+});
+
+test('registry: a shed while the fetch is in flight returns the decode reservation and holds the file when it lands', async () => {
+  const h = holding();
+  const p = seen(h.acquire('prop/w', prop('w'), P, 'preload'));
+  expect(h.fetches('w')).toBe(1);
+  expect(h.registry.stats().bytes).toBe(F + PROP);
+  void h.warm('prop/w', prop('w'), W);
+  h.registry.release(asId('prop/w'), P);
+  // The same turn: the decode reservation returned; the fetch goes on for the warm holder.
+  expect(h.registry.stats().bytes).toBe(F);
+  expect(h.registry.state(asId('prop/w'))).toBe('held');
+  expect(h.registry.stats().pending).toBe(1);
+  expect(h.fetchSignal('w')?.aborted).toBe(false);
+  h.land('w');
+  await flush();
+  expect(p.value).toMatchObject({ ok: false, error: { kind: 'aborted' } });
+  expect([h.registry.state(asId('prop/w')), h.registry.stats().pending, h.decodes('w')]).toEqual(['held', 0, 0]);
+  const v = h.acquire('prop/w', prop('w'), 'scene:prop', 'visible');
+  h.decoded('w');
+  expect((await v).ok).toBe(true);
+  expect([h.fetches('w'), h.decodes('w')]).toEqual([1, 1]);
+});
+
+test('registry: a failed fetch fails every waiter and ends the record', async () => {
+  const h = holding();
+  const p = seen(h.acquire('prop/x', prop('x'), 'preload:k', 'preload'));
+  expect(h.fetches('x')).toBe(1);
+  const v = seen(h.acquire('prop/x', prop('x'), 'scene:x', 'visible'));
+  const w = seen(h.warm('prop/x', prop('x')));
+  h.fetchFails('x');
+  await flush();
+  for (const r of [p, v, w]) {
+    expect(r.value).toMatchObject({ ok: false, error: { kind: 'fetch' } });
+  }
+  expect(h.registry.state(asId('prop/x'))).toBe('none');
+  expect(h.registry.stats()).toEqual(ZERO);
+  expect(h.decodes('x')).toBe(0);
+  // No mark: a later ask fetches again.
+  void h.acquire('prop/x', prop('x'), 'preload:k', 'preload');
+  expect(h.fetches('x')).toBe(2);
+});
+
+test('registry: a failed decode ends the record and a background ask never fetches the file again', async () => {
+  const h = holding();
+  const p = seen(h.acquire('prop/x', prop('x'), 'preload:k', 'preload'));
+  expect(h.fetches('x')).toBe(1);
+  h.land('x');
+  await flush();
+  h.decodeFails('x');
+  await flush();
+  expect(p.value).toMatchObject({ ok: false, error: { kind: 'decode' } });
+  expect([h.registry.state(asId('prop/x')), h.dropped('x'), h.registry.stats().bytes]).toEqual(['none', 1, 0]);
+  // Marked undecodable: a background ask is refused at once, with no fetch.
+  const again = seen(h.acquire('prop/x', prop('x'), 'preload:k', 'preload'));
+  const warm = seen(h.warm('prop/x', prop('x')));
+  await flush();
+  expect(h.fetches('x')).toBe(1);
+  expect(again.value).toMatchObject({ ok: false, error: { kind: 'decode' } });
+  expect(warm.value).toMatchObject({ ok: false, error: { kind: 'decode' } });
+  // A visible ask tries the file again, and its success lifts the mark.
+  const v = h.acquire('prop/x', prop('x'), 'scene:x', 'visible');
+  expect(h.fetches('x')).toBe(2);
+  h.land('x');
+  await flush();
+  h.decoded('x');
+  expect((await v).ok).toBe(true);
+  expect(h.registry.state(asId('prop/x'))).toBe('live');
+  h.registry.release(asId('prop/x'), 'scene:x');
+  void h.acquire('prop/x', prop('x'), 'preload:k', 'preload');
+  expect(h.fetches('x')).toBe(3);
+});
+
+test('registry: a failed decode with a warm holder ends the record and drops the held file', async () => {
+  const h = holding();
+  void h.warm('prop/x', prop('x'));
+  const p = seen(h.acquire('prop/x', prop('x'), 'preload:k', 'preload'));
+  expect(h.fetches('x')).toBe(1);
+  h.land('x');
+  await flush();
+  h.decodeFails('x');
+  await flush();
+  expect(p.value).toMatchObject({ ok: false, error: { kind: 'decode' } });
+  // Ended whatever its holders: never back to held.
+  expect(h.registry.state(asId('prop/x'))).toBe('none');
+  expect(h.dropped('x')).toBe(1);
+  expect(h.registry.warmStats()).toEqual({ warm: 0, warmBytes: 0 });
+  expect(h.registry.stats().bytes).toBe(0);
+  const later = seen(h.warm('prop/x', prop('x')));
+  await flush();
+  expect(h.fetches('x')).toBe(1);
+  expect(later.value).toMatchObject({ ok: false, error: { kind: 'decode' } });
+});
+
+test('registry: a held file decoded off its manifest size is refused', async () => {
+  const h = holding();
+  const p = seen(h.acquire('prop/lie', prop('lie'), 'preload:k', 'preload'));
+  expect(h.fetches('lie')).toBe(1);
+  h.land('lie');
+  await flush();
+  // The manifest says 512×512, the file decodes 1080×2048: the caps counted the wrong bytes.
+  h.decoded('lie', { w: 1080, h: 2048 });
+  await flush();
+  expect(p.value).toEqual({ ok: false, error: { kind: 'decode', id: 'prop/lie', detail: 'decoded 1080x2048, manifest 512x512' } });
+  expect([h.released('lie'), h.dropped('lie')]).toEqual([1, 1]);
+  expect(h.registry.stats()).toEqual(ZERO);
+});
+
+test('registry: a held file of another size is counted as it is and reported once', async () => {
+  const h = holding();
+  void h.warm('prop/w', prop('w'));
+  expect(h.fetches('w')).toBe(1);
+  h.land('w', 300);
+  await flush();
+  expect(h.registry.stats()).toMatchObject({ bytes: 300, keptMismatch: 0 });
+  const v = h.acquire('prop/w', prop('w'), 'scene:a', 'visible');
+  h.decoded('w');
+  expect((await v).ok).toBe(true);
+  expect(h.registry.stats()).toMatchObject({ live: 1, keptBytes: 300, keptMismatch: 1 });
+  // Shed to the warm holder and decoded again: the same record, reported once.
+  h.registry.release(asId('prop/w'), 'scene:a');
+  expect(h.registry.state(asId('prop/w'))).toBe('held');
+  const again = h.acquire('prop/w', prop('w'), 'scene:b', 'visible');
+  h.decoded('w');
+  expect((await again).ok).toBe(true);
+  expect(h.registry.stats().keptMismatch).toBe(1);
+});
+
+test('registry: a decode aborted by a shed that fails late leaves the file held', async () => {
+  const h = holding();
+  void h.warm('prop/w', prop('w'), W);
+  expect(h.fetches('w')).toBe(1);
+  h.land('w');
+  await flush();
+  void h.acquire('prop/w', prop('w'), P, 'preload');
+  h.registry.release(asId('prop/w'), P);
+  // The aborted decode fails late: it ends nothing and marks nothing.
+  h.decodeFails('w');
+  await flush();
+  expect(h.registry.state(asId('prop/w'))).toBe('held');
+  expect(h.dropped('w')).toBe(0);
+  void h.acquire('prop/w', prop('w'), P, 'preload');
+  expect([h.fetches('w'), h.decodes('w')]).toEqual([1, 2]);
+});
+
+test('registry: an undecodable half file leaves the full file free after demote', async () => {
+  // The mark is the file's URL: the demoted record's full file is another URL.
+  const h = holding('half');
+  const entry = halved('a', prop('a'));
+  const p = seen(h.acquire('prop/a', entry, 'preload:k', 'preload'));
+  expect(h.fetches('a-half')).toBe(1);
+  h.land('a-half');
+  await flush();
+  h.decodeFails('a-half');
+  await flush();
+  expect(p.value).toMatchObject({ ok: false, error: { kind: 'decode' } });
+  h.registry.demote();
+  void h.acquire('prop/a', entry, 'preload:k', 'preload');
+  expect(h.fetches()).toBe(2);
+  expect(h.fetchUrls()).toEqual(['/assets/a-half.avif', '/assets/a.avif']);
+  expect(h.registry.state(asId('prop/a'))).toBe('pending');
 });
