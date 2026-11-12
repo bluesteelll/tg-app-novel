@@ -893,8 +893,9 @@
   - **M-W1** (new; "kept state first") — phase A releases `state:<m>` only when m leaves the keep set (r2's rule):
     red on `controller: neighbour preloads stay under the steady cap`'s `a -> b` step (`bg/c` refused under the
     steady cap) and on the e2e `mechanics: the cellar's background is preloaded in the hall after the study`.
-  - **M-W1b** (new) — a kept set asked for before the neighbours' bgs: red on the cellar e2e's hall step and on the
-    steady-cap test's `a -> b` step.
+  - **M-W1b** (new) — a kept set asked for before the neighbours' bgs: red on the hall step of `controller: a room
+    preloads every image it can show before its neighbours` (cut §3 C4 test 3) and on the steady-cap test's `a -> b`
+    step.
 - **Ruled since: RULINGS 248** — critique r3 W1: the drawer e2e's second test waits for exactly the held loads
   pending and no transition (a wait local to `mechanics.spec.ts`), since `atRest` can never pass while
   `drawer_open`'s preload is held. O1: the "at the point" ledgers quote R' 2.666 beside 2.306.

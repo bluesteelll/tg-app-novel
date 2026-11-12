@@ -147,8 +147,10 @@ KB, entry +0.15, all JS +2.73). The four STOP items above PASS at the cut: the s
 `budget.test.ts` pins no Record key set, and `story/shots.ts` stays out of the entry closure. The critique: four
 `dev-canary(5)` pins (W1); M-SH3y counts only shot-family ids free (W2 (b)); `assetUsage(u)` deep-equals today's (W3);
 the placeholder ambient (Q3) goes to SH9's cut ("Order" above); depth-grid sampling at the vertices,
-`y = i/(rows-1)·h` (§4.2). Merged `efd3811`: 12 commits (riders R1, Q9's comment stripping, and R2, the dev-canary
-needles), the 12 lock files, 46 vitest names (tag SH3A). Rows: entry 38,416 -> 38,548 B br (+132, under the +150 STOP);
+`y = i/(rows-1)·h` (§4.2). Merged `efd3811`: 15 commits, C1-C12 (the cut's 12, riders R1, Q9's comment
+stripping, and R2, the dev-canary needles, first), the trunk sync `c71be41` and two test-only fixes (`d562368`,
+`2a76204`; RULINGS 256), the 12 lock files, 46 vitest names (tag SH3A).
+Rows: entry 38,416 -> 38,548 B br (+132, under the +150 STOP);
 engine +161 (hashed names only: the decoders do not bundle, so no R sample, and their 1.0 KB term moves to the first
 importer, SH4 / SH5a); first load ch1 +881, ch3 +677.
 
@@ -292,3 +294,10 @@ KB, ch2 11.0, ch3 11.2, ch4 10.1 (limit 279.0 KB). Every committed chapter is le
 shot-chapter branches of knot-set and first-load are fixture-covered until SH4 / SH5a restage a chapter. The
 scene-motion row's forecast, 6.0 x 2.027 = 12.16 KB against its 8.0 KB LIMIT (first projected FAIL at SH9), is
 carried to SH7's and SH8's cuts.
+
+**Re-located on `a064399`** (SH3b's cut §1b; docs lane `docs-errata-16`, group A; this section's citations predate
+SH3a, GM3s, O5, P, GM3b and SH3b itself): `budget.test.ts:1392-1398` (hand-built usage JSON) is `assetInputs()`
+`client/scripts/budget.test.ts:1182-1237`, its usage decoded by `decodeStoryUsage` at `:1187-1199`; `budget.ts`
+`:841-867` (`knotRows`) is `:1059-1086`; `:911-927` (`firstKnotAvif`) is `:1143-1159`; `:958-994` (`firstLoadRows`) is
+`:1190-1231`; `:870-899` (`roomRows`) is `:1099-1131`; `:146-154` (`LazyFamily`, its `importer` union) is `:220-235`
+(`importer` `:234`).
