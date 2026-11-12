@@ -295,6 +295,33 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   left)**; **Ledger 1** 240.133 + 17.433 = **257.566 / 270.0 (12.434 left)**. The trigger does not hold: Y stays on the
   shelf until a ledger is within 1.0 KB; the GM3b engine-lever candidate is measured once Ledger 4 or Ledger 1 is
   within 2.0 KB (RULINGS 253). L2's return line (entry headroom under 0.5 KB) does not hold: 0.836 KB is left.
+- **Main `48489b7`, MEASURED** (Changed by RULINGS 292, 296, 302, 304, 309, 312, 314 (as of `48489b7`; docs lane
+  `docs-errata-18`, group A); the orchestrator's merge checks and the testers' means of 4 builds, exact B br). Per
+  lane, main -> merge (docs-errata-17 `65f3e56` is docs only):
+  - **GM4** `d695053`: engine 200,969 -> **201,123** (+154 against E 0.09, under the +0.740 KB STOP; sample 1.711),
+    explore-ui **10,737** (+291 against E 0.5; sample 0.582 recorded), entry **39,152** (-12), first line **240,275**,
+    all JS **275,259**, first load ch1 **292,921** / ch3 **272,436** (RULINGS 292).
+  - **GM4u** `aac7a97`: engine **201,429** (+306, under the +0.520 KB STOP), explore-ui **10,826** (+89; sample 0.445
+    recorded), entry **39,117** (-35, hash text), first line **240,546**, all JS **275,631**, first load ch1
+    **293,390** / ch3 **272,750**. The GM4 + GM4u pair's engine sample (154 + 306) / 100 = **4.60** replaces GM4's
+    1.711, n stays 16 (RULINGS 296 Q2, 304).
+  - **GM5** `5190235`: engine **202,009** (+580 against E 0.2, under the +1.033 KB STOP; sample **2.90**), explore-ui
+    **11,391** (+565; sample 0.94 recorded), entry **39,143** (hash text only), cue-stage 6,083, first line
+    **241,152**, all JS **276,791**, first load ch1 **293,995** / ch3 **273,355** (RULINGS 312).
+  - **SH5a** `48489b7` (merged after GM5, on a tree tested as merged): engine **204,295** (+2,286 on the merge tree;
+    on its base `aac7a97` +2,211 raw, under +3.612 KB, and **+1,657 net** by RULINGS 302 Q9, under +3.112 KB; sample
+    1.657 / 1.3 = **1.27**), entry **39,163** (+20, hash text only: no entry change by module identity, RULINGS 269,
+    309), first line **243,458**, explore-ui **11,385**, cue-stage 6,086, all JS **279,097**, first load ch1
+    **296,301** / ch3 **275,661** (RULINGS 314).
+  **R** (the estimate policy below): engine **2.603** (n 18: -0.127, 0.123, 0.527, 1.009, **1.27**, 1.31, 1.527,
+  1.700, 2.306, **2.90**, 3.025, 3.131, 3.513, 3.546, 4.000, **4.60**, 5.96, 11.1; the median (2.306 + 2.90) / 2;
+  RULINGS 314); explore-ui stays **2.319** (its list not rebuilt, RULINGS 214's rule). Remaining terms (ARITHMETIC,
+  RULINGS 292, 312, 314): engine 7.56 -> 7.47 (GM4's 0.09) -> 7.461 (after GM4u, as RULINGS 312 counts it) -> 7.261
+  (GM5's 0.2) -> **5.961** (SH5a's 1.3; GM5f restates its own term at its cut, RULINGS 306 Q3); entry **0**. Projection (RULINGS 314): **Ledger
+  4** 204.295 + 5.961 x 2.603 = **219.811 / 230.0 (10.189 left)**; **Ledger 2** **39.163 / 40.0 (0.837 left)**;
+  **Ledger 1** 243.458 + 15.516 = **258.974 / 270.0 (11.026 left)**. The trigger does not hold: Y stays on the shelf
+  until a ledger is within 1.0 KB; the GM3b engine-lever candidate waits for a ledger within 2.0 KB (RULINGS 253).
+  L2's return line does not hold: 0.837 KB is left.
 - **The path rule (RULINGS 201; the union rule, budget round r198 design §3.1).** Ledgers 1 and 4 count every JS chunk
   that some supported WebView requests **automatically before its first line** on the boot -> chapter -> first-line
   path, a capability fallback included (Pixi's three renderer facades: a device requests one by what it is): the
@@ -346,6 +373,10 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   SH3b's and Q69's merges gave no sample; at GM6t's (RULINGS 269): the entry sample 2.55, with no entry term left;
   (Changed by RULINGS 290 (as of `768fc9d`; docs lane `docs-errata-17`, group A)) SH3c's and GM4g's merges gave no
   sample (build tools); at SH4's (RULINGS 290): engine **2.306** (n 15; the sample 1.527);
+  (Changed by RULINGS 292, 304, 312, 314 (as of `48489b7`; docs lane `docs-errata-18`, group A)) at GM4's (RULINGS
+  292): engine **2.009** (n 16; the sample 1.711); at GM4u's (RULINGS 304): engine **2.666** (the pair's 4.60
+  replaces 1.711, n 16); at GM5's (RULINGS 312): engine **2.90** (n 17); at SH5a's (RULINGS 314): engine **2.603**
+  (n 18; Q9's net sample 1.27); the explore-ui samples 0.582, 0.445 and 0.94 recorded, its R kept at 2.319;
   cue-stage and `scene-motion` use the all-JS R. **Stability note:** the engine sample is bimodal (1.009 | 3.025, SH1
   between), so each next sample moves the median toward its own ratio; this is why the trigger is evaluated at every
   merge, and why Ledger 3's one-time LIMIT is set on the upper quartile, not the median. **Booking:** (2a) the unit is
@@ -550,6 +581,17 @@ not hold**; the GM3b candidate waits for a ledger within 2.0 KB (RULINGS 253); L
 once by the orchestrator's **pre-merge lens check** (RULINGS 289): three independent verifiers (paid content,
 lifetime, gate honesty), each finding sent to a refuter; it found one gate claim that could not fail (TM13), pinned
 test-only in fix2 before the merge. Per-merge rows: the `768fc9d` bullet above.
+
+**Ruled since: RULINGS 292, 296, 302, 304, 309, 310, 311, 312, 314** — GM4 (`d695053`), GM4u (`aac7a97`), GM5
+(`5190235`) and SH5a (`48489b7`) took the engine to 204,295 B. GM4u's pair sample (4.60) replaced GM4's (RULINGS 296
+Q2), GM5's 2.90 and SH5a's net 1.27 (RULINGS 302 Q9: the STOP judged on the net delta) joined, and **R is 2.603**
+(n 18). After SH5a: **Ledger 4 219.811 / 230.0** (10.189 left), **Ledger 2 39.163 / 40.0** (0.837 left), **Ledger 1
+258.974 / 270.0** (11.026 left), with 5.961 KB of engine terms and no entry term left. **The trigger does not hold**;
+the GM3b candidate waits for a ledger within 2.0 KB (RULINGS 253); L2 stays shelved. The entry row moved only by
+hash text, judged by module identity (RULINGS 269, 309). The orchestrator's **pre-merge lens check** (RULINGS 289)
+ran at every one of the four merges: it found test gaps in GM5 (G-LAYER, an unpinned ruled clause) and in SH5a (G22,
+G58, G15, three unpinned new rules), each closed by a fix round before the merge (RULINGS 310, 311; fix2, fix4).
+Per-merge rows: the `48489b7` bullet above.
 
 **One owner per figure (reconcile r2, RC-W1).** This section owns the sums, headrooms and verdicts of the three
 designs; each design owns its own lane terms (EN §3.5, per-player §10 "Ledgers", the shots §9 / §10 with this

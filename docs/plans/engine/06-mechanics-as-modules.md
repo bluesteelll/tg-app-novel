@@ -53,6 +53,44 @@
 - **Texts (round 6, W1):** `COMBINE_TEXTS` in `client/scripts/story/mechanics/combine.ts` declares each
   `recipes.<i>.say` (role `toast`, reach []); one `MECHANIC_TEXTS` line. Test (GM5) `combine: a recipe's say is a world
   line of role toast` (red: the line absent).
+- **Ruled since: RULINGS 305, 306, 307, 308, 309, 310, 312** — as built (GM5 `5190235`, lock 22; cut r3 and the fix2
+  round). Where this section and the points below differ, the points hold.
+  - **The data:** a top-level `recipes` key (module `combine`, `client/src/mechanics/data/index.ts:54-61`), each
+    `{ a, b, gives, keep?, when?, say? }` (`Recipe`, `client/src/mechanics/data/combine.ts:14-25`; `keep` default [],
+    `when` and `say` null).
+  - **The action and its refusal:** the ribbon dispatches `combine {a, b}` when the selected item is tapped onto another
+    (`oncombine`, `client/src/app/yields.ts:1389-1395`: the selection settles back first, then the dispatch, in one
+    `h.tap` block). `applyCombine` (`client/src/mechanics/rules/combine.ts:112-134`) runs in any current section with no
+    event knot pending: the first recipe of the unordered pair whose `when` holds writes `held - inputs not kept`,
+    `used + those`, then `held + gives`, with the product's `got` toast and the recipe's `say`. No recipe: nothing is
+    written, and two cues shake both ribbon items, `module:combine:refused` on the selected item (the error haptic)
+    and `module:combine:refused-with` on the tapped one (no haptic; `client/src/cues/stage/motions.ts:219-220`): one
+    refusal, one error haptic (RULINGS 306). `combineActions` (`:84`) lists a recipe only while its own section is
+    current, each unordered pair once, so the section searches stay per section.
+  - **`world/recipe-scope`** (`client/scripts/story/mechanics/combine.ts:34`, `combineFindings` `:45`): a recipe's
+    inputs belong to one section S (the first section that gives both, through a chain of S's own recipes in any source
+    order: `recipeSections`, `rules/combine.ts:49`); its product is accepted by no lock of another section (X15: the
+    kernel's `world/cross-section-item` reads kernel gifts only); each `when` is a gating condition of S
+    (`world/cross-section-cond`, `world/cond-size`). An unknown item is `world/recipe-unknown-ref`. The commutation
+    argument as built (RULINGS 307 C1): a combine in another section B writes only S-scoped facts **that B's key
+    ignores and B's rules never read**; the property test (`combine: combining in another section equals combining
+    before leaving the recipe's section`) compares B's enabled steps and their successors' B-keys from `combine(x)` and
+    from `x`, seen red on its mutant (B's lock accepts the product).
+  - **Ruled: RULINGS 310** — **one giver per product:** a recipe's product has no other giver: no take, trigger or `use`
+    rule of any section, and no other recipe of any section, S included (a gift fires once, so a second giver of a held
+    product would consume its inputs for nothing); refused under `world/recipe-scope` at `<recipe>.gives`, no new code.
+    Pinned by `story: a recipe's product has one giver`.
+  - **Ruled: RULINGS 307** — W1 (a): the decoder refuses a recipe whose `keep` holds both inputs
+    (`data/combine.ts:79-82`: "a recipe consumes at least one of its inputs"), so every run removes an input and no
+    pair is a cue-less self-loop in the playthrough. If content ever needs keep-both, the path is the fire-once
+    extension (b): a fired key per recipe, its key cost measured then.
+  - **Texts:** `COMBINE_TEXTS` (`client/scripts/story/mechanics/combine.ts:29`) walks every recipe's `say` (role
+    `toast`, reach []), registered in `MECHANIC_TEXTS` (`client/scripts/story/mechanics/index.ts:66`); a paid recipe's
+    say is a paid needle. `MECHANIC_STORIES.combine` is null (no recipe enters a knot).
+  - **Open (carried to the next holder of `yields.ts`' selection, with `use`):** the hand empties after a refused
+    `combine`, as after a refused `use` (`yields.ts:1382-1395`: `onuse` and `oncombine` deselect before the dispatch). Whether the item stays in
+    hand after a refusal is one question for both ([08b §8.2](08b-interactions-mechanism-presenters.md#82-i5-every-ui-interaction-and-its-mechanism),
+    "Open: the selection after a refusal").
 
 ### 6.3 `view`: full-screen zoom views (GM4; O5)
 
@@ -182,6 +220,96 @@
   views, CGs and the first knot's art together (ARITHMETIC at the limit; real files are smaller). The row gates it
   already; the author trades views against CGs inside it.
 - **Devices in a view** render inside the room layer, not in App's puzzle layer (W1, round 3): §7.5.
+- **Ruled since: RULINGS 285, 286, 287, 288, 292** — as built (GM4 `d695053`, lock 19; cut r3 and its Addendum
+  (RULINGS 287)). Where this section and the points below differ, the points hold.
+  - **One source for a move's kind:** `moveHow` (`client/src/mechanics/rules/view.ts:27`) names every move core's exit
+    tap makes (`'zoom-in'` when the target's `of` is the current room, `'zoom-out'` when the current room's `of` is the
+    target, else `'walk'`); `leave-view` (`applyView` `:61`) moves through core's own `arrive` with `how: 'zoom-out'`
+    and `via: null`, so a leave reaches the state an exit back reaches. `viewActions` (`:56`) offers it only in a view
+    of a current section with no event knot pending; it checks no lock, so **a locked exit back from a view does not
+    hold the player**. `viewParent` (`:21`) is the one reader of `of`; the runtime never walks the `of` chain.
+  - **The walk by `e.how`** (`client/src/explore/controller.ts:358-382`): a zoom-in pushes the room left whatever exits
+    the view has; a zoom-out (by `leave-view` or an exit to `of`) truncates the path at `of` when it is on it, else
+    leaves it, and never pushes the view; a walk keeps D7's rule. "Back has a target" is `path.length > 0 || inView()`
+    (`:386-390`); `back()` dispatches `leave-view` in a view, one level per press (`:465-468`).
+  - **Back-first and one exit-rooms rule:** `neighbours(room)` (`controller.ts:184-188`) is Back's target (a view's
+    parent; else the path's last room) first, then `nearRooms` (`rules/view.ts:36`): a view's parent, then the rooms of
+    R's exits in hotspot order, distinct, same section, a locked exit included, a story exit and R not. The story
+    tool writes the same rule as the usage neighbours (`client/scripts/story/emit.ts:359-376`), so a view's parent is
+    its first usage neighbour and every view has a `room-set` row.
+  - **The leaf zoom keep** (cut §1.3a; RULINGS 286 Q3): a zoom-in into a view whose only neighbour is its parent keeps
+    `state:<parent>` (`controller.ts:213`, `keepsParentSet = e.how === 'zoom-in' && near.every((n) => n === e.from)`,
+    read at `:224`). **Proof that it displaces no neighbour bg:** the one neighbour bg `roomShown(V)` asks for is the
+    parent's, which `room:<parent>` already holds (a join, never refused), and under the hard-cap eviction both
+    holders go and the built order asks the bg first. **Its memory** is V's own `room-set` pair term (V's set + the
+    parent's plate and props), so a PASS bounds it under the steady cap; the kept files and characters on stage sit
+    outside the row, as for every room. **Counts per zoom round trip P -> V -> P:** P's bg once (kept `room:P`); each of
+    P's state images **once** for a leaf view, **twice** for a view with another neighbour (a child view); each of P's
+    other neighbour bgs **twice**. Pinned by `controller: a zoom round trip P -> V -> P fetches each of P's state images
+    once` and the twice test beside it, under M-R13h and M-K1..M-K4 (12d GM4). Walks and every other zoom release as
+    §6.4 round 13 states.
+  - **Q9's stated refetch:** P's other neighbour bgs leave the keep set at the zoom-in (`keep(V) = {V, ...neighbours(V)}`
+    does not hold them), so P's return fetches each again in the background: (|neighbours(P)| - 1) x <= 300,000 B AVIF
+    (450,000 B WebP) per zoom round trip. Holding them would put them ahead of V's own set and outside V's row, so the
+    keep stays this narrow (M-K4); carried to the preload-priority lane (RULINGS 152 Q14 (b)) with Q5, O2 and the
+    navmem lens's open question.
+  - **The note's exactness** (GM4g's `preloads k of n`, `client/scripts/budget.ts:1126`): for a view it is exact (its
+    Back target is its parent, `nearRooms`' first entry); a leaf view reads `preloads 1 of 1` with the parent live. For
+    a non-view room the note is not a guaranteed worst case under Back-first (carried to the next `budget.ts` holder,
+    RULINGS 286 Q4).
+  - **Transition:** a zoom move's room batch is a `bg` crossfade of `VIEW_FADE_MS` = 400 ms
+    (`client/src/app/yields.ts:49`, `:746-750`); a walk keeps the dip. Pinned by `yields: a zoom move crossfades the bg`.
+  - **Ruled: RULINGS 286** — Q2: `world/one-way-exit` exempts an exit into a view; GM4u built it for **any** exit
+    into a view, at any depth (`client/scripts/story/world.ts:601-606`), so a depth-2 view (no exit back:
+    `world/view-entry` refuses an exit from a view to its parent view) is authorable and leaves by `leave-view` only.
+  - **Pins:** `mechanics: every action kind has one handler` (`client/src/mechanics/registry.test.ts:454`) is a
+    vitest pin as well as a `check` pin: without its `kinds` line, svelte-check fails on the `satisfies` and vitest on
+    `expect(Object.keys(APPLY).sort()).toEqual(Object.keys(kinds).sort())` (GM4 `impl.md`).
+- **Ruled since: RULINGS 293, 296, 298, 300, 302, 304** — as built (GM4u `aac7a97`, lock 14; cut r3 and its Addendum
+  (RULINGS 300)).
+  - **The leave control:** the store's `inView` (`client/src/ui/explore-view.svelte.ts:120`, `:137`) is written by
+    yields in the room batch's synchronous run, with the layer, by the controller's own rule over its state
+    (`client/src/app/yields.ts:760-764`), and reset to `false` at dispose (`:1410`). `ExploreView`'s `.bar` shows the
+    control first while `view.inView` (`client/src/ui/explore/ExploreView.svelte:95-96`: `data-cue="view-leave"`,
+    labelled with Back's string `explore.room_back`); `onleaveview` is a required layer action
+    (`explore-view.svelte.ts:79`, forwarded `:99`) and yields wires it to `back`, the BackButton's own press
+    (`yields.ts:1396`). The control sits under `inert` with every sheet. Pinned by `explore: the view bar's leave
+    control leaves the view` and the e2e `mechanics: zoom into the desk and back with the BackButton and with the
+    leave control`, `mechanics: a reload inside a view resumes there and offers Back`.
+  - **The first committed view:** ch1's `desk_view`, a view of the study (bg `room`, no exit back, no hotspot), entered
+    by the study's `to_desk` (`story/ch1/world.json:121-123`, `:142-148`).
+  - **Ruled: RULINGS 296** — a view as a section's start room is refused under the existing `world/view-entry` at
+    `sections.<sid>.start` (`client/scripts/story/mechanics/view.ts:49-52`); the one-way-exit exemption covers an
+    exit into a view at any depth (RULINGS 286 Q2, above).
+  - **Ruled: RULINGS 298, 300** — the zoom-out by no exit (`leave-view`, from the control or the BackButton) carries
+    the drawn box of the parent's first shown exit into the view just left, the zoom-in's box read backwards
+    (`exitBoxInto`, `yields.ts:517-521`, used at `:592`); a zoom-out by an exit keeps its `via` box. A view that no
+    parent exit enters cannot be reached at runtime: a save standing in it restarts its section on load (`reconcile`
+    -> `unproved` -> `admitSection` from the start room, `'no'` -> restart with its reset toast), so the null-box cue
+    is a defensive fallback only ([08b §8.4](08b-interactions-mechanism-presenters.md#84-the-presenter-table-every-cue---default-motion),
+    the `move:zoom-in` / `move:zoom-out` row).
+  - **Ruled: RULINGS 304** — M-MEM-1, as revised by SH5a (RULINGS 311, 314). RULINGS 296 Q3's "a zoom round trip
+    loads bg/room and then bg/hall on tap" was false: on `aac7a97` bg/hall stays resident under GameSession's legacy
+    knot hold `preload:manor_arrive` for the whole exploration, and only bg/room loads on tap at the zoom-in. Cut
+    1.6's desk prediction (about 26.71 MB) was false there: the desk view read 35,559,504 B of live textures (counted
+    35,600,183 B: the explore set 20,647,565 B + the knot hold 14,952,618 B), over the 33,554,432 B steady cap and under
+    the hard cap (K5). **On `48489b7` the
+    desk view holds 26,712,144 B**, because SH5a's `hold` keeps only `char/` images in a chapter with a decoding
+    `look` (`client/src/app/game.ts:1084-1097`); the knot hold's off-stage `char/ally/neutral` (3,044,496 B) remains.
+    The study's "preloads 1 of 2" binding term before the first event knot of a fresh start is that off-stage
+    character (GM4g Q1's "no characters on stage" misses it). The knot hold's lifetime during exploration, a budget row
+    for room-set + a carried knot hold, and the steady-cap e2e at a close-up and a view stay carried (M-MEM-2) to the
+    preload-priority lane (RULINGS 152 Q14 (b)) and SH11.
+  - **Ruled: RULINGS 307, 308** (as built, GM5 `5190235`) — **the bar stays centred** (RULINGS 307 revises RULINGS
+    304's stable slot: `.bar` keeps `justify-content: center`, `client/src/ui/explore/ExploreView.svelte:181-191`, so
+    the bar re-centres when the leave control comes or goes). Instead, Inventory and Reveal go through `h.tap`
+    (`barTap`, `client/src/app/yields.ts:1334-1340`) **only** in a room batch whose synchronous run flips
+    `explore.inView` while the layer was already shown (a zoom into a view, a zoom-out or leave out of one: `barShift`,
+    `:361`, set at `:763`, cleared in a `finally` at the batch's end `:768-773` and on dispose `:1411`). There a bar tap
+    completes that batch and opens nothing; in every other batch and at rest Inventory and Reveal open at once. During
+    a zoom's art load-wait such a tap is swallowed (the fade completes; a load in progress continues): the scene's
+    `complete()` reaches enqueued batches only, so on a slow network the bar stays dead until the view's art arrives
+    (GM5 player lens F4; views are exit neighbours, so preloading makes it rare).
 
 ### 6.4 `visual`: state-derived room pictures (GM3b; replaces LFU3's B-001 fix)
 
@@ -384,6 +512,9 @@ export function roomImages(w: WorldPublic, room: RoomId): readonly PropId[];
     after V's neighbours. Otherwise P's set is requested again: at V in the background, one request per image whose
     record ended, or at P's return when refused at V. A priority between preload holders would keep a fitting set with
     no new request; that is the carried preload-priority lane (RULINGS 152 Q14 (b)), which W1 does not need.
+    Changed by RULINGS 286, 292 (as of `48489b7`; docs lane `docs-errata-18`, group A): **except a leaf view (GM4's
+    keep):** a zoom-in into a view whose only neighbour is P keeps P's set, so each of P's state images is fetched once
+    per round trip ([§6.3](#63-view-full-screen-zoom-views-gm4-o5), "Ruled since: RULINGS 285, 286, 287, 288, 292").
   - **RULINGS 245 Q8, as built** (Changed by RULINGS 290 (as of `768fc9d`; docs lane `docs-errata-17`, group A);
     SH4 `768fc9d`, rider R3): a prop that moves keeps its live record, drawn at its new anchor in the same batch with
     no new take, whether into an anchor the target names or out of one to its own key (`syncProps`,

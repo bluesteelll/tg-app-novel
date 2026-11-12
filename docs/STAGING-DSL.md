@@ -701,6 +701,13 @@ fixed:
     the room arrived from and the neighbours it shares with this room first). It counts no characters on stage. The
     note is a report, never a FAIL (`client/scripts/budget.ts:1169`; the note's text `preloadNote` `:1157`, its count
     `neighbourPreloads` `:1126`).
+    Changed by RULINGS 286, 287, 292 (as of `48489b7`; docs lane `docs-errata-18`, group A): a room's neighbour rooms
+    (`neighbourRooms` and `neighbours` in `usage.json`) are `nearRooms` (`client/src/mechanics/rules/view.ts:36`, the
+    one rule the explore controller preloads by): a view's parent first, then the rooms the room's exits lead to in
+    hotspot order, distinct, of the same section, a locked exit included, a story exit and the room itself not. The
+    usage decoder refuses a neighbour room listed twice or naming the room itself (`client/scripts/story/emit.ts:609-622`).
+    For a view the note is exact: its Back target is always its parent, which it lists first; a leaf view (no child
+    view) reads `preloads 1 of 1`. Every view gets its own row.
   - **`first-load <ch>`** (the head of each story). The download before the first line of a fresh start: the JS, CSS,
     html and TWA script, the chapter catalog and the covers, the chapter's story, meta and manifest, its public world
     (a chapter with a world) and its en table (GM4g: the files the first line awaits for an en-UI player), and its first
@@ -917,7 +924,7 @@ check (the second table below).
 | `world/duplicate-id`, `world/id-reserved` | E | rooms collide across sections; a puzzle id ends in `_hints` |
 | `world/unknown-asset` | E | room `bg`, `prop`, `closeup` (cg), section `bgm`, exit `sfx` not in the catalog |
 | `world/unknown-ref` | E | an item, doc, puzzle, room or hotspot key referenced but not defined; an effect knot not in the chapter |
-| `world/one-way-exit` | E | a room→room exit without a reverse exit |
+| `world/one-way-exit` | E | a room→room exit without a reverse exit; an exit into a view (a room with `view`, AUTHORING "Hotspot kinds") needs none, at any depth (as merged, GM4u `aac7a97`; RULINGS 286, 296) |
 | `world/hotspot-frame` | E | a rect outside the safe frame `x 80–1000, y 160–1760` |
 | `world/hotspot-small` / `world/hotspot-overlap` | W | a rect under 150×150 source px (44 CSS px at a 0.296 scale, 320×568); overlapping rects |
 | `world/props-per-room` | E | more than 8 props in a room |

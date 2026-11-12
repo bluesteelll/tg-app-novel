@@ -29,6 +29,9 @@
 | SH12a `sprites-out` (rev. 4: the kinds, atomic) | MD3's flat-character removal |
 | SH12b `sprites-residue` (rev. 4: `budget/knot-set`, `charPlacement`) | MD3's flat-character removal |
 
+**Ruled: RULINGS 294** — O-B1 (a): this table stays the plan's lane list (`Lane | Replaces`), with no state column;
+lane state lives in engine §12 ([§9.14](09f-order-and-conflicts.md#914-order-and-conflicts-superseded-by-engine-12)).
+
 ### 9.1 SH1 `shot-dsl` (client)
 
 **Goal:** §3.1-3.2 and the snapshot (S24).

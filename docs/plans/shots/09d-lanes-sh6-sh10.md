@@ -265,6 +265,10 @@ round 3's moves did not yet fetch a sheet on tap; I-16.
   name (`client/scripts/assets/extract.ts:109-113`, `:608-609`); lifting them needs the asset tool's `src` ambient
   (flicker masks, ambient loop frames <= 256 x 256 and <= 8 frames, particles, sway) and the same widened
   sheet-existence rule (`usage.ts:90-92`).
+- Changed by RULINGS 294 (as of `48489b7`; docs lane `docs-errata-18`, group A): lifting those two refusals edits
+  `client/scripts/assets/extract.ts` itself (both lines hold on `48489b7`), so the lane that lifts them (SH9, or the
+  shot-assets lane before it) also holds `client/scripts/assets/extract.ts`. The two refusals' pins are in
+  `client/scripts/assets/assets.test.ts:2109-2122`, a file already in the list above; the cut states the lock.
 
 **Commits:**
 1. Sources:
