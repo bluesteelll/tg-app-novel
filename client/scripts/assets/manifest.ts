@@ -37,6 +37,8 @@ export {
   decodeChapterMeta,
   decodeCoverManifest,
 } from '../../src/story/catalog.ts';
+/** The world decoder, for the asset tool's R8 (a room's prop rects over a `src` shot's figures, lane SH3c). */
+export { decodeWorldSource } from '../../src/world/decode.ts';
 /** The registry's preload cap: the knot-set and room-set rows' limit (MEMORY-PLAN M2). */
 export { STEADY_CAP_BYTES } from '../../src/scene/registry.ts';
 export { PIXI_ENV_SRCS, SKIP_PIXI_ENV } from '../../src/scene/pixi-env.ts';
@@ -299,6 +301,27 @@ export function canvasProblems(encoded: ReadonlyMap<AssetId, Encoded>): string[]
   return problems;
 }
 
+/**
+ * Principle 0 at the file level (fix3 I-0): each file planned under `ASSET_OUT.paid` whose bytes equal a file planned
+ * under `ASSET_OUT.public`, one line each, sorted by the gated path, naming the first public twin (sorted) by path;
+ * empty when none. Such a file ships publicly under its twin's name, and scan-dist's hash arm finds it there. The asset
+ * tool checks the plan before it sweeps or writes anything.
+ */
+export function gatedCopies(files: ReadonlyMap<string, Uint8Array>): string[] {
+  const under = (dir: string): [string, Uint8Array][] => [...files].filter(([p]) => p.startsWith(`${dir}/`)).sort(([a], [b]) => (a < b ? -1 : 1));
+  const publicBySha = new Map<string, string>();
+  for (const [p, bytes] of under(ASSET_OUT.public)) {
+    const sha = sha256Hex(bytes);
+    if (!publicBySha.has(sha)) {
+      publicBySha.set(sha, p);
+    }
+  }
+  return under(ASSET_OUT.paid).flatMap(([p, bytes]) => {
+    const twin = publicBySha.get(sha256Hex(bytes));
+    return twin === undefined ? [] : [`${p} has the bytes of ${twin} (principle 0: a gated file is never a public file's copy)`];
+  });
+}
+
 /** server/content/build/fingerprints.assets.json: one entry per paid file, sorted by name. */
 export type AssetFingerprint = { asset: AssetId; name: string; sha256: string };
 export type AssetFingerprints = { files: readonly AssetFingerprint[] };
@@ -314,8 +337,8 @@ export function sha256Hex(bytes: Uint8Array): string {
 
 /**
  * `<ns>-<id parts joined by ->[-half]-<hash8>.<ext>`, inside the server's name rule. Injective: ids never hold '-' and
- * each namespace has a fixed number of parts (char 3, every other 2), so a half name has one segment more than its full
- * name and its first segment still names its namespace.
+ * each namespace has a fixed number of parts (char 3, face and talk 4, every other 2), so a half name has one segment
+ * more than its full name and its first segment still names its namespace.
  */
 export function assetFileName(id: AssetId, bytes: Uint8Array, ext: 'avif' | 'webp' | 'wav', size: SizeTier): string {
   return `${id.replaceAll('/', '-')}${size === 'half' ? '-half' : ''}-${sha256Hex(bytes).slice(0, 8)}.${ext}`;
