@@ -9,8 +9,8 @@ import { decodeShotSource, depthGrid, extractShot, maskMoments } from './extract
 import type { Extracted } from './extract.ts';
 import { geometry, syntheticShot } from './fixtures/shot/synthetic.ts';
 import type { SyntheticShot } from './fixtures/shot/synthetic.ts';
-import { COARSE, packShot, shotFileRaster } from './shots.ts';
-import type { ChapterNeed, ExprLayers, Raster, ShotLayers } from './shots.ts';
+import { COARSE, packShot, shotFileRaster, shotRig } from './shots.ts';
+import type { ChapterNeed, ExprLayers, PackedFile, Raster, ShotLayers } from './shots.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // The pure extraction (extract.ts, shots §4.2-4.3) over the synthetic `src` shot (fixtures/shot/synthetic.ts, 160 × 320).
@@ -275,14 +275,19 @@ describe('extract', () => {
   });
 
   test('assets: overlapping blink and accent boxes are cut as masked layers', async () => {
-    // §4.2 step 7b (rev. 3, m7; critique O4): angry lowers the brow (its diff misses the rest blink box E, so the rest
-    // blink is reused) and its own accent lowers it further: the accent's box overlaps E while the two diffs stay 6 px
-    // apart. Both layers are masked: alpha 255 within 2 px of the layer's own diff, 170 at 3, 85 at 4, 0 beyond. The rest
-    // blink is one Layer, so it is masked wherever it is used (exact: angry equals the plate inside E).
+    // §4.2 step 7b (rev. 3, m7; fix3 M1, per file): angry lowers the brow (its diff misses the rest blink box E, so the
+    // rest blink is reused) and its own accent lowers it further: the accent's box overlaps E while the two diffs stay
+    // 6 px apart. Both layers are masked in angry's file: alpha 255 within 2 px of the layer's own diff, 170 at 3, 85 at
+    // 4, 0 beyond. The rest blink is masked in angry's file and a rectangle in the sheet, where the rest's own layers do
+    // not overlap it (exact either way: angry equals the plate inside E).
     const fx = syntheticShot();
     const layers = layersOf(await extract(fx, [needOf('ch1', [['neutral', false], ['angry', false]])]));
     const [rest, angry] = [exprOf(layers, 'neutral'), exprOf(layers, 'angry')];
-    expect(angry.blink.half).toBe(rest.blink.half);
+    // One state in two forms: angry's at E with the rest blink's colour, masked; the rest's own, a rectangle.
+    expect([angry.blink.half.box, angry.blink.closed.box]).toEqual([rest.blink.half.box, rest.blink.closed.box]);
+    const rgb = (r: Raster): number[] => [...r.data].filter((_, i) => i % 4 !== 3);
+    expect([rgb(angry.blink.half.fill), rgb(angry.blink.closed.fill)]).toEqual([rgb(rest.blink.half.fill), rgb(rest.blink.closed.fill)]);
+    expect([angry.blink.half.masked, rest.blink.half.masked, rest.blink.closed.masked]).toEqual([true, undefined, undefined]);
     expect(angry.accent).not.toBe(rest.accent);
     expect([angry.accent.masked, angry.blink.half.masked, angry.blink.closed.masked]).toEqual([true, true, true]);
     expect([rest.accent.masked, angry.layer?.masked]).toEqual([undefined, undefined]);
@@ -315,7 +320,8 @@ describe('extract', () => {
     const pack = packShot(layers);
     const motion = pack.cast[0]?.exprs.get('angry' as ExprId)?.motion;
     expect([motion?.accent.masked, motion?.blink.half.masked, motion?.blink.closed.masked]).toEqual([true, true, true]);
-    expect(pack.cast[0]?.exprs.get('neutral' as ExprId)?.motion.blink.half).toMatchObject({ file: 'sheet/cafe', masked: true });
+    const restBlink = pack.cast[0]?.exprs.get('neutral' as ExprId)?.motion.blink.half;
+    expect([restBlink?.file, restBlink?.masked]).toEqual(['sheet/cafe', undefined]);
     expect(pack.cast[0]?.exprs.get('neutral' as ExprId)?.motion.accent.masked).toBeUndefined();
     const file = pack.files.get('face/cafe/ally/angry' as AssetId);
     const item = file?.items.find((i) => i.key === 'ally/angry/accent');
@@ -327,6 +333,44 @@ describe('extract', () => {
       for (let x = 0; x < bw; x++) {
         expect(alphaIn(composed, fx0 + x, fy0 + y, composed?.w ?? 0)).toBe(alphaIn(angry.accent.fill, x, y, bw));
       }
+    }
+  });
+
+  test('assets: a motion state is masked only in the files of an expression whose layers overlap it', async () => {
+    // §4.2 step 7b per file (fix3 M1; supersedes cut O4): angry's own accent overlaps the rest blink box E, so the rest
+    // blink is masked in angry's face file, and only there. A paid chapter's angry changes no byte, no masked flag and no
+    // rig field of what free ch1 needs: the sheet, smile's face file and smile's talk file are cut as without it.
+    const fx = syntheticShot();
+    const ch1 = needOf('ch1', [['neutral', false], ['smile', true]]);
+    const [a, b] = [await extract(fx, [ch1]), await extract(fx, [ch1, needOf('ch2', [['angry', false]])])];
+    const [layersA, layersB] = [layersOf(a), layersOf(b)];
+    const [packA, packB] = [packShot(layersA), packShot(layersB)];
+    const masked = (file: PackedFile<Raster> | undefined): string[] => (file?.items ?? []).filter((i) => i.masked === true).map((i) => i.key);
+    const differing = (x: Raster | undefined, y: Raster | undefined): number => {
+      let n = 0;
+      for (let i = 0; i < Math.max(x?.data.length ?? 0, y?.data.length ?? 0); i++) {
+        n += x?.data[i] === y?.data[i] ? 0 : 1;
+      }
+      return n;
+    };
+    for (const id of ['sheet/cafe', 'face/cafe/ally/smile', 'talk/cafe/ally/smile']) {
+      const [fa, fb] = [packA.files.get(id as AssetId), packB.files.get(id as AssetId)];
+      const [ra, rb] = [fa === undefined ? undefined : shotFileRaster(fa), fb === undefined ? undefined : shotFileRaster(fb)];
+      expect([ra?.w, ra?.h], `${id}: in both runs, one size`).toEqual([rb?.w ?? -1, rb?.h ?? -1]);
+      expect(differing(ra, rb), `${id}: bytes that differ with ch2's angry`).toBe(0);
+      expect(masked(fb), `${id}: masked items`).toEqual(masked(fa));
+    }
+    const depth = (r: Result<Extracted, string[]>): Uint8Array => (r.ok ? r.value.depth : new Uint8Array(0));
+    expect(shotRig(layersB, packB, ch1.need, depth(b)), "ch1's rig").toEqual(shotRig(layersA, packA, ch1.need, depth(a)));
+    // In angry's own file its blink copies and its accent are masked; the copies sit at E with the rest blink's colour.
+    const angry = packB.files.get('face/cafe/ally/angry' as AssetId);
+    expect(masked(angry).sort()).toEqual(['ally/angry/accent', 'ally/angry/blink.closed', 'ally/angry/blink.half']);
+    const rest = exprOf(layersB, 'neutral');
+    const rgb = (r: Raster | undefined): number[] => [...(r?.data ?? [])].filter((_, i) => i % 4 !== 3);
+    for (const [state, layer] of [['half', rest.blink.half], ['closed', rest.blink.closed]] as const) {
+      const item = angry?.items.find((i) => i.key === `ally/angry/blink.${state}`);
+      expect(item?.at, state).toEqual(layer.box);
+      expect(rgb(item?.fill), state).toEqual(rgb(layer.fill));
     }
   });
 

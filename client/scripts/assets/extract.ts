@@ -637,8 +637,8 @@ export type Extracted = { readonly layers: ShotLayers<Raster>; readonly depth: U
 
 /**
  * Extracts a `src` shot (§4.2 steps 1-6), its original and plate opaque inside the crop (§4.3, fix3 F1) before any
- * other file is read: the rest motion boxes E / M / B, each needed expression's layer, its motion
- * states (its own where it changes that box, else the rest's own `Layer`: the reuse rule, step 3), the cut-out layers,
+ * other file is read: the rest motion boxes E / M / B, each needed expression's layer, its motion states (its own where
+ * it changes that box, else the rest's own state cut in its form: the reuse rule, step 3; fix3 M1), the cut-out layers,
  * the figure moments, the head mask's box and the depth grid; every problem reported by name, nothing thrown.
  */
 export async function extractShot(input: ExtractInput): Promise<Result<Extracted, string[]>> {
@@ -777,8 +777,8 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
   /**
    * §4.2 steps 1-3 for one face member: the rest states against the plate (E, B, and M where the rest is spoken), each
    * needed expression's layer against the plate, and its motion states: its own against it where its diff meets that
-   * rest box, else the rest's own `Layer` (copied into its file by the packer, §2.6). Every variant registers (R1, R3);
-   * R2 then tests the motion layers each expression uses together.
+   * rest box, else the rest's own state (copied into its file by the packer, §2.6). Every variant registers (R1, R3);
+   * R2 then tests the motion layers each expression uses together, and decides which are masked in its own files.
    */
   const faceStates = async (
     c: CharId,
@@ -816,22 +816,31 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
       readonly joint?: readonly [State, State];
     };
     const plans = new Map<ExprId, Plan>();
-    /** The states some expression masks (O4: a reused rest state masked anywhere is masked everywhere: one `Layer`). */
-    const masked = new Set<State>();
+    /**
+     * The states masked in each expression's own files (fix3 M1, supersedes cut O4): a state is masked in the files of an
+     * expression whose own R2 overlaps it (the rest's: the sheet and `talk/<rest>`), so another expression's needs never
+     * change how a file is cut. A reused rest state is the same State cut in x's form, exact in either (§4.2 7b).
+     */
+    const maskedIn = new Map<ExprId, Set<State>>();
+    const maskIn = (x: ExprId, states: readonly State[]): void => {
+      const set = maskedIn.get(x) ?? new Set<State>();
+      for (const st of states) {
+        set.add(st);
+      }
+      maskedIn.set(x, set);
+    };
     /** Joint states by accent, then blink: a reused blink with a reused accent copies the rest's (null: asked for). */
     const joints = new Map<State, Map<State, readonly [State, State] | null>>();
     /**
      * R2 and step 7b on one expression's motion layers (`base`: its own raster, the plate for the rest). Boxes that overlap
-     * make both layers masked; diffs that still touch: blink and accent need the joint states, cut against the accent
-     * state (`<c>[.<x>].accent.half|closed.png`); a talk pair has no joint form. Null when R2 refuses the expression.
+     * make both layers masked in x's files; diffs that still touch: blink and accent need the joint states, cut against
+     * the accent state (`<c>[.<x>].accent.half|closed.png`); a talk pair has no joint form. Null when R2 refuses x.
      */
     const apart = async (x: ExprId, p: Plan, base: Raster): Promise<Plan | null> => {
       let ok = true;
       let joint: readonly [State, State] | null | undefined;
       if (overlap(p.blink[0].box, p.accent.box)) {
-        for (const st of [...p.blink, p.accent]) {
-          masked.add(st);
-        }
+        maskIn(x, [...p.blink, p.accent]);
         if (touch(p.blink, [p.accent])) {
           const known = joints.get(p.accent)?.get(p.blink[0]);
           // Cut D7: the rest's joint is drawn on `<c>.accent.png`; an x that reuses both rest states hits `known` instead.
@@ -856,9 +865,7 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
       const talk = p.speaks ? p.mouths : null;
       for (const [bn, b] of [['blink', p.blink], ['accent', [p.accent]]] as const) {
         if (talk !== null && overlap(talk[0].box, b[0].box)) {
-          for (const st of [...talk, ...b]) {
-            masked.add(st);
-          }
+          maskIn(x, [...talk, ...b]);
           if (touch(talk, b)) {
             problems.push(`${s}: ${c} in ${x}: the talk and ${bn} diffs are within 4 px (R2: motion layers used together never touch; ${whoNeeds(c, x)})`);
             ok = false;
@@ -913,23 +920,26 @@ export async function extractShot(input: ExtractInput): Promise<Result<Extracted
         plans.set(x, planned);
       }
     }
-    // Each state is cut once, after every expression's R2, so a reused rest state stays the rest's own `Layer`.
-    const cutStates = new Map<State, Layer<Raster>>();
-    const layerOf = (st: State): Layer<Raster> => {
-      const known = cutStates.get(st) ?? (masked.has(st) ? maskedLayer(st) : rectLayer(st));
-      cutStates.set(st, known);
+    // Each state is cut once per form, after every expression's R2: masked in the files of an expression whose own R2
+    // overlaps it (fix3 M1; supersedes cut O4), else a rectangle. A reused rest state is the same State cut in x's form,
+    // exact in either, and it stays the rest's own `Layer` wherever both use one form.
+    const cuts = { rect: new Map<State, Layer<Raster>>(), masked: new Map<State, Layer<Raster>>() };
+    const layerOf = (st: State, x: ExprId): Layer<Raster> => {
+      const form = maskedIn.get(x)?.has(st) === true ? 'masked' : 'rect';
+      const known = cuts[form].get(st) ?? (form === 'masked' ? maskedLayer(st) : rectLayer(st));
+      cuts[form].set(st, known);
       return known;
     };
     return new Map(
       [...plans].map(([x, p]): [ExprId, ExprLayers<Raster>] => [
         x,
         {
-          layer: p.layer === null ? null : layerOf(p.layer),
-          blink: { half: layerOf(p.blink[0]), closed: layerOf(p.blink[1]) },
-          accent: layerOf(p.accent),
-          mouths: p.mouths === null ? null : [layerOf(p.mouths[0]), layerOf(p.mouths[1])],
+          layer: p.layer === null ? null : layerOf(p.layer, x),
+          blink: { half: layerOf(p.blink[0], x), closed: layerOf(p.blink[1], x) },
+          accent: layerOf(p.accent, x),
+          mouths: p.mouths === null ? null : [layerOf(p.mouths[0], x), layerOf(p.mouths[1], x)],
           speaks: p.speaks,
-          ...(p.joint === undefined ? {} : { joint: { half: layerOf(p.joint[0]), closed: layerOf(p.joint[1]) } }),
+          ...(p.joint === undefined ? {} : { joint: { half: layerOf(p.joint[0], x), closed: layerOf(p.joint[1], x) } }),
         },
       ]),
     );

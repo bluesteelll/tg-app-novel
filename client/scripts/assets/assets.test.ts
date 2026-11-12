@@ -591,9 +591,10 @@ describe('encode', () => {
   }, 60_000);
 
   test('assets: an encoded sheet keeps its feathered alpha within 8/255', async () => {
-    // R6 (§4.3, cut D9) through RULINGS 267's search: the fixture's sheet (a feathered hair lock, the masked rest blink)
-    // and its three face files at 1080-plate scale, each searched per tier from q 50. The test decodes what ships, AVIF
-    // and WebP of both tiers, and compares every px's alpha with its source's (the half's: halfRgba of it).
+    // R6 (§4.3, cut D9) through RULINGS 267's search: the fixture's sheet (a feathered hair lock) and its three face files
+    // (angry's with its masked blink and accent, fix3 M1) at 1080-plate scale, each searched per tier from q 50. The test
+    // decodes what ships, AVIF and WebP of both tiers, and compares every px's alpha with its source's (the half's:
+    // halfRgba of it).
     const files = await fixtureFiles();
     const ids = ['face/cafe/ally/angry', 'face/cafe/ally/smile', 'face/cafe/ally/surprised', 'sheet/cafe'];
     expect([...files.keys()].filter((id) => !id.startsWith('talk/')).sort()).toEqual(ids);
