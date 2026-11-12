@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { brotliCompressSync, constants } from 'node:zlib';
 
-import type { AssetCatalog, AssetEntry, AssetManifest, ChapterListEntry, ChapterMeta, CoverManifest, ImageEntry } from '../src/story/catalog.ts';
+import type { AssetCatalog, AssetEntry, AssetManifest, ChapterListEntry, ChapterMeta, CoverManifest, ImageEntry, Result } from '../src/story/catalog.ts';
 import type { AssetId, ChapterId, PropId } from '../src/story/staging.ts';
 import {
   PIXI_ENV_SRCS,
@@ -22,7 +22,7 @@ import {
   urlPath,
   worldHasSections,
 } from './assets/manifest.ts';
-import type { AssetUsage } from './assets/manifest.ts';
+import type { AssetUsage, RoomUsage } from './assets/manifest.ts';
 import { imageKind } from './assets/placeholder.ts';
 import type { ImageKind } from './assets/placeholder.ts';
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
@@ -1095,7 +1095,28 @@ export function imgIds(manifest: AssetManifest, bg: AssetId): AssetId[] {
   return Object.hasOwn(manifest.assets, sheet) ? [bg, sheet] : [bg];
 }
 
-/** PUZZLES-PLAN `budget/room-set`: per room, img(bg) + props + max(largest neighbour img, largest close-up). */
+/**
+ * R's neighbour rooms in exit order, each with its usage; else the first key usage.json lacks, which only a hand-built
+ * input can name (the decoder refuses one): its row FAILs rather than pass smaller.
+ */
+function neighbourRoomsOf(rooms: AssetUsage['rooms'], room: RoomUsage): Result<Array<readonly [string, RoomUsage]>, string> {
+  const out: Array<readonly [string, RoomUsage]> = [];
+  for (const k of room.neighbourRooms) {
+    const n = Object.hasOwn(rooms, k) ? rooms[k] : undefined;
+    if (n === undefined) {
+      return { ok: false, error: k };
+    }
+    out.push([k, n]);
+  }
+  return { ok: true, value: out };
+}
+
+/**
+ * PUZZLES-PLAN `budget/room-set`, engine plan §6.3 "Gates" (O5): per room R, img(R) + props(R) + max(the transition
+ * pair, the largest close-up), the pair being the largest img(n) + props(n) over R's neighbour rooms n: a crossfade has
+ * both rooms' sets on stage (`syncProps` fades both). Every image term goes through `imgIds` (reconcile r1); a close-up
+ * is a CG, never a key of it. An id R and a neighbour share is counted in both terms: an upper bound.
+ */
 function roomRows(a: AssetInputs, limits: Limits): Row[] {
   const rows: Row[] = [];
   for (const [key, room] of Object.entries(a.rooms).sort(([x], [y]) => (x < y ? -1 : 1))) {
@@ -1106,14 +1127,20 @@ function roomRows(a: AssetInputs, limits: Limits): Row[] {
       rows.push(failed(name, limits.roomSet, `no manifest for ${ch}`, 'MiB'));
       continue;
     }
+    const near = neighbourRoomsOf(a.rooms, room);
+    if (!near.ok) {
+      rows.push(failed(name, limits.roomSet, `neighbour room ${near.error} not in usage.json`, 'MiB'));
+      continue;
+    }
+    const neighbourRooms = near.value.map(([, n]) => n);
     const lacking: string[] = [];
     const sum = (ids: readonly AssetId[]): number => [...decodedOf(manifest.value, ids, lacking).values()].reduce((s, b) => s + b, 0);
     const max = (ids: readonly AssetId[]): number => Math.max(0, ...decodedOf(manifest.value, ids, lacking).values());
     const img = (bg: AssetId): AssetId[] => imgIds(manifest.value, bg);
-    const neighbour = Math.max(0, ...room.neighbours.map((n) => sum(img(n))));
-    const total = sum(img(room.bg)) + sum(room.props) + Math.max(neighbour, max(room.closeups));
-    const sheets = [room.bg, ...room.neighbours].some((bg) => img(bg).length > 1);
-    const note = `bg + ${room.props.length} props + max(neighbour bg, close-up)${sheets ? ' (+ sheets)' : ''}`;
+    const pair = Math.max(0, ...neighbourRooms.map((n) => sum(img(n.bg)) + sum(n.props)));
+    const total = sum(img(room.bg)) + sum(room.props) + Math.max(pair, max(room.closeups));
+    const sheets = [room.bg, ...neighbourRooms.map((n) => n.bg)].some((bg) => img(bg).length > 1);
+    const note = `bg + ${room.props.length} props + max(neighbour bg + props, close-up)${sheets ? ' (+ sheets)' : ''}`;
     rows.push(
       lacking.length > 0
         ? failed(name, limits.roomSet, `not in ${ch}'s manifest: ${lacking.join(', ')}`, 'MiB')

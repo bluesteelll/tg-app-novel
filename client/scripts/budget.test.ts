@@ -1259,6 +1259,25 @@ function assetRows(a: AssetInputs, dist: BudgetInputs = inputs()): Row[] {
   return evaluateAssets(dist, a, LIMITS);
 }
 
+/** One usage room of a fixture: its bg, props and close-ups (default none), and the room keys its exits lead to, in order. */
+type RoomSpec = { bg: string; props?: readonly string[]; closeups?: readonly string[]; to?: readonly string[] };
+
+/**
+ * The usage rooms of `spec` (`<ch>/<section>/<room>` keys), as emit.ts writes them: `neighbourRooms` the `to` keys in
+ * their order, `neighbours` the bgs of those of them `spec` holds, sorted and once each.
+ */
+function usageRooms(spec: Readonly<Record<string, RoomSpec>>): AssetInputs['rooms'] {
+  const bgOf = (key: string): string[] => (Object.hasOwn(spec, key) ? [spec[key]?.bg ?? ''] : []);
+  const rooms = Object.fromEntries(
+    Object.entries(spec).map(([key, r]) => {
+      const to = r.to ?? [];
+      const neighbours = [...new Set(to.flatMap(bgOf))].sort();
+      return [key, { bg: r.bg, props: r.props ?? [], closeups: r.closeups ?? [], neighbours, neighbourRooms: to }];
+    }),
+  );
+  return rooms as unknown as AssetInputs['rooms']; // ids are fixture literals
+}
+
 describe('budget assets', () => {
   test('budget: image over 2048 px fails', () => {
     const rows = assetRows(assetInputs(specsWith('ch1', (s) => (s.assets['bg/cafe'] = img('bg-cafe-0a0a0a0a', 4096, 2048)))));
@@ -1389,13 +1408,13 @@ describe('budget assets', () => {
         }
       }),
     );
-    const room = { bg: 'bg/hall', props, closeups: ['cg/drawer'], neighbours: [] };
-    const rows = assetRows({ ...a, rooms: { 'ch1/hall/main': room } as unknown as AssetInputs['rooms'] }); // ids are fixture literals
+    const room = { bg: 'bg/hall', props, closeups: ['cg/drawer'] };
+    const rows = assetRows({ ...a, rooms: usageRooms({ 'ch1/hall/main': room }) });
     const row = rowOf(rows, 'room-set ch1/hall/main');
     expect(row).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: 2 * (1080 * 2048 * 4 + 150_000) + 16 * (MIB + 30_000) });
     expect(((row.valueBytes ?? 0) / MIB).toFixed(1)).toBe('33.6');
     // Without the close-up the same room fits (25.0 MiB): the close-up term is what tips it.
-    const open = assetRows({ ...a, rooms: { 'ch1/hall/main': { ...room, closeups: [] } } as unknown as AssetInputs['rooms'] });
+    const open = assetRows({ ...a, rooms: usageRooms({ 'ch1/hall/main': { ...room, closeups: [] } }) });
     expect(rowOf(open, 'room-set ch1/hall/main').status).toBe('PASS');
     expect(rows.some((r) => r.name === 'room-set')).toBe(false); // no PENDING row once a room is measured
   });
@@ -1432,8 +1451,8 @@ describe('budget assets', () => {
     );
     const pixels = 2 * 1080 * 2048 * 4 + 15 * 512 * 512 * 4 + 256 * 128 * 4;
     expect(pixels, 'the decoded bytes alone are at the limit').toBe(32 * MIB);
-    const room = { bg: 'bg/hall', props, closeups: [], neighbours: ['bg/yard'] };
-    const rows = assetRows({ ...a, rooms: { 'ch1/hall/main': room } as unknown as AssetInputs['rooms'] }); // ids are fixture literals
+    const rooms = usageRooms({ 'ch1/hall/main': { bg: 'bg/hall', props, to: ['ch1/hall/yard'] }, 'ch1/hall/yard': { bg: 'bg/yard' } });
+    const rows = assetRows({ ...a, rooms });
     expect(rowOf(rows, 'room-set ch1/hall/main')).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: pixels + 18 });
   });
 
@@ -1600,12 +1619,13 @@ describe('budget assets', () => {
     expect(knot.note).toContain("not in ch1's manifest: bg/ghost");
     // A room naming a close-up the manifest lacks, likewise.
     const a = assetInputs();
-    const room = { bg: 'bg/cafe', props: [], closeups: ['cg/drawer'], neighbours: ['bg/street'] };
-    const roomRow = rowOf(assetRows({ ...a, rooms: { 'ch1/hall/main': room } as unknown as AssetInputs['rooms'] }), 'room-set ch1/hall/main'); // ids are fixture literals
+    const room = { bg: 'bg/cafe', closeups: ['cg/drawer'], to: ['ch1/hall/street'] };
+    const street = { bg: 'bg/street' };
+    const roomRow = rowOf(assetRows({ ...a, rooms: usageRooms({ 'ch1/hall/main': room, 'ch1/hall/street': street }) }), 'room-set ch1/hall/main');
     expect(roomRow.status).toBe('FAIL');
     expect(roomRow.note).toContain("not in ch1's manifest: cg/drawer");
     const fits = { ...room, closeups: [] };
-    expect(rowOf(assetRows({ ...a, rooms: { 'ch1/hall/main': fits } as unknown as AssetInputs['rooms'] }), 'room-set ch1/hall/main').status).toBe('PASS');
+    expect(rowOf(assetRows({ ...a, rooms: usageRooms({ 'ch1/hall/main': fits, 'ch1/hall/street': street }) }), 'room-set ch1/hall/main').status).toBe('PASS');
   });
 
   // MEMORY-PLAN 4.C, §7: an image's half-tier file, exactly half its stored size, beside it under the same prefix.
@@ -1702,10 +1722,7 @@ describe('budget assets', () => {
     const a = assetInputs(specsWith('ch1', (s) => (s.assets['bg/hall'] = img('bg-hall-0a0a0a0a', 1440, 2048, 300_000, 450_000))));
     const shot = rowOf(assetRows(a), 'image bg/hall');
     expect(shot.status, shot.note).toBe('PASS');
-    const inRoom = (x: AssetInputs): Row => {
-      const room = { bg: 'bg/hall', props: [], closeups: [], neighbours: [] };
-      return rowOf(assetRows({ ...x, rooms: { 'ch1/manor/hall': room } as unknown as AssetInputs['rooms'] }), 'image bg/hall'); // ids are fixture literals
-    };
+    const inRoom = (x: AssetInputs): Row => rowOf(assetRows({ ...x, rooms: usageRooms({ 'ch1/manor/hall': { bg: 'bg/hall' } }) }), 'image bg/hall');
     const row = inRoom(a);
     expect(row.status).toBe('FAIL');
     expect(row.note).toBe('1440×2048, not exactly 1080×2048 (room plate ch1/manor/hall)');
@@ -1739,27 +1756,85 @@ describe('budget assets', () => {
 
   test("budget: room-set counts the room's sheet", () => {
     // Per-player §6.5 (Reconcile P2): img(n) = bg(n) + sheet(n), so room-set counts img(room) + props + max(the largest
-    // neighbour's img, the largest close-up).
+    // neighbour's img + props, the largest close-up).
     const sheeted = specsWith('ch1', (s) => {
       Object.assign(s.assets, { 'bg/hall': bg('hall'), 'sheet/hall': cuSheetOf('hall'), 'bg/yard': bg('yard'), 'sheet/yard': cuSheetOf('yard'), 'cg/drawer': cg('drawer') });
     });
-    const room = { bg: 'bg/hall', props: [], closeups: ['cg/drawer'], neighbours: ['bg/yard'] };
-    const roomRow = (a: AssetInputs): Row => rowOf(assetRows({ ...a, rooms: { 'ch1/manor/hall': room } as unknown as AssetInputs['rooms'] }), 'room-set ch1/manor/hall'); // ids are fixture literals
+    const rooms = usageRooms({ 'ch1/manor/hall': { bg: 'bg/hall', closeups: ['cg/drawer'], to: ['ch1/manor/yard'] }, 'ch1/manor/yard': { bg: 'bg/yard' } });
+    const roomRow = (a: AssetInputs): Row => rowOf(assetRows({ ...a, rooms }), 'room-set ch1/manor/hall');
     const a = assetInputs(sheeted);
     const plate = 1080 * 2048 * 4 + 150_000;
     const sheet = fullOf(cuSheetOf('hall'));
     const row = roomRow(a);
     expect(row.valueBytes).toBe(plate + sheet + (plate + sheet));
-    expect(row).toMatchObject({ status: 'PASS', note: 'bg + 0 props + max(neighbour bg, close-up) (+ sheets)' });
+    expect(row).toMatchObject({ status: 'PASS', note: 'bg + 0 props + max(neighbour bg + props, close-up) (+ sheets)' });
     const manifest = chapterOf(a, 'ch1').manifest;
     if (manifest === null) {
       throw new Error('invariant: ch1 has a manifest');
     }
     expect(imgIds(manifest.value, 'bg/hall' as AssetId)).toEqual(['bg/hall', 'sheet/hall']);
     expect(imgIds(manifest.value, 'bg/cafe' as AssetId)).toEqual(['bg/cafe']);
-    // Control: without sheets the room counts bg + max(neighbour bg, close-up), and its note is today's.
+    // Control: without sheets the room counts bg + max(neighbour bg + props, close-up), and its note has no sheets.
     const bare = roomRow(assetInputs(specsWith('ch1', (s) => Object.assign(s.assets, { 'bg/hall': bg('hall'), 'bg/yard': bg('yard'), 'cg/drawer': cg('drawer') }))));
-    expect(bare).toMatchObject({ status: 'PASS', valueBytes: 2 * plate, note: 'bg + 0 props + max(neighbour bg, close-up)' });
+    expect(bare).toMatchObject({ status: 'PASS', valueBytes: 2 * plate, note: 'bg + 0 props + max(neighbour bg + props, close-up)' });
+  });
+
+  test('budget: room-set counts the transition pair', () => {
+    // Engine plan §6.3 "Gates" (O5): a crossfade has both rooms' sets on stage (`syncProps` fades both), so the row is
+    // img(R) + props(R) + max over R's neighbour rooms n of (img(n) + props(n)), or the largest close-up. The hall has
+    // no prop of its own and fails on the study's 16.
+    const studyProps = Array.from({ length: 16 }, (_, i) => `prop/s${i}`);
+    const a = assetInputs(
+      specsWith('ch1', (s) => {
+        Object.assign(s.assets, { 'bg/hall': bg('hall'), 'bg/yard': bg('yard'), 'bg/study': bg('study'), 'cg/drawer': cg('drawer') });
+        for (const p of studyProps) {
+          s.assets[p] = prop(p.slice('prop/'.length));
+        }
+      }),
+    );
+    const plate = 1080 * 2048 * 4 + 150_000;
+    const one = 512 * 512 * 4 + 30_000;
+    const hall = (props: number, to: readonly string[] = ['ch1/manor/yard', 'ch1/manor/study']): Row => {
+      const rooms = usageRooms({
+        'ch1/manor/hall': { bg: 'bg/hall', closeups: ['cg/drawer'], to },
+        'ch1/manor/yard': { bg: 'bg/yard', to: ['ch1/manor/hall'] },
+        'ch1/manor/study': { bg: 'bg/study', props: studyProps.slice(0, props), to: ['ch1/manor/hall'] },
+      });
+      return rowOf(assetRows({ ...a, rooms }), 'room-set ch1/manor/hall');
+    };
+    const row = hall(16);
+    expect(row).toMatchObject({ status: 'FAIL', unit: 'MiB', valueBytes: plate + (plate + 16 * one) });
+    expect(row.valueBytes).toBe(35_251_936);
+    expect(row.note).toContain('max(neighbour bg + props, close-up)');
+    // Control: with 7 props on the study the pair fits.
+    expect(hall(7)).toMatchObject({ status: 'PASS', valueBytes: 25_544_752 });
+    // A neighbour room usage.json lacks cannot be summed: FAIL, not a smaller PASS.
+    const unknown = hall(7, ['ch1/manor/yard', 'ch1/manor/study', 'ch1/manor/attic']);
+    expect(unknown).toMatchObject({ status: 'FAIL', valueBytes: null });
+    expect(unknown.note).toContain('neighbour room ch1/manor/attic not in usage.json');
+  });
+
+  test("budget: the transition pair counts each room's sheet", () => {
+    // Reconcile r1 (design-shots I-3): every image term of the pair goes through `imgIds`, the neighbour's sheet beside
+    // its props: hall (plate + sheet) + yard (plate + room sheet + 4 props).
+    const yardProps = ['prop/y0', 'prop/y1', 'prop/y2', 'prop/y3'];
+    const a = assetInputs(
+      specsWith('ch1', (s) => {
+        Object.assign(s.assets, { 'bg/hall': bg('hall'), 'sheet/hall': cuSheetOf('hall'), 'bg/yard': bg('yard'), 'sheet/yard': roomSheetOf('yard') });
+        for (const p of yardProps) {
+          s.assets[p] = prop(p.slice('prop/'.length));
+        }
+      }),
+    );
+    const rooms = usageRooms({
+      'ch1/manor/hall': { bg: 'bg/hall', to: ['ch1/manor/yard'] },
+      'ch1/manor/yard': { bg: 'bg/yard', props: yardProps, to: ['ch1/manor/hall'] },
+    });
+    const plate = 1080 * 2048 * 4 + 150_000;
+    const row = rowOf(assetRows({ ...a, rooms }), 'room-set ch1/manor/hall');
+    expect(row.valueBytes).toBe(plate + fullOf(cuSheetOf('hall')) + (plate + fullOf(roomSheetOf('yard')) + 4 * (512 * 512 * 4 + 30_000)));
+    expect(row).toMatchObject({ status: 'PASS', valueBytes: 29_062_784 });
+    expect(row.note).toContain('(+ sheets)');
   });
 
   test('budget: a loop prop atlas is held to its own limits', () => {
@@ -2028,8 +2103,7 @@ const propsOf = (files: Readonly<Record<string, AssetEntry>>): string[] => ids(f
 /** One free chapter ch1 holding `assets`, its build/shots.json `c`, and the usage rooms `rooms` (`<ch>/<section>/<room>`). */
 function shotInputs(assets: Record<string, AssetEntry>, c: ShotChapterSpec, rooms: Readonly<Record<string, { bg: string; props: string[] }>> = {}): AssetInputs {
   const a = assetInputs([{ id: 'ch1', paid: false, next: null, assets, knots: { scene: { assets: [], next: [] } } }]);
-  const usageRooms = Object.fromEntries(Object.entries(rooms).map(([k, r]) => [k, { ...r, closeups: [], neighbours: [] }]));
-  return { ...a, shots: shotUsageOf({ ch1: c }), rooms: usageRooms as unknown as AssetInputs['rooms'] }; // ids are fixture literals
+  return { ...a, shots: shotUsageOf({ ch1: c }), rooms: usageRooms(rooms) };
 }
 
 /** `e` with its half-tier file (exactly half per side, MEMORY-PLAN 4.C) of `avif` and `webp` bytes, beside its own. */
