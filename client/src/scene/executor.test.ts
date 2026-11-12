@@ -8,8 +8,9 @@ import type { ImageEntry, Result } from '../story/catalog.ts';
 import type { Box as Box4, CastRig, Member, ShotRig } from '../story/shots.ts';
 import type { AssetId, BgId, CgId, CharId, ExprId, PropId, Rect, Slot } from '../story/staging.ts';
 import { createExecutor } from './executor.ts';
-import type { Layer, Placement, StageAdapter, VisualCommand } from './executor.ts';
+import type { ExecutorDeps, Layer, Placement, StageAdapter, VisualCommand } from './executor.ts';
 import { backdropPlacement, propPlacement } from './layout.ts';
+import type { StageWindow } from './preload.ts';
 import { REVIVE_DEADLINE_MS, createAssetRegistry } from './registry.ts';
 import type { AssetError, Decoded, FrameCut, LoadError, LoadImage } from './registry.ts';
 import { createRenderLoop } from './render-loop.ts';
@@ -258,9 +259,15 @@ const quietLoop = (): RenderLoop => createRenderLoop({ ticker: { add: () => {}, 
 
 /**
  * `shots`: the executor's shot dep (absent: none). The registry cuts frames as stand-ins named `<file url>#<box>`; a
- * disposed frame joins `freed`, so a sprite drawn on it throws like one on a released texture.
+ * disposed frame joins `freed`, so a sprite drawn on it throws like one on a released texture. `seat`: the window
+ * seat's two reports (shots §5.8; absent: none).
  */
-function harness(size: Size = S390, loop: RenderLoop = quietLoop(), shots?: { rigs(): ReadonlyMap<BgId, ShotRig> | null; half(): boolean }) {
+function harness(
+  size: Size = S390,
+  loop: RenderLoop = quietLoop(),
+  shots?: { rigs(): ReadonlyMap<BgId, ShotRig> | null; half(): boolean },
+  seat?: Pick<ExecutorDeps<Tex>, 'swapped' | 'released'>,
+) {
   const freed = new Set<Tex>();
   const stage = recordingStage(size, freed);
   const loads = new Map<string, number>();
@@ -342,7 +349,7 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop(), shots?: { ri
   const onSkip = (e: AssetError): void => {
     skipped.push(e);
   };
-  const ex = createExecutor<Tex>({ adapter: stage.adapter, registry, resolve, loop, resolution: 2, onSkip, ...(shots === undefined ? {} : { shots }) });
+  const ex = createExecutor<Tex>({ adapter: stage.adapter, registry, resolve, loop, resolution: 2, onSkip, ...(shots === undefined ? {} : { shots }), ...seat });
   return {
     ...stage,
     freed,
@@ -2329,3 +2336,161 @@ for (const id of ['face/lamp/ally/smile', 'sheet/lamp', 'bg/lamp']) {
     expect(h.registry.stats().live).toBe(0);
   });
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// The swap point (shots §5.8, lane SH5a D9): a batch with a window reports it once, after the sweep that releases the
+// old shot's holders: at black for a dip, when the old root retires for a crossfade, right after the build otherwise,
+// and at its end when it settles first. A sweep that releases a holder outside a swap point reports the release.
+
+const STREET: StageWindow = { need: [asId('bg/street')], warm: [], near: 0, hope: [asId('bg/room')], eventRoom: [] };
+const ROOM: StageWindow = { need: [asId('bg/room')], warm: [], near: 0, hope: [], eventRoom: [] };
+
+/** A harness whose seat logs each report with the release count of `old`'s texture at that moment. */
+function seated(old = 'bg/cafe'): ReturnType<typeof harness> & { readonly reports: string[] } {
+  const reports: string[] = [];
+  const h = harness(S390, quietLoop(), undefined, {
+    swapped: (w) => reports.push(`swapped ${w.need.join(',')}: ${old} released ${h.releasedOf(old)}`),
+    released: () => reports.push(`released: ${old} released ${h.releasedOf(old)}`),
+  });
+  return Object.assign(h, { reports });
+}
+
+test("executor: a cut reports its swap after the old shot's holders are released", async () => {
+  const h = seated();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  expect(h.reports).toEqual([]);
+  await h.ex.apply([bg('street', 'cut')], { instant: false, window: STREET });
+  // Once, after the sweep that let the old plate go; that release is the swap's own, so no `released` beside it.
+  expect(h.reports).toEqual(['swapped bg/street: bg/cafe released 1']);
+  h.ex.destroy();
+  expect(h.reports).toEqual(['swapped bg/street: bg/cafe released 1']);
+});
+
+test('executor: a dip reports its swap at black', async () => {
+  const h = seated();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  const dip = h.ex.apply([scene('street', 'fade', 800)], { instant: false, window: STREET });
+  await flush();
+  advance(350);
+  expect(h.reports).toEqual([]);
+  advance(100);
+  expect(h.reports).toEqual(['swapped bg/street: bg/cafe released 1']);
+  advance(500);
+  await dip;
+  // `bg t=fade` dips the same way.
+  h.reports.length = 0;
+  const fade = h.ex.apply([bg('room', 'fade', 600)], { instant: false, window: ROOM });
+  await flush();
+  advance(250);
+  expect(h.reports).toEqual([]);
+  advance(100);
+  expect(h.reports).toEqual(['swapped bg/room: bg/cafe released 1']);
+  h.ex.complete();
+  await fade;
+  expect(h.reports).toEqual(['swapped bg/room: bg/cafe released 1']);
+  expect(h.releasedOf('bg/street')).toBe(1);
+  h.ex.destroy();
+});
+
+test('executor: a crossfade reports its swap once the old shot retires', async () => {
+  const h = seated();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  const fade = h.ex.apply([bg('street', 'crossfade', 500)], { instant: false, window: STREET });
+  await flush();
+  advance(250);
+  // The old plate still shows under the new one: no swap yet.
+  expect(h.reports).toEqual([]);
+  advance(300);
+  await fade;
+  expect(h.reports).toEqual(['swapped bg/street: bg/cafe released 1']);
+  // A tap retires the old root at once, and the swap is reported with it.
+  h.reports.length = 0;
+  const tapped = h.ex.apply([bg('room', 'crossfade', 500)], { instant: false, window: ROOM });
+  await flush();
+  expect(h.reports).toEqual([]);
+  h.ex.complete();
+  await tapped;
+  expect(h.reports).toEqual(['swapped bg/room: bg/cafe released 1']);
+  expect(h.releasedOf('bg/street')).toBe(1);
+  h.ex.destroy();
+});
+
+test('executor: restore awaits the CG and not the shot under it', async () => {
+  const h = harness();
+  const plate = h.deferLoad('bg/room');
+  const saved = {
+    bg: 'room' as BgId,
+    cg: 'letter' as CgId,
+    chars: [{ char: 'ally' as CharId, expr: 'neutral' as ExprId, at: 'right' as const }],
+    props: [],
+  };
+  const restored = track(h.ex.restore(saved));
+  await flush();
+  // The CG covers the stage: the restore is done once it shows, while the covered plate still loads.
+  expect(restored.done).toBe(true);
+  expect(h.live('cg').map((x) => x.key)).toEqual(['letter']);
+  expect(h.live('bg')).toEqual([]);
+  expect(h.ex.snapshot()).toEqual(saved);
+  // The covered slots were taken with the restore, and they draw under the CG once the plate lands.
+  expect(h.loadsOf('bg/room')).toBe(1);
+  expect(h.loadsOf('char/ally/neutral')).toBe(1);
+  plate();
+  await flush();
+  expect(h.live('bg').map((x) => x.key)).toEqual(['room']);
+  expect(h.inGroup('ally').length).toBe(1);
+  expect(h.live('cg').map((x) => x.key)).toEqual(['letter']);
+  expect(h.loadsOf('bg/room')).toBe(1);
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  h.ex.destroy();
+  expect(h.registry.stats().live).toBe(0);
+});
+
+test('executor: a batch without a window reports no swap', async () => {
+  const h = seated();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  const fade = h.ex.apply([bg('street', 'crossfade', 500)], NOW);
+  await flush();
+  h.ex.complete();
+  await fade;
+  await h.ex.apply([scene('room', 'fade', 800)], { instant: true });
+  await h.ex.restore({ bg: 'cafe' as BgId, cg: null, chars: [], props: [] });
+  expect(h.reports.filter((r) => r.startsWith('swapped'))).toEqual([]);
+  h.ex.destroy();
+});
+
+test('executor: a batch that fails to build still reports its swap at its end', async () => {
+  const h = seated();
+  const errors = spyErrors();
+  const sprite = h.adapter.sprite.bind(h.adapter);
+  let thrown = false;
+  h.adapter.sprite = (layer, tex, g) => {
+    if (!thrown) {
+      thrown = true;
+      throw new Error('stage: a bug in a build');
+    }
+    return sprite(layer, tex, g);
+  };
+  const applied = track(h.ex.apply([bg('cafe', 'crossfade', 500)], { instant: false, window: STREET }));
+  await flush();
+  errors.restore();
+  expect(errors.errors.map((e) => e[0])).toEqual(['scene: batch failed']);
+  expect(applied.done).toBe(true);
+  expect(h.reports).toEqual(['swapped bg/street: bg/cafe released 0']);
+  h.ex.destroy();
+});
+
+test('executor: a sweep that releases a holder reports it', async () => {
+  const h = seated();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  // A batch's end that releases nothing reports nothing.
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  expect(h.reports).toEqual([]);
+  // A crossfade with no window: the old plate's holder goes at the batch's end, and the release is reported once.
+  const fade = h.ex.apply([bg('street', 'crossfade', 500)], NOW);
+  await flush();
+  advance(550);
+  await fade;
+  expect(h.reports).toEqual(['released: bg/cafe released 1']);
+  h.ex.destroy();
+  expect(h.reports).toEqual(['released: bg/cafe released 1']);
+});

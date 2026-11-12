@@ -21,6 +21,7 @@ import type { ManualSlot, SaveError, SaveService, SaveState, SaveWrite } from '.
 import { summaryOf } from '../saves/summary.ts';
 import type { SceneController } from '../scene/controller.ts';
 import type { VisualCommand } from '../scene/executor.ts';
+import type { StageWindow } from '../scene/preload.ts';
 import type { SceneError } from '../scene/registry.ts';
 import type { Settings, SettingsStore } from '../settings/store.ts';
 import type { StatsReporter } from '../stats/reporter.ts';
@@ -57,7 +58,8 @@ import type { Screens, ScreensView } from '../ui/screens.ts';
 import type { ChoiceSet, LineView, OverlayUi, PlayMode, ViewModel } from '../ui/state.svelte.ts';
 import { graphemes, GRAPHEMES_PER_SECOND } from '../ui/typewriter.ts';
 import { latched, metaHold, PURCHASE_OPEN, RELOAD_POLL_MS, RELOADED_FOR, withLatch } from './reload.ts';
-import { imageIds, knotAssets, manifestIndex, splitBatch } from './stage-route.ts';
+import { imageIds, knotAssets, lookOf, manifestIndex, roomWindowKey, splitBatch, windowFor, withRoomProps } from './stage-route.ts';
+import type { WorldAt } from './stage-route.ts';
 import { createYields, LAZY_CHUNKS } from './yields.ts';
 import type { LazyChunks, Yields, YieldsHost } from './yields.ts';
 
@@ -703,14 +705,57 @@ export function createGame(deps: GameDeps): Game {
   // -------------------------------------------------------------------------------------------------------------
   // Steps
 
-  /** Applies a visual batch after its blocking loads; resolves with the batch's own end (transitions, wait). */
-  const stage = async (s: Session, visual: readonly VisualCommand[], instant: boolean): Promise<{ done: Promise<void> }> => {
+  /**
+   * Applies a visual batch after its blocking loads; resolves with the batch's own end (transitions, wait). `window`:
+   * the step's preload window, wanted at the batch's swap point (shots §5.8); none keeps the previous one.
+   */
+  const stage = async (s: Session, visual: readonly VisualCommand[], instant: boolean, window?: StageWindow): Promise<{ done: Promise<void> }> => {
     const ids = imageIds(visual, { stage: scene.snapshot(), manifest: s.ch?.assets ?? null });
     if (ids.length > 0) {
       // F1 step 9: an asset that fails to load is skipped by the scene, and the story goes on.
       await scene.ensure(ids, s.abort.signal);
     }
-    return { done: scene.apply(visual, { instant }) };
+    return { done: scene.apply(visual, { instant, window }) };
+  };
+
+  /** The world's section and room, which a step's window reads (an event's room) and a room batch keys on. */
+  const worldAt = (s: Session): WorldAt => {
+    const w = s.yields.world();
+    return { section: w.section, room: w.room };
+  };
+
+  /**
+   * A presented step's window (shots §5.8, D1): a line by its ID, a choice set by its first choice's ID, else the knot's
+   * index; inside a room event with the room as `eventRoom`. A yield step hands none, so the previous window stays
+   * through it (D13).
+   */
+  const windowOf = (s: Session, ch: LoadedChapter, step: RunnerStep): StageWindow | undefined => {
+    switch (step.kind) {
+      case 'line':
+        return windowFor(ch.assets, step.lineId, step.knot, worldAt(s));
+      case 'choices':
+        return windowFor(ch.assets, step.choices[0]?.lineId ?? null, step.knot, worldAt(s));
+      case 'yield':
+        return undefined;
+      case 'end':
+        return windowFor(ch.assets, null, null, worldAt(s));
+      default: {
+        const _never: never = step;
+        return _never;
+      }
+    }
+  };
+
+  /** A room batch's window (shots §5.8 "At each room batch"): its room's, while a section is current; else none. */
+  const roomWindow = (s: Session, visual: readonly VisualCommand[]): StageWindow | undefined => {
+    const m = s.ch?.assets ?? null;
+    const look = m === null ? null : lookOf(m);
+    if (look === null || !look.ok) {
+      return undefined;
+    }
+    const at = worldAt(s);
+    const key = roomWindowKey(visual, at, look.value);
+    return key === null ? undefined : windowFor(m, key, null, at);
   };
 
   /** D8: one displayed step, its batch, its view, the knot entry and its autosave. */
@@ -722,6 +767,8 @@ export function createGame(deps: GameDeps): Game {
     const instant = vm.mode === 'skip';
     const before = stagingNow();
     const batch = splitBatch(step.commands);
+    // W8: a cut to a room's shot inside its section shows the room's props from the world.
+    const visual = withRoomProps(batch.visual, (bg) => s.yields.roomFor(bg));
     let wasRead = false;
     if (step.kind === 'line') {
       wasRead = settings.isRead(ch.id, step.lineId);
@@ -731,7 +778,7 @@ export function createGame(deps: GameDeps): Game {
         s.backlog.splice(0, s.backlog.length - BACKLOG_MAX);
       }
     }
-    const shown = await stage(s, batch.visual, instant);
+    const shown = await stage(s, visual, instant, windowOf(s, ch, step));
     if (session !== s) {
       return;
     }
@@ -1030,14 +1077,18 @@ export function createGame(deps: GameDeps): Game {
   // -------------------------------------------------------------------------------------------------------------
   // Knots, the next chapter and the chapter end (PP F2 steps 1-5, F4, F5; SP F2 addition, F4′)
 
-  /** Requests `preload:<k>` for knot `k` of `ch` once: its images in the scene, its sfx in the audio. */
+  /**
+   * Requests `preload:<k>` for knot `k` of `ch` once: its images in the scene, its sfx in the audio. With a decoding
+   * `look` the windows ask for the bg, CG and prop files, so the knot keeps its sprites (never appearances) only (L3).
+   */
   const hold = (s: Session, ch: LoadedChapter, k: KnotName): void => {
     if (s.held.has(k) || !Object.hasOwn(ch.meta.knots, k)) {
       return;
     }
     const { images, sounds } = knotAssets(ch.meta.knots[k]?.assets ?? []);
-    if (images.length > 0) {
-      scene.preload(`preload:${k}`, images);
+    const kept = lookOf(ch.assets).ok ? images.filter((id) => id.startsWith('char/')) : images;
+    if (kept.length > 0) {
+      scene.preload(`preload:${k}`, kept);
     }
     if (sounds.length > 0) {
       audioOnce().preload(sounds);
@@ -1067,10 +1118,14 @@ export function createGame(deps: GameDeps): Game {
         s.kept = null; // F4 step 4 loads it again and reports its error there
         return;
       }
-      const { images, sounds } = knotAssets(r.value.meta.knots[r.value.meta.firstKnot]?.assets ?? []);
-      // The ids resolve in the next chapter's manifest: art only that chapter uses loads too.
-      scene.preload(tag, images, r.value.assets);
-      audioOnce().preload(sounds, r.value.assets);
+      const next = r.value;
+      const { images, sounds } = knotAssets(next.meta.knots[next.meta.firstKnot]?.assets ?? []);
+      // D6: with a decoding look, the first knot's index window (need, warm, then hope, each id once) and its sprites;
+      // else its images. The ids resolve in the next chapter's manifest: art only that chapter uses loads too.
+      const w = windowFor(next.assets, null, next.meta.firstKnot, null);
+      const ids = lookOf(next.assets).ok ? [...new Set([...w.need, ...w.warm, ...w.hope, ...images.filter((id) => id.startsWith('char/'))])] : images;
+      scene.preload(tag, ids, next.assets);
+      audioOnce().preload(sounds, next.assets);
     });
   };
 
@@ -1081,10 +1136,10 @@ export function createGame(deps: GameDeps): Game {
       return;
     }
     if (s.handover === k) {
-      // 1. The new chapter's first knot: its art, resident under next:<id>, is held under the chapter's own tag.
+      // 1. The new chapter's first knot: its art, resident under next:<id>, is held under the chapter's own tag. The
+      // entry tag itself ends at the chapter's first window, once its files were joined (shots §5.8 step 1c).
       s.handover = null;
       hold(s, ch, k);
-      scene.releasePreload(`next:${ch.id}`);
     }
     if (!knot.ending && (s.nextTag !== null || s.handover !== null)) {
       // 2. The story goes on in this chapter: the next chapter's art does not stay live; the kept chapter stays.
@@ -1456,7 +1511,7 @@ export function createGame(deps: GameDeps): Game {
     apply: async (visual, audio, started) => {
       const s = of();
       const instant = vm.mode === 'skip';
-      const shown = await stage(s, visual, instant);
+      const shown = await stage(s, visual, instant, roomWindow(s, visual));
       if (session !== s) {
         return;
       }

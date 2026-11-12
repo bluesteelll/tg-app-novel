@@ -16,8 +16,8 @@ import { halfFits, renderResolution, stageBound, tierFor } from './layout.ts';
 import type { PerfClass } from './layout.ts';
 import { createImageLoader, probeAvif } from './loader.ts';
 import { SKIP_PIXI_ENV } from './pixi-env.ts';
-import { ENSURE_HOLDER, createAssetScheduler } from './preload.ts';
-import type { AssetScheduler } from './preload.ts';
+import { ENSURE_HOLDER, createAssetScheduler, windowDeps } from './preload.ts';
+import type { AssetScheduler, StageWindow, WindowStats } from './preload.ts';
 import { createAssetRegistry, pixiFrames } from './registry.ts';
 import type { AssetError, AssetRegistry, ReviveEnd, SceneError } from './registry.ts';
 import { createRenderLoop } from './render-loop.ts';
@@ -49,15 +49,27 @@ export type SceneStats = {
   reviving: boolean;
   /** The latest visible revive, from its start to its visible pass done, in ms; null before the first. */
   visibleReviveMs: number | null;
+  // The step windows (shots §5.8). Optional in the type only, for the stats literals other modules build; the controller
+  // always reports them.
+  /** The current window's need items not live, and the window's ids held or asked for. */
+  window?: WindowStats['window'];
+  /** The `room:` tags that hold or load a record. */
+  rooms?: string[];
+  /** Records with a warm holder, and the file bytes of the ones held undecoded. */
+  warm?: number;
+  warmBytes?: number;
 };
 
 export interface SceneController {
   /** The render resolution is decided here, from the device's pixel ratio and its class (layout.ts, lever F). */
   mount(host: HTMLElement, o: { dpr: number; perfClass: PerfClass; fetchAsset: FetchAsset }): Promise<Result<void, SceneError>>;
-  /** Releases every preload:* holder and every next:* holder except next:<m.chapterId> (F4, F5). */
+  /**
+   * Releases every preload:* holder (the window's included) and every next:* holder except next:<m.chapterId> (F4, F5):
+   * the entry tag, which the chapter's first window ends once it joined its files (shots §5.8 step 1c).
+   */
   setChapter(m: AssetManifest): void;
-  /** Resolves after transitions + wait. */
-  apply(batch: readonly VisualCommand[], o: { instant: boolean }): Promise<void>;
+  /** Resolves after transitions + wait. `window`: the step's preload window, wanted at the batch's swap point. */
+  apply(batch: readonly VisualCommand[], o: { instant: boolean; window?: StageWindow }): Promise<void>;
   /** A tap during a transition. */
   complete(): void;
   /** Instant. */
@@ -453,7 +465,7 @@ export function createSceneController(): SceneController {
       // MEMORY-PLAN 4.C: the half files only on a LOW device whose largest reachable stage passes halfFits.
       const tier = tierFor(o.perfClass, stageBound(screenSize(), { w: host.clientWidth, h: host.clientHeight }), resolution);
       const registry = createAssetRegistry<Texture>({
-        load: createImageLoader({ fetchAsset: o.fetchAsset, upload }),
+        hold: createImageLoader({ fetchAsset: o.fetchAsset, upload }),
         variant: avif ? 'avif' : 'webp',
         tier,
         frames: pixiFrames({ Texture, Rectangle }),
@@ -483,6 +495,8 @@ export function createSceneController(): SceneController {
         onSkip: report,
         // A demoted session's new records are full (MEMORY-PLAN 4.C), so the overscan reads the tier as it is now.
         shots: { rigs: () => rigs, half: () => core?.tier === 'half' },
+        // The swap point wants the step's window; a release retries what the window was refused (shots §5.8).
+        ...windowDeps(scheduler),
       });
       const flow = createReviveFlow({
         revive: reviveWith(registry),
@@ -577,7 +591,8 @@ export function createSceneController(): SceneController {
       const counters = { rebuilds, gen, staleFrames, visibleReviveMs };
       if (core === null) {
         const none = { liveTextures: 0, liveBytes: 0, pendingLoads: 0, activeTimelines: 0, overCap: 0 };
-        return { ...none, openBitmaps: 0, stale: 0, reviveFailed: 0, reviving: false, ...counters };
+        const windows = { window: { pending: 0, ids: [] }, rooms: [], warm: 0, warmBytes: 0 };
+        return { ...none, openBitmaps: 0, stale: 0, reviveFailed: 0, reviving: false, ...counters, ...windows };
       }
       const r = core.registry.stats();
       return {
@@ -592,6 +607,8 @@ export function createSceneController(): SceneController {
         reviveFailed: r.reviveFailed,
         reviving: core.flow.reviving(),
         ...counters,
+        ...core.scheduler.stats(),
+        ...core.registry.warmStats(),
       };
     },
     debugForceContextLoss(mode) {

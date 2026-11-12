@@ -1,10 +1,11 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 
 import type { AssetEntry, AssetManifest, ImageEntry, Result } from '../story/catalog.ts';
 import type { AssetId, ChapterId } from '../story/staging.ts';
-import { PRELOAD_IN_FLIGHT, createAssetScheduler } from './preload.ts';
+import { PRELOAD_IN_FLIGHT, createAssetScheduler, windowDeps } from './preload.ts';
+import type { StageWindow } from './preload.ts';
 import { HARD_CAP_BYTES, createAssetRegistry } from './registry.ts';
-import type { AssetError, Decoded, LoadError, LoadImage } from './registry.ts';
+import type { AcquireOptions, AssetError, AssetRegistry, Decoded, HeldFile, HoldImage, LoadError, LoadImage, SceneError, TextureHandle } from './registry.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Two chapter manifests over the real registry. The fake loader records every call (URL, file bytes, signal) and
@@ -68,7 +69,32 @@ const urlOf = (m: AssetManifest, id: string): string => {
   return e?.kind === 'image' ? e.avif.url : `missing:${id}`;
 };
 
-function harness(mode: 'auto' | 'deferred' = 'auto') {
+type HoldCall = { url: string; bytes: number; signal: AbortSignal; resolve(r: Result<HeldFile<Tex>, LoadError>): void; done: boolean };
+
+/** Records every acquire (`acquire <holder> <id>`) and every holder release (`release <name>`) the scheduler makes. */
+function recording(registry: AssetRegistry<Tex>, log: string[]): AssetRegistry<Tex> {
+  function acquire(id: AssetId, holder: string, o: AcquireOptions & { priority: 'warm' }): Promise<Result<null, AssetError>>;
+  function acquire(id: AssetId, holder: string, o: AcquireOptions & { priority: 'visible' | 'preload' }): Promise<Result<TextureHandle<Tex>, AssetError>>;
+  function acquire(id: AssetId, holder: string, o: AcquireOptions): Promise<Result<TextureHandle<Tex> | null, AssetError>> {
+    log.push(`acquire ${holder} ${id}`);
+    return o.priority === 'warm' ? registry.acquire(id, holder, { ...o, priority: 'warm' }) : registry.acquire(id, holder, { ...o, priority: o.priority });
+  }
+  return {
+    ...registry,
+    acquire,
+    releaseHolder(h) {
+      log.push(`release ${h}`);
+      registry.releaseHolder(h);
+    },
+  };
+}
+
+/**
+ * `{ hold: true }` (lane SH5a): the registry gets a fake `hold` instead of `load`; its fetches and its held files'
+ * decodes are separate calls, each settled at once (`auto`) or on demand (`deferred`), counted by URL. The scheduler
+ * then sees the registry through `recording`.
+ */
+function harness(mode: 'auto' | 'deferred' = 'auto', o?: { hold: true }) {
   const calls: Call[] = [];
   const released = new Map<string, number>();
   const decoded = (url: string, keptBytes: number): Decoded<Tex> | null => {
@@ -107,14 +133,35 @@ function harness(mode: 'auto' | 'deferred' = 'auto') {
         succeed(call);
       }
     });
-  const registry = createAssetRegistry<Tex>({ load, variant: 'avif', tier: 'full' });
+  // The hold harness: a fetch keeps the file; each decode of it is its own call (`calls` then lists the decodes).
+  const fetches: HoldCall[] = [];
+  const file = (url: string, bytes: number): HeldFile<Tex> => ({ bytes, decode: (signal, g) => load({ url, bytes }, signal, g), drop: () => {} });
+  const hold: HoldImage<Tex> = (ref, signal) =>
+    new Promise((resolve) => {
+      const call: HoldCall = { url: ref.url, bytes: ref.bytes, signal, resolve, done: false };
+      fetches.push(call);
+      if (mode === 'auto') {
+        call.done = true;
+        resolve({ ok: true, value: file(ref.url, ref.bytes) });
+      }
+    });
+  const log: string[] = [];
+  const registry = o?.hold === true ? createAssetRegistry<Tex>({ hold, variant: 'avif', tier: 'full' }) : createAssetRegistry<Tex>({ load, variant: 'avif', tier: 'full' });
   const errors: AssetError[] = [];
   const s = createAssetScheduler({
-    registry,
+    registry: o?.hold === true ? recording(registry, log) : registry,
     onError: (e) => {
       errors.push(e);
     },
   });
+  /** The first call of `id` (in the window fixtures' manifests) not yet settled. */
+  const open = <C extends { url: string; done: boolean }>(list: C[], id: string): C => {
+    const c = list.find((x) => x.url === winUrl(id) && !x.done);
+    if (c === undefined) {
+      throw new Error(`invariant: ${id} has a call in flight`);
+    }
+    return c;
+  };
   return {
     s,
     registry,
@@ -128,6 +175,42 @@ function harness(mode: 'auto' | 'deferred' = 'auto') {
     },
     callsOf: (url: string): number => calls.filter((c) => c.url === url).length,
     releasedOf: (m: AssetManifest, id: string): number => released.get(urlOf(m, id)) ?? 0,
+    // The hold harness, by the window fixtures' ids.
+    log,
+    acquired: (): string[] => log.filter((l) => l.startsWith('acquire ')).map((l) => l.slice('acquire '.length)),
+    fetchesOf: (id: string): number => fetches.filter((c) => c.url === winUrl(id)).length,
+    decodesOf: (id: string): number => calls.filter((c) => c.url === winUrl(id)).length,
+    releasesOf: (id: string): number => released.get(winUrl(id)) ?? 0,
+    fetchSignal: (id: string): AbortSignal | undefined => fetches.filter((c) => c.url === winUrl(id)).at(-1)?.signal,
+    decodeSignal: (id: string): AbortSignal | undefined => calls.filter((c) => c.url === winUrl(id)).at(-1)?.signal,
+    state: (id: string) => registry.state(asId(id)),
+    land: (id: string): void => {
+      const c = open(fetches, id);
+      c.done = true;
+      c.resolve({ ok: true, value: file(c.url, c.bytes) });
+    },
+    fetchFails: (id: string): void => {
+      const c = open(fetches, id);
+      c.done = true;
+      c.resolve({ ok: false, error: { kind: 'fetch', error: { kind: 'http', status: 500 } } });
+    },
+    decoded: (id: string): void => succeed(open(calls, id)),
+    /** A visible holder outside the scheduler (a slot of the stage), as the executor's take adds it. */
+    visible: (id: string, holder: string) => registry.acquire(asId(id), holder, { entry: winEntry(id), priority: 'visible' }),
+    /** Lands every fetch and settles every decode in flight, until none is left. */
+    settle: async (): Promise<void> => {
+      for (let i = 0; i < 8; i += 1) {
+        for (const c of fetches.filter((x) => !x.done)) {
+          c.done = true;
+          c.resolve({ ok: true, value: file(c.url, c.bytes) });
+        }
+        await flush();
+        for (const c of calls.filter((x) => !x.done)) {
+          succeed(c);
+        }
+        await flush();
+      }
+    },
   };
 }
 
@@ -526,4 +609,876 @@ test('preload: two joins of different tags on one carried fetch cost one slot', 
   h.s.releasePreload('preload:j');
   h.s.preload('preload:n', [asId('prop/a'), asId('prop/b'), asId('prop/c')]);
   expect(h.calls.map((c) => c.url)).toEqual([urlOf(ch1, 'prop/a'), urlOf(ch1, 'prop/b')]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Pins for two arms no test held (LHJ triage_r4 F2 / Q7, test_r5 survivor R4).
+
+test('preload: a repeated preload of an id in flight adds nothing, so one failure is one report', async () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  h.s.preload('room:r1', [asId('prop/a')]);
+  h.s.preload('room:r1', [asId('prop/a')]);
+  const a = h.calls[0];
+  if (a === undefined) {
+    throw new Error('invariant: the fixture started a load');
+  }
+  a.done = true;
+  a.resolve({ ok: false, error: { kind: 'fetch', error: { kind: 'http', status: 500 } } });
+  await flush();
+  expect(h.errors.length).toBe(1);
+});
+
+test('preload: a release pumps the next queued preload in the same turn', () => {
+  const h = harness('deferred');
+  h.s.setChapter(ch1);
+  h.s.preload('preload:x', ['prop/a', 'prop/b'].map(asId));
+  h.s.preload('preload:y', [asId('prop/c')]);
+  expect(h.calls.map((c) => c.url)).toEqual([urlOf(ch1, 'prop/a'), urlOf(ch1, 'prop/b')]);
+  // The released flights' acquires settle a microtask later; the release itself frees the slots for c at once.
+  h.s.releasePreload('preload:x');
+  expect(h.calls.map((c) => c.url)).toEqual([urlOf(ch1, 'prop/a'), urlOf(ch1, 'prop/b'), urlOf(ch1, 'prop/c')]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The step window (shots §5.8, lane SH5a) on the hold harness, at §5.9's sizes in MiB. A close-up's file is held at
+// 0.477 MiB and decodes to 12.703 MiB live (its file included); every other image counts its decoded bytes only. One
+// shot is one id here: the scheduler's rules do not depend on how many files a shot has.
+
+const MIB = 1_048_576;
+const mib = (x: number): number => Math.round(x * MIB);
+const sized = (file: string, decoded: number, held = 0): ImageEntry => ({
+  kind: 'image',
+  w: 1024,
+  h: 1024,
+  decodedBytes: mib(decoded),
+  avif: { url: `/assets/${file}.avif`, bytes: mib(held) },
+  webp: { url: `/assets/${file}.webp`, bytes: mib(held) },
+});
+const cu = (file: string): ImageEntry => sized(file, 12.226, 0.477);
+const CU = mib(12.226) + mib(0.477);
+const wm = manifest('ch6', {
+  'bg/wide': sized('wide', 10.169),
+  'bg/close': sized('close', 10.169),
+  'bg/cu_a': cu('cu_a'),
+  'bg/cu_b': cu('cu_b'),
+  'bg/cu_c': cu('cu_c'),
+  'bg/cu_d': cu('cu_d'),
+  'bg/street': cu('street'),
+  'bg/vault': cu('vault'),
+  'prop/x6': sized('x6', 6, 0.477),
+  'prop/big': sized('big', 32, 0.477),
+  'bg/hall': sized('hall', 11.262),
+  'bg/study': sized('study', 11.262),
+  'bg/cellar': sized('cellar', 11.262),
+  'bg/lobby': sized('lobby', 16.562),
+  'prop/hall': sized('prop_hall', 3.3),
+  'prop/study': sized('prop_study', 3.3),
+  'prop/cellar': sized('prop_cellar', 3.3),
+  'prop/p3': sized('p3', 3),
+  'face/f': sized('face_f', 1.633),
+  'prop/s1': sized('s1', 0.1),
+  'prop/s2': sized('s2', 0.1),
+  'prop/s3': sized('s3', 0.1),
+  'prop/h': sized('h', 0.1),
+});
+// The next chapter of the window fixtures: its opening wide and a first knot of six small files.
+const nx = manifest('ch7', {
+  'bg/opening': sized('opening', 10.169),
+  ...Object.fromEntries([1, 2, 3, 4, 5, 6].map((i) => [`prop/n${i}`, sized(`n${i}`, 0.1)])),
+});
+for (const m of [wm, nx]) {
+  for (const e of Object.values(m.assets)) {
+    if (e.kind === 'image') {
+      URLS.set(e.avif.url, e);
+    }
+  }
+}
+const winUrl = (id: string): string => urlOf(Object.hasOwn(wm.assets, id) ? wm : nx, id);
+function winEntry(id: string): ImageEntry {
+  const e = wm.assets[asId(id)] ?? nx.assets[asId(id)];
+  if (e?.kind !== 'image') {
+    throw new Error(`invariant: ${id} is a window fixture image`);
+  }
+  return e;
+}
+const stage = (o: { need?: string[]; warm?: string[]; near?: number; hope?: string[]; eventRoom?: string[] }): StageWindow => ({
+  need: (o.need ?? []).map(asId),
+  warm: (o.warm ?? []).map(asId),
+  near: o.near ?? 0,
+  hope: (o.hope ?? []).map(asId),
+  eventRoom: (o.eventRoom ?? []).map(asId),
+});
+/** Microtasks only: what a settle does in the turn it runs, with no timer between. */
+const micro = async (): Promise<void> => {
+  for (let i = 0; i < 20; i += 1) {
+    await Promise.resolve();
+  }
+};
+const SIX = [1, 2, 3, 4, 5, 6].map((i) => `prop/n${i}`);
+
+test('preload: want admits the required set first and hoped sets under STEADY', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['bg/cu_a', 'bg/cu_b'], hope: ['bg/wide', 'prop/s1'] }));
+  await h.settle();
+  // need 25.406 MiB; the wide would make 35.575 > 32 and is refused; the small hoped prop fits after it.
+  expect(h.acquired()).toEqual(['preload:win:bg/cu_a bg/cu_a', 'preload:win:bg/cu_b bg/cu_b', 'preload:win:bg/wide bg/wide', 'preload:win:prop/s1 prop/s1']);
+  expect(['bg/cu_a', 'bg/cu_b', 'bg/wide', 'prop/s1'].map(h.state)).toEqual(['live', 'live', 'none', 'live']);
+  expect(h.errors).toEqual([]);
+});
+
+test('preload: want releases what left the window', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['bg/cu_a'], hope: ['prop/s1'] }));
+  await h.settle();
+  h.s.want(stage({ need: ['bg/cu_b'] }));
+  await h.settle();
+  expect(['bg/cu_a', 'prop/s1', 'bg/cu_b'].map(h.state)).toEqual(['none', 'none', 'live']);
+  expect(h.log).toContain('release preload:win:bg/cu_a');
+  expect(h.log).toContain('release preload:win:prop/s1');
+});
+
+// An end step hands EMPTY_WINDOW and the ending card, "to be continued" or the paywall follow with no setChapter:
+// only want's own release frees the last line's holders there.
+test('preload: an empty window releases every window holder', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b'], hope: ['prop/s1'] }));
+  await h.settle();
+  // The warm file is held, then decoded under its window holder (step 3): two holders on cu_b.
+  expect([...h.acquired()].sort()).toEqual([
+    'preload:warm:bg/cu_b bg/cu_b',
+    'preload:win:bg/cu_a bg/cu_a',
+    'preload:win:bg/cu_b bg/cu_b',
+    'preload:win:prop/s1 prop/s1',
+  ]);
+  h.s.want(stage({}));
+  await h.settle();
+  expect(['bg/cu_a', 'bg/cu_b', 'prop/s1'].map(h.state)).toEqual(['none', 'none', 'none']);
+  expect(h.log).toContain('release preload:win:bg/cu_a');
+  expect(h.log).toContain('release preload:warm:bg/cu_b');
+  expect(h.log).toContain('release preload:win:bg/cu_b');
+  expect(h.log).toContain('release preload:win:prop/s1');
+});
+
+// Step 1 keeps every holder of an id that stays in need ∪ warm ∪ hope ∪ eventRoom, under either tag.
+test('preload: ids that stay in the window keep their holders across a swap', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b'], hope: ['prop/s1'] }));
+  await h.settle();
+  const before = h.log.length;
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b'], hope: ['prop/s1'] }));
+  await h.settle();
+  expect(h.log.slice(before).filter((l) => l.startsWith('release '))).toEqual([]);
+});
+
+// A record whose only holder was a dropped one ends: a kept warm file held but not decoded, or a kept hope file,
+// would be fetched again on every swap.
+test('preload: a held-only warm file and a hoped file kept across a swap are fetched once', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/cu_a', 'scene:a');
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b', 'bg/cu_c'], hope: ['prop/s1'] }));
+  await h.settle();
+  expect(['bg/cu_b', 'bg/cu_c', 'prop/s1'].map(h.state)).toEqual(['live', 'held', 'live']);
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b', 'bg/cu_c'], hope: ['prop/s1'] }));
+  await h.settle();
+  expect([h.fetchesOf('bg/cu_c'), h.fetchesOf('prop/s1')]).toEqual([1, 1]);
+});
+
+test('preload: a tag released while its items are still queued never fetches them', async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  // Two of the four take the slots; the other two wait in the queue when the tag goes.
+  h.s.preload('preload:k1', ['prop/s1', 'prop/s2', 'prop/s3', 'prop/h'].map(asId));
+  expect([h.fetchesOf('prop/s1'), h.fetchesOf('prop/s3')]).toEqual([1, 0]);
+  h.s.releasePreload('preload:k1');
+  await h.settle();
+  expect([h.fetchesOf('prop/s3'), h.fetchesOf('prop/h')]).toEqual([0, 0]);
+});
+
+// A queued item has no holder yet, so step 1's drop never sees it: only the queue filter takes a leaver out.
+test('preload: a window item still queued when the window swaps is never fetched', async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  // PRELOAD_IN_FLIGHT = 2: s1 and s2 are in flight, s3 and h queued.
+  h.s.want(stage({ need: ['prop/s1', 'prop/s2', 'prop/s3', 'prop/h'] }));
+  expect(h.fetchesOf('prop/s3')).toBe(0);
+  expect(h.fetchesOf('prop/h')).toBe(0);
+  h.s.want(stage({ need: ['prop/x6'] }));
+  await h.settle();
+  expect(h.fetchesOf('prop/s3')).toBe(0);
+  expect(h.fetchesOf('prop/h')).toBe(0);
+});
+
+test('preload: the new need takes the slots ahead of the old window still queued', () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['prop/s1', 'prop/s2', 'prop/s3', 'prop/h'] }));
+  h.s.want(stage({ need: ['prop/x6'] }));
+  expect([h.fetchesOf('prop/x6'), h.fetchesOf('prop/s3'), h.fetchesOf('prop/h')]).toEqual([1, 0, 0]);
+});
+
+test('preload: a released in-flight fetch is aborted', () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['bg/cu_a'] }));
+  expect(h.fetchSignal('bg/cu_a')?.aborted).toBe(false);
+  h.s.want(stage({ need: ['bg/cu_b'] }));
+  expect(h.fetchSignal('bg/cu_a')?.aborted).toBe(true);
+  expect(h.state('bg/cu_a')).toBe('none');
+});
+
+test('preload: a need refused over the cap is admitted after a release', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/wide', 'scene:a');
+  await h.visible('bg/cu_a', 'scene:b');
+  // 22.872 MiB on stage; CU B would make 35.575: refused, and nothing of the window's may go.
+  h.s.want(stage({ need: ['bg/cu_a', 'bg/cu_b'] }));
+  await h.settle();
+  expect(h.state('bg/cu_b')).toBe('none');
+  // A sweep released the wide: the deferred need is tried again.
+  h.registry.release(asId('bg/wide'), 'scene:a');
+  h.s.retry();
+  await h.settle();
+  expect(h.state('bg/cu_b')).toBe('live');
+  expect(h.acquired().filter((a) => a.startsWith('preload:win:bg/cu_b'))).toHaveLength(2);
+});
+
+test('preload: a deferred need outside a newer window is forgotten', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/wide', 'scene:a');
+  await h.visible('bg/cu_a', 'scene:b');
+  h.s.want(stage({ need: ['bg/cu_a', 'bg/cu_b'] }));
+  await h.settle();
+  h.s.want(stage({ need: ['bg/cu_a'] }));
+  h.registry.release(asId('bg/wide'), 'scene:a');
+  h.s.retry();
+  await h.settle();
+  expect(h.state('bg/cu_b')).toBe('none');
+  expect(h.acquired().filter((a) => a.startsWith('preload:win:bg/cu_b'))).toHaveLength(1);
+});
+
+test('preload: a refused need evicts resident hope and is admitted', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['bg/wide'] }));
+  await h.settle();
+  // The tap: CU A visible; the wide's window holder stays (it is hope d2 of the next window): 22.872 MiB.
+  await h.visible('bg/cu_a', 'scene:a');
+  h.s.want(stage({ need: ['bg/cu_a', 'bg/cu_b'], hope: ['bg/wide'] }));
+  await h.settle();
+  expect(['bg/cu_b', 'bg/wide'].map(h.state)).toEqual(['live', 'none']);
+  expect(h.registry.stats().bytes).toBe(2 * CU);
+});
+
+test('preload: a refused warm fetch evicts resident hope and is held', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['bg/cu_a'], hope: ['bg/wide'] }));
+  await h.settle();
+  await h.visible('bg/cu_b', 'scene:b');
+  // 35.575 MiB live: the street's file (0.477) is refused at STEADY; step 6 (a) evicts the hoped wide to make room.
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/street'], near: 1, hope: ['bg/wide'] }));
+  await h.settle();
+  expect(['bg/street', 'bg/wide'].map(h.state)).toEqual(['held', 'none']);
+  expect(h.log).toContain('release preload:win:bg/wide');
+});
+
+test('preload: a warm fetch refused over the cap is held after a release', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/cu_a', 'scene:a');
+  await h.visible('bg/cu_b', 'scene:b');
+  await h.visible('bg/wide', 'scene:w');
+  // 35.575 MiB on stage and nothing of step 6 to release: the street's file is deferred, not lost.
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/street'], near: 1 }));
+  await h.settle();
+  expect(h.state('bg/street')).toBe('none');
+  h.registry.release(asId('bg/cu_b'), 'scene:b');
+  h.s.retry();
+  await h.settle();
+  expect(h.state('bg/street')).toBe('held');
+  expect(h.fetchesOf('bg/street')).toBe(1);
+});
+
+test('preload: a refused need evicts room holders outside the window at any step', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('room:hall', [asId('bg/hall')]);
+  h.s.preload('room:study', [asId('bg/study')]);
+  await h.settle();
+  await h.visible('bg/cu_a', 'scene:a');
+  // Inside the hall's event: the hall is the window's eventRoom. 35.227 MiB; CU B refused.
+  h.s.want(stage({ need: ['bg/cu_a', 'bg/cu_b'], eventRoom: ['bg/hall'] }));
+  await h.settle();
+  expect(['bg/cu_b', 'bg/study', 'bg/hall'].map(h.state)).toEqual(['live', 'none', 'none']);
+  expect(h.registry.stats().bytes).toBe(2 * CU);
+  expect(h.log.filter((l) => l.startsWith('release room:'))).toEqual(['release room:study', 'release room:hall']);
+});
+
+test('preload: a room window never evicts the room on stage', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('room:study', [asId('bg/study')]);
+  h.s.preload('room:hall', [asId('bg/hall')]);
+  await h.settle();
+  await h.visible('bg/wide', 'scene:a');
+  // r:hall's window: the hall (the most recently requested tag) is its need; the props would make 35.993 MiB.
+  h.s.want(stage({ need: ['bg/hall', 'prop/hall'] }));
+  await h.settle();
+  expect(['bg/hall', 'prop/hall', 'bg/study'].map(h.state)).toEqual(['live', 'live', 'none']);
+  expect(h.log).not.toContain('release room:hall');
+});
+
+test('preload: room holders the window hopes for are evicted last', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('room:study', [asId('bg/study')]);
+  h.s.preload('room:cellar', [asId('bg/cellar')]);
+  await h.settle();
+  await h.visible('bg/wide', 'scene:a');
+  // The cellar (the most recent tag) is hoped for: the study goes first, and one eviction suffices.
+  h.s.want(stage({ need: ['bg/wide', 'face/f'], hope: ['bg/cellar'] }));
+  await h.settle();
+  expect(['face/f', 'bg/study', 'bg/cellar'].map(h.state)).toEqual(['live', 'none', 'live']);
+  expect(h.log).not.toContain('release room:cellar');
+});
+
+test('preload: warm files are held before hope and decoded in order while they fit', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/cu_a', 'scene:a');
+  // A choice at CU A whose replies open on CU B and CU C: 13.657 MiB held; CU B decodes ahead, CU C would not fit.
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b', 'bg/cu_c'], hope: ['prop/s1'] }));
+  await h.settle();
+  const a = h.acquired();
+  expect(a.indexOf('preload:warm:bg/cu_b bg/cu_b')).toBeLessThan(a.indexOf('preload:warm:bg/cu_c bg/cu_c'));
+  expect(a.indexOf('preload:warm:bg/cu_c bg/cu_c')).toBeLessThan(a.indexOf('preload:win:prop/s1 prop/s1'));
+  expect(['bg/cu_b', 'bg/cu_c'].map(h.state)).toEqual(['live', 'held']);
+  expect([h.fetchesOf('bg/cu_b'), h.fetchesOf('bg/cu_c'), h.decodesOf('bg/cu_c')]).toEqual([1, 1, 0]);
+});
+
+test('preload: a refused need sheds a decoded warm file back to its bytes', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/cu_a', 'scene:a');
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b', 'bg/cu_c'] }));
+  await h.settle();
+  expect(h.state('bg/cu_b')).toBe('live');
+  // Reply B's next step keeps CU B as an opener and needs CU D: 38.586 MiB, refused; CU B's decode sheds.
+  h.s.want(stage({ need: ['bg/cu_a', 'bg/cu_d'], warm: ['bg/cu_b'] }));
+  await h.settle();
+  expect(['bg/cu_d', 'bg/cu_b', 'bg/cu_c'].map(h.state)).toEqual(['live', 'held', 'none']);
+  expect(h.fetchesOf('bg/cu_b')).toBe(1);
+});
+
+// Step 6 (a) goes by rank: a warm decode (an opener of the coming cut) outranks a best-effort hope.
+test('preload: step 6 (a) releases resident hope before it sheds a warm decode', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/cu_a', 'scene:a');
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b'], hope: ['prop/x6'] }));
+  await h.settle();
+  expect(['bg/cu_a', 'bg/cu_b', 'prop/x6'].map(h.state)).toEqual(['live', 'live', 'live']);
+  // 31.883 MiB: CU A on stage, CU B decoded, x6 hoped. The hall's prop (3.3) is refused; the hope alone makes room,
+  // and it queues again but no longer fits.
+  h.s.want(stage({ need: ['bg/cu_a', 'prop/hall'], warm: ['bg/cu_b'], hope: ['prop/x6'] }));
+  await h.settle();
+  expect(['prop/hall', 'bg/cu_b', 'prop/x6'].map(h.state)).toEqual(['live', 'live', 'none']);
+});
+
+test('preload: want keeps the held warm files of the new window', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b'] }));
+  await h.settle();
+  h.s.want(stage({ need: ['bg/cu_c'], warm: ['bg/cu_b'] }));
+  await h.settle();
+  expect(h.state('bg/cu_b')).not.toBe('none');
+  expect(h.fetchesOf('bg/cu_b')).toBe(1);
+});
+
+test('preload: near warm files go before tag preloads, far ones after', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  // r:hall's window: the room's own opener (near) first, EN's neighbour, then the neighbours' onEnter openers.
+  h.s.want(stage({ need: ['prop/s1', 'prop/s2'], warm: ['bg/cu_a', 'bg/cu_b', 'bg/cu_c'], near: 1 }));
+  h.s.preload('room:study', [asId('bg/study')]);
+  await h.settle();
+  const order = h.acquired().filter((a) => a.startsWith('preload:warm:') || a.startsWith('room:'));
+  expect(order).toEqual(['preload:warm:bg/cu_a bg/cu_a', 'room:study bg/study', 'preload:warm:bg/cu_b bg/cu_b', 'preload:warm:bg/cu_c bg/cu_c']);
+});
+
+test("preload: a refused need evicts the next chapter's holders", async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/cu_b', 'scene:b');
+  h.s.preload('next:ch7', [asId('bg/opening')], nx);
+  await h.settle();
+  // The step before the closing wide: CU B + the wide + next:ch7's opening wide would be 33.041 MiB.
+  h.s.want(stage({ need: ['bg/cu_b', 'bg/close'] }));
+  await h.settle();
+  expect(['bg/close', 'bg/opening'].map(h.state)).toEqual(['live', 'none']);
+  expect(h.registry.stats().bytes).toBe(CU + mib(10.169));
+});
+
+test("preload: a refused need never evicts a next chapter's tag that holds a need id", async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/cu_b', 'scene:b');
+  h.s.preload('next:ch7', ['prop/x6', 'bg/close'].map(asId));
+  await h.settle();
+  expect(['prop/x6', 'bg/close'].map(h.state)).toEqual(['live', 'live']);
+  // 29.349 MiB; CU C would make 42.052. Step 6 (c) spares the tag (it holds x6, a need id): CU C is deferred.
+  h.s.want(stage({ need: ['prop/x6', 'bg/cu_c'] }));
+  await h.settle();
+  expect(['bg/cu_c', 'bg/close'].map(h.state)).toEqual(['none', 'live']);
+  expect(h.log).not.toContain('release next:ch7');
+});
+
+test('preload: next-chapter preloads queue after hope', async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('preload:k', ['prop/s1', 'prop/s2'].map(asId));
+  h.s.preload('next:ch7', [asId('prop/n1')], nx);
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b'], near: 1, hope: ['prop/h'] }));
+  await h.settle();
+  expect(h.acquired().at(-1)).toBe('next:ch7 prop/n1');
+  expect(h.state('prop/n1')).toBe('live');
+});
+
+test("preload: inside a room event the event's own room is evicted last", async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  // EN at the hall: the hall, the study, the cellar (refused); the move to the study: the cellar released, then the
+  // study and the hall requested again.
+  for (const r of ['hall', 'study', 'cellar']) {
+    h.s.preload(`room:${r}`, [asId(`bg/${r}`)]);
+  }
+  await h.settle();
+  expect(h.state('bg/cellar')).toBe('none');
+  h.s.releasePreload('room:cellar');
+  h.s.preload('room:study', [asId('bg/study')]);
+  h.s.preload('room:hall', [asId('bg/hall')]);
+  await h.settle();
+  await h.visible('bg/wide', 'scene:a');
+  // The study event's step: 32.693 MiB live and a face file of 1.633: one eviction suffices.
+  h.s.want(stage({ need: ['bg/wide', 'face/f'] }));
+  await h.settle();
+  expect(['face/f', 'bg/hall', 'bg/study'].map(h.state)).toEqual(['live', 'none', 'live']);
+  expect(h.registry.stats().bytes).toBe(mib(11.262) + mib(10.169) + mib(1.633));
+});
+
+test('preload: an onEnter event keeps its room through eventRoom', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('room:hall', [asId('bg/hall')]);
+  h.s.preload('room:cellar', [asId('bg/cellar')]);
+  await h.settle();
+  await h.visible('bg/cu_a', 'scene:a');
+  // 35.227 MiB; the cellar's event needs a face file: the hall goes, the cellar's tag stays.
+  h.s.want(stage({ need: ['bg/cu_a', 'face/f'], eventRoom: ['bg/cellar'] }));
+  await h.settle();
+  expect(['face/f', 'bg/hall', 'bg/cellar'].map(h.state)).toEqual(['live', 'none', 'live']);
+  expect(h.log).not.toContain('release room:cellar');
+  expect(h.s.stats().rooms).toEqual(['room:cellar']);
+  expect(h.registry.stats().bytes).toBe(mib(11.262) + CU + mib(1.633));
+});
+
+test('preload: an onEnter event whose room only the window holds keeps it', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('room:hall', [asId('bg/hall')]);
+  await h.settle();
+  await h.visible('bg/cu_a', 'scene:a');
+  // At the hall the cellar's neighbour preload was refused: room:cellar holds nothing.
+  h.s.preload('room:cellar', [asId('bg/cellar')]);
+  await h.settle();
+  expect(h.state('bg/cellar')).toBe('none');
+  // The cellar on stage, then its onEnter event's opening cut: the window's eventRoom holders alone keep it.
+  await h.visible('bg/cellar', 'scene:bg');
+  await h.visible('prop/cellar', 'scene:prop');
+  h.s.want(stage({ need: ['bg/cu_a', 'face/f'], eventRoom: ['bg/cellar', 'prop/cellar'] }));
+  h.registry.release(asId('bg/cellar'), 'scene:bg');
+  h.registry.release(asId('prop/cellar'), 'scene:prop');
+  await h.settle();
+  // 38.527 MiB + the face file: the hall goes, the cellar stays (28.898 MiB).
+  expect(['face/f', 'bg/hall', 'bg/cellar', 'prop/cellar'].map(h.state)).toEqual(['live', 'none', 'live', 'live']);
+  expect(h.registry.stats().bytes).toBe(mib(11.262) + mib(3.3) + CU + mib(1.633));
+});
+
+test("preload: step 6 (d) releases the window's event-room holders before EN's tags that hold the room", async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('room:hall', [asId('bg/hall')]);
+  h.s.preload('state:hall', [asId('prop/hall')]);
+  await h.settle();
+  await h.visible('bg/cu_a', 'scene:a');
+  // 27.265 MiB; x6 (6.477) is refused. (d): the window's holders free nothing while EN holds the room, then EN's most
+  // recent tag, state:hall, frees enough; room:hall stays.
+  h.s.want(stage({ need: ['bg/cu_a', 'prop/x6'], eventRoom: ['bg/hall', 'prop/hall'] }));
+  await h.settle();
+  expect(h.state('prop/x6')).toBe('live');
+  expect(h.log).toContain('release state:hall');
+  expect(h.log).not.toContain('release room:hall');
+  expect(h.s.stats().rooms).toEqual(['room:hall']);
+});
+
+test('preload: step 6 (d) never evicts an EN tag of the event room that holds a need id', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('room:hall', [asId('bg/hall')]);
+  h.s.preload('state:hall', ['prop/hall', 'prop/p3'].map(asId));
+  await h.settle();
+  await h.visible('bg/cu_a', 'scene:a');
+  // 30.265 MiB; x6 (6.477) is refused. (d): the window's holders, then room:hall; state:hall holds p3, a need id.
+  h.s.want(stage({ need: ['bg/cu_a', 'prop/p3', 'prop/x6'], eventRoom: ['bg/hall', 'prop/hall'] }));
+  await h.settle();
+  expect(h.state('prop/x6')).toBe('live');
+  expect(h.log).toContain('release room:hall');
+  expect(h.log).not.toContain('release state:hall');
+  expect(h.state('prop/hall')).toBe('live');
+});
+
+test('preload: a hope item evicted for a need queues again and is admitted while it fits', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['bg/wide', 'prop/s1'] }));
+  await h.settle();
+  await h.visible('bg/cu_a', 'scene:a');
+  // 22.972 MiB; CU B would make 35.675. Step 6 (a), the last first: s1 frees too little, the wide enough. Both queue
+  // again: s1 fits, the wide does not.
+  h.s.want(stage({ need: ['bg/cu_a', 'bg/cu_b'], hope: ['bg/wide', 'prop/s1'] }));
+  await h.settle();
+  expect(['bg/cu_b', 'bg/wide', 'prop/s1'].map(h.state)).toEqual(['live', 'none', 'live']);
+});
+
+test('preload: an event-room item evicted for a need queues again and is admitted while it fits', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ eventRoom: ['bg/hall', 'prop/s1'] }));
+  await h.settle();
+  await h.visible('bg/cu_a', 'scene:a');
+  // 24.065 MiB; CU B would make 36.768. Step 6 (d), the last first: s1 frees too little, the hall enough. Both queue
+  // again: s1 fits, the hall does not.
+  h.s.want(stage({ need: ['bg/cu_a', 'bg/cu_b'], eventRoom: ['bg/hall', 'prop/s1'] }));
+  await h.settle();
+  expect(['bg/cu_b', 'bg/hall', 'prop/s1'].map(h.state)).toEqual(['live', 'none', 'live']);
+});
+
+test('preload: a warm decode that does not fit evicts nothing', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('room:study', [asId('bg/study')]);
+  await h.settle();
+  // r:lobby's window with two openers held: 28.778 MiB; decoding the first needs 12.226 more.
+  h.s.want(stage({ need: ['bg/lobby'], warm: ['bg/cu_b', 'bg/cu_c'], near: 2 }));
+  await h.settle();
+  expect(['bg/study', 'bg/cu_b', 'bg/cu_c'].map(h.state)).toEqual(['live', 'held', 'held']);
+  expect(h.log).not.toContain('release room:study');
+});
+
+test('preload: retry() starts the decode of a held warm file stopped for room', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/cu_a', 'scene:a');
+  await h.visible('bg/cu_b', 'scene:b');
+  // 25.883 MiB with the street's file held; its decode (12.226) does not fit and stops.
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/street'], near: 1 }));
+  await h.settle();
+  expect([h.state('bg/street'), h.decodesOf('bg/street')]).toEqual(['held', 0]);
+  // A sweep released CU B: step 3 runs again at the retry, from the held file.
+  h.registry.release(asId('bg/cu_b'), 'scene:b');
+  h.s.retry();
+  await h.settle();
+  expect(h.state('bg/street')).toBe('live');
+  expect([h.fetchesOf('bg/street'), h.decodesOf('bg/street')]).toEqual([1, 1]);
+});
+
+// A second queued decode of one file would join the first once it starts and hold a slot its own flight covers.
+test('preload: a warm decode still queued for a slot is not queued again by retry()', async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ warm: ['prop/s1', 'prop/s2', 'prop/s3'] }));
+  h.land('prop/s1');
+  await flush();
+  h.land('prop/s2');
+  await flush();
+  h.land('prop/s3');
+  await flush();
+  // PRELOAD_IN_FLIGHT = 2: the decodes of s1 and s2 are in flight and s3's waits; the next chapter's file queues
+  // behind it.
+  expect([h.decodesOf('prop/s1'), h.decodesOf('prop/s2'), h.decodesOf('prop/s3')]).toEqual([1, 1, 0]);
+  h.s.preload('next:ch7', [asId('prop/n1')], nx);
+  h.s.retry();
+  await flush();
+  h.decoded('prop/s1');
+  await flush();
+  expect(h.decodesOf('prop/s3')).toBe(1);
+  // The second freed slot goes to the next chapter's file, and s3's decode was asked for once.
+  h.decoded('prop/s2');
+  await flush();
+  expect(h.fetchesOf('prop/n1')).toBe(1);
+  expect(h.acquired().filter((a) => a.startsWith('preload:win:prop/s3'))).toHaveLength(1);
+});
+
+test('preload: joining a record that exists takes no slot', async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  for (const id of ['prop/s3', 'prop/h', 'face/f']) {
+    void h.visible(id, `scene:${id}`);
+  }
+  await h.settle();
+  // Both slots busy with fetches.
+  h.s.preload('preload:k', ['prop/s1', 'prop/s2'].map(asId));
+  h.log.length = 0;
+  h.s.want(stage({ need: ['prop/s3', 'prop/h', 'face/f', 'prop/s1', 'prop/s2', 'prop/x6'] }));
+  expect(h.acquired()).toEqual(['prop/s3', 'prop/h', 'face/f', 'prop/s1', 'prop/s2'].map((id) => `preload:win:${id} ${id}`));
+  h.s.preload('room:z', ['prop/s3', 'prop/h', 'face/f'].map(asId));
+  expect(h.acquired().slice(5)).toEqual(['room:z prop/s3', 'room:z prop/h', 'room:z face/f']);
+  expect(h.fetchesOf('prop/x6')).toBe(0);
+});
+
+test("preload: the first window after a chapter change joins the next chapter's files, then releases its tag", async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('next:ch7', SIX.map(asId), nx);
+  await h.settle();
+  h.s.setChapter(nx);
+  h.log.length = 0;
+  h.s.want(stage({ need: SIX }));
+  expect(h.log).toEqual([...SIX.map((id) => `acquire preload:win:${id} ${id}`), 'release next:ch7']);
+  await h.settle();
+  expect(SIX.map(h.fetchesOf)).toEqual([1, 1, 1, 1, 1, 1]);
+  expect(SIX.map(h.state)).toEqual(SIX.map(() => 'live'));
+  h.log.length = 0;
+  h.s.want(stage({ need: SIX }));
+  expect(h.log.filter((l) => l.startsWith('release '))).toEqual([]);
+});
+
+test('preload: a room preload refused under a warm decode sheds the decode and is admitted', async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  // r:lobby: the street opener near, a 6 MiB file and the vault's bg far (the neighbour EN asks for), a small hope.
+  h.s.want(stage({ need: ['bg/lobby'], warm: ['bg/street', 'prop/x6', 'bg/vault'], near: 1, hope: ['prop/h'] }));
+  h.land('bg/street');
+  await micro();
+  h.land('bg/lobby');
+  await micro();
+  h.decoded('bg/lobby');
+  await micro();
+  h.land('prop/x6');
+  await micro();
+  h.land('bg/vault');
+  await micro();
+  // Every warm file held: the street decodes ahead (30.319 MiB), the hope is in flight, the other decodes queue.
+  expect([h.decodesOf('bg/street'), h.fetchesOf('prop/h')]).toEqual([1, 1]);
+  h.s.preload('room:vault', [asId('bg/vault')]);
+  h.decoded('bg/street');
+  await micro();
+  // The vault's decode was refused at 42.6 MiB: the street sheds to its file, the hope goes, the vault is admitted
+  // before anything queued (the 6 MiB decode would fit after the shed) is pumped.
+  expect(['bg/vault', 'bg/street', 'prop/x6'].map(h.state)).toEqual(['pending', 'held', 'held']);
+  expect([h.fetchesOf('bg/street'), h.fetchesOf('bg/vault'), h.decodesOf('bg/vault')]).toEqual([1, 1, 1]);
+});
+
+test('preload: a room preload refused under a warm decode in flight sheds the decode and is admitted in the same turn', async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['bg/lobby'], warm: ['bg/street', 'bg/vault'], near: 1 }));
+  h.land('bg/street');
+  await micro();
+  h.land('bg/lobby');
+  await micro();
+  h.decoded('bg/lobby');
+  await micro();
+  h.land('bg/vault');
+  await micro();
+  expect(h.decodesOf('bg/street')).toBe(1);
+  // The street's decode is still in flight when EN asks for the vault.
+  h.s.preload('room:vault', [asId('bg/vault')]);
+  await micro();
+  expect(h.state('bg/vault')).toBe('pending');
+  expect(h.decodeSignal('bg/street')?.aborted).toBe(true);
+  expect(h.registry.stats().bytes).toBe(mib(16.562) + 2 * mib(0.477) + mib(12.226));
+  // The aborted decode lands late: released at once, the file still held.
+  h.decoded('bg/street');
+  await micro();
+  expect(h.releasesOf('bg/street')).toBe(1);
+  expect(h.state('bg/street')).toBe('held');
+  expect([h.fetchesOf('bg/street'), h.fetchesOf('bg/vault')]).toEqual([1, 1]);
+});
+
+test('preload: a refused need sheds a warm decode in flight and is admitted in the same turn', async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('room:r', [asId('prop/p3')]);
+  h.land('prop/p3');
+  await micro();
+  h.decoded('prop/p3');
+  await micro();
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b'] }));
+  h.land('bg/cu_a');
+  h.land('bg/cu_b');
+  await micro();
+  h.decoded('bg/cu_a');
+  await micro();
+  // CU B's decode ahead is in flight (28.406 MiB); the next step needs CU D: refused at 41.109.
+  expect(h.decodesOf('bg/cu_b')).toBe(1);
+  h.s.want(stage({ need: ['bg/cu_a', 'bg/cu_d'], warm: ['bg/cu_b'] }));
+  await micro();
+  expect(['bg/cu_d', 'bg/cu_b', 'prop/p3'].map(h.state)).toEqual(['pending', 'held', 'live']);
+  expect(h.decodeSignal('bg/cu_b')?.aborted).toBe(true);
+  expect(h.log).not.toContain('release room:r');
+});
+
+test('preload: the warm decodes start in the turn the last warm file lands', async () => {
+  vi.useFakeTimers();
+  try {
+    const h = harness('deferred', { hold: true });
+    h.s.setChapter(wm);
+    h.s.want(stage({ warm: ['prop/x6', 'prop/big'] }));
+    h.land('prop/x6');
+    await micro();
+    expect(h.decodesOf('prop/x6')).toBe(0);
+    h.land('prop/big');
+    await micro();
+    // No timer ran: the decode of the first file started in the settle of the last fetch; the second does not fit.
+    expect(h.decodesOf('prop/x6')).toBe(1);
+    expect(h.registry.stats().pending).toBe(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('preload: a held record is queued as a decode and never joined', async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ warm: ['prop/big'] }));
+  h.land('prop/big');
+  await micro();
+  expect(h.state('prop/big')).toBe('held');
+  // Both slots busy with the next window's need fetches.
+  h.s.want(stage({ need: ['prop/s1', 'prop/s2'], warm: ['prop/big'] }));
+  h.s.preload('room:x', [asId('prop/big')]);
+  expect(h.acquired().filter((a) => a.startsWith('room:x'))).toEqual([]);
+  h.land('prop/s1');
+  await micro();
+  h.decoded('prop/s1');
+  await micro();
+  expect(h.acquired().filter((a) => a.startsWith('room:x'))).toEqual(['room:x prop/big']);
+});
+
+test('preload: a warm id another holder decodes is joined and stays decoded when that holder leaves', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/street', 'scene:s');
+  // The street is on stage when it becomes the window's warm opener: step 3 joins its decode as it is.
+  h.s.want(stage({ warm: ['bg/street'], near: 1 }));
+  await h.settle();
+  h.registry.release(asId('bg/street'), 'scene:s');
+  await h.settle();
+  expect(h.state('bg/street')).toBe('live');
+  expect([h.fetchesOf('bg/street'), h.decodesOf('bg/street')]).toEqual([1, 1]);
+});
+
+test('preload: a join that carries a fetch in flight holds one of the two slots', async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('room:x', [asId('bg/vault')]);
+  h.s.want(stage({ warm: ['bg/vault'] }));
+  h.s.preload('room:y', [asId('prop/s1')]);
+  h.s.preload('room:z', [asId('prop/s2')]);
+  h.s.releasePreload('room:x');
+  // The vault is warm-only and still fetching: its join carries the fetch and holds a slot.
+  expect(h.state('bg/vault')).toBe('held');
+  expect([h.fetchesOf('bg/vault'), h.fetchesOf('prop/s1'), h.fetchesOf('prop/s2')]).toEqual([1, 1, 0]);
+  h.land('bg/vault');
+  await micro();
+  expect(h.fetchesOf('prop/s2')).toBe(1);
+});
+
+test("preload: a refused need evicts a kept room's state set before a neighbour's bg", async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  // EN back in the hall: its room and state set, then the study's bg and its kept state set (29.124 MiB).
+  h.s.preload('room:hall', [asId('bg/hall')]);
+  h.s.preload('state:hall', [asId('prop/hall')]);
+  h.s.preload('room:study', [asId('bg/study')]);
+  h.s.preload('state:study', [asId('prop/study')]);
+  await h.settle();
+  h.s.want(stage({ need: ['bg/hall', 'prop/hall', 'prop/p3'] }));
+  await h.settle();
+  expect(['prop/p3', 'prop/study', 'bg/study'].map(h.state)).toEqual(['live', 'none', 'live']);
+});
+
+test("preload: window stats count every need item not live and list the window's ids", async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  expect(h.s.stats()).toEqual({ window: { pending: 0, ids: [] }, rooms: [] });
+  h.s.preload('room:study', [asId('prop/s3')]);
+  h.s.want(stage({ need: ['prop/s1', 'prop/s2'], warm: ['bg/cu_b'], hope: ['prop/h'] }));
+  expect(h.s.stats()).toEqual({ window: { pending: 2, ids: ['prop/s1', 'prop/s2', 'bg/cu_b', 'prop/h'] }, rooms: ['room:study'] });
+  h.land('prop/s1');
+  await micro();
+  h.decoded('prop/s1');
+  await micro();
+  expect(h.s.stats().window.pending).toBe(1);
+});
+
+test('preload: stats list no room tag whose preload was refused', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/cu_a', 'scene:a');
+  await h.visible('bg/cu_b', 'scene:b');
+  // 25.406 MiB: the lobby (16.562) is refused at STEADY; the study's prop (0.1) is admitted.
+  h.s.preload('room:lobby', [asId('bg/lobby')]);
+  h.s.preload('room:study', [asId('prop/s3')]);
+  await h.settle();
+  expect(['bg/lobby', 'prop/s3'].map(h.state)).toEqual(['none', 'live']);
+  expect(h.s.stats().rooms).toEqual(['room:study']);
+});
+
+test("preload: ensure settles when a window item's fetch fails", async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['prop/s1'] }));
+  const seen: { value: Result<void, SceneError> | null } = { value: null };
+  void h.s.ensure([asId('prop/s1')], live()).then((r) => {
+    seen.value = r;
+  });
+  h.fetchFails('prop/s1');
+  await flush();
+  expect(seen.value).toMatchObject({ ok: false, error: { kind: 'assets', errors: [{ kind: 'fetch', id: 'prop/s1' }] } });
+  expect(h.state('prop/s1')).toBe('none');
+  expect(h.errors).toMatchObject([{ kind: 'fetch', id: 'prop/s1' }]);
+});
+
+test('preload: the window seat forwards a swap to want and a release to retry', () => {
+  // The executor's two reports reach the scheduler through this seat alone (lane SH5a D12): a swap is exactly
+  // want(window), a release exactly retry().
+  const calls: string[] = [];
+  const asked: StageWindow[] = [];
+  const seat = windowDeps({
+    want: (w) => {
+      calls.push('want');
+      asked.push(w);
+    },
+    retry: () => {
+      calls.push('retry');
+    },
+  });
+  const w: StageWindow = { need: [asId('bg/a')], warm: [asId('bg/b')], near: 1, hope: [], eventRoom: [] };
+  seat.swapped(w);
+  expect(calls).toEqual(['want']);
+  expect(asked[0]).toBe(w);
+  seat.released();
+  expect(calls).toEqual(['want', 'retry']);
+  expect(asked).toEqual([w]);
 });

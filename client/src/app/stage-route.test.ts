@@ -2,9 +2,10 @@ import { expect, test } from 'vitest';
 
 import type { SceneSnapshot, VisualCommand } from '../scene/executor.ts';
 import type { AssetEntry, AssetManifest } from '../story/catalog.ts';
-import type { BgId, CgId, ChapterId, CharId, ExprId, KnotName, PropId, PuzzleLocalId, SectionId, SfxId, StagingCommand, TrackId } from '../story/staging.ts';
+import type { AssetId, BgId, CgId, ChapterId, CharId, ExprId, KnotName, PropId, PuzzleLocalId, SectionId, SfxId, StagingCommand, TrackId } from '../story/staging.ts';
 import { parseTags } from '../story/tags.ts';
-import { imageIds, manifestIndex, splitBatch } from './stage-route.ts';
+import { EMPTY_WINDOW } from '../scene/preload.ts';
+import { imageIds, lookOf, manifestIndex, roomWindowKey, splitBatch, windowFor, withEventRoom, withRoomProps } from './stage-route.ts';
 
 // Commands as parseTags types them; the brands are earned by the parser in production.
 /** One command of every kind: a kind added to StagingCommand fails `check` here until its route is pinned. */
@@ -163,12 +164,13 @@ test('stage-route: a batch ensures the face file of every visible face not at re
 
 test("stage-route: a paid chapter's batch ensures its gated face files", () => {
   // A paid chapter's manifest: every file gated; the blush lives only in a gated face file.
-  const paid = shotManifest('ch2', '/api/assets/', ['blush']);
+  const gated = '/api/assets/';
+  const paid = shotManifest('ch2', gated, ['blush']);
   const ids = imageIds([cmdFace('ally', 'blush')], { stage: on('two'), manifest: paid });
   expect(ids).toEqual(['bg/two', 'face/two/ally/blush', 'sheet/two']);
   for (const id of ids) {
     const e = paid.assets[id];
-    expect(e?.kind === 'image' ? e.avif.url : null, id).toMatch(/^\/api\/assets\//);
+    expect(e?.kind === 'image' ? e.avif.url.slice(0, gated.length) : null, id).toBe(gated);
   }
 });
 
@@ -181,4 +183,96 @@ test("stage-route: a sprite chapter's ids are unchanged with a context", () => {
   for (const manifest of [castless, { chapterId: 'ch1' as ChapterId, assets: {} }, null]) {
     expect(imageIds(cmds, { stage: on('two', [['ally', 'smile']]), manifest })).toEqual(today);
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The step windows (shots §5.8, lane SH5a): a chapter's look decoded once per manifest, a step's window by its key or
+// its knot's index, a room batch's key, the event's room, and the room props on a story cut.
+
+const LOOK = {
+  images: ['bg/hall', 'sheet/hall', 'bg/cu_a', 'bg/cu_b', 'prop/lamp', 'bg/study', 'bg/street'],
+  windows: {
+    'ch1.arrival.a001': [[0, 1], [3], 0, [2]],
+    'k:arrival': [[6], [], 0, [0]],
+    'r:hall': [[0, 1, 4], [6], 1, []],
+    'r:study': [[5], [], 0, []],
+    'r:office': [[5], [], 0, []],
+  },
+};
+const looked = (look?: unknown): AssetManifest => ({ chapterId: 'ch1' as ChapterId, assets: {}, ...(look === undefined ? {} : { look }) });
+const where = (section: string | null, room: string | null): { section: string | null; room: string | null } => ({ section, room });
+const asAsset = (s: string): AssetId => s as AssetId; // fixture ids: the brand is earned by the manifest decoder
+const A001 = { need: ['bg/hall', 'sheet/hall'], warm: ['bg/cu_b'], near: 0, hope: ['bg/cu_a'] };
+
+test("stage-route: a step's window comes from look", () => {
+  const m = looked(LOOK);
+  expect(lookOf(m), 'decoded once per manifest').toBe(lookOf(m));
+  expect(windowFor(m, 'ch1.arrival.a001', 'arrival', null)).toEqual({ ...A001, eventRoom: [] });
+  // A chapter without look, or with one that does not decode: the empty window, which still ends the entry tag.
+  for (const none of [looked(), looked({ images: 'bg/hall' }), null]) {
+    expect(windowFor(none, 'ch1.arrival.a001', 'arrival', null)).toEqual(EMPTY_WINDOW);
+  }
+  expect(lookOf(looked({ images: 'bg/hall' })).ok).toBe(false);
+});
+
+test('stage-route: a missing key falls back to the knot index', () => {
+  const m = looked(LOOK);
+  const index = { need: ['bg/street'], warm: [], near: 0, hope: ['bg/hall'], eventRoom: [] };
+  expect(windowFor(m, 'ch1.arrival.a099', 'arrival', null)).toEqual(index);
+  expect(windowFor(m, null, 'arrival', null)).toEqual(index);
+  // Neither the key nor the knot's index: the empty window.
+  expect(windowFor(m, 'ch1.arrival.a099', 'gate', null)).toEqual(EMPTY_WINDOW);
+  expect(windowFor(m, null, null, null)).toEqual(EMPTY_WINDOW);
+});
+
+test("stage-route: a room batch's window key is its room's; a close-up batch has none", () => {
+  const r = lookOf(looked(LOOK));
+  if (!r.ok) {
+    throw new Error('invariant: the fixture look decodes');
+  }
+  const look = r.value;
+  const letter: VisualCommand = { kind: 'cg', cg: 'letter' as CgId, t: 'fade', ms: 500 };
+  const clear: VisualCommand = { kind: 'cg', cg: null, t: 'fade', ms: 500 };
+  // A room batch, an empty one and a close-up's clear hand the room's window; two rooms on one bg keep their own keys.
+  expect(roomWindowKey([cmdScene('hall')], where('manor', 'hall'), look)).toBe('r:hall');
+  expect(roomWindowKey([], where('manor', 'hall'), look)).toBe('r:hall');
+  expect(roomWindowKey([clear], where('manor', 'hall'), look)).toBe('r:hall');
+  expect(roomWindowKey([cmdScene('study')], where('manor', 'study'), look)).toBe('r:study');
+  expect(roomWindowKey([cmdScene('study')], where('manor', 'office'), look)).toBe('r:office');
+  // A batch that sets a CG (a close-up), no current section, or a room the look has no window for: none.
+  expect(roomWindowKey([letter], where('manor', 'hall'), look)).toBeNull();
+  expect(roomWindowKey([], where(null, null), look)).toBeNull();
+  expect(roomWindowKey([], where('manor', 'attic'), look)).toBeNull();
+});
+
+test('stage-route: a story step inside a room event passes its room as eventRoom', () => {
+  const m = looked(LOOK);
+  // In the hall's event: the hall window's need files the step lists in no class, in order.
+  expect(windowFor(m, 'ch1.arrival.a001', 'arrival', where('manor', 'hall'))).toEqual({ ...A001, eventRoom: ['prop/lamp'] });
+  const room = { need: ['bg/hall', 'prop/lamp', 'bg/study'].map(asAsset), warm: [asAsset('bg/street')], near: 0, hope: [] };
+  const step = { need: [asAsset('bg/cu_a')], warm: [asAsset('bg/study')], near: 0, hope: [asAsset('prop/lamp')] };
+  expect(withEventRoom(step, room).eventRoom).toEqual(['bg/hall']);
+  expect(withEventRoom(step, null).eventRoom).toEqual([]);
+  // No current section, the room's own window, or a room with no window: no eventRoom.
+  expect(windowFor(m, 'ch1.arrival.a001', 'arrival', where(null, null)).eventRoom).toEqual([]);
+  expect(windowFor(m, 'r:hall', null, where('manor', 'hall')).eventRoom).toEqual([]);
+  expect(windowFor(m, 'ch1.arrival.a001', 'arrival', where('manor', 'attic')).eventRoom).toEqual([]);
+});
+
+test('stage-route: a story step after a leave (no section, the last room kept) gets no eventRoom', () => {
+  const m = looked(LOOK);
+  // A leave changes only the section: ch1's steps after the gate run at { section: null, room: 'hall' }.
+  expect(windowFor(m, 'ch1.arrival.a001', 'arrival', where('manor', 'hall')).eventRoom).toEqual(['prop/lamp']);
+  expect(windowFor(m, 'ch1.arrival.a001', 'arrival', where(null, 'hall'))).toEqual({ ...A001, eventRoom: [] });
+});
+
+test("stage-route: a cut to a room's shot appends its props from world state", () => {
+  const props: VisualCommand = { kind: 'props', props: [{ prop: 'lamp' as PropId, rect: [500, 900, 100, 100] }] };
+  const roomFor = (bg: BgId): readonly VisualCommand[] | null => (bg === 'hall' ? [props] : null);
+  expect(withRoomProps([cmdBg('hall')], roomFor)).toEqual([cmdBg('hall'), props]);
+  expect(withRoomProps([cmdScene('street'), ALL.show, cmdScene('hall')], roomFor)).toEqual([cmdScene('street'), ALL.show, cmdScene('hall'), props]);
+  // A cut to a bg no room of the section shows, a batch with no cut, and no world (roomFor null): unchanged.
+  expect(withRoomProps([cmdBg('street')], roomFor)).toEqual([cmdBg('street')]);
+  expect(withRoomProps([ALL.show], roomFor)).toEqual([ALL.show]);
+  expect(withRoomProps([cmdBg('hall')], () => null)).toEqual([cmdBg('hall')]);
 });

@@ -3,6 +3,7 @@
 // batch's ensure holds the line until that file is live (app/stage-route.ts imageIds with the stage and the chapter's
 // manifest), and a reload restores the face from the server's autosave. The colours are the asset tool's placeholder
 // fills (scripts/assets/shots.ts): an expression's layer is hsl(hue, 45%, 55%), its hue from assets/catalog.json.
+// Lane SH5a (shots §5.8): the step windows in ch1, a cut whose plate the window asked for ahead and the rooms' windows.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,10 +14,27 @@ import { t } from '../src/i18n/index.ts';
 import { overscan, restFraming } from '../src/scene/shot-view.ts';
 import { decodeAssetCatalog, decodeAssetManifest } from '../src/story/catalog.ts';
 import type { AssetManifest } from '../src/story/catalog.ts';
-import { decodeShotRigs } from '../src/story/shots.ts';
-import type { Box, Member, ShotRig } from '../src/story/shots.ts';
+import { decodeLook, decodeShotRigs, stepWindow } from '../src/story/shots.ts';
+import type { Box, LookIndex, Member, ShotRig } from '../src/story/shots.ts';
 import type { AssetId, BgId, CharId, ExprId } from '../src/story/staging.ts';
-import { ANSWER_SETTLE_MS, atRest, devToken, expect, grantChapter, holdRequests, launch, reachLine, stagePixel, test, type E2eWindow } from './helpers.ts';
+import {
+  ANSWER_SETTLE_MS,
+  atRest,
+  debugStats,
+  devToken,
+  enterManor,
+  expect,
+  grantChapter,
+  holdRequests,
+  hotspot,
+  launch,
+  reachLine,
+  stagePixel,
+  tapHotspot,
+  test,
+  walk,
+  type E2eWindow,
+} from './helpers.ts';
 
 const CLIENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 /** A chapter load, the scene mount and the first batch. */
@@ -24,6 +42,10 @@ const LINE_MS = 30_000;
 /** Fresh dev users (no other spec names them): saves and purchases are server state for the whole run. */
 const UID_FACE = 1201;
 const UID_RELOAD = 1202;
+const UID_CUT = 1203;
+const UID_ROOMS = 1204;
+/** Never granted ch4: no spec grants it (principle 0's non-owner). */
+const UID_NON_OWNER = 1205;
 const CLOSE_UP = 'lamp_keeper_cu' as BgId; // a shot id of story/shots.json
 const KEEPER = 'keeper' as CharId; // a cast id of story/cast.json
 const SMILE = 'smile' as ExprId; // an expression of assets/catalog.json
@@ -31,6 +53,63 @@ const SMILE_FILE = 'face/lamp_keeper_cu/keeper/smile' as AssetId; // the close-u
 
 type Rgba = readonly [number, number, number, number];
 type Rgb = readonly [number, number, number];
+
+/** The steady cap of the live texture bytes (MEMORY-PLAN STEADY, scene/registry.ts). */
+const STEADY_BYTES = 33_554_432;
+
+/**
+ * The window fields of `__novelDebug.stats().scene` (scene/controller.ts SceneStats, lane SH5a D10) beside the ones
+ * this spec samples. helpers.ts names none of them; not a type import of scene/controller.ts, which loads pixi.js.
+ */
+type WindowScene = {
+  liveBytes: number;
+  pendingLoads: number;
+  activeTimelines: number;
+  overCap: number;
+  window: { pending: number; ids: string[] };
+  rooms: string[];
+  warm: number;
+  warmBytes: number;
+};
+
+/** `__novelDebug.stats().scene` with its window fields. */
+async function windowScene(page: Page): Promise<WindowScene> {
+  await page.waitForFunction(() => '__novelDebug' in window);
+  return page.evaluate(() => {
+    const hook = (window as unknown as { __novelDebug?: { stats(): { scene: WindowScene } } }).__novelDebug;
+    if (hook === undefined) {
+      throw new Error('__novelDebug is gone');
+    }
+    return hook.stats().scene;
+  });
+}
+
+/** ch1's look as the build under test writes it (the public story-gen manifest). */
+function ch1Look(): LookIndex {
+  const raw: unknown = JSON.parse(readFileSync(path.join(CLIENT_DIR, 'src', 'story-gen', 'free', 'ch1.assets.json'), 'utf8'));
+  const look = decodeLook(typeof raw === 'object' && raw !== null ? Reflect.get(raw, 'look') : undefined);
+  if (!look.ok) {
+    throw new Error(`fixture shape absent: ch1's look does not decode: ${look.error.join('; ')}`);
+  }
+  return look.value;
+}
+
+/** The scene with no transition, on two reads 100 ms apart (atRest without its loads: a held fetch stays pending). */
+async function stillScene(page: Page): Promise<void> {
+  const still = async (): Promise<boolean> => (await debugStats(page)).scene.activeTimelines === 0;
+  await expect
+    .poll(
+      async () => {
+        if (!(await still())) {
+          return false;
+        }
+        await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
+        return still();
+      },
+      { timeout: LINE_MS, message: 'the scene still (no transition)' },
+    )
+    .toBe(true);
+}
 
 /** ch4's paid manifest as the build under test writes it (server/content: served only after an entitlement check). */
 function ch4Manifest(): AssetManifest {
@@ -109,9 +188,9 @@ async function stagePoint(page: Page, rig: ShotRig, at: readonly [number, number
 const distance = (a: Rgba, b: Rgb): number => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 const within = (a: Rgba, b: Rgb, d: number): boolean => [0, 1, 2].every((i) => Math.abs((a[i] ?? 0) - (b[i] ?? 0)) <= d);
 
-/** Tide's card button, then the session's first line (stories.spec.ts `play`). */
-async function play(page: Page, button: 'stories.start' | 'stories.continue'): Promise<void> {
-  const b = page.locator('[data-story="tide"]').getByRole('button', { name: t('ru', button) });
+/** A story card's button (tide's by default), then the session's first line (stories.spec.ts `play`). */
+async function play(page: Page, button: 'stories.start' | 'stories.continue', story: 'tide' | 'manor' = 'tide'): Promise<void> {
+  const b = page.locator(`[data-story="${story}"]`).getByRole('button', { name: t('ru', button) });
   await expect(b).toBeVisible({ timeout: LINE_MS });
   await b.tap();
   await expect(page.locator('.dialogue[data-line-id]')).toBeVisible({ timeout: LINE_MS });
@@ -156,27 +235,15 @@ test.use({ reducedMotion: 'reduce' });
 test("shots: the keeper's face changes in the lamp-room shot", async ({ page, request }) => {
   test.setTimeout(300_000);
   await grantChapter(request, UID_FACE, 'chapter:ch4');
-  await launch(page, UID_FACE);
-  await play(page, 'stories.start');
-  await toTheCloseUp(page);
-
   const manifest = ch4Manifest();
-  const { rig, at } = smilePoint(manifest);
-  const smile = smileColour();
-  const [x, y] = await stagePoint(page, rig, at);
-  // The close-up at rest: its plate shows the keeper worried. Every sample follows atRest (the K7 fade is 200 ms
-  // whatever reducedMotion says).
-  await atRest(page);
-  const rest = await stagePixel(page, x, y);
-  expect(distance(rest, smile), `the rest face at ${x}, ${y} (${rest.join(', ')}) is not the smile ${smile.join(', ')}`).toBeGreaterThan(40);
-
-  // The ensure hold: a017's batch names the smile's face file, and its line waits for it.
-  await reachLine(page, 'ch4.lamp.a016', { 'ch4.lamp.c001': 0 });
-  await revealed(page);
   const entry = manifest.assets[SMILE_FILE];
   if (entry?.kind !== 'image') {
     throw new Error(`ch4's manifest has no image ${SMILE_FILE}`);
   }
+  await launch(page, UID_FACE);
+  // The ensure hold: a017's batch names the smile's face file, and its line waits for it. The windows ask for that
+  // file long before a017 (k:lamp's hope under next:ch4, a001's hope, a004's need), so every URL of it is held from
+  // the launch on, and whichever ask comes first is held until the release.
   const urls = [entry, ...(entry.half === undefined ? [] : [entry.half])].flatMap((f) => [f.avif.url, f.webp.url]);
   const holds = await Promise.all(urls.map((u) => holdRequests(page, `**${u}`)));
   let requested = false;
@@ -185,9 +252,29 @@ test("shots: the keeper's face changes in the lamp-room shot", async ({ page, re
       requested = true;
     });
   }
-  await page.locator('.dialogue .tap').tap();
+  await play(page, 'stories.start');
+  await toTheCloseUp(page);
+
+  const { rig, at } = smilePoint(manifest);
+  const smile = smileColour();
+  const [x, y] = await stagePoint(page, rig, at);
+  // The close-up at rest: its plate shows the keeper worried. The held fetch is pending by design, so this sample waits
+  // for no transition only: a004's batch ensured its plate before its line was set, and the point is off every motion
+  // and hair member. Every later sample follows atRest (the K7 fade is 200 ms whatever reducedMotion says).
+  await stillScene(page);
+  const rest = await stagePixel(page, x, y);
+  expect(distance(rest, smile), `the rest face at ${x}, ${y} (${rest.join(', ')}) is not the smile ${smile.join(', ')}`).toBeGreaterThan(40);
+
+  await reachLine(page, 'ch4.lamp.a016', { 'ch4.lamp.c001': 0 });
+  await revealed(page);
   // Only the tier and the format the page picks is fetched: the first request of any of them.
-  await expect.poll(() => requested, { timeout: LINE_MS, message: "fixture shape absent: a017's batch never requested the keeper's smile face file" }).toBe(true);
+  await expect
+    .poll(() => requested, {
+      timeout: LINE_MS,
+      message: "fixture shape absent: no request of the keeper's smile face file before a017's batch (a004's window needs it: C6's print (g))",
+    })
+    .toBe(true);
+  await page.locator('.dialogue .tap').tap();
   await page.waitForTimeout(ANSWER_SETTLE_MS);
   expect(await page.locator('.dialogue').getAttribute('data-line-id'), 'still at a016 while the face file is held').toBe('ch4.lamp.a016');
   await Promise.all(holds.map((h) => h.release()));
@@ -218,4 +305,127 @@ test("shots: a reload restores the keeper's face", async ({ page, request }) => 
   await atRest(page);
   const restored = await stagePixel(page, x, y);
   expect(within(restored, smile, 10), `the restored smile at ${x}, ${y}: ${restored.join(', ')} against ${smile.join(', ')}`).toBe(true);
+});
+
+test('shots: a player without ch4 gets 403 for its sheet, face and talk files', async ({ request }) => {
+  // Principle 0 for the shot kinds a window may fetch (the scene's other 403 pin is a ch2 bg half, memory.spec.ts).
+  const manifest = ch4Manifest();
+  const ids = Object.keys(manifest.assets) as AssetId[]; // the manifest decoder's keys are asset ids
+  const urls = ['sheet/', 'face/', 'talk/'].flatMap((kind) => {
+    const id = ids.find((x) => x.startsWith(kind) && manifest.assets[x]?.kind === 'image');
+    const e = id === undefined ? undefined : manifest.assets[id];
+    if (e?.kind !== 'image') {
+      throw new Error(`fixture shape absent: ch4 has no ${kind.slice(0, -1)} file`);
+    }
+    return [e, ...(e.half === undefined ? [] : [e.half])].flatMap((f) => [f.avif.url, f.webp.url]);
+  });
+  const token = await devToken(request, UID_NON_OWNER);
+  for (const url of urls) {
+    const res = await request.get(url, { headers: { Authorization: `Bearer ${token}` } });
+    expect(res.status(), `GET ${url} without the entitlement`).toBe(403);
+  }
+});
+
+test('shots: a cut never waits for its plate', async ({ page }) => {
+  // F2 (shots §5.8): the hall's plate is in a013's window, so the window fetched it before the tap; the cut's line
+  // shows at once although every bg file after the first is answered 1.5 s late.
+  test.setTimeout(300_000);
+  const a013 = stepWindow(ch1Look(), 'ch1.arrival.a013');
+  if (a013 === null || !a013.need.includes('bg/hall' as AssetId)) {
+    throw new Error("fixture shape absent: ch1.arrival.a013's window does not need bg/hall");
+  }
+  let first: string | null = null;
+  await page.route(/\/assets\/bg-[^/]+\.(?:avif|webp)$/, async (route) => {
+    const url = route.request().url();
+    first ??= url;
+    if (url !== first) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    await route.fallback();
+  });
+  await launch(page, UID_CUT);
+  await play(page, 'stories.start', 'manor');
+  await reachLine(page, 'ch1.arrival.a013');
+  await expect.poll(async () => (await windowScene(page)).window.pending, { timeout: LINE_MS, message: "a013's window live" }).toBe(0);
+  await atRest(page);
+  // The line's appearance, timed in the page from just before the tap.
+  const target = 'ch1.manor_arrive.a002';
+  await page.evaluate((id) => {
+    const w = window as unknown as { __cutLineAt?: number };
+    delete w.__cutLineAt;
+    const shown = (): boolean => {
+      const box = document.querySelector<HTMLElement>('.dialogue');
+      return box !== null && !box.hidden && box.getAttribute('data-line-id') === id;
+    };
+    const obs = new MutationObserver(() => {
+      if (shown()) {
+        w.__cutLineAt = performance.now();
+        obs.disconnect();
+      }
+    });
+    obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-line-id', 'hidden'] });
+  }, target);
+  const tappedAt = await page.evaluate(() => performance.now());
+  await page.locator('.dialogue .tap').tap();
+  await expect(page.locator(`.dialogue[data-line-id="${target}"]`)).toBeVisible({ timeout: LINE_MS });
+  const shownAt = await page.evaluate(() => (window as unknown as { __cutLineAt?: number }).__cutLineAt ?? null);
+  expect(shownAt, 'the line seen by the observer').not.toBeNull();
+  const ms = (shownAt ?? Number.POSITIVE_INFINITY) - tappedAt;
+  console.log(`shots F2: ${target} shown ${ms.toFixed(0)} ms after the tap`);
+  expect(ms, "the cut's line after the tap, in ms").toBeLessThanOrEqual(300);
+});
+
+/**
+ * F3's sample in `room`, once the scheduler is idle (the window's need live, nothing in flight, warm included), then at
+ * rest: the window is the room's (its need asked, nothing outside it), the live texture bytes under STEADY, and no
+ * visible refusal past the hard cap since `overCap`.
+ */
+async function roomSample(page: Page, look: LookIndex, room: string, overCap: number): Promise<void> {
+  const w = stepWindow(look, `r:${room}`);
+  if (w === null) {
+    throw new Error(`fixture shape absent: ch1's look has no r:${room}`);
+  }
+  await expect
+    .poll(
+      async () => {
+        const s = await windowScene(page);
+        return s.window.pending === 0 && s.pendingLoads === 0;
+      },
+      { timeout: LINE_MS, message: `the scheduler idle in the ${room}` },
+    )
+    .toBe(true);
+  await atRest(page);
+  const s = await windowScene(page);
+  console.log(`shots F3: ${room} ids ${s.window.ids.join(',')} live ${s.liveBytes} warm ${s.warm} (${s.warmBytes} B) rooms ${s.rooms.join(',')}`);
+  const listed = new Set<string>([...w.need, ...w.warm, ...w.hope]);
+  expect(w.need.filter((id) => !s.window.ids.includes(id)), `r:${room}'s need not asked`).toEqual([]);
+  expect(s.window.ids.filter((id) => !listed.has(id)), `window ids outside r:${room}`).toEqual([]);
+  expect(s.liveBytes, `live texture bytes in the ${room}`).toBeLessThanOrEqual(STEADY_BYTES);
+  expect(s.overCap, `overCap in the ${room}`).toBe(overCap);
+}
+
+test('shots: a room move hands the window to the new room', async ({ page }) => {
+  // F3 (shots §5.8 "At each room batch"): hall, study, hall, then the cellar through its onEnter event; each room's
+  // sample reads that room's window (the cellar's after the event's return, never a line of it).
+  test.setTimeout(300_000);
+  const look = ch1Look();
+  for (const r of ['hall', 'study', 'cellar']) {
+    if (stepWindow(look, `r:${r}`) === null) {
+      throw new Error(`fixture shape absent: ch1's look has no r:${r}`);
+    }
+  }
+  await launch(page, UID_ROOMS);
+  await play(page, 'stories.start', 'manor');
+  await enterManor(page);
+  const overCap = (await windowScene(page)).overCap;
+  await roomSample(page, look, 'hall', overCap);
+  await walk(page, 'hall', 'to_study', 'study', 'to_hall');
+  await roomSample(page, look, 'study', overCap);
+  await walk(page, 'study', 'to_hall', 'hall', 'to_cellar');
+  await roomSample(page, look, 'hall', overCap);
+  await tapHotspot(page, 'hall', 'to_cellar'); // the cellar's onEnter: the voice
+  await reachLine(page, 'ch1.manor_cellar_voice.v007');
+  await page.locator('.dialogue .tap').tap(); // `# explore: manor`: back in the cellar
+  await expect(hotspot(page, 'cellar', 'to_hall'), "the cellar's rooms after the event").toBeVisible({ timeout: LINE_MS });
+  await roomSample(page, look, 'cellar', overCap);
 });

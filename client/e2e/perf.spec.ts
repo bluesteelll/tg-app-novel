@@ -207,7 +207,35 @@ test.describe(() => {
     await playCh1ToEnd(page);
     await expect(ch2FirstLine(page)).toBeVisible({ timeout: LINE_MS });
     await atRest(page);
-    const bound = openingBound('ch2');
+    // RULINGS 297 Q3: ch2's first line holds its window at rest (need, warm, hope; shots §5.8), so the bound adds the
+    // window's files outside the opening, read like openingBound from the paid content; an absent window throws.
+    const bound =
+      openingBound('ch2') +
+      ((): number => {
+        const dir = path.resolve(E2E_DIR, '..', '..', 'server', 'content', 'chapters', 'ch2');
+        // Casts of the story tool's own outputs, whose shapes its gate checks.
+        const meta = JSON.parse(readFileSync(path.join(dir, 'meta.json'), 'utf8')) as {
+          firstKnot: string;
+          knots: Record<string, { assets: string[]; next: string[] }>;
+        };
+        const manifest = JSON.parse(readFileSync(path.join(dir, 'assets.json'), 'utf8')) as {
+          assets: Record<string, { kind: string; decodedBytes?: number }>;
+          look?: { images: string[]; windows: Record<string, [number[], number[], number, number[]]> };
+        };
+        const w = manifest.look?.windows['ch2.archive_cabinet.c002'];
+        if (w === undefined) {
+          throw new Error("ch2's first-line window absent");
+        }
+        const first = meta.knots[meta.firstKnot];
+        const opening = new Set([...(first?.assets ?? []), ...(first?.next ?? []).flatMap((k) => meta.knots[k]?.assets ?? [])]);
+        const ids = new Set([...w[0], ...w[1], ...w[3]].map((i) => manifest.look?.images[i] ?? '').filter((id) => id !== '' && !opening.has(id)));
+        let bytes = 0;
+        for (const id of ids) {
+          const a = manifest.assets[id];
+          bytes += a?.kind === 'image' ? (a.decodedBytes ?? 0) : 0;
+        }
+        return bytes;
+      })();
     const { liveBytes, liveTextures } = (await debugStats(page)).scene;
     console.log(`textures at ch2's first line: ${liveTextures} live, ${liveBytes} B (bound ${bound} B)`);
     expect(liveBytes, 'something of ch2 is on stage').toBeGreaterThan(0);
