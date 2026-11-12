@@ -146,7 +146,7 @@ export type StepFlow = { readonly key: StepKey; readonly file: string; readonly 
 export function buildFlow(classified: ClassifiedChapter, graph: ChapterGraph, returns: EventReturns): Result<ReadonlyMap<StepKey, StepFlow>, Finding[]>;  // rev. 5 (W2): + returns
 /** rev. 4 (C1, W2): one window per step key and per explore room; rev. 5 (m7): keyed by the room id, not its bg. */
 export type WindowKey = StepKey | `r:${RoomId}`;
-export type Lookahead = { readonly cur: readonly AssetId[];                 // the largest alternative in effect
+export type Lookahead = { readonly cur: readonly AssetId[];                 // the union of every alternative in effect (+ talk files)
   readonly certain: readonly AssetId[]; readonly certainDist: number;        // the shared next appearance; least steps to it
   readonly possible: readonly AssetId[];                                    // the other next-appearance files
   readonly near: number;                                                    // rev. 5 (m3): at a room window possible[0, near) = this room's own knots' files; rev. 6 (m3): at a story step near = possible.length
@@ -159,6 +159,13 @@ export type RoomEvents = ReadonlyMap<RoomId, { readonly shot: BgId; readonly roo
   readonly near: readonly KnotName[]; readonly far: readonly KnotName[] }>;
 export type EventReturns = ReadonlyMap<KnotName, { readonly rooms: readonly RoomId[]; readonly cofiredAfter: readonly KnotName[] }>;
 ```
+
+Changed by RULINGS 261 (as of `a064399`; docs lane `docs-errata-16`, group A): `cur`'s comment read "the largest
+alternative in effect". As built (SH2's `client/scripts/story/shots/flow.ts:1275-1283`, which SH3b's gate reads) `cur`
+is the **union** of every alternative in effect plus the talk files of every shot in effect, and the runtime's `need`
+is that same union plus `certain` (`foldWindow`, `client/scripts/assets/shots.ts:560-564`), so the gate charges what
+the runtime requests (SH3b cut Q2). A room certain at the next step adds its label bound, derived from the usage
+rooms' `bg`, since `build/shots.json` carries `labels` only for the window's own stage (cut Q3).
 
 **CFG rules** over `classify.ts` line kinds (`client/scripts/story/classify.ts:20-82`):
 - weave depth for choices and gathers;

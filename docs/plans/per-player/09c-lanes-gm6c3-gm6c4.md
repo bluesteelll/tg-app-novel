@@ -145,6 +145,32 @@ export function stackOf(prev: readonly ToastSlot[], next: readonly ToastEntry[],
   build log also states that no Svelte transition module entered the entry chunk: its entry delta stays within the
   estimate + 0.5 KB br, engine.md's STOP rule), e2e full (toasts are read by text; a ghost stays ~180 ms, `inert` and
   `aria-hidden`, which Playwright's auto-waiting assertions absorb).
+- **Ruled since: RULINGS 266, 268, 269** — launched from `adf7e47` in lane C (the plan's lock 5; `App.svelte` also took
+  Q67's `@media` comment carry, commit C4); merged `a064399` (C1-C4 and the comment fix `fe9bb06`; 17 vitest names,
+  tag GM6T: the plan's twelve, the lane's own `toast: the stack is built from the dev-filtered entries` and
+  `toast: App passes the view model's reduced motion to the stack`, and the critique's three below). Entry 38,517 ->
+  **39,179** B br (+662; STOPs +760 and 39,500); Svelte's `transitions.js` / `loop.js` stay out of the entry; every
+  other row equal by module identity. As built, `client/src/ui/toast-motion.ts` (`TOAST_MOTIONS` `:19`, `playToast`
+  `:62`, `stackOf` `:85`) and `client/src/ui/Toast.svelte`. The plan forms the cut changed, its Q2 (a)-(f), as
+  RULINGS 268 accepted them:
+  - (a) `stackOf` reads `shown`, the dev-filtered entries, not `ui.toasts`.
+  - (b) The recompute is `$effect.pre` (`Toast.svelte:63`), the motion a plain `$effect` (`:79`). The reason that
+    holds (`Toast.svelte:60-62`; RULINGS 269 impl Q1): a pre effect runs before the DOM update, Svelte's documented
+    order, so the template applies the new `slots` before the walk runs. A plain effect also gets there in Svelte
+    5.57, but only through an undocumented step (a block that reads a signal an effect writes runs right after it).
+    The earlier reason, "a plain effect never plays `in`", is refuted: mutation M-T5 (the plain form) passes the whole
+    suite. The cost is Svelte's `user_pre_effect` in the entry, a few tens of B.
+  - (c) The walk zips `root.children[i]` with `slots[i]`, with no `data-toast-key` / `data-toast-leave`: every slot
+    renders exactly one root element (`toast: every slot renders exactly one root element`).
+  - (d) A motion ends through `onfinish`, not the `finished` promise; only an `out` has a continuation.
+  - (e) The cancel-all is a dependency-free teardown `$effect` (`Toast.svelte:117`), not the motion effect's
+    cleanup, so a new toast never cancels a running `in`.
+  - (f) A leave plays from rest, not from the current frame ([§7](07-concurrency-and-failure.md), its toast row).
+  - Critique W1: an animation's record leaves `running` when its element leaves the stack, not at its finish
+    (`Toast.svelte:109-111`), so the unmount cancels every running motion and a key back before its ghost is dropped
+    cancels the finished `out` before its `in` (`toast: a dropped ghost's finished out is released, not cancelled at
+    unmount`, `toast: a key returning after its out finished cancels that out before its in`). O3: no `alive` guard
+    (a cancelled animation fires no `onfinish`). `reduced` is a required prop (`reduced={vm.reducedMotion}`).
 
 ### GM6c4 `values-world-text` (client + story)
 

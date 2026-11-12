@@ -32,6 +32,9 @@ as of 52e328e: no lane of this plan runs; engine lever P 3d120bc, GM3 7082a35, G
 as of 0b91acc: no lane of this plan runs; engine E6 d5e04ef, GM3u 33b4f8d, lever O5 9a0ae2d and the fix lanes Q63
               340f47c and Q64 d820803 merged; engine GM3p running (RULINGS 232-234); O5 ran (the trigger fired at E6's
               merge, RULINGS 228) and merged, so GM6t's App.svelte predecessor is met; lever Y on the shelf (RULINGS 234)
+as of a064399: GM6t merged a064399 (RULINGS 269; after O5, the Q64 fix and the Q67 fix 4f26e8e on App.svelte);
+              engine GM3p d478384 and GM3b ac9cab1, shots SH3a efd3811 and SH3b e1e7637, the fix lanes Q67 4f26e8e and
+              Q69 99be5c1 merged; shots SH3c running (lane A, RULINGS 263); no lane of this plan runs or is next
 reconcile r2: (E-P26, engine.md §12 "Order and conflicts" engine §12 Order and conflicts owns every row below; mirrored)
 reconcile:    scene/*: M3c, LHJ (merged) -> GM2a's field -> GM6a -> SH1 -> SH4 -> SH5a -> SH5b -> SH6 -> SH7 -> SH8 ->
               {GM6d1, SH9, SH10, SH12a, SH12b, the carried preload-priority lane} one at a time by launch (GM6a before
@@ -126,6 +129,20 @@ seven of GM6c3's 14 lock files: O5 moved `Backlog.svelte` to `ui/overlays/` and 
 GM6t has no ruled slot yet (lane C is kept for engine GM3b, RULINGS 237), and its entry term is watched against Ledger
 2's 1.331 KB at its cut (RULINGS 236); GM6c1a still waits for GM4 on the world chain. The server slot runs the docs
 lane `docs-errata-15` (RULINGS 237).
+
+Changed by RULINGS 238-270 (as of `a064399`; docs lane `docs-errata-16`, group B): the block's `as of a064399:` row is
+new (SHAs from `git log --first-parent main`). GM6t `toast-motion` merged as `a064399` (RULINGS 269; it ran in lane C
+from `adf7e47`, RULINGS 266). On the `App.svelte` row it followed GM3s, then engine's O5 and the fix lanes Q64
+(`d820803`) and Q67 (`4f26e8e`, RULINGS 251), which no row names; it was the row's last holder of this design, and the
+`overlay:` row's "before GM6c4" edge is met. Its entry term was Ledger 2's last planned one (39.179 / 40.0 on `a064399`,
+RULINGS 269). The `requests.test.ts` row's first holder, engine GM3p, merged as `d478384` (RULINGS 243), so GM6c2's
+edge on that file is met. Engine GM3b merged as `ac9cab1` (RULINGS 258), so on the `build.test.ts`, `explore/controller.ts` and
+`story/ch1/world.json` rows the next holders are GM4g, GM4 and GM4u; the `runtime:` row's "GM6d2 after ... GM3b" edge
+is met. Shots SH3a (`efd3811`) and SH3b (`e1e7637`) merged (RULINGS 256, 262), so on the `budget.ts` row the next
+holder is GM4g, after SH3c on `scripts/assets/manifest.ts` (engine §12's GM4g row). The Q69 fix (`99be5c1`, RULINGS
+265) followed GM3b on `yields.ts`, so GM6c2, GM6c4 and GM6d2 still take that file by launch. No lane of this plan runs
+or is next: GM6c1a waits for GM4 on the world chain, and every later lane of this plan follows it or GM4. Shots SH3c
+runs in lane A and the docs lane `docs-errata-16` in lane C (RULINGS 263, 270), two lanes at most (RULINGS 255).
 
 Until GM6d2, per-player codes show in documents, item descriptions, ink lines, choices and the tier-3 hint (synthesis
 §6.4 item 4), which needs no label on the art.

@@ -25,6 +25,13 @@ Changed by RULINGS 225-237 (as of `0b91acc`; docs lane `docs-errata-15`, group B
 and two fix lanes, Q63 (`340f47c`) and Q64 (`d820803`); the lever Y stays an approved design on the shelf (RULINGS
 234); engine GM3p runs (RULINGS 232-234); next, engine GM3b after GM3p, shots SH3a and per-player GM6t, their entry
 terms watched against Ledger 2; the rest is planned, in the one order below.
+Changed by RULINGS 238-270 (as of `a064399`; docs lane `docs-errata-16`, group B): built since also engine GM3p
+(`d478384`) and GM3b (`ac9cab1`; engine R 2.666, RULINGS 258), shots SH3a (`efd3811`) and SH3b (`e1e7637`), per-player
+GM6t (`a064399`; Ledger 2's last planned entry term, RULINGS 269) and two fix lanes, Q67 (`4f26e8e`) and Q69
+(`99be5c1`); the lever Y stays an approved design on the shelf (RULINGS 269); shots SH3c runs (lane A, RULINGS 263)
+and carries the critical path (engine GM4g waits for it, RULINGS 259); next, engine GM4g after SH3c in lane A and
+shots SH4 beside SH3c in lane C after the docs lane `docs-errata-16` (RULINGS 270), two lanes at most (RULINGS 255);
+the rest is planned, in the one order below.
 
 - [engine](engine/README.md) — the mechanics engine: module contract, world data, puzzle types, the cue union and bus, lanes GM1a-GM9r.
 - [per-player](per-player/README.md) — per-player codes and labels on the art: the server half, the values store, labels, lanes GM6a-GM6d2.
