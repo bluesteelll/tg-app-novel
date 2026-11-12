@@ -1,4 +1,5 @@
-// Module `combine`'s build half (engine plan §6.2): its world lint, with its own codes (both errors).
+// Module `combine`'s build half (engine plan §6.2): its text walker (each recipe's `say`, role toast) and its world lint,
+// with its own codes (both errors).
 // `world/recipe-unknown-ref`: a recipe names an item the world lacks. `world/recipe-scope` (R11's first condition): a
 // recipe's inputs belong to one section S (`recipeSections`: no one section gives both is refused), its product is given
 // only by recipes of S (never by a take, a trigger or a `use` rule of any section, nor by a recipe of another section),
@@ -8,6 +9,7 @@
 // imports the registry and scan-dist.ts imports world.ts. Its imports from index.ts and lint.ts are `import type`; it
 // never imports world.ts (index.ts's header).
 import { sectionScope } from '../../../src/explore/reduce.ts';
+import type { CombineData } from '../../../src/mechanics/data/combine.ts';
 import { recipeSections } from '../../../src/mechanics/rules/combine.ts';
 import { useScope } from '../../../src/mechanics/rules/use.ts';
 import type { SectionId } from '../../../src/story/staging.ts';
@@ -17,6 +19,14 @@ import type { Finding, Severity } from '../lint.ts';
 import { condFindings } from './conditions.ts';
 import type { CondSite } from './conditions.ts';
 import type { WorldLint, WorldLintInput } from './index.ts';
+import type { ModuleText, TextWalker } from './texts.ts';
+
+/**
+ * The texts of `combine`'s data in source order: each recipe's `say`, a toast (a note that lives seconds), never a
+ * clue. Its path is under the world's root (`recipes.<i>.say`), so `--fix-ids` has no owner for its ID (§3.2).
+ */
+export const COMBINE_TEXTS: TextWalker<CombineData> = (_w, d) =>
+  d.recipes.flatMap((r, i): ModuleText[] => (r.say === null ? [] : [{ text: r.say, path: `recipes.${i}.say`, role: 'toast', reach: [] }]));
 
 /** Every `combine` code with its severity: a dangling id or a recipe across sections is an authoring fault the proof
  *  would carry. */

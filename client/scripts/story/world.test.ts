@@ -40,6 +40,7 @@ import { playChapter } from './playthrough.ts';
 import { PUZZLE_LINTS } from './puzzles/index.ts';
 import type { PuzzleLintCode, PuzzleTypeLint } from './puzzles/index.ts';
 import { MAX_ANSWER_LEN, answerLenFindings, answerLenIssues } from './puzzles/shape.ts';
+import { fixWorldIds } from './fix.ts';
 import { buildFlow, crossCheck } from './shots/flow.ts';
 import { decodeWorldFile, lintWorld, worldLines } from './world.ts';
 import type { SectionReport, VarLiteral } from './world.ts';
@@ -2000,6 +2001,51 @@ test("use: a world whose rules give and read their section's own items lints cle
   spot(w, 'hall', 'inscription')['uses'] = [{ item: 'medal_sun', keep: true, do: [{ give: 'coin' }] }];
   spot(w, 'study', 'drawer')['uses'] = [{ item: 'coin', when: { held: 'coin' }, do: [{ story: 'manor_cellar_voice' }] }];
   expect(lint(w)).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Module `combine`'s texts (scripts/story/mechanics/combine.ts) and the `--fix-ids` owner rule it relies on (§3.2)
+
+/**
+ * The demo manor with one recipe (RULINGS 212's positive control, recombined): the inscription's `use` rule keeps the
+ * sun medallion and gives the coin; the recipe consumes the coin, keeps the sun (so the gate's slots can still be
+ * filled: the section stays leave-safe) and makes the amulet, all manor's own items. `say` is the recipe's text, built
+ * after `base()` restarts the fixture's ID counter.
+ */
+function recipeBase(say: () => Json): Json {
+  const w = base();
+  obj(w['items'])['coin'] = { name: t('coin', 'Монета'), desc: t('coin', 'Старая монета.'), glyph: 'key' };
+  obj(w['items'])['amulet'] = { name: t('amulet', 'Амулет'), desc: t('amulet', 'Монета в оправе.'), glyph: 'key' };
+  spot(w, 'hall', 'inscription')['uses'] = [{ item: 'medal_sun', keep: true, do: [{ give: 'coin' }] }];
+  w['recipes'] = [{ a: 'coin', b: 'medal_sun', gives: 'amulet', keep: ['medal_sun'], say: say() }];
+  return w;
+}
+
+test("combine: a recipe's say is a world line of role toast", () => {
+  const w = recipeBase(() => t('manor', 'Монета легла в оправу.'));
+  const say = obj(list(w['recipes'])[0]?.['say']);
+  const { text, world } = decodedText(w);
+  const lines = worldLines(world, FILE, text);
+  // The recipe's say last, at its source path (under the world's root) and line; the kernel's lines before it, unchanged.
+  expect(lines.at(-1)).toEqual({ id: say['id'], text: 'Монета легла в оправу.', file: FILE, line: jsonLine(w, '"say": {'), hint: false, path: 'recipes.0.say', role: 'toast', reach: [] });
+  expect(lines.slice(0, -1)).toEqual(worldLines(world, FILE, text, { ...MECHANIC_TEXTS, combine: null }));
+  // The texts gate reads it as walked: the world lints clean.
+  expect(lint(w)).toEqual([]);
+});
+
+test("combine: --fix-ids skips a recipe's say and names why", () => {
+  // The say without its ID: under the world's root, no item, doc, puzzle or section owns it (fix.ts WORLD_OWNERS).
+  const w = recipeBase(() => ({ ru: 'Монета легла в оправу.' }));
+  const text = `${JSON.stringify(w, null, 2)}\n`;
+  let n = 0;
+  const r = fixWorldIds({ text, chapter: CH1.id, taken: new Set(), suffix: () => (n++).toString(36).padStart(4, '0') });
+  if (!('text' in r)) {
+    throw new Error(`invariant: a JSON world is fixed: ${r.error}`);
+  }
+  expect(r.skipped).toEqual([{ path: 'recipes.0.say', reason: 'the text is under no item, doc, puzzle or section, so the ID would have no knot part (§4)' }]);
+  expect(r.added.filter((a) => a.path.startsWith('recipes.'))).toEqual([]);
+  // So the gate keeps reporting it, at its own line: its ID is written by hand (§3.2).
+  expect(of(decodeWorldFile({ file: FILE, text }).findings, 'id/missing').map((f) => [f.line, f.message.startsWith('recipes.0.say')])).toEqual([[jsonLine(w, '"say": {'), true]]);
 });
 
 test("conditions: a module's scope hook widens the gating scope", () => {
