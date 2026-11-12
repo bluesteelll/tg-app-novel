@@ -1679,3 +1679,39 @@ test('executor: a build whose view creation throws after the anchor leaves no an
   expect(() => d.ex.destroy()).not.toThrow();
   expect(d.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
 });
+
+test('executor: a character whose sprite throws leaves no group in its layer', async () => {
+  // SH1 cut Q5: newChar makes the group, then its sprite throws; the group goes with it, as a backdrop's anchor does.
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  throwOn(h, 'char/ally/neutral');
+  h.log.length = 0;
+  await applyFailing(h, [show('ally', 'neutral', 'left', 'cut')]);
+  expect(h.log.filter((x) => /^(group|drop):/.test(x))).toEqual(['group:ally', 'drop:ally']);
+  expect(h.liveNodes().filter((x) => x.role === 'char')).toEqual([]);
+  h.ex.destroy();
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+});
+
+test('executor: a rebind whose prop sprite throws leaves no anchor in its layer', async () => {
+  // SH1 cut Q5: rebind's props loop makes the anchor, then a sprite in it throws; the sprites it made and the anchor go.
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'])], NOW);
+  const fresh = recordingStage(S390, h.freed);
+  const sprite = fresh.adapter.sprite.bind(fresh.adapter);
+  fresh.adapter.sprite = (layer, tex, g) => {
+    if (tex.id === 'prop/glint') {
+      throw new Error('stage: a bug in the build of prop/glint');
+    }
+    return sprite(layer, tex, g);
+  };
+  expect(() => h.ex.rebind(fresh.adapter)).toThrow('prop/glint');
+  expect(fresh.log.filter((x) => /^(anchor:props|create:props|destroy|drop):/.test(x))).toEqual([
+    'anchor:props:room.drawer',
+    'create:props:drawer',
+    'destroy:props:drawer',
+    'drop:room.drawer',
+  ]);
+  expect(fresh.anchors('props')).toEqual([]);
+  expect(fresh.live('props')).toEqual([]);
+});

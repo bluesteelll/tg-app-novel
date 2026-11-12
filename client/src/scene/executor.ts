@@ -547,9 +547,17 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       tl.to(p, { a: 0, duration: half, onUpdate: write }, half);
     };
 
+    /** A sprite that throws takes its fresh group with it (backdrop's rule; SH1 cut Q5). */
     const newChar = (c: CharId, at: Slot, h: TextureHandle<T>, alpha: number): CharView<T> => {
       const group = adapter.group(c);
-      const view: View<T> = { slot: charSlot(c), handle: h, sprite: adapter.sprite('chars', h, group) };
+      let sprite: SpriteRef;
+      try {
+        sprite = adapter.sprite('chars', h, group);
+      } catch (e) {
+        adapter.dropGroup(group);
+        throw e;
+      }
+      const view: View<T> = { slot: charSlot(c), handle: h, sprite };
       const cv: CharView<T> = { char: c, group, at, view };
       chars.set(c, cv);
       placeCharSprite(view);
@@ -962,7 +970,18 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
           continue;
         }
         const node = adapter.anchor('props', k);
-        const next: PropAnchor<T> = { node, rect: p.rect, views: views.map((v) => ({ ...v, sprite: adapter.sprite('props', v.handle, node.content) })) };
+        // A sprite that throws takes the sprites made before it and the fresh anchor with it (SH1 cut Q5).
+        const made: PropView<T>[] = [];
+        try {
+          for (const v of views) {
+            made.push({ ...v, sprite: adapter.sprite('props', v.handle, node.content) });
+          }
+        } catch (e) {
+          made.forEach(destroyView);
+          adapter.dropGroup(node.anchor);
+          throw e;
+        }
+        const next: PropAnchor<T> = { node, rect: p.rect, views: made };
         anchors.set(k, next);
         placeAnchor(next);
         adapter.set(node.anchor, { alpha: 1 });
