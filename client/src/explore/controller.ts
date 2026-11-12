@@ -9,6 +9,7 @@ import type { Box, Size } from '../geom/cover.ts';
 import type { AnchorKey, PropView, SectionAction } from '../mechanics/contract.ts';
 import { reduce } from '../mechanics/rules/core.ts';
 import { admitEvent, admitSection } from '../mechanics/rules/search.ts';
+import { nearRooms, viewParent } from '../mechanics/rules/view.ts';
 import { roomImages, visualsOf } from '../mechanics/rules/visual.ts';
 import type { SceneController } from '../scene/controller.ts';
 import type { AssetManifest } from '../story/catalog.ts';
@@ -36,11 +37,15 @@ export interface ExploreController {
   /** Taps, inserts and puzzle results; `enter-section` / `event-returned` take `enter`'s route, never `reduce` directly. */
   dispatch(a: SectionAction): void;
   /**
-   * BackButton at the root (X12): a `tap` on the current room's open exit to the previous room of the path; false
-   * when the path is empty or the controller is disposed. During an event knot the reducer refuses the tap.
+   * BackButton at the root (X12): in a view (engine plan §6.3 W1) a `leave-view` to its parent, whatever the path;
+   * elsewhere a `tap` on the current room's open exit to the previous room of the path. False when neither applies
+   * or the controller is disposed. During an event knot the reducer refuses the action.
    */
   back(): boolean;
-  /** The path's empty ↔ non-empty edges, for `setRootBack`; called once on subscribe with the current value. */
+  /**
+   * "Back has a target" edges, for `setRootBack`: the path is non-empty, or the room is a view of a current section
+   * (§6.3: a view always offers Back, a resume into one included). Called once on subscribe with the current value.
+   */
   onPath(fn: (walkable: boolean) => void): Unsubscribe;
   /** The stage host's content box (X10); recomputes the hotspot boxes. The host's own ResizeObserver calls it too. */
   resize(stage: Size): void;
@@ -83,7 +88,8 @@ export type ExploreControllerDeps = {
   view: ExploreViewStore;
   /** A world line in the UI language. */
   text: (t: WorldText) => string;
-  /** The Stage.svelte element: Pixi's `resizeTo` box, so the buttons and the canvas share one size (X10). */
+  /** The Stage.svelte element: the box the scene's ResizeObserver sizes the canvas to, so the buttons and the canvas
+   *  share one size (X10). */
   stageHost: HTMLElement;
 };
 
@@ -105,7 +111,8 @@ const propAsset = (p: PropId): AssetId => `prop/${p}` as AssetId; // STAGING-DSL
  */
 type Route = { kind: 'admit' } | { kind: 'event' } | { kind: 'action'; action: SectionAction; room: RoomId | null };
 
-/** The renderer reads the same two numbers (`scene/controller.ts:180`); `.host` has no padding, so this is its content box. */
+/** The renderer reads the same two numbers (`scene/controller.ts` `appOptions` and `onResize`); `.host` has no
+ *  padding, so this is its content box. */
 const sizeOf = (host: HTMLElement): Size => ({ w: host.clientWidth, h: host.clientHeight });
 
 export function createExploreController(deps: ExploreControllerDeps): ExploreController {
@@ -169,15 +176,15 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     return v === undefined || stage.w <= 0 || stage.h <= 0 ? null : toStage(v.rect, cover(stage, ROOM_SOURCE));
   };
 
-  /** D9: the distinct rooms R's exits lead to, in hotspot order; locked exits included, story exits and R not. */
+  /**
+   * D9 in engine plan §6.3's preload order (m2): Back's target first (a view's parent; else, for the current room, the
+   * path's last room), then `nearRooms` (the rule emit writes as the usage neighbours: a view's parent, then the rooms
+   * R's exits lead to in hotspot order, locked exits included, story exits and R not), distinct.
+   */
   const neighbours = (room: RoomId): RoomId[] => {
-    const out: RoomId[] = [];
-    for (const h of ix.rooms.get(room)?.room.hotspots ?? []) {
-      if (h.kind === 'exit' && 'room' in h.to && h.to.room !== room && !out.includes(h.to.room)) {
-        out.push(h.to.room);
-      }
-    }
-    return out;
+    const near = nearRooms(world, room);
+    const back = viewParent(world, room) ?? (room === current.room ? (path.at(-1) ?? null) : null);
+    return back === null ? near : [back, ...near.filter((r) => r !== back)];
   };
 
   /** Both families, unconditionally (RULINGS 245 Q7): a `leave` and `dispose`. */
@@ -194,12 +201,16 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
    * these free. A room's `state:*` set (§6.4 round 13, RULINGS 246 W1): a move releases every set but the new room's
    * and stops tracking a room that left the keep set; a kept room's set is asked for again only after the neighbours'
    * bgs (`roomShown`), so a neighbour's bg outranks it. An event's return or a resume (`from === room`) moves nowhere,
-   * and the close-up keeps the room's own set.
+   * and the close-up keeps the room's own set. A zoom-in to a view whose only neighbour is its parent keeps the
+   * parent's set (§6.3, RULINGS 286 Q3): the one neighbour bg it asks for is the parent's, which `room:<of>` already
+   * holds, so the set can displace no neighbour bg; walks and every other zoom release it as above.
    */
   const releaseHolders = (effects: readonly ExploreEffect[]): void => {
     for (const e of effects) {
       if (e.kind === 'room') {
-        const keep = new Set([e.room, ...neighbours(e.room)]);
+        const near = neighbours(e.room);
+        const keep = new Set([e.room, ...near]);
+        const keepsParentSet = e.how === 'zoom-in' && near.every((n) => n === e.from);
         for (const m of [...tracked]) {
           if (!keep.has(m)) {
             tracked.delete(m);
@@ -210,7 +221,7 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
           if (!keep.has(m)) {
             trackedState.delete(m);
             scene.releasePreload(stateTag(m));
-          } else if (m !== e.room && e.from !== e.room) {
+          } else if (m !== e.room && e.from !== e.room && !(m === e.from && keepsParentSet)) {
             scene.releasePreload(stateTag(m));
           }
         }
@@ -338,8 +349,11 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
   };
 
   /**
-   * D7: a move prev -> R truncates a cycle (R on the path), else pushes prev when R's way back to it is open, else
-   * clears the path (a door locked from the other side). An entry and a `leave` clear it; an event's return keeps it.
+   * D7, with engine plan §6.3's two view cases ahead of it (W1), told apart by the move's own `how` (core's `moveHow`):
+   * a zoom-in pushes prev whatever exits the view has; a zoom-out truncates at its room when that is on the path and
+   * never pushes the view, so the next Back never re-enters it. Any other move truncates a cycle (R on the path), else
+   * pushes prev when R's way back to it is open, else clears the path (a door locked from the other side). An entry and
+   * a `leave` clear it; an event's return keeps it.
    */
   const walk = (route: Route, effects: readonly ExploreEffect[]): void => {
     if (route.kind === 'admit') {
@@ -355,15 +369,25 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
         path = [];
       } else if (e.kind === 'room' && prev !== null && e.room !== prev) {
         const at = path.indexOf(e.room);
-        path = at !== -1 ? path.slice(0, at) : openExit(e.room, prev) !== null ? [...path, prev] : [];
+        if (e.how === 'zoom-in') {
+          path = [...path, prev];
+        } else if (e.how === 'zoom-out') {
+          path = at !== -1 ? path.slice(0, at) : path;
+        } else {
+          path = at !== -1 ? path.slice(0, at) : openExit(e.room, prev) !== null ? [...path, prev] : [];
+        }
         prev = e.room;
       }
     }
   };
 
-  /** D8: only an empty ↔ non-empty edge reaches the listeners. */
+  /** The current room is a view of a current section (§6.3): Back leaves it, whatever the path. A story exit out of a
+   *  view keeps its room but clears the section, so it leaves no Back target. */
+  const inView = (): boolean => current.section !== null && current.room !== null && viewParent(world, current.room) !== null;
+
+  /** D8: only a change of "Back has a target" reaches the listeners. */
   const reportPath = (): void => {
-    const now = path.length > 0;
+    const now = path.length > 0 || inView();
     if (now === walkable) {
       return;
     }
@@ -439,6 +463,10 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     },
     dispatch,
     back() {
+      if (!dead && inView()) {
+        dispatch({ kind: 'leave-view' });
+        return true;
+      }
       const target = path.at(-1);
       const key = dead || target === undefined || current.room === null ? null : openExit(current.room, target);
       if (key === null) {

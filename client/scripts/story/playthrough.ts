@@ -120,7 +120,7 @@ const SEEN = new Set<ExploreEffect['kind']>(['cue', 'room', 'leave', 'lock', 'pu
 
 /** A step's kind and what it acts on, for a finding. */
 function stepName(step: SectionAction): string {
-  const target = 'hotspot' in step ? step.hotspot : 'target' in step ? step.target : 'puzzle' in step ? step.puzzle : step.section;
+  const target = 'hotspot' in step ? step.hotspot : 'target' in step ? step.target : 'puzzle' in step ? step.puzzle : 'section' in step ? step.section : '(current room)';
   return `${step.kind} ${target}`;
 }
 

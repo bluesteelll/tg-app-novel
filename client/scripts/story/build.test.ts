@@ -1352,8 +1352,8 @@ test('emit: usage holds world assets and rooms', () => {
   const pre = decodeStoryUsage({ chapters: { ch1: { assets: ['bg/cafe'], knots: {} } } });
   expect(pre.ok && assetUsage(pre.value)).toEqual({ chapters: { ch1: { ink: ['bg/cafe'], world: [] } }, rooms: {} });
   // A bad room key, a room of a chapter usage.json lacks, a value of the wrong namespace: each refused. So is a room
-  // without its neighbour rooms (a usage.json written before them: no silent smaller room-set), and a neighbour room
-  // of another chapter or of no room of the file.
+  // without its neighbour rooms (a usage.json written before them: no silent smaller room-set), a neighbour room of
+  // another chapter or of no room of the file, one listed twice, and the room itself (GM4g review M1).
   const hall = rooms['ch1/manor/hall'];
   const lacksNeighbourRooms = Object.fromEntries(Object.entries(hall).filter(([k]) => k !== 'neighbourRooms'));
   const refused: Array<readonly [string, unknown]> = [
@@ -1364,6 +1364,8 @@ test('emit: usage holds world assets and rooms', () => {
     ['rooms.ch1/manor/hall.neighbourRooms: missing', { 'ch1/manor/hall': lacksNeighbourRooms }],
     ['rooms.ch1/manor/hall.neighbourRooms.0: "ch2/manor/hall" is not a room key of ch1', { 'ch1/manor/hall': { ...hall, neighbourRooms: ['ch2/manor/hall'] } }],
     ['rooms.ch1/manor/hall.neighbourRooms.0: "ch1/manor/attic" is not a room of usage.json', { 'ch1/manor/hall': { ...hall, neighbourRooms: ['ch1/manor/attic'] } }],
+    ['rooms.ch1/manor/hall.neighbourRooms.1: "ch1/manor/study" is listed twice', { ...rooms, 'ch1/manor/hall': { ...hall, neighbourRooms: ['ch1/manor/study', 'ch1/manor/study'] } }],
+    ['rooms.ch1/manor/hall.neighbourRooms.0: "ch1/manor/hall" is the room itself', { ...rooms, 'ch1/manor/hall': { ...hall, neighbourRooms: ['ch1/manor/hall'] } }],
   ];
   for (const [path, bad] of refused) {
     const d = decodeStoryUsage({ ...raw, rooms: bad });
@@ -1394,6 +1396,21 @@ test('emit: usage neighbour rooms follow the exits in hotspot order', () => {
   // An exit back into the hall itself is no neighbour.
   hall['hotspots'] = [key, exit('to_hall', 400, 'hall'), ...(hall['hotspots'] as unknown[]).slice(1)];
   expect(usageOf(w)?.neighbourRooms).toEqual(expected);
+});
+
+test("emit: a view's usage neighbour rooms list its parent first", () => {
+  // `nearRooms`, the rule the explore controller preloads by: a view's parent leads its neighbour rooms (engine plan
+  // §6.3), here its only one (the desk has no exit back: `leave-view` returns), and its bg joins `neighbours`.
+  const text = (n: number, ru: string): { id: string; ru: string } => ({ id: `ch1.manor.vx${n.toString().padStart(2, '0')}`, ru });
+  const w = worldSource('ch1', 'cafe');
+  Object.assign(objectAt(w, 'sections.manor.rooms'), { desk: { bg: 'desk', title: text(1, 'Стол'), onEnter: [], hotspots: [], view: { of: 'hall' } } });
+  const hall = objectAt(w, 'sections.manor.rooms.hall');
+  const [key, toStudy, out] = hall['hotspots'] as unknown[]; // the fixture's three hall hotspots
+  hall['hotspots'] = [key, toStudy, { id: 'to_desk', kind: 'exit', rect: [400, 600, 200, 200], label: text(2, 'Стол'), to: { room: 'desk' }, lock: null, sfx: null }, out];
+  const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld(w)]]));
+  const rooms = plannedUsage(plan).rooms ?? {};
+  expect(rooms['ch1/manor/desk']).toEqual({ bg: 'bg/desk', props: [], closeups: [], neighbours: ['bg/hall'], neighbourRooms: ['ch1/manor/hall'] });
+  expect(rooms['ch1/manor/hall']?.neighbourRooms).toEqual(['ch1/manor/study', 'ch1/manor/desk']);
 });
 
 const USAGE = 'server/content/build/usage.json';

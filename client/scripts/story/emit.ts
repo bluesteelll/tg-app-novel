@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 
 import { RULES_VERSION, lockOf } from '../../src/explore/reduce.ts';
 import type { KernelWorld } from '../../src/mechanics/contract.ts';
+import { nearRooms } from '../../src/mechanics/rules/view.ts';
 import { roomImages } from '../../src/mechanics/rules/visual.ts';
 import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
 import type { PuzzleTypes } from '../../src/puzzles/rules/index.ts';
@@ -86,9 +87,10 @@ export type ServerMeta = {
 };
 /**
  * A room's images (PUZZLES-PLAN `budget/room-set`): its bg, its props, its locks' closeups, its neighbours' bgs (sorted,
- * one per plate), and its neighbour rooms: the keys of the rooms its exits lead to, by the explore controller's rule
- * (`neighbours()`, D9: distinct, in hotspot order, a locked exit included, a story exit and the room itself not), so
- * the budget can price the transition pair and model the preload order (engine plan §6.3).
+ * one per plate), and its neighbour rooms: their keys by `nearRooms` (mechanics/rules/view.ts), the rule the explore
+ * controller preloads by (a view's parent first, then the rooms its exits lead to, distinct, in hotspot order, a
+ * locked exit included, a story exit and the room itself not), so the budget can price the transition pair and model
+ * the preload order (engine plan §6.3).
  */
 export type StoryRoomUsage = {
   bg: AssetId;
@@ -354,8 +356,8 @@ function worldAssets(w: KernelWorld): AssetId[] {
 
 /**
  * Per room `<ch>/<section>/<room>`: its bg, every image it can show, its locks' closeups, its neighbours' bgs and its
- * neighbour rooms. The neighbour rooms restate `neighbours()` of `client/src/explore/controller.ts` (the order the
- * controller preloads them in); same-section only, which on a built world is every exit to a room.
+ * neighbour rooms. Both neighbour lists come from `nearRooms`, the one exit-rooms rule the explore controller shares
+ * (GM4g carry 1): a view's parent joins the rooms its exits lead to, same-section only.
  */
 function roomUsage(ch: ChapterId, w: KernelWorld): Array<[string, StoryRoomUsage]> {
   return Object.entries(w.sections).flatMap(([sid, s]) =>
@@ -366,20 +368,12 @@ function roomUsage(ch: ChapterId, w: KernelWorld): Array<[string, StoryRoomUsage
         const closeup = puzzle === null || !Object.hasOwn(w.puzzles, puzzle) ? null : (w.puzzles[puzzle]?.closeup ?? null);
         return closeup === null ? [] : [`cg/${closeup}`];
       });
-      const neighbours: string[] = [];
-      const neighbourRooms: string[] = [];
-      for (const h of room.hotspots) {
-        const to = h.kind === 'exit' && 'room' in h.to ? h.to.room : null;
-        const next = to === null || !Object.hasOwn(s.rooms, to) ? undefined : s.rooms[to]; // a cross-section exit is `world/cross-section-exit`
-        if (to === null || next === undefined) {
-          continue;
-        }
-        neighbours.push(`bg/${next.bg}`);
-        const key = `${ch}/${sid}/${to}`;
-        if (to !== rid && !neighbourRooms.includes(key)) {
-          neighbourRooms.push(key);
-        }
-      }
+      const near = nearRooms(w, rid as RoomId); // a key of a decoded section's rooms
+      const neighbours = near.flatMap((to) => {
+        const next = Object.hasOwn(s.rooms, to) ? s.rooms[to] : undefined; // always: `nearRooms` keeps R's section
+        return next === undefined ? [] : [`bg/${next.bg}`];
+      });
+      const neighbourRooms = near.map((to) => `${ch}/${sid}/${to}`);
       const usage = { bg: `bg/${room.bg}` as AssetId, props: assetSet(props), closeups: assetSet(closeups), neighbours: assetSet(neighbours), neighbourRooms };
       return [`${ch}/${sid}/${rid}`, usage];
     }),
@@ -612,11 +606,18 @@ function decodeRooms(raw: unknown, chapters: Readonly<Record<string, unknown>>, 
       neighbourRooms: list(room['neighbourRooms'], `${path}.neighbourRooms`, issues, (s) => ROOM_KEY_RE.exec(s)?.[1] === ch, `a room key of ${ch}`),
     };
   }
-  // Once every room is known: a neighbour room names a room of this very file (the budget reads its images there).
+  // Once every room is known: a neighbour room names a room of this very file (the budget reads its images there),
+  // once, and never the room itself (`nearRooms`' rule: distinct, R not), so the budget never counts one room twice.
   for (const [key, room] of Object.entries(rooms)) {
     room.neighbourRooms.forEach((n, i) => {
       if (!Object.hasOwn(rooms, n)) {
         issues.push(`rooms.${key}.neighbourRooms.${i}: ${JSON.stringify(n)} is not a room of usage.json`);
+      }
+      if (n === key) {
+        issues.push(`rooms.${key}.neighbourRooms.${i}: ${JSON.stringify(n)} is the room itself`);
+      }
+      if (room.neighbourRooms.indexOf(n) !== i) {
+        issues.push(`rooms.${key}.neighbourRooms.${i}: ${JSON.stringify(n)} is listed twice`);
       }
     });
   }

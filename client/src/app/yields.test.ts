@@ -33,7 +33,7 @@ import type { CueStageProps } from '../ui/state.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import type { WaitRow } from '../requests.test.ts';
-import { ROOM_FADE_MS, TAKE_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
+import { ROOM_FADE_MS, TAKE_FADE_MS, VIEW_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
 import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
 import yieldsSource from './yields.ts?raw';
 
@@ -1103,6 +1103,60 @@ test('yields: a move cue plays when its batch starts', async () => {
   r.yields.dispose();
 });
 
+/** The hall (an exit into the desk, the medal with its prop) and the desk, a zoom view of the hall with no exit back. */
+function zoomWorld(): WorldPublic {
+  const raw = {
+    format: 1,
+    items: { medal: { name: txt('Медаль'), desc: txt('d'), glyph: 'sun' } },
+    docs: {},
+    puzzles: {},
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: { bg: 'hall', title: txt('Hall'), onEnter: [], hotspots: [exit('to_desk', 'desk'), take('medal', 'medal', 'medal')] },
+          desk: { bg: 'cellar', title: txt('Desk'), onEnter: [], hotspots: [look('blotter')], view: { of: 'hall' } },
+        },
+      },
+    },
+  };
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the zoom fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods, version: '6666666666666666' };
+}
+
+test('yields: a zoom move crossfades the bg', async () => {
+  const r = rig({ world: zoomWorld() });
+  await inHall(r);
+  const moves = (from: number): Array<Pick<CueEvent, 'cue' | 'box'>> =>
+    r.cues
+      .slice(from)
+      .filter((e) => e.cue.kind === 'move')
+      .map((e) => ({ cue: e.cue, box: e.box }));
+  // The zoom-in: the desk crossfades over the hall (engine plan §6.3), its move cue at the exit's box.
+  const door = boxOf(r, 'hall.to_desk');
+  let at = r.batches.length;
+  let mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_desk'));
+  await settle();
+  expect(roomOf(r)).toBe('desk');
+  expect(r.batches.slice(at)).toEqual([[{ kind: 'bg', bg: 'cellar', t: 'crossfade', ms: VIEW_FADE_MS }, { kind: 'props', props: [] }]]);
+  expect(moves(mark)).toEqual([{ cue: { kind: 'move', from: 'hall', to: 'desk', via: 'hall.to_desk', how: 'zoom-in' }, box: door }]);
+  // The root back leaves the view by `leave-view`: a zoom-out by no exit, so its cue has no box.
+  expect(r.vm.screens.backVisible).toBe(true);
+  at = r.batches.length;
+  mark = r.cues.length;
+  r.screens.back();
+  await settle();
+  expect(roomOf(r)).toBe('hall');
+  expect(r.batches.slice(at)).toEqual([[{ kind: 'bg', bg: 'hall', t: 'crossfade', ms: VIEW_FADE_MS }, { kind: 'props', props: [{ prop: 'medal', rect: RECT, at: 'hall.medal' }] }]]);
+  expect(moves(mark)).toEqual([{ cue: { kind: 'move', from: 'desk', to: 'hall', via: null, how: 'zoom-out' }, box: null }]);
+  r.yields.dispose();
+});
+
 test('yields: a take emits exactly one held cue', async () => {
   // The writer's `held` alone: the `got` effect keeps its toast and batch, and no cue of its own.
   const r = rig({ world: cueWorld() });
@@ -1422,7 +1476,9 @@ test('yields: a state change under a close-up applies no batch', async () => {
   const mark = r.batches.length;
   r.yields.layer.ontap(key('hall.switch'));
   await settle();
+  // The look changed the hall's picture (the lamp is lit), so the empty batch list is the guard, not an empty diff.
   expect(r.yields.world().examined).toContain('hall.switch');
+  expect((r.yields.roomFor('hall' as BgId) ?? []).flatMap((c) => (c.kind === 'props' ? c.props : []))).toContainEqual(placed('lamp_lit', LAMP, 'hall.lamp'));
   expect(r.batches.slice(mark)).toEqual([]);
   r.yields.dispose();
 });
@@ -1491,6 +1547,51 @@ test("yields: a move that changes the left room's picture stays a room fade", as
   r.yields.layer.ontap(key('den.to_hall'));
   await settle();
   expect(r.stage().props).toContainEqual(placed('door_ajar', VASE, 'hall.door'));
+  r.yields.dispose();
+});
+
+test("yields: a room batch applies when a prop's rect or the prop count differs", async () => {
+  // `sameProps` (the room batch's "the stage already shows the room" guard) compares each placement's rect and the two
+  // lists' lengths. No shipped path leaves the stage on a room's bg with its props almost drawn, so the stage is put
+  // there directly from the den, which shares the hall's bg, and the hall is entered again.
+  const r = rig({ world: visualWorld() });
+  await inHall(r);
+  const hallShown = r.stage().props;
+  expect(hallShown).toEqual(HALL_PROPS);
+  const fade = [{ kind: 'bg', bg: 'hall', t: 'fade', ms: ROOM_FADE_MS }, { kind: 'props', props: HALL_PROPS }];
+  const backToHall = async (shown: typeof hallShown): Promise<VisualCommand[][]> => {
+    r.yields.layer.ontap(key('hall.to_den'));
+    await settle();
+    await r.host.apply([{ kind: 'props', props: shown }], []);
+    expect(r.stage().bg).toBe('hall');
+    const at = r.batches.length;
+    r.yields.layer.ontap(key('den.to_hall'));
+    await settle();
+    expect(roomOf(r)).toBe('hall');
+    return r.batches.slice(at);
+  };
+  // The lamp's image on its own anchor, at another rect.
+  const moved = hallShown.map((p) => (p.at === 'hall.lamp' ? { ...p, rect: [LAMP[0] + 50, LAMP[1], LAMP[2], LAMP[3]] as const } : p));
+  expect(await backToHall(moved)).toEqual([fade]);
+  // One placement more on the room's side: the stage shows a strict prefix of the room's placements.
+  expect(await backToHall(hallShown.slice(0, -1))).toEqual([fade]);
+  r.yields.dispose();
+});
+
+test('yields: a room batch over a close-up applies its fade', async () => {
+  // The room's own bg and props are on the stage, but a close-up stands over them: the batch applies, so the room
+  // comes back over the close-up (no shipped move starts under one; the stage is put there directly).
+  const r = rig({ world: visualWorld() });
+  await inHall(r);
+  const hallShown = r.stage().props;
+  r.yields.layer.ontap(key('hall.to_den'));
+  await settle();
+  await r.host.apply([{ kind: 'props', props: hallShown }, { kind: 'cg', cg: 'drawer_close' as CgId, t: 'cut', ms: 0 }], []);
+  expect([r.stage().bg, r.stage().cg, r.stage().props]).toEqual(['hall', 'drawer_close', HALL_PROPS]);
+  const at = r.batches.length;
+  r.yields.layer.ontap(key('den.to_hall'));
+  await settle();
+  expect(r.batches.slice(at)).toEqual([[{ kind: 'bg', bg: 'hall', t: 'fade', ms: ROOM_FADE_MS }, { kind: 'props', props: HALL_PROPS }]]);
   r.yields.dispose();
 });
 
@@ -3079,7 +3180,7 @@ test("yields: an explore root control's point reaches the bus in stage-host px",
   // its centre) moves off the host's; the stage plays in the host's px, as for the frame family.
   const r = rig({ world: cueWorld() });
   await inHall(r);
-  // The root mid-entrance: 0.975 of the host's 360 x 640, centred.
+  // The root mid-entrance: offset and scaled from the host's 360 x 640 (its entrance scales 0.98 -> 1).
   const root = { getBoundingClientRect: () => ({ left: 10, top: 20, right: 361, bottom: 644, width: 351, height: 624, x: 10, y: 20 }) as DOMRect };
   const el = { closest: (sel: string) => (sel === '[data-cue-root]' ? root : null) } as unknown as HTMLElement;
   const tapAt = (point: { x: number; y: number } | null): CueEvent => ({

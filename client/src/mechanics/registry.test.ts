@@ -233,27 +233,30 @@ test('mechanics: the rules registry loads from either module first', async () =>
     core: typeof import('./rules/core.ts'),
     use: typeof import('./rules/use.ts'),
     visual: typeof import('./rules/visual.ts'),
+    view: typeof import('./rules/view.ts'),
   ): void => {
     expect(index.MECHANIC_RULES).toStrictEqual([
       { id: 'core', actions: core.actions, apply: core.applyCore, reads: core.reads, cues: ['look', 'locked', 'refused', 'reset'] },
       { id: 'use', actions: use.useActions, apply: use.applyUse, reads: use.useReads, scope: use.useScope, cues: ['refused', 'said'] },
       { id: 'visual', actions: visual.visualActions, apply: visual.applyVisual, reads: visual.visualReads, cues: [], visuals: visual.visuals },
+      { id: 'view', actions: view.viewActions, apply: view.applyView, reads: view.viewReads, cues: [] },
     ]);
     expect(core.reduce(w, at('hall'), tap('hall.statue')).effects.map((e) => e.kind)).toEqual(['look', 'cue', 'cue', 'dirty']);
   };
-  // rules/use.ts, rules/visual.ts and rules/conditions.ts sit on the cycle too (use.ts <-> core.ts, visual.ts ->
-  // conditions.ts -> index.ts).
+  // rules/use.ts, rules/visual.ts, rules/conditions.ts and rules/view.ts sit on the cycle too (use.ts <-> core.ts,
+  // visual.ts -> conditions.ts -> index.ts, view.ts <-> core.ts).
   const firsts = [
     () => import('./rules/core.ts'),
     () => import('./rules/index.ts'),
     () => import('./rules/use.ts'),
     () => import('./rules/conditions.ts'),
     () => import('./rules/visual.ts'),
+    () => import('./rules/view.ts'),
   ];
   for (const first of firsts) {
     vi.resetModules();
     await first();
-    checkGraph(await import('./rules/index.ts'), await import('./rules/core.ts'), await import('./rules/use.ts'), await import('./rules/visual.ts'));
+    checkGraph(await import('./rules/index.ts'), await import('./rules/core.ts'), await import('./rules/use.ts'), await import('./rules/visual.ts'), await import('./rules/view.ts'));
   }
 });
 
@@ -283,6 +286,7 @@ test('mechanics: the data registry loads from any module first', async () => {
     core: typeof import('./data/core.ts'),
     use: typeof import('./data/use.ts'),
     visual: typeof import('./data/visual.ts'),
+    view: typeof import('./data/view.ts'),
   ): void => {
     expect(index.MECHANIC_DATA).toStrictEqual([
       core.core,
@@ -302,6 +306,14 @@ test('mechanics: the data registry loads from any module first', async () => {
         encode: visual.encodeVisual,
         normalize: visual.normalizeVisual,
       },
+      {
+        id: 'view',
+        rules: 'chunk',
+        owns: { room: ['view'], facts: [] },
+        decode: view.decodeView,
+        encode: view.encodeView,
+        normalize: view.normalizeView,
+      },
     ]);
   };
   const firsts = [
@@ -310,11 +322,12 @@ test('mechanics: the data registry loads from any module first', async () => {
     () => import('./data/index.ts'),
     () => import('./data/core.ts'),
     () => import('./data/visual.ts'),
+    () => import('./data/view.ts'),
   ];
   for (const first of firsts) {
     vi.resetModules();
     await first();
-    checkData(await import('./data/index.ts'), await import('./data/core.ts'), await import('./data/use.ts'), await import('./data/visual.ts'));
+    checkData(await import('./data/index.ts'), await import('./data/core.ts'), await import('./data/use.ts'), await import('./data/visual.ts'), await import('./data/view.ts'));
     const decoded = (await import('../world/decode.ts')).decodeWorldSource(useSource());
     expect(decoded.ok ? decoded.value.mods.use.uses[k('hall.box')]?.[0]?.when : decoded.error).toEqual({ all: [{ held: 'lens' }, { not: { open: 'hall.box' } }] });
   }
@@ -421,6 +434,7 @@ test('mechanics: every action kind has one handler', () => {
     'hint-opened': true,
     'puzzle-ended': true,
     use: true,
+    'leave-view': true,
   } satisfies Record<SectionAction['kind'], true>;
   expect(Object.keys(APPLY).sort()).toEqual(Object.keys(kinds).sort());
   expect(Object.values(APPLY).every((handler) => typeof handler === 'function')).toBe(true);

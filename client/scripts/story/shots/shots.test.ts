@@ -921,14 +921,26 @@ test('shots: an undeclared shot warns', () => {
 });
 
 test('shots: a view whose bg is declared as an insert fails', () => {
-  // No zoom view exists on this tree (no `view` key yet): a view is a room of a section, so the fixture is a room.
-  const insert = shotList({ locs: [{ id: 'hall', light: null }], shots: [{ id: 'hall', loc: 'hall', frame: 'insert', cast: [] }] });
-  const w = manorWorld();
-  expect(shown(linted(MANOR, { list: insert, w }).findings, 'shot/room-frame')).toEqual([
-    "shot/room-frame story/ch1/world.json:0 room s.hall draws 'hall', which story/shots.json declares frame insert: a room's shot is frame room (§14)",
+  // A real zoom view (engine plan §6.3, SH2 O3): the desk is a view of the hall, entered by the hall's exit and left
+  // back to it. A view is a room of its section, so its shot is frame room like any room's.
+  const exitTo = (id: string, to: string, label: string): Json => ({ id, kind: 'exit', rect: [100, 1300, 250, 400], label: TEXT(label), to: { room: to }, lock: null, sfx: null });
+  const w = world({
+    hall: room('hall', [exitTo('to_desk', 'desk', 'ch1.s.l001')]),
+    desk: { ...room('desk', [exitTo('back', 'hall', 'ch1.s.l002')]), view: { of: 'hall' } },
+  });
+  expect(w.mods.view.of).toEqual({ desk: 'hall' });
+  const shots = (desk: 'insert' | 'room'): ShotList =>
+    shotList({
+      locs: [{ id: 'hall', light: null }],
+      shots: [
+        { id: 'hall', loc: 'hall', frame: 'room', cast: [] },
+        { id: 'desk', loc: 'hall', frame: desk, cast: [] },
+      ],
+    });
+  expect(shown(linted(MANOR, { list: shots('insert'), w }).findings, 'shot/room-frame')).toEqual([
+    "shot/room-frame story/ch1/world.json:0 room s.desk draws 'desk', which story/shots.json declares frame insert: a room's shot is frame room (§14)",
   ]);
-  const room = shotList({ locs: [{ id: 'hall', light: null }], shots: [{ id: 'hall', loc: 'hall', frame: 'room', cast: [] }] });
-  expect(shown(linted(MANOR, { list: room, w }).findings, 'shot/room-frame')).toEqual([]);
+  expect(shown(linted(MANOR, { list: shots('room'), w }).findings, 'shot/room-frame')).toEqual([]);
 });
 
 /** The rows of STAGING-DSL §14 that start with a code (`| \`code\` | sev |`). */

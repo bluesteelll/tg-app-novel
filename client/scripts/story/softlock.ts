@@ -41,6 +41,8 @@ function describe(w: KernelWorld, from: WorldState, step: Step): string {
       const how = opened === undefined ? `open ${step.puzzle}` : describe(w, from, opened);
       return `${how} → ${step.puzzle} ${step.kind === 'closed' ? 'closed' : step.outcome}`;
     }
+    case 'leave-view':
+      return `leave view ${from.room ?? '?'}`;
     case 'enter-section':
     case 'attempt-failed':
     case 'hint-opened':
