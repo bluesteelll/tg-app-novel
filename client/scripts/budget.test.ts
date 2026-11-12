@@ -2259,6 +2259,16 @@ describe('budget shots', () => {
     expect(lacking.note).toContain("not in ch1's manifest: cg/ghost");
   });
 
+  test('budget: a step-window FAIL for a lacking id names the window that lists it', () => {
+    // SH3b review M2: the FAIL prints the terms of a window that lists the missing file, not the chapter's largest
+    // window (K1, complete and larger, names no missing file).
+    const two = { ...CU_A, ...CU_B };
+    const look = { [K1]: { cur: ids(two) }, [K2]: { cur: ['cg/ghost'] } };
+    const row = rowOf(assetRows(shotInputs(two, { look })), 'step-window ch1');
+    expect(row).toMatchObject({ status: 'FAIL', valueBytes: null });
+    expect(row.note).toBe(`budget/step-window: ${K2}: cur 0.00 + certain 0.00 (at 1) + possible 0.00 + labels 0.00 MiB; not in ch1's manifest: cg/ghost`);
+  });
+
   test('budget: step window counts the current shot once', () => {
     // CU A on stage, CU A and CU B certain at the next line, CU A's plate and CU B's sheet also listed as possible: every
     // file is counted once, at full: 12.703 + 12.703 = 25.406.

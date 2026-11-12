@@ -1332,16 +1332,17 @@ const STEP_WINDOW_LEVERS =
 /** How many failing windows a row names before it counts the rest. */
 const NAMED_FAILURES = 5;
 
-/** One window's terms (shots §3.4 "The gate step-window"), in bytes. */
-type WindowSum = { key: string; cur: number; certain: number; possible: number; labels: number; total: number };
+/** One window's terms (shots §3.4 "The gate step-window"), in bytes, and the ids it lists that are no image of the manifest. */
+type WindowSum = { key: string; cur: number; certain: number; possible: number; labels: number; total: number; lacking: ReadonlySet<AssetId> };
 
 /**
  * `cur` at full, + the certain files due at the next step (`certainDist` 1) at full, + the other openers at their kept
  * bytes, each file counted once; + one label bound when a room is in effect and one per usage room whose plate is
  * certain at the next step and not in effect (build/shots.json's `labels` is the window's own room only). An id that
- * is not an image of `manifest` is added to `lacking`.
+ * is not an image of `manifest` is listed in the window's own `lacking`.
  */
-function windowSum(key: string, w: WindowRefs, manifest: AssetManifest, roomsByBg: ReadonlyMap<AssetId, number>, lacking: Set<AssetId>): WindowSum {
+function windowSum(key: string, w: WindowRefs, manifest: AssetManifest, roomsByBg: ReadonlyMap<AssetId, number>): WindowSum {
+  const lacking = new Set<AssetId>();
   const sum = (ids: ReadonlySet<AssetId>, bytes: (e: ImageEntry) => number): number => {
     let total = 0;
     for (const id of ids) {
@@ -1364,7 +1365,7 @@ function windowSum(key: string, w: WindowRefs, manifest: AssetManifest, roomsByB
     possible: sum(possible, (e) => Math.max(e.avif.bytes, e.webp.bytes)),
     labels: ((w.labels ? 1 : 0) + rooms) * LABELS_BOUND,
   };
-  return { key, ...t, total: t.cur + t.certain + t.possible + t.labels };
+  return { key, ...t, total: t.cur + t.certain + t.possible + t.labels, lacking };
 }
 
 /** MiB to two decimals, the unit the window terms print in. */
@@ -1372,23 +1373,30 @@ function mib2(bytes: number): string {
   return (bytes / MIB).toFixed(2);
 }
 
-/** The largest window of `keys`; a FAIL names the code, the failing windows worst first, and the levers. */
+/**
+ * The largest window of `keys`; a FAIL names the code, the failing windows worst first, and the levers. A window that
+ * lists a file the manifest lacks cannot be summed: the FAIL prints the largest such window's terms (SH3b review M2:
+ * the window that names the file, not the chapter's largest) and every lacking id.
+ */
 function stepWindowRow(name: string, ch: ChapterId, keys: readonly string[], cs: ChapterShots, manifest: AssetManifest, roomsByBg: ReadonlyMap<AssetId, number>, limit: number): Row {
-  const lacking = new Set<AssetId>();
   const sums = keys
     .flatMap((k) => {
       const w = cs.look[k as keyof ChapterShots['look']]; // a key of this very record
-      return w === undefined ? [] : [windowSum(k, w, manifest, roomsByBg, lacking)];
+      return w === undefined ? [] : [windowSum(k, w, manifest, roomsByBg)];
     })
     .sort((x, y) => y.total - x.total || (x.key < y.key ? -1 : 1));
   const worst = sums[0];
   if (worst === undefined) {
     return failed(name, limit, `${STEP_WINDOW_CODE}: no story window in ${SHOT_USAGE_FILE}`, 'MiB');
   }
-  const terms = `${worst.key}: cur ${mib2(worst.cur)} + certain ${mib2(worst.certain)} (at 1) + possible ${mib2(worst.possible)} + labels ${mib2(worst.labels)} MiB`;
-  if (lacking.size > 0) {
-    return failed(name, limit, `${STEP_WINDOW_CODE}: ${terms}; not in ${ch}'s manifest: ${[...lacking].sort().join(', ')}`, 'MiB');
+  const termsOf = (s: WindowSum): string =>
+    `${s.key}: cur ${mib2(s.cur)} + certain ${mib2(s.certain)} (at 1) + possible ${mib2(s.possible)} + labels ${mib2(s.labels)} MiB`;
+  const lacks = sums.find((s) => s.lacking.size > 0);
+  if (lacks !== undefined) {
+    const lacking = new Set(sums.flatMap((s) => [...s.lacking]));
+    return failed(name, limit, `${STEP_WINDOW_CODE}: ${termsOf(lacks)}; not in ${ch}'s manifest: ${[...lacking].sort().join(', ')}`, 'MiB');
   }
+  const terms = termsOf(worst);
   if (worst.total <= limit) {
     return measured(name, worst.total, limit, terms, 'MiB');
   }
