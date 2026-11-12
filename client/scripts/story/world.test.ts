@@ -403,6 +403,17 @@ test('lint: world/one-way-exit red on fixture', () => {
   expect(of(lint(w), 'world/one-way-exit')).toEqual([expect.objectContaining({ message: 'exit hall.to_cellar leads to room cellar, which has no exit back to hall' })]);
 });
 
+test('lint: world/one-way-exit refuses a plain one-way exit out of a room that has a view', () => {
+  const w = base();
+  const cellar = at(w, 'sections.manor.rooms.cellar');
+  cellar['hotspots'] = hotspots(w, 'cellar').filter((h) => h['id'] !== 'to_hall');
+  // The hall zooms into its nook: the exemption is keyed on the exit's target being a view, never on its source room
+  // having one (G1), so the hall's plain exit into the cellar is still one-way.
+  hotspots(w, 'hall').push(demoExit('to_nook', [400, 600, 300, 300], { room: 'nook' }));
+  at(w, 'sections.manor.rooms')['nook'] = { bg: 'room', title: t('manor', 'Ниша'), onEnter: [], hotspots: [], view: { of: 'hall' } };
+  expect(of(lint(w), 'world/one-way-exit')).toEqual([expect.objectContaining({ message: 'exit hall.to_cellar leads to room cellar, which has no exit back to hall' })]);
+});
+
 test('lint: world/one-way-exit spares an exit into a view at either depth', () => {
   const w = base();
   // The study zooms into its desk, and the desk into its drawer: a depth-2 tree whose views have no exit back. A view

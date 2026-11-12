@@ -1214,10 +1214,13 @@ test('yields: the explore view is in a view exactly while the room is one', asyn
   // A walked plain room has a Back target, and is no view.
   expect([roomOf(r), r.vm.screens.backVisible, r.explore.inView]).toEqual(['study', true, false]);
   r.yields.layer.ontap(key('study.to_desk'));
+  // The flag is written with the layer, in the batch's synchronous run, before the batch is held (G2).
+  expect([roomOf(r), r.explore.layer !== null, r.explore.inView]).toEqual(['desk', true, true]);
   await settle();
   expect([roomOf(r), r.explore.inView]).toEqual(['desk', true]);
   const inDesk = r.yields.world();
   r.screens.back(); // a zoom-out by `leave-view`
+  expect([roomOf(r), r.explore.layer !== null, r.explore.inView]).toEqual(['study', true, false]);
   await settle();
   expect([roomOf(r), r.explore.inView]).toEqual(['study', false]);
   r.yields.layer.ontap(key('study.to_desk'));

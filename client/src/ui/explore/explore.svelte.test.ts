@@ -201,10 +201,21 @@ test("explore: the view bar's leave control leaves the view", async () => {
     await fireEvent.click(leave);
     expect([onleaveview.mock.calls.length, onreveal.mock.calls.length], lang).toEqual([1, 0]);
     inside.unmount();
-    // Under a sheet the rooms are inert, the leave control with them.
-    const covered = render(ExploreView, layerProps({ lang, inView: true, panel: { kind: 'inventory' } }));
-    expect(covered.container.querySelector('[data-cue="view-leave"]')?.closest('[inert]'), lang).not.toBeNull();
-    covered.unmount();
+    // Under each sheet the rooms are inert, the leave control with them: present (so the inert check is not vacuous on
+    // a missing element, G3), and inside an inert ancestor.
+    const sheets: readonly LayerOver[] = [
+      { panel: { kind: 'inventory' } },
+      { docs: [LETTER], panel: { kind: 'doc', doc: LETTER.id } },
+      { items: [SUN], lock: GATE, panel: { kind: 'lock' } },
+    ];
+    for (const sheet of sheets) {
+      const covered = render(ExploreView, layerProps({ lang, inView: true, ...sheet }));
+      const control = covered.container.querySelector('[data-cue="view-leave"]');
+      const where = `${lang} ${sheet.panel?.kind ?? ''}`;
+      expect(control, where).toBeInstanceOf(HTMLElement);
+      expect(control?.closest('[inert]'), where).not.toBeNull();
+      covered.unmount();
+    }
   }
   // Owner Q15f: a down arrow (the exit glyph turned a quarter, read from the source: happy-dom computes no cascade).
   expect(declarationsFor(exploreViewSource, 'leave-glyph').get('transform')).toBe('rotate(90deg)');
