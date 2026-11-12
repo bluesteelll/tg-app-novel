@@ -6,6 +6,7 @@
 // Generic over the texture type, so it holds no Pixi value and is tested in node over a fake loader;
 // `scene/loader.ts` is the real `LoadImage`.
 import type { AssetFetchError, AssetRef, ImageEntry, ImageFile, Result, SizeTier } from '../story/catalog.ts';
+import type { Box } from '../story/shots.ts';
 import type { AssetId } from '../story/staging.ts';
 import { textureGeometry } from './layout.ts';
 import type { TextureGeometry } from './layout.ts';
@@ -86,6 +87,27 @@ export type RegistryStats = {
 };
 /** An id's record as `state(id)` reports it: decoded (revived or not), its load in flight, or no record. */
 export type RecordState = 'live' | 'pending' | 'none';
+/**
+ * How a record's texture is cut into frames (shots §5.1 "Ownership": a shot file's packed members): `cut` makes a
+ * frame over the record's own source at a box in the file's full px, `dispose` destroys it and never that source.
+ */
+export type FrameCut<T> = { cut(base: T, box: Box): T; dispose(frame: T): void };
+
+/**
+ * The Pixi cut (the `texture-create` rule's file). A half file's source has resolution 0.5, so its width is already in
+ * full px (Pixi 8: width = pixelWidth / resolution; a frame's UVs are frame / source width): the member's box cuts either
+ * tier as the rig gives it. Its dispose leaves the source, which is the record's and dies with `release()`. Structural,
+ * so this file keeps type-only Pixi imports and the scene suites pass stand-ins.
+ */
+export function pixiFrames<T extends { readonly source: unknown; destroy(destroySource?: boolean): void }, R>(pixi: {
+  Texture: new (o: { source: T['source']; frame: R }) => T;
+  Rectangle: new (x: number, y: number, w: number, h: number) => R;
+}): FrameCut<T> {
+  return {
+    cut: (base, [x, y, w, h]) => new pixi.Texture({ source: base.source, frame: new pixi.Rectangle(x, y, w, h) }),
+    dispose: (frame) => frame.destroy(false),
+  };
+}
 
 export interface AssetRegistry<T> {
   /**
@@ -123,6 +145,12 @@ export interface AssetRegistry<T> {
    */
   demote(): void;
   stats(): RegistryStats;
+  /**
+   * Frames cut from the live record behind `h` at `boxes` (file px), once per box, owned by that record: disposed when
+   * it ends, before its texture is released. Refused (`decode`) for a handle that is not the id's current record, and
+   * by a registry made without a FrameCut.
+   */
+  frames(h: TextureHandle<T>, boxes: readonly Box[]): Result<readonly T[], AssetError>;
   /** Releases every entry, aborting loads in flight and a running revive; later calls are no-ops. */
   destroy(): void;
 }
@@ -146,6 +174,8 @@ type Rec<T> = {
   state: 'pending' | 'live' | 'dead';
   decoded: Decoded<T> | null;
   handle: TextureHandle<T> | null;
+  /** The frames cut from this record's texture, by box. */
+  readonly frames: Map<string, T>;
 };
 
 const fail = <E>(error: E): { ok: false; error: E } => ({ ok: false, error });
@@ -178,7 +208,7 @@ function deadline(): { late: Promise<'late'>; clear(): void } {
  * `tier` is required (critique_r2 W6): a caller that forgets it would load the full tier silently. `'half'` loads each
  * entry's half file where it has one (MEMORY-PLAN 4.C), until `demote()`.
  */
-export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avif' | 'webp'; tier: SizeTier }): AssetRegistry<T> {
+export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avif' | 'webp'; tier: SizeTier; frames?: FrameCut<T> }): AssetRegistry<T> {
   // Every record in the map is pending or live and counts its decodedBytes; a record leaves the map exactly once,
   // so a reservation is returned exactly once whatever order abort, release and a late settle come in.
   const records = new Map<AssetId, Rec<T>>();
@@ -240,6 +270,11 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
     if (records.get(rec.id) === rec) {
       records.delete(rec.id);
     }
+    // Its frames go first: each is a view of the source that release() destroys.
+    for (const f of rec.frames.values()) {
+      deps.frames?.dispose(f);
+    }
+    rec.frames.clear();
     rec.decoded?.release();
     rec.decoded = null;
     wake(rec, fail(error));
@@ -315,6 +350,7 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
       state: 'pending',
       decoded: null,
       handle: null,
+      frames: new Map(),
     };
     records.set(id, rec);
     let loading: Promise<Result<Decoded<T>, LoadError>>;
@@ -585,6 +621,29 @@ export function createAssetRegistry<T>(deps: { load: LoadImage<T>; variant: 'avi
     },
     demote() {
       tier = 'full';
+    },
+    frames(h, boxes) {
+      const rec = records.get(h.id);
+      const cut = deps.frames;
+      if (rec?.state !== 'live' || rec.handle !== h) {
+        return fail({ kind: 'decode', id: h.id, detail: 'frames of a record that is not current' });
+      }
+      if (cut === undefined) {
+        return fail({ kind: 'decode', id: h.id, detail: 'no frame cut' });
+      }
+      return {
+        ok: true,
+        value: boxes.map((b) => {
+          const key = b.join(',');
+          const have = rec.frames.get(key);
+          if (have !== undefined) {
+            return have;
+          }
+          const f = cut.cut(h.texture, b);
+          rec.frames.set(key, f);
+          return f;
+        }),
+      };
     },
     stats() {
       let live = 0;

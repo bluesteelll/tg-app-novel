@@ -5,15 +5,17 @@ import { ROOM_SOURCE } from '../geom/cover.ts';
 import type { Size } from '../geom/cover.ts';
 import type { AnchorKey } from '../mechanics/contract.ts';
 import type { ImageEntry, Result } from '../story/catalog.ts';
+import type { Box as Box4, CastRig, Member, ShotRig } from '../story/shots.ts';
 import type { AssetId, BgId, CgId, CharId, ExprId, PropId, Rect, Slot } from '../story/staging.ts';
 import { createExecutor } from './executor.ts';
 import type { Layer, Placement, StageAdapter, VisualCommand } from './executor.ts';
 import { backdropPlacement, propPlacement } from './layout.ts';
 import { REVIVE_DEADLINE_MS, createAssetRegistry } from './registry.ts';
-import type { AssetError, Decoded, LoadError, LoadImage } from './registry.ts';
+import type { AssetError, Decoded, FrameCut, LoadError, LoadImage } from './registry.ts';
 import { createRenderLoop } from './render-loop.ts';
 import type { RenderLoop, Ticker } from './render-loop.ts';
 import { createReviveFlow } from './revive-flow.ts';
+import { restFraming } from './shot-view.ts';
 
 // GSAP reads the clock through `Date.now`, captured when its module loads: fake timers installed before every import
 // (vi.hoisted runs first) make its ticker deterministic. advance() moves the fake clock and runs one manual tick (V6).
@@ -47,7 +49,7 @@ const track = (p: Promise<void>): { done: boolean } => {
 // crash, or draw a dead texture, there) and on a drop over a live sprite (the executor destroys the art first).
 
 type Tex = { readonly url: string };
-type Role = 'char' | 'anchor' | 'depth' | 'motion' | 'content' | 'sprite';
+type Role = 'char' | 'anchor' | 'depth' | 'motion' | 'content' | 'node' | 'sprite';
 /** `parent`: null for a node at the top of its layer. */
 type Node = {
   readonly id: number;
@@ -91,8 +93,9 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
   };
   const below = (x: Node): Node[] => (kids.get(x.id) ?? []).map(node).flatMap((c) => [c, ...below(c)]);
   const up = (x: Node): Node[] => (x.parent === null ? [] : [node(x.parent), ...up(node(x.parent))]);
-  // chars sprites log their character, every other sprite its asset name.
-  const keyOf = (layer: Layer, id: AssetId): string => (layer === 'chars' ? (id.split('/')[1] ?? id) : (id.split('/').pop() ?? id));
+  // chars sprites log their character, a shot file's frame its id, every other sprite its asset name.
+  const keyOf = (layer: Layer, id: AssetId): string =>
+    layer === 'chars' ? (id.split('/')[1] ?? id) : /^(?:sheet|face|talk)\//.test(id) ? id : (id.split('/').pop() ?? id);
   const adapter: StageAdapter<Tex> = {
     size: () => stage.size,
     group(char) {
@@ -106,9 +109,13 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
       const motion = add('motion', layer, label, depth, null);
       return { anchor: { group: anchor }, depth: { group: depth }, motion: { group: motion }, content: { group: add('content', layer, label, motion, null) } };
     },
+    node(parent, label) {
+      log.push(`node:${label}`);
+      return { group: add('node', node(parent.group).layer, label, parent.group, null) };
+    },
     dropGroup(g) {
       const x = node(g.group);
-      if (x.role !== 'char' && x.role !== 'anchor') {
+      if (x.role !== 'char' && x.role !== 'anchor' && x.role !== 'node') {
         throw new Error(`stage: drop of an anchor's inner ${x.role} node`);
       }
       const art = below(x).find((d) => d.role === 'sprite');
@@ -227,13 +234,33 @@ const ENTRIES: Readonly<Record<string, ImageEntry>> = {
   'prop/drawer': image('prop_drawer', 300, 200),
   'prop/drawer_open': image('prop_drawer_open', 300, 260),
   'prop/glint': image('prop_glint', 100, 100),
+  // Two shots of one place (the shots plan's SH4): plates, sheets, face files and talk files.
+  'bg/lamp': image('bg_lamp', 1080, 2048),
+  'bg/lamp_cu': image('bg_lamp_cu', 1080, 2048),
+  'sheet/lamp': image('sheet_lamp', 512, 512),
+  'sheet/lamp_cu': image('sheet_lamp_cu', 512, 512),
+  'face/lamp/ally/smile': image('face_lamp_ally_smile', 256, 256),
+  'face/lamp/ally/worried': image('face_lamp_ally_worried', 256, 256),
+  'face/lamp/stranger/smile': image('face_lamp_stranger_smile', 256, 256),
+  'face/lamp_cu/ally/smile': image('face_lamp_cu_ally_smile', 256, 256),
+  'talk/lamp/ally/neutral': image('talk_lamp_ally_neutral', 128, 64),
+  'talk/lamp/ally/smile': image('talk_lamp_ally_smile', 128, 64),
+  'talk/lamp/ally/worried': image('talk_lamp_ally_worried', 128, 64),
+  'talk/lamp/stranger/neutral': image('talk_lamp_stranger_neutral', 128, 64),
+  'talk/lamp/stranger/smile': image('talk_lamp_stranger_smile', 128, 64),
+  'talk/lamp_cu/ally/neutral': image('talk_lamp_cu_ally_neutral', 128, 64),
+  'talk/lamp_cu/ally/smile': image('talk_lamp_cu_ally_smile', 128, 64),
 };
 const urlOf = (id: string): string => ENTRIES[id]?.avif.url ?? `missing:${id}`;
 
 /** A loop on a ticker that never ticks: these tests watch the stage, not the frames. */
 const quietLoop = (): RenderLoop => createRenderLoop({ ticker: { add: () => {}, remove: () => {} }, render: () => {} });
 
-function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
+/**
+ * `shots`: the executor's shot dep (absent: none). The registry cuts frames as stand-ins named `<file url>#<box>`; a
+ * disposed frame joins `freed`, so a sprite drawn on it throws like one on a released texture.
+ */
+function harness(size: Size = S390, loop: RenderLoop = quietLoop(), shots?: { rigs(): ReadonlyMap<BgId, ShotRig> | null; half(): boolean }) {
   const freed = new Set<Tex>();
   const stage = recordingStage(size, freed);
   const loads = new Map<string, number>();
@@ -245,10 +272,12 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
   const heldRevives = new Map<string, Array<(r: Result<void, LoadError>) => void>>();
   /** Per URL: the next load waits until the test lets it settle. */
   const deferred = new Map<string, { ready: boolean; go: (() => void) | null }>();
+  /** URLs whose every load fails to decode. */
+  const broken = new Set([urlOf('bg/broken')]);
   const load: LoadImage<Tex> = (ref) => {
     loads.set(ref.url, (loads.get(ref.url) ?? 0) + 1);
     const e = byUrl.get(ref.url);
-    if (e === undefined || ref.url === urlOf('bg/broken')) {
+    if (e === undefined || broken.has(ref.url)) {
       return Promise.resolve({ ok: false, error: { kind: 'decode', detail: 'no such fixture' } });
     }
     const decode = (): Result<Decoded<Tex>, LoadError> => {
@@ -298,7 +327,13 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
       }
     });
   };
-  const registry = createAssetRegistry<Tex>({ load, variant: 'avif', tier: 'full' });
+  const frames: FrameCut<Tex> = {
+    cut: (base, box) => ({ url: `${base.url}#${box.join(',')}` }),
+    dispose: (frame) => {
+      freed.add(frame);
+    },
+  };
+  const registry = createAssetRegistry<Tex>({ load, variant: 'avif', tier: 'full', frames });
   const resolve = (id: AssetId): Result<ImageEntry, AssetError> => {
     const e = Object.hasOwn(ENTRIES, id) ? ENTRIES[id] : undefined;
     return e === undefined ? { ok: false, error: { kind: 'missing-id', id } } : { ok: true, value: e };
@@ -307,7 +342,7 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
   const onSkip = (e: AssetError): void => {
     skipped.push(e);
   };
-  const ex = createExecutor<Tex>({ adapter: stage.adapter, registry, resolve, loop, resolution: 2, onSkip });
+  const ex = createExecutor<Tex>({ adapter: stage.adapter, registry, resolve, loop, resolution: 2, onSkip, ...(shots === undefined ? {} : { shots }) });
   return {
     ...stage,
     freed,
@@ -337,6 +372,10 @@ function harness(size: Size = S390, loop: RenderLoop = quietLoop()) {
         succeed: () => settle({ ok: true, value: undefined }),
         fail: () => settle({ ok: false, error: { kind: 'decode', detail: 'revive failed' } }),
       };
+    },
+    /** Every later load of `id` fails to decode (a manifest file whose bytes are broken). */
+    failLoad: (id: string): void => {
+      broken.add(urlOf(id));
     },
     /** The next load of `id` waits (a stalled fetch) until the returned function is called. */
     deferLoad: (id: string): (() => void) => {
@@ -1386,11 +1425,13 @@ test('executor: an anchor the target names is never taken over', async () => {
   expect(h.drawOrder(h.contentOf(drawer)).map((x) => x.key)).toEqual(['drawer']);
   h.ex.destroy();
   // A prop moved into a key that has its anchor: that anchor is never replaced in the map (it would outlive destroy).
+  // The moved prop is drawn there from its live record in the same batch (RULINGS 245 Q8, GM6a review r2's carry).
   const m = harness();
   await m.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.glint'])], NOW);
   const base = one(m.anchors('props').filter((x) => x.key === 'room.drawer'));
   await m.ex.apply([bg('room', 'crossfade', 300), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'])], { instant: true });
-  expect(m.drawOrder(m.contentOf(base)).map((x) => x.key)).toEqual(['drawer']);
+  expect(m.anchors('props')).toEqual([base]);
+  expect(m.drawOrder(m.contentOf(base)).map((x) => x.key)).toEqual(['drawer', 'glint']);
   m.ex.destroy();
   expect(m.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
 });
@@ -1679,3 +1720,612 @@ test('executor: a build whose view creation throws after the anchor leaves no an
   expect(() => d.ex.destroy()).not.toThrow();
   expect(d.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
 });
+
+test('executor: a character whose sprite throws leaves no group in its layer', async () => {
+  // SH1 cut Q5: newChar makes the group, then its sprite throws; the group goes with it, as a backdrop's anchor does.
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  throwOn(h, 'char/ally/neutral');
+  h.log.length = 0;
+  await applyFailing(h, [show('ally', 'neutral', 'left', 'cut')]);
+  expect(h.log.filter((x) => /^(group|drop):/.test(x))).toEqual(['group:ally', 'drop:ally']);
+  expect(h.liveNodes().filter((x) => x.role === 'char')).toEqual([]);
+  h.ex.destroy();
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+});
+
+test('executor: a rebind whose prop sprite throws leaves no anchor in its layer', async () => {
+  // SH1 cut Q5: rebind's props loop makes the anchor, then a sprite in it throws; the sprites it made and the anchor go.
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'])], NOW);
+  const fresh = recordingStage(S390, h.freed);
+  const sprite = fresh.adapter.sprite.bind(fresh.adapter);
+  fresh.adapter.sprite = (layer, tex, g) => {
+    if (tex.id === 'prop/glint') {
+      throw new Error('stage: a bug in the build of prop/glint');
+    }
+    return sprite(layer, tex, g);
+  };
+  expect(() => h.ex.rebind(fresh.adapter)).toThrow('prop/glint');
+  expect(fresh.log.filter((x) => /^(anchor:props|create:props|destroy|drop):/.test(x))).toEqual([
+    'anchor:props:room.drawer',
+    'create:props:drawer',
+    'destroy:props:drawer',
+    'drop:room.drawer',
+  ]);
+  expect(fresh.anchors('props')).toEqual([]);
+  expect(fresh.live('props')).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// SH1 review M2 / M3: a show and a face of one character in one batch.
+
+test('executor: a show governs the timing of a face of the same character in its batch', async () => {
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut'), show('ally', 'neutral', 'left', 'cut')], NOW);
+  // The face asks for 1000 ms, the show for a cut: the show governs, so the expression changes at once.
+  const both = track(h.ex.apply([face('ally', 'worried', 1000), show('ally', 'neutral', null, 'cut')], NOW));
+  await flush();
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  expect(both.done).toBe(true);
+  expect(h.ex.snapshot().chars).toEqual([{ char: 'ally', expr: 'worried', at: 'left' }]);
+  expect(h.inGroup('ally').length).toBe(1);
+  expect(h.releasedOf('char/ally/neutral')).toBe(1);
+  h.ex.destroy();
+});
+
+test("executor: a face applies after the batch's show", async () => {
+  // STAGING-DSL §7's order: shows, then faces; the tag order in the batch does not matter.
+  for (const batch of [
+    [show('ally', 'neutral', 'left', 'cut'), face('ally', 'worried')],
+    [face('ally', 'worried'), show('ally', 'neutral', 'left', 'cut')],
+  ]) {
+    const h = harness();
+    await h.ex.apply([bg('cafe', 'cut'), ...batch], { instant: true });
+    expect(h.ex.snapshot().chars).toEqual([{ char: 'ally', expr: 'worried', at: 'left' }]);
+    h.ex.destroy();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// RULINGS 245 Q8: the prop carry (GM3b's executor items).
+
+test('executor: a prop moving to another anchor shows at its new key in the same batch', async () => {
+  // GM6a cut deviation 5 / fix_r1: a two-view anchor whose patch leaves to its own key; the target still names the
+  // old anchor, so nothing is taken over. The moved view is drawn at its new key from the live record, with no take.
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'])], NOW);
+  const loads = h.loadsOf('prop/glint');
+  await h.ex.apply([bg('room', 'crossfade', 300), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.glint'])], { instant: true });
+  expect(h.anchors('props').map((x) => x.key)).toEqual(['room.drawer', 'room.glint']);
+  const glint = one(h.anchors('props').filter((x) => x.key === 'room.glint'));
+  expect(h.drawOrder(h.contentOf(glint)).map((x) => x.key)).toEqual(['glint']);
+  expect(h.ex.propRects().map((r) => r.prop)).toEqual(['drawer', 'glint']);
+  expect(h.loadsOf('prop/glint')).toBe(loads);
+  expect(h.releasedOf('prop/glint')).toBe(0);
+  h.ex.destroy();
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+});
+
+test('executor: a restore re-keys a multi-view anchor without a new anchor', async () => {
+  // GM6a test_r2 TM5 / TM13: the take-over looks at every view of the anchor, not only at its first.
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'])], NOW);
+  const before = h.anchors('props');
+  h.log.length = 0;
+  await h.ex.restore({ bg: 'room' as BgId, cg: null, chars: [], props: [{ prop: 'drawer' as PropId, rect: DRAWER }] });
+  expect(h.anchors('props')).toEqual(before);
+  expect(h.log.filter((x) => /^(anchor|drop):/.test(x))).toEqual([]);
+  expect(h.log.filter((x) => /^(create|destroy):/.test(x))).toEqual(['destroy:props:glint']);
+  h.ex.destroy();
+});
+
+test('executor: a restore re-keys a multi-view anchor by its patch alone', async () => {
+  // Pre-merge V-I1 (TM13): the anchor's first view is its base, so only a target naming a later view (the patch) tells
+  // "every view" from "the first view only".
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['drawer', DRAWER, 'room.drawer'], ['glint', GLINT, 'room.drawer', 'patch'])], NOW);
+  const before = h.anchors('props');
+  h.log.length = 0;
+  await h.ex.restore({ bg: 'room' as BgId, cg: null, chars: [], props: [{ prop: 'glint' as PropId, rect: GLINT }] });
+  expect(h.anchors('props')).toEqual(before);
+  expect(h.log.filter((x) => /^(anchor|drop):/.test(x))).toEqual([]);
+  expect(h.log.filter((x) => /^(create|destroy):/.test(x))).toEqual(['destroy:props:drawer']);
+  h.ex.destroy();
+});
+
+test('executor: one prop at two anchors keeps both', async () => {
+  // The logical stage keys a placement by its anchor (`at ?? prop`), so one prop id at two anchors is two placements.
+  const h = harness();
+  await h.ex.apply([bg('room', 'cut'), props(['lamp', LAMP, 'room.lamp'], ['lamp', KEY, 'room.key'])], NOW);
+  expect(h.ex.snapshot().props.map((p) => p.at)).toEqual(['room.lamp', 'room.key']);
+  expect(h.anchors('props').map((x) => x.key)).toEqual(['room.lamp', 'room.key']);
+  expect(h.live('props').map((x) => x.key)).toEqual(['lamp', 'lamp']);
+  h.ex.destroy();
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Shots drawn from rigs (docs/plans/shots §5.1-5.2, §5.5, lane SH4): the plate and the drawn faces in the bg anchor.
+
+const mem = (file: string, frame: Box4, at: Box4): Member => ({ file: asId(file), frame, at });
+/** A face member of `shot` at `at`: rest `neutral` (talk), `smile` and `worried` (each a layer; talk where the shot has it). */
+function castMember(shot: string, c: string, at: Box4): CastRig & { char: CharId } {
+  const talkOf = (x: string): Member[] => (Object.hasOwn(ENTRIES, `talk/${shot}/${c}/${x}`) ? [mem(`talk/${shot}/${c}/${x}`, [0, 0, 40, 20], [at[0] + 40, at[1] + 140, 40, 20])] : []);
+  const motion = (x: string) => {
+    const f = `face/${shot}/${c}/${x}`;
+    return { blink: { half: mem(f, [0, 0, 1, 1], at), closed: mem(f, [1, 0, 1, 1], at) }, talk: talkOf(x), accent: mem(f, [2, 0, 1, 1], at) };
+  };
+  const expr = (x: string) => (Object.hasOwn(ENTRIES, `face/${shot}/${c}/${x}`) ? { [x]: { layer: mem(`face/${shot}/${c}/${x}`, [0, 40, at[2], at[3]], at), motion: motion(x) } } : {});
+  return {
+    char: c as CharId,
+    view: 'face',
+    face: { rest: 'neutral' as ExprId, exprs: { ['neutral' as ExprId]: { layer: null, motion: motion('neutral') }, ...expr('smile'), ...expr('worried') }, head: at },
+    body: { cx: 540, cy: 1300, rx: 200, ry: 600, rot: 0, feet: [540, 1900] },
+    headDepth: 0.5,
+    plateau: '',
+    plateauCoarse: '',
+    band: 40,
+    group: 0,
+    figure: null,
+    hair: [{ member: mem(`sheet/${shot}`, [0, 0, 200, 120], [at[0], at[1] - 60, 200, 120]), pivot: [at[0] + 100, at[1]] }],
+  };
+}
+const shotRig = (cast: ShotRig['cast']): ShotRig => ({ w: 1080, h: 2048, frame: 'two', focus: [540, 1024], cast, planes: [], ambient: [], depth: '' });
+const ALLY_AT: Box4 = [200, 520, 160, 200];
+const LAMP_RIG = shotRig([castMember('lamp', 'ally', ALLY_AT), castMember('lamp', 'stranger', [700, 500, 160, 200])]);
+const LAMP_RIGS: ReadonlyMap<BgId, ShotRig> = new Map([
+  ['lamp' as BgId, LAMP_RIG],
+  ['lamp_cu' as BgId, shotRig([castMember('lamp_cu', 'ally', [400, 600, 300, 380])])],
+]);
+const shotHarness = (): ReturnType<typeof harness> => harness(S390, quietLoop(), { rigs: () => LAMP_RIGS, half: () => false });
+/** The shot parts' nodes alive, in creation order. */
+const partNodes = (h: ReturnType<typeof harness>): string[] => h.liveNodes().filter((x) => x.role === 'node').map((x) => x.key);
+const drawLog = (h: ReturnType<typeof harness>): string[] => h.log.filter((x) => /^(anchor|node|create|destroy|drop):/.test(x));
+
+test("executor: a shot draws its plate and its cast's drawn faces in the bg anchor", async () => {
+  const h = shotHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  // The face of a shot chapter is in the snapshot without a show.
+  expect(h.ex.snapshot().chars).toEqual([{ char: 'ally', expr: 'smile', at: 'center' }]);
+  expect(drawLog(h)).toEqual(['anchor:bg:bg/lamp', 'create:bg:lamp', 'node:face:ally', 'create:bg:face/lamp/ally/smile', 'create:bg:sheet/lamp']);
+  // The stranger is at rest: the plate shows it, no group.
+  expect(partNodes(h)).toEqual(['face:ally']);
+  // The bg anchor sits at the rest framing, scaled; the plate and the members are in plate px inside it.
+  const f = restFraming(LAMP_RIG, S390, 2, false);
+  expect(one(h.anchors('bg')).p).toMatchObject({ x: f.x, y: f.y, scale: f.k, alpha: 1 });
+  const [plate, layer, hair] = h.live('bg');
+  expect(plate?.p).toMatchObject({ w: 1080, h: 2048 });
+  expect(layer?.p).toMatchObject({ x: 200, y: 520, w: 160, h: 200 });
+  expect(hair?.p).toMatchObject({ x: 200, y: 460, w: 200, h: 120 });
+  // Each member draws a frame of its record, not the whole file.
+  expect([layer?.tex, hair?.tex]).toEqual([{ url: '/assets/face_lamp_ally_smile.avif#0,40,160,200' }, { url: '/assets/sheet_lamp.avif#0,0,200,120' }]);
+  for (const x of [layer, hair]) {
+    expect(x === undefined ? [] : h.rolesAbove(x)).toEqual(['node', 'content', 'motion', 'depth', 'anchor', 'layer']);
+  }
+  expect(plate === undefined ? [] : h.rolesAbove(plate)).toEqual(['content', 'motion', 'depth', 'anchor', 'layer']);
+  h.ex.destroy();
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+  expect(h.registry.stats().live).toBe(0);
+});
+
+test("executor: a face change swaps only that character's groups", async () => {
+  const h = shotHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile'), face('stranger', 'smile')], NOW);
+  const stranger = h.liveNodes().filter((x) => x.key === 'face:stranger' || x.key === 'face/lamp/stranger/smile');
+  h.log.length = 0;
+  h.alphas.length = 0;
+  const swap = track(h.ex.apply([face('ally', 'worried')], NOW));
+  await flush();
+  advance(100);
+  await flush();
+  // K7: the new expression group fades in over the old one, which stays opaque; the stranger is not touched.
+  expect(partNodes(h)).toEqual(['face:ally', 'face:stranger', 'face:ally']);
+  const [, , fresh] = h.liveNodes().filter((x) => x.role === 'node');
+  expect(fresh?.p.alpha).toBeGreaterThan(0);
+  expect(fresh?.p.alpha).toBeLessThan(1);
+  advance(150);
+  await flush();
+  expect(swap.done).toBe(true);
+  // The old group left whole with all its sprites; the new one holds only the new expression's own set (O2).
+  expect(drawLog(h)).toEqual([
+    'node:face:ally',
+    'create:bg:face/lamp/ally/worried',
+    'create:bg:sheet/lamp',
+    'destroy:bg:face/lamp/ally/smile',
+    'destroy:bg:sheet/lamp',
+    'drop:face:ally',
+  ]);
+  expect(partNodes(h)).toEqual(['face:stranger', 'face:ally']);
+  expect(stranger.every((x) => x.alive)).toBe(true);
+  expect(h.alphas.filter((w) => w.key.includes('stranger'))).toEqual([]);
+  expect(h.releasedOf('face/lamp/ally/smile')).toBe(1);
+  expect(h.releasedOf('sheet/lamp')).toBe(0);
+  // Back to the rest: the group fades out and leaves; the plate shows the face.
+  await h.ex.apply([face('ally', 'neutral')], { instant: true });
+  expect(partNodes(h)).toEqual(['face:stranger']);
+  h.ex.destroy();
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+});
+
+test("executor: a cut destroys the old shot's layers", async () => {
+  const h = shotHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  h.log.length = 0;
+  const cut = track(h.ex.apply([bg('lamp_cu', 'cut')], NOW));
+  await flush();
+  // At once: the old root's parts, its plate and its anchor go; the new shot is built with the faces a bg keeps.
+  expect(cut.done).toBe(true);
+  expect(drawLog(h)).toEqual([
+    'destroy:bg:face/lamp/ally/smile',
+    'destroy:bg:sheet/lamp',
+    'drop:face:ally',
+    'destroy:bg:lamp',
+    'drop:bg/lamp',
+    'anchor:bg:bg/lamp_cu',
+    'create:bg:lamp_cu',
+    'node:face:ally',
+    'create:bg:face/lamp_cu/ally/smile',
+    'create:bg:sheet/lamp_cu',
+  ]);
+  expect(['bg/lamp', 'sheet/lamp', 'face/lamp/ally/smile'].map(h.releasedOf)).toEqual([1, 1, 1]);
+  // A dissolve to another shot: the new root over the old, which retires whole at the end.
+  h.log.length = 0;
+  const dissolve = track(h.ex.apply([bg('lamp', 'crossfade', 300)], NOW));
+  await flush();
+  advance(150);
+  expect(h.anchors('bg').map((x) => x.key)).toEqual(['bg/lamp_cu', 'bg/lamp']);
+  advance(200);
+  await flush();
+  expect(dissolve.done).toBe(true);
+  expect(h.anchors('bg').map((x) => x.key)).toEqual(['bg/lamp']);
+  expect(drawLog(h).filter((x) => /^(destroy|drop):/.test(x))).toEqual([
+    'destroy:bg:face/lamp_cu/ally/smile',
+    'destroy:bg:sheet/lamp_cu',
+    'drop:face:ally',
+    'destroy:bg:lamp_cu',
+    'drop:bg/lamp_cu',
+  ]);
+  h.ex.destroy();
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+});
+
+test("executor: restore draws the snapshot's faces", async () => {
+  const h = shotHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('stranger', 'smile')], NOW);
+  h.log.length = 0;
+  await h.ex.restore({ bg: 'lamp' as BgId, cg: null, chars: [{ char: 'ally' as CharId, expr: 'smile' as ExprId, at: 'center' }], props: [] });
+  // Instantly: the snapshot's face drawn, the stranger back at rest; the plate kept.
+  expect(partNodes(h)).toEqual(['face:ally']);
+  expect(drawLog(h)).toEqual([
+    'node:face:ally',
+    'create:bg:face/lamp/ally/smile',
+    'create:bg:sheet/lamp',
+    'destroy:bg:face/lamp/stranger/smile',
+    'destroy:bg:sheet/lamp',
+    'drop:face:stranger',
+  ]);
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  // A fresh executor restores the shot whole.
+  const r = shotHarness();
+  await r.ex.restore({ bg: 'lamp' as BgId, cg: null, chars: [{ char: 'ally' as CharId, expr: 'smile' as ExprId, at: 'center' }], props: [] });
+  expect(drawLog(r)).toEqual(['anchor:bg:bg/lamp', 'create:bg:lamp', 'node:face:ally', 'create:bg:face/lamp/ally/smile', 'create:bg:sheet/lamp']);
+  h.ex.destroy();
+  r.ex.destroy();
+});
+
+test('executor: a shot whose member sprite throws leaves no shot root', async () => {
+  // (a) The face layer throws; (b) the hair lock after it throws: neither the part nor the root stays.
+  for (const id of ['face/lamp/ally/smile', 'sheet/lamp']) {
+    const h = shotHarness();
+    throwOn(h, id);
+    await applyFailing(h, [scene('lamp', 'cut'), face('ally', 'smile')]);
+    expect(h.anchors('bg'), id).toEqual([]);
+    expect(h.liveNodes().map((x) => `${x.role}:${x.key}`), id).toEqual([]);
+    h.ex.destroy();
+    expect(h.liveNodes()).toEqual([]);
+  }
+});
+
+test('executor: a bg without a rig is drawn as before', async () => {
+  // The legacy pin: a shots dep whose rigs() is null draws exactly what no dep draws (ch1-ch3).
+  const run = async (h: ReturnType<typeof harness>): Promise<string[]> => {
+    await h.ex.apply([scene('cafe', 'cut'), show('ally', 'neutral', 'left', 'cut'), face('stranger', 'serious')], NOW);
+    await h.ex.apply([face('ally', 'worried'), props(['lamp', LAMP])], { instant: true });
+    await h.ex.apply([bg('street', 'crossfade', 300)], { instant: true });
+    await h.ex.restore({ ...h.ex.snapshot(), bg: 'cafe' as BgId });
+    const out = [...h.log, JSON.stringify(h.ex.snapshot())];
+    h.ex.destroy();
+    return out;
+  };
+  const legacy = await run(harness());
+  expect(legacy).toContain('create:chars:ally');
+  expect(await run(harness(S390, quietLoop(), { rigs: () => null, half: () => false }))).toEqual(legacy);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The face lifecycle (docs/plans/shots §5.2, lane SH4 C5): a failed file draws the rest; talk files held, never awaited.
+
+/** Whether the registry still has a live record of `id` (the executor is its only holder in these tests). */
+const liveIn = (h: ReturnType<typeof harness>, ids: readonly string[]): boolean[] => ids.map((id) => h.registry.current(asId(id)) !== null);
+
+test('executor: a face state whose sheet failed shows the rest face and logs a skip', async () => {
+  const h = shotHarness();
+  h.failLoad('sheet/lamp');
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  // The logical stage keeps the face; the stage shows the plate alone, which draws every face at rest: no group, and
+  // no layer without the hair locks the sheet carries.
+  expect(h.ex.snapshot().chars).toEqual([{ char: 'ally', expr: 'smile', at: 'center' }]);
+  expect(partNodes(h)).toEqual([]);
+  expect(drawLog(h)).toEqual(['anchor:bg:bg/lamp', 'create:bg:lamp']);
+  expect(h.skipped.map((e) => `${e.kind}:${e.id}`)).toEqual(['decode:sheet/lamp']);
+  // The same for a face file that failed: the stranger's smile is skipped, ally's (sheet and file live) is drawn.
+  const g = shotHarness();
+  g.failLoad('face/lamp/stranger/smile');
+  await g.ex.apply([scene('lamp', 'cut'), face('ally', 'smile'), face('stranger', 'smile')], NOW);
+  expect(partNodes(g)).toEqual(['face:ally']);
+  expect(g.skipped.map((e) => `${e.kind}:${e.id}`)).toEqual(['decode:face/lamp/stranger/smile']);
+  for (const x of [h, g]) {
+    x.ex.destroy();
+    expect(x.liveNodes()).toEqual([]);
+    expect(x.registry.stats().live).toBe(0);
+  }
+});
+
+test('executor: a cut whose plate fails draws no file of the new shot on the kept root', async () => {
+  // Review r1 I1: the new shot's plate fails, so the old root stays (the story goes on). Its rig also has the face's
+  // expression, but the slots hold the new shot's face file and sheet: another shot's files are not live on this root,
+  // so the face is drawn at rest. The cut, the dissolve and the dip share it.
+  for (const cmd of [bg('lamp_cu', 'cut'), bg('lamp_cu', 'crossfade', 300), bg('lamp_cu', 'fade', 300)]) {
+    const h = shotHarness();
+    await h.ex.apply([scene('lamp', 'cut')], NOW);
+    h.failLoad('bg/lamp_cu');
+    h.log.length = 0;
+    const b = track(h.ex.apply([cmd, face('ally', 'smile')], NOW));
+    for (let i = 0; i < 4; i += 1) {
+      await flush();
+      advance(200);
+    }
+    await flush();
+    const t = JSON.stringify(cmd);
+    expect(b.done, t).toBe(true);
+    expect(h.anchors('bg').map((x) => x.key), t).toEqual(['bg/lamp']);
+    expect(h.live('bg').map((x) => x.tex?.url), t).toEqual(['/assets/bg_lamp.avif']);
+    expect(partNodes(h), t).toEqual([]);
+    expect(drawLog(h), t).toEqual([]);
+    expect(h.skipped.map((e) => `${e.kind}:${e.id}`), t).toEqual(['decode:bg/lamp_cu']);
+    // The logical stage keeps the face and holds the target's files, so a later batch can retry the plate.
+    expect(h.ex.snapshot().chars, t).toEqual([{ char: 'ally', expr: 'smile', at: 'center' }]);
+    h.ex.destroy();
+    expect(h.liveNodes(), t).toEqual([]);
+    expect(h.registry.stats().live, t).toBe(0);
+  }
+  // The pin: a face the kept root already draws keeps its own files.
+  const g = shotHarness();
+  await g.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  g.failLoad('bg/lamp_cu');
+  g.log.length = 0;
+  await g.ex.apply([bg('lamp_cu', 'cut')], NOW);
+  expect(g.live('bg').map((x) => x.tex?.url)).toEqual([
+    '/assets/bg_lamp.avif',
+    '/assets/face_lamp_ally_smile.avif#0,40,160,200',
+    '/assets/sheet_lamp.avif#0,0,200,120',
+  ]);
+  expect(drawLog(g)).toEqual([]);
+  g.ex.destroy();
+  expect(g.liveNodes()).toEqual([]);
+  expect(g.registry.stats().live).toBe(0);
+});
+
+test('executor: a kept root draws no figure plane of another shot', async () => {
+  // Triage r2 F1: a figure plane is cut from the `sheet` slot too. The root's own sheet failed, so its figure plane is
+  // missing and every later draw retries it; the next shot's plate fails while that shot's sheet loads, so the kept
+  // root's `sheet` slot holds another shot's sheet, which is not this root's figure: no plane is drawn from it.
+  const at: Box4 = [100, 700, 400, 392];
+  const figured = (shot: string, c: string, head: Box4): CastRig & { char: CharId } => ({ ...castMember(shot, c, head), figure: mem(`sheet/${shot}`, [0, 120, 400, 392], at) });
+  const rigs: ReadonlyMap<BgId, ShotRig> = new Map([
+    ['lamp' as BgId, shotRig([figured('lamp', 'ally', ALLY_AT)])],
+    ['lamp_cu' as BgId, shotRig([figured('lamp_cu', 'ally', [400, 600, 300, 380])])],
+  ]);
+  const figureHarness = (): ReturnType<typeof harness> => harness(S390, quietLoop(), { rigs: () => rigs, half: () => false });
+  // The control: the same rig draws its own figure plane when its sheet loads, so the case below cannot pass because
+  // no figure plane is ever drawn.
+  const c = figureHarness();
+  await c.ex.apply([scene('lamp', 'cut')], NOW);
+  expect(c.live('bg').map((x) => x.tex?.url)).toEqual(['/assets/bg_lamp.avif', '/assets/sheet_lamp.avif#0,120,400,392']);
+  expect(partNodes(c)).toEqual(['figure:ally']);
+  c.ex.destroy();
+  expect(c.liveNodes()).toEqual([]);
+  expect(c.registry.stats().live).toBe(0);
+  const h = figureHarness();
+  h.failLoad('sheet/lamp');
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  expect(h.live('bg').map((x) => x.tex?.url)).toEqual(['/assets/bg_lamp.avif']);
+  h.failLoad('bg/lamp_cu');
+  h.log.length = 0;
+  const b = track(h.ex.apply([bg('lamp_cu', 'cut')], NOW));
+  await flush();
+  expect(b.done).toBe(true);
+  expect(h.anchors('bg').map((x) => x.key)).toEqual(['bg/lamp']);
+  expect(h.live('bg').map((x) => x.tex?.url)).toEqual(['/assets/bg_lamp.avif']);
+  expect(partNodes(h)).toEqual([]);
+  expect(drawLog(h)).toEqual([]);
+  expect(h.skipped.map((e) => `${e.kind}:${e.id}`)).toEqual(['decode:sheet/lamp', 'decode:bg/lamp_cu']);
+  h.ex.destroy();
+  expect(h.liveNodes()).toEqual([]);
+  expect(h.registry.stats().live).toBe(0);
+});
+
+test('executor: a face change releases the previous face and talk files after the transition', async () => {
+  const h = shotHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  const smile = ['face/lamp/ally/smile', 'talk/lamp/ally/smile'];
+  const worried = ['face/lamp/ally/worried', 'talk/lamp/ally/worried'];
+  // The face on stage holds its face file and its talk file (SH7 draws talk; SH4 draws no talk sprite).
+  expect(liveIn(h, smile)).toEqual([true, true]);
+  expect(h.live('bg').filter((x) => x.tex?.url.includes('/talk_') === true)).toEqual([]);
+  const swap = track(h.ex.apply([face('ally', 'worried')], NOW));
+  await flush();
+  advance(100);
+  await flush();
+  // K7 mid-way: the old group still shows, and the old files are still held beside the new ones.
+  expect(swap.done).toBe(false);
+  expect(liveIn(h, [...smile, ...worried])).toEqual([true, true, true, true]);
+  advance(150);
+  await flush();
+  expect(swap.done).toBe(true);
+  // After the K7 phases only the new expression's files are held; the old ones were released once each.
+  expect(liveIn(h, [...smile, ...worried])).toEqual([false, false, true, true]);
+  expect(smile.map((id) => h.releasedOf(id))).toEqual([1, 1]);
+  // Back to the rest: the face file goes, the rest's talk file is held in its place.
+  await h.ex.apply([face('ally', 'neutral')], { instant: true });
+  expect(liveIn(h, [...worried, 'talk/lamp/ally/neutral'])).toEqual([false, false, true]);
+  h.ex.destroy();
+  expect(h.registry.stats().live).toBe(0);
+});
+
+test('executor: a talk file is taken without being awaited', async () => {
+  const h = shotHarness();
+  const go = h.deferLoad('talk/lamp/ally/smile');
+  const b = track(h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW));
+  await flush();
+  // The batch finished with its talk file still loading: it was requested, never awaited.
+  expect(b.done).toBe(true);
+  expect(h.loadsOf('talk/lamp/ally/smile')).toBe(1);
+  expect(partNodes(h)).toEqual(['face:ally']);
+  expect(h.skipped).toEqual([]);
+  // Settling later draws nothing and holds it for the stage.
+  go();
+  await flush();
+  expect(liveIn(h, ['talk/lamp/ally/smile'])).toEqual([true]);
+  expect(h.live('bg').filter((x) => x.tex?.url.includes('/talk_') === true)).toEqual([]);
+  h.ex.destroy();
+  expect(h.registry.stats().live).toBe(0);
+});
+
+test('executor: a figure plane and a drawn face keep their sprites in their own groups', async () => {
+  // Triage r3 F1: a figured member whose face is drawn. The figure plane and the face's hair locks are both cut from
+  // the `sheet` slot; the plane lives only in its own group, under its member's face, and the expression group holds
+  // only that expression's layer and the member's hair locks (RULINGS 273 O2).
+  const at: Box4 = [100, 700, 400, 392];
+  const figured = (shot: string, c: string, head: Box4): CastRig & { char: CharId } => ({ ...castMember(shot, c, head), figure: mem(`sheet/${shot}`, [0, 120, 400, 392], at) });
+  const rigs: ReadonlyMap<BgId, ShotRig> = new Map([['lamp' as BgId, shotRig([figured('lamp', 'ally', ALLY_AT)])]]);
+  const h = harness(S390, quietLoop(), { rigs: () => rigs, half: () => false });
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  expect(drawLog(h)).toEqual(['anchor:bg:bg/lamp', 'create:bg:lamp', 'node:figure:ally', 'create:bg:sheet/lamp', 'node:face:ally', 'create:bg:face/lamp/ally/smile', 'create:bg:sheet/lamp']);
+  const parts = h.liveNodes().filter((x) => x.role === 'node');
+  expect(parts.map((x) => [x.key, h.drawOrder(x).map((s) => s.tex?.url)])).toEqual([
+    ['figure:ally', ['/assets/sheet_lamp.avif#0,120,400,392']],
+    ['face:ally', ['/assets/face_lamp_ally_smile.avif#0,40,160,200', '/assets/sheet_lamp.avif#0,0,200,120']],
+  ]);
+  // The figure plane draws under its member's face.
+  expect(parts.map((x) => [x.key, x.p.z])).toEqual([
+    ['figure:ally', 1],
+    ['face:ally', 2],
+  ]);
+  h.ex.destroy();
+  expect(h.liveNodes().map((x) => `${x.role}:${x.key}`)).toEqual([]);
+  expect(h.registry.stats().live).toBe(0);
+});
+
+test('executor: members draw back to front across members', async () => {
+  // Triage r4 M4b: a shot's cast is listed back to front, and every member's parts are siblings in the root's content,
+  // so the member term of the z alone keeps the back member's face under the front member's figure plane, and a back
+  // member's new expression group under the front member's face after a swap (a z tie falls back to creation order).
+  const at: Box4 = [100, 700, 400, 392];
+  const figured = (shot: string, c: string, head: Box4): CastRig & { char: CharId } => ({ ...castMember(shot, c, head), figure: mem(`sheet/${shot}`, [0, 120, 400, 392], at) });
+  const rigs: ReadonlyMap<BgId, ShotRig> = new Map([['lamp' as BgId, shotRig([figured('lamp', 'ally', ALLY_AT), figured('lamp', 'stranger', [700, 500, 160, 200])])]]);
+  const h = harness(S390, quietLoop(), { rigs: () => rigs, half: () => false });
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile'), face('stranger', 'smile')], NOW);
+  const parts = h.liveNodes().filter((x) => x.role === 'node');
+  expect(parts.map((x) => [x.key, x.p.z])).toEqual([
+    ['figure:ally', 1],
+    ['face:ally', 2],
+    ['figure:stranger', 3],
+    ['face:stranger', 4],
+  ]);
+  // What draws: the root's content in z order.
+  const [root] = h.anchors('bg');
+  expect(root === undefined ? [] : h.drawOrder(h.contentOf(root)).map((x) => `${x.role}:${x.key}`)).toEqual([
+    'sprite:lamp',
+    'node:figure:ally',
+    'node:face:ally',
+    'node:figure:stranger',
+    'node:face:stranger',
+  ]);
+  h.ex.destroy();
+  expect(h.liveNodes()).toEqual([]);
+  expect(h.registry.stats().live).toBe(0);
+  // The back member swaps its face (K7): its new group is created last and still draws under the front member's face.
+  const s = shotHarness();
+  await s.ex.apply([scene('lamp', 'cut'), face('ally', 'smile'), face('stranger', 'smile')], NOW);
+  const swap = track(s.ex.apply([face('ally', 'worried')], NOW));
+  await flush();
+  advance(250);
+  await flush();
+  expect(swap.done).toBe(true);
+  const [kept] = s.anchors('bg');
+  expect(kept === undefined ? [] : s.drawOrder(s.contentOf(kept)).map((x) => `${x.role}:${x.key}`)).toEqual([
+    'sprite:lamp',
+    'node:face:ally',
+    'node:face:stranger',
+  ]);
+  s.ex.destroy();
+  expect(s.liveNodes()).toEqual([]);
+  expect(s.registry.stats().live).toBe(0);
+});
+
+test('executor: a rebind re-creates a shot root and its drawn face from the cached frames', async () => {
+  // Cut §2.3, pre-merge V-L (RULINGS 289): after a rebuild the root comes back with its rig and its faces (not the
+  // legacy cover placement), every part on the same texture objects its records keep; no load, no release.
+  const h = shotHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  const files = ['bg/lamp', 'sheet/lamp', 'face/lamp/ally/smile'];
+  const before = h.live('bg');
+  const beforeTex = before.map((x) => x.tex);
+  const beforeBox = before.map(h.worldBox);
+  const loads = files.map(h.loadsOf);
+  const fresh = recordingStage(S390, h.freed);
+  h.ex.rebind(fresh.adapter);
+  const after = fresh.live('bg');
+  expect(after.map((x) => x.key)).toEqual(['lamp', 'face/lamp/ally/smile', 'sheet/lamp']);
+  // The very same texture objects: the plate's record texture and the two cached frames (no new cut, no load).
+  after.forEach((x, i) => expect(x.tex).toBe(beforeTex[i]));
+  expect(after.map(fresh.worldBox)).toEqual(beforeBox);
+  expect(after.map(fresh.worldAlpha)).toEqual([1, 1, 1]);
+  const f = restFraming(LAMP_RIG, S390, 2, false);
+  expect(one(fresh.anchors('bg')).p).toMatchObject({ x: f.x, y: f.y, scale: f.k, alpha: 1 });
+  expect(fresh.liveNodes().filter((x) => x.role === 'node').map((x) => [x.key, x.p.z])).toEqual([['face:ally', 2]]);
+  expect(files.map(h.loadsOf)).toEqual(loads);
+  expect(files.map(h.releasedOf)).toEqual([0, 0, 0]);
+  // From now on the new stage is driven: a face back to its rest drops the group there.
+  await h.ex.apply([face('ally', 'neutral')], { instant: true });
+  expect(fresh.liveNodes().filter((x) => x.role === 'node')).toEqual([]);
+  h.ex.destroy();
+  expect(fresh.liveNodes()).toEqual([]);
+  expect(h.registry.stats().live).toBe(0);
+});
+
+for (const id of ['face/lamp/ally/smile', 'sheet/lamp', 'bg/lamp']) {
+  test(`executor: a reacquire after a failed revive of ${id} redraws the shot's face on a new record`, async () => {
+    // Cut §2.3, pre-merge V-L (RULINGS 289): a part over an ended record leaves the root at once (no sprite over a
+    // freed texture) and is drawn again on the re-taken record; only the ended file loads again.
+    const files = ['face/lamp/ally/smile', 'sheet/lamp', 'bg/lamp'];
+    const h = shotHarness();
+    await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+    await failOnRevive(h, id);
+    h.ex.reacquire();
+    expect(h.live('bg').filter((x) => x.tex !== null && h.freed.has(x.tex)).map((x) => x.key)).toEqual([]);
+    await flush();
+    expect(h.live('bg').map((x) => x.key)).toEqual(['lamp', 'face/lamp/ally/smile', 'sheet/lamp']);
+    expect(h.live('bg').filter((x) => x.tex !== null && h.freed.has(x.tex)).map((x) => x.key)).toEqual([]);
+    expect(partNodes(h)).toEqual(['face:ally']);
+    expect(h.loadsOf(id)).toBe(2);
+    for (const other of files.filter((x) => x !== id)) {
+      expect(h.loadsOf(other), other).toBe(1);
+    }
+    h.ex.destroy();
+    expect(h.liveNodes()).toEqual([]);
+    expect(h.registry.stats().live).toBe(0);
+  });
+}

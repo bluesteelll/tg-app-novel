@@ -16,6 +16,7 @@ import { GLOBALS_PATH, LINT_CODES, tagsOf } from './lint.ts';
 import type { Finding, LintCode, SourceChapter } from './lint.ts';
 import { MECHANIC_STORIES } from './mechanics/index.ts';
 import type { StoryList } from './mechanics/index.ts';
+import type { Shot } from './shots/list.ts';
 import type { VarLiteral } from './world.ts';
 
 /** A player-facing line with its ID: `text` is as displayed (speaker prefix stripped, ink escapes resolved). */
@@ -112,16 +113,19 @@ function commandsOf(tags: readonly RawTag[], assets: AssetIndex): StagingCommand
   return tags.filter((t) => !t.text.includes('{')).flatMap((t) => parseTags([t.text], assets).commands);
 }
 
-/** The asset a command names, if any. */
-function assetOf(c: StagingCommand): AssetId | null {
+/** The asset a command names, if any; `shot`: the chapter is a shot chapter (STAGING-DSL §14.1). */
+function assetOf(c: StagingCommand, shot: boolean): AssetId | null {
   // The brands are earned by parseTags, which accepts only ids the catalog lists.
   switch (c.kind) {
     case 'bg':
     case 'scene':
       return `bg/${c.bg}` as AssetId;
     case 'show':
-    case 'face': // on a sprite stage a face shows its expression's sprite (the runtime ensures it from the manifest)
       return `char/${c.char}/${c.expr}` as AssetId;
+    case 'face':
+      // On a sprite stage a face shows its expression's sprite (the runtime ensures it from the manifest). On a shot
+      // chapter it draws from the shot in effect, which only the step flow knows: its files are the shot pass's.
+      return shot ? null : (`char/${c.char}/${c.expr}` as AssetId);
     case 'cg':
       return c.cg === null ? null : (`cg/${c.cg}` as AssetId);
     case 'bgm':
@@ -495,6 +499,21 @@ function roomStage(room: Room): AssetId[] {
 }
 
 /**
+ * A shot chapter (STAGING-DSL §14.1): a literal `bg:` / `scene:` tag of its files or a room of its world names a shot
+ * with a cast. The tags name a superset of the shots the step flow reaches (`shots/lint.ts` `castShotOf`), so every
+ * chapter the shot pass calls a shot chapter is one here; one it does not reaches no cast shot and has no `face:`.
+ */
+function isShotChapter(parsed: readonly Parsed[], world: WorldRef, shots: readonly Shot[], assets: AssetIndex): boolean {
+  const cast = new Set<string>(shots.flatMap((s) => (s.cast.length > 0 ? [s.id] : [])));
+  if (cast.size === 0) {
+    return false;
+  }
+  const rooms = world.kind === 'ok' ? Object.values(world.body.sections).flatMap((s) => Object.values(s.rooms).map((r) => r.bg)) : [];
+  const tags = parsed.flatMap(({ lines }) => lines.flatMap((l) => commandsOf(tagsOf(l.cls), assets)));
+  return rooms.some((bg) => cast.has(bg)) || tags.some((c) => (c.kind === 'bg' || c.kind === 'scene') && cast.has(c.bg));
+}
+
+/**
  * The graph's world input (D6) from the decoded world, the one construction the story gate and its tests share: a world
  * that did not decode skips the world-dependent graph codes. The body carries the decoded `mods`: a section's module
  * data names knots the graph must see (RULINGS 212 Q3).
@@ -512,7 +531,8 @@ export function worldRef(w: WorldInput | undefined): WorldRef {
  * `ink/entry` (the entry divert names no knot), and the yield codes against `world` (default none): `puzzle/unknown`,
  * `puzzle/then-unknown`, `puzzle/in-section`, `explore/unknown-section`, `explore/event-return`,
  * `explore/event-escape`. A `then=` knot is a successor; an explore yield's section knots are reachability edges only
- * (never in the preload `next`, PUZZLES-PLAN §8), seeded with their rooms' stage.
+ * (never in the preload `next`, PUZZLES-PLAN §8), seeded with their rooms' stage. `shots` (default none): the declared
+ * shots of story/shots.json; on a chapter that names one with a cast, a face names no asset (STAGING-DSL §14.1).
  */
 export function buildGraph(input: {
   chapter: SourceChapter;
@@ -520,11 +540,13 @@ export function buildGraph(input: {
   sources: ReadonlyMap<string, string>;
   assets: AssetIndex;
   world?: WorldRef;
+  shots?: readonly Shot[];
 }): { graph: ChapterGraph; findings: Finding[]; facts: GraphFacts } {
   const { chapter, assets } = input;
   const world: WorldRef = input.world ?? { kind: 'none' };
   const parsed: Parsed[] = input.files.map((file) => ({ file, lines: classify(input.sources.get(file) ?? '') }));
   const findings: Finding[] = [];
+  const shot = isShotChapter(parsed, world, input.shots ?? [], assets);
 
   // Pass 1: knots (the first definition of a name wins; a repeat is the compiler's error), their stitches and
   // labels, and every name a divert could reach as a variable.
@@ -586,7 +608,7 @@ export function buildGraph(input: {
       }
       const node = knot === null ? undefined : built.get(knot);
       const commands = commandsOf(tagsOf(cls), assets);
-      for (const a of commands.map(assetOf)) {
+      for (const a of commands.map((c) => assetOf(c, shot))) {
         if (a !== null) {
           node?.assets.add(a);
         }
