@@ -783,6 +783,23 @@ test('controller: dispose releases room holders', () => {
   expect([p.view.items, p.view.docs, p.view.lock]).toEqual([[], [], null]);
 });
 
+test('controller: a controller disposed on a walked path answers Back with false', () => {
+  const h = harness(manor());
+  h.c.enter(sec('manor'), EMPTY_WORLD_STATE);
+  h.c.roomShown();
+  h.c.dispatch(tap('hall.to_study'));
+  h.c.roomShown();
+  expect(h.c.state().room).toBe('study');
+  expect(h.c.back()).toBe(true); // live: Back walks to the hall
+  h.c.dispatch(tap('hall.to_study')); // the path is [hall] again
+  h.c.dispose();
+  const end = h.log.length;
+  // Back's walk branch checks `dead` too (R2-C): a disposed controller with a path neither moves nor logs.
+  expect(h.c.back()).toBe(false);
+  expect(h.c.state().room).toBe('study');
+  expect(h.log.slice(end)).toEqual([]);
+});
+
 test('controller: leave releases room holders', () => {
   const h = harness(manor());
   h.c.enter(sec('manor'), at('study', 'manor', { open: [k('hall.gate')] }));
@@ -944,6 +961,9 @@ test('controller: neighbour preloads stay under the steady cap', async () => {
   h.c.dispatch(tap('c.to_b'));
   await shown('b');
   await record('c -> b');
+  // X13: 31.3 MiB with two neighbours and two of the left room's state images, 20.9 MiB with a close-up open; never
+  // above the steady cap. Checked before the exact steps, so an over-cap regression is red on this line.
+  expect(Math.max(...steps.map((s) => s.bytes))).toBeLessThanOrEqual(STEADY_CAP_BYTES);
   const room = BG_BYTES + 4 * PROP_BYTES;
   expect(steps).toEqual([
     // + 1 B per live record: each keeps its 1 B fixture file (MEMORY-PLAN M2).
@@ -955,9 +975,6 @@ test('controller: neighbour preloads stay under the steady cap', async () => {
     { step: 'close-up open', live: ['bg/c', 'cg/box'], bytes: room + BG_BYTES + 6 },
     { step: 'c -> b', live: ['bg/a', 'bg/b', 'bg/c'], bytes: room + 2 * BG_BYTES + 2 * PROP_BYTES + 9 },
   ]);
-  // X13: 31.3 MiB with two neighbours and two of the left room's state images, 20.9 MiB with a close-up open; never
-  // above the steady cap.
-  expect(Math.max(...steps.map((s) => s.bytes))).toBeLessThanOrEqual(STEADY_CAP_BYTES);
   expect(sc.errors).toEqual([]);
 });
 
@@ -1301,6 +1318,8 @@ test('controller: zoom preloads stay under the steady cap and admit every neighb
   expect(h.c.back()).toBe(true);
   await shown('b');
   await record('c -> b');
+  // X13: never above the steady cap. Checked before the exact steps, so an over-cap regression is red on this line.
+  expect(Math.max(...steps.map((s) => s.bytes))).toBeLessThanOrEqual(STEADY_CAP_BYTES);
   const room = BG_BYTES + 4 * PROP_BYTES;
   expect(steps).toEqual([
     // + 1 B per live record (each keeps its 1 B fixture file).
@@ -1312,7 +1331,6 @@ test('controller: zoom preloads stay under the steady cap and admit every neighb
     // a's bg is fetched again (Q9) and two of c's props fit after the bgs.
     { step: 'c -> b', live: ['bg/a', 'bg/b', 'bg/c'], bytes: room + 2 * BG_BYTES + 2 * PROP_BYTES + 9 },
   ]);
-  expect(Math.max(...steps.map((s) => s.bytes))).toBeLessThanOrEqual(STEADY_CAP_BYTES);
   expect(sc.errors).toEqual([]);
 });
 
