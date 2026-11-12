@@ -763,6 +763,32 @@ test('preload: an empty window releases every window holder', async () => {
   expect(h.log).toContain('release preload:win:prop/s1');
 });
 
+// Step 1 keeps every holder of an id that stays in need ∪ warm ∪ hope ∪ eventRoom, under either tag.
+test('preload: ids that stay in the window keep their holders across a swap', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b'], hope: ['prop/s1'] }));
+  await h.settle();
+  const before = h.log.length;
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b'], hope: ['prop/s1'] }));
+  await h.settle();
+  expect(h.log.slice(before).filter((l) => l.startsWith('release '))).toEqual([]);
+});
+
+// A record whose only holder was a dropped one ends: a kept warm file held but not decoded, or a kept hope file,
+// would be fetched again on every swap.
+test('preload: a held-only warm file and a hoped file kept across a swap are fetched once', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/cu_a', 'scene:a');
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b', 'bg/cu_c'], hope: ['prop/s1'] }));
+  await h.settle();
+  expect(['bg/cu_b', 'bg/cu_c', 'prop/s1'].map(h.state)).toEqual(['live', 'held', 'live']);
+  h.s.want(stage({ need: ['bg/cu_a'], warm: ['bg/cu_b', 'bg/cu_c'], hope: ['prop/s1'] }));
+  await h.settle();
+  expect([h.fetchesOf('bg/cu_c'), h.fetchesOf('prop/s1')]).toEqual([1, 1]);
+});
+
 test('preload: a released in-flight fetch is aborted', () => {
   const h = harness('deferred', { hold: true });
   h.s.setChapter(wm);
