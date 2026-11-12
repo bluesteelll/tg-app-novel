@@ -9,8 +9,9 @@
 // exists.
 import { expect, test } from 'vitest';
 
-import { MECHANIC_LINTS } from '../../scripts/story/mechanics/index.ts';
+import { MECHANIC_LINTS, MECHANIC_TEXTS } from '../../scripts/story/mechanics/index.ts';
 import type { WorldLintInput } from '../../scripts/story/mechanics/index.ts';
+import type { PlacePaths } from '../../scripts/story/mechanics/texts.ts';
 import { checkWorld } from '../../scripts/story/softlock.ts';
 import { RESUME_STATE_CAP, sectionScope } from '../explore/reduce.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
@@ -273,6 +274,14 @@ test("combine: a recipe's say and product are its toasts", () => {
   expect(kernelEffects(reduce(w, at('hall', held('vase', 'pin')), combine('pin', 'vase')).effects)).toEqual([{ kind: 'got', gift: { item: 'lamp' }, at: null }, DIRTY]);
 });
 
+test("story: the combine text walker walks every recipe's say", () => {
+  // The gate's text walk (IDs, locales, `world/text-unwalked`) sees each recipe's say, in source order.
+  const src = source(hall([recipe('shard', 'glue', 'vase', { say: txt('a') }), recipe('vase', 'pin', 'lamp', { say: txt('b') })], ['pin', 'lamp']));
+  const walker = MECHANIC_TEXTS.combine;
+  const nowhere: PlacePaths = { room: () => '', hotspot: () => '', item: () => '', slot: () => '' }; // a say sits at no place
+  expect(walker === null ? null : walker(src, src.mods.combine, nowhere).map((t) => t.path)).toEqual(['recipes.0.say', 'recipes.1.say']);
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // The sections and the proof path
 
@@ -315,6 +324,14 @@ test("combine: a recipe's section is its inputs' section, through a chain in any
   ]);
 });
 
+test('combine: a two-recipe chain in reverse source order lints clean and gives its section both products', () => {
+  // The chain as deep as its recipes: the lamp's recipe resolves only on the pass after the vase's, the fixed point's
+  // last one.
+  const raw = twoSections([recipe('vase', 'wire', 'lamp'), recipe('shard', 'glue', 'vase')]);
+  expect(lint(source(raw))).toEqual([]);
+  expect([...ownScope(kernel(source(raw)), S).items].sort()).toEqual(['fuse', 'glue', 'lamp', 'shard', 'vase', 'wire']);
+});
+
 test("combine: a section's search enumerates its recipes only while it is current", () => {
   const w = kernel(source(twoSections([recipe('shard', 'glue', 'vase')])));
   const combines = (s: WorldState): unknown[] => successors(w, s).flatMap((x) => (x.step.kind === 'combine' ? [x.step] : []));
@@ -327,6 +344,12 @@ test("combine: a section's search enumerates its recipes only while it is curren
   expect(reduce(w, inT, combine('shard', 'glue')).state.held).toEqual(['vase']);
   // Under a pending knot, and with no current section: no edge.
   expect([combines({ ...inS, pendingStory: ['hall_voice' as KnotName] }), combines({ ...inS, section: null })]).toEqual([[], []]); // a fixture knot name
+});
+
+test('combine: a pair with two recipes is one search edge', () => {
+  // Both recipes of the pair are S's, the first gated off: the pair is listed once, as its first matching recipe runs.
+  const w = kernel(source(hall([recipe('shard', 'glue', 'vase', { when: { held: 'map' } }), recipe('glue', 'shard', 'urn')], ['map', 'urn'])));
+  expect(successors(w, at('hall', held('shard', 'glue'))).flatMap((x) => (x.step.kind === 'combine' ? [x.step] : []))).toEqual([{ kind: 'combine', a: 'glue', b: 'shard' }]);
 });
 
 test('combine: the soft-lock proof takes a combine edge', () => {
