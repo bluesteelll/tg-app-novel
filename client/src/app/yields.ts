@@ -352,6 +352,13 @@ export function createYields(h: YieldsHost): Yields {
   let panels: readonly PanelKind[] = [];
   /** The async steps the effects of one dispatch asked for, run in order by the intent that dispatched. */
   const jobs: Array<() => Promise<void>> = [];
+  /**
+   * The room batch that moved the bar, while it runs (RULINGS 308): its synchronous run flipped `explore.inView` over a
+   * shown layer (a zoom into a view, a zoom-out or a leave out of one), so the leave control came or went and the bar
+   * re-centred under the finger. A bar tap then goes through `h.tap` and only completes that batch (`barTap`). Cleared
+   * at that batch's end (by its own job only) and on dispose.
+   */
+  let barShift: RoomJob | null = null;
 
   // -------------------------------------------------------------------------------------------------------------
   // The cue channel (engine plan §8.1): one bus per session; the stage's slot once its chunk is in
@@ -752,9 +759,14 @@ export function createYields(h: YieldsHost): Yields {
     shown = room;
     // §6.3 (GM4u): the bar's leave control shows in a view, by the controller's own rule over its state (`inView`), in
     // the same flush as the layer and the room's hotspots, so it never shows over a room the layer is not showing.
-    explore.inView = world.section !== null && world.room !== null && own(w.mods.view.of, world.room) !== undefined;
+    const inView = world.section !== null && world.room !== null && own(w.mods.view.of, world.room) !== undefined;
+    barShift = explore.layer !== null && explore.inView !== inView ? j : null;
+    explore.inView = inView;
     explore.layer = inEvent() ? null : layerComponent; // an onEnter event hides the rooms it moved into
     await held(visual, audio, { box: j.move.box, atStart });
+    if (barShift === j) {
+      barShift = null;
+    }
     if (dead) {
       return;
     }
@@ -1309,6 +1321,19 @@ export function createYields(h: YieldsHost): Yields {
   // -------------------------------------------------------------------------------------------------------------
   // The explore layer (K48)
 
+  /**
+   * A tap on the bar's Inventory or Reveal (RULINGS 308): while a batch that moved the bar runs (`barShift`), a player
+   * intent (D7), so a tap on a control that slid under the finger completes that batch and opens nothing; otherwise at
+   * once, as every other batch and the rooms at rest have it (a slow room load never swallows the tap).
+   */
+  const barTap = (fn: () => void): void => {
+    if (barShift === null) {
+      fn();
+    } else {
+      void h.tap(async () => fn());
+    }
+  };
+
   const layer: ExploreLayerActions = {
     ontap: (key) => {
       void h.tap(() => dispatchNow({ kind: 'tap', hotspot: key })); // the outcome is on screen
@@ -1317,19 +1342,23 @@ export function createYields(h: YieldsHost): Yields {
       void h.tap(() => dispatchNow({ kind: 'insert', hotspot: key, item })); // the outcome is on screen
     },
     oninventory: () => {
-      explore.panel = { kind: 'inventory' };
-      screens.push({ kind: 'inventory' });
+      barTap(() => {
+        explore.panel = { kind: 'inventory' };
+        screens.push({ kind: 'inventory' });
+      });
     },
     onread: (doc) => {
       explore.panel = { kind: 'doc', doc };
       screens.push({ kind: 'document' });
     },
     onreveal: () => {
-      if (controller !== null) {
-        controller.reveal();
-        // The reveal's own cue (§8.1 point 10): no box, the stage plays it over the stage.
-        bus.emit(cueEvent({ kind: 'ui-state', name: 'reveal', panel: null, item: null }, null));
-      }
+      barTap(() => {
+        if (controller !== null) {
+          controller.reveal();
+          // The reveal's own cue (§8.1 point 10): no box, the stage plays it over the stage.
+          bus.emit(cueEvent({ kind: 'ui-state', name: 'reveal', panel: null, item: null }, null));
+        }
+      });
     },
     onclose: () => {
       screens.back(); // the overlay's own close is a Back press; screensChanged follows it
@@ -1374,6 +1403,7 @@ export function createYields(h: YieldsHost): Yields {
     explore.panel = null;
     explore.selected = null;
     explore.inView = false;
+    barShift = null;
   };
 
   return {

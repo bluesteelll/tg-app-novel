@@ -2197,6 +2197,100 @@ test('yields: the screens diff emits panel-open and panel-close', async () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
+// The bar's taps during a batch (RULINGS 307, 308): through `h.tap` only while a batch moves the bar
+
+/**
+ * Game's `tap` as D7 has it (`game.ts`), installed on the rig's host: with an intent in flight a tap completes its
+ * batch (here: releases the held one) and returns it; otherwise it runs `fn` as the intent, from a microtask, until it
+ * settles. Counts the completions.
+ */
+function d7Tap(r: Rig): () => number {
+  let busy: Promise<void> | null = null;
+  let completions = 0;
+  r.host.tap = (fn) => {
+    if (busy !== null) {
+      completions += 1;
+      r.release();
+      return busy;
+    }
+    const p = Promise.resolve().then(fn);
+    const clear = (): void => {
+      if (busy === tracked) {
+        busy = null;
+      }
+    };
+    const tracked: Promise<void> = p.then(clear, clear);
+    busy = tracked;
+    return p;
+  };
+  return () => completions;
+}
+
+/** Releases every held batch, one at a time, until the scene is at rest. */
+async function atRest(r: Rig): Promise<void> {
+  for (let i = 0; i < 6; i += 1) {
+    r.release();
+    await settle();
+  }
+}
+
+/** What the bar's taps left: the room, the flag, the panel, the overlays, the panel and reveal cues since `mark`. */
+const barState = (r: Rig, mark: number): unknown[] => [
+  roomOf(r),
+  r.explore.inView,
+  r.explore.panel,
+  r.vm.screens.overlays.map((s) => s.kind),
+  r.cues.slice(mark).flatMap((e) => (e.cue.kind !== 'ui-state' ? [] : e.cue.name === 'reveal' ? ['ui-state:reveal'] : e.cue.name === 'panel-open' ? [`panel-open:${e.cue.panel}`] : [])),
+];
+
+test('yields: a bar tap during a view change completes it and opens nothing', async () => {
+  const r = rig({ world: viewWorld(), late: true });
+  const completions = d7Tap(r);
+  await inLateHall(r);
+  r.yields.layer.ontap(key('hall.to_study'));
+  await atRest(r);
+  expect([roomOf(r), r.explore.inView, completions()]).toEqual(['study', false, 0]);
+  // The zoom into the desk, held: the leave control has just come under the finger, so Inventory and Reveal only
+  // complete the zoom (D7).
+  let mark = r.cues.length;
+  r.yields.layer.ontap(key('study.to_desk'));
+  await settle();
+  r.yields.layer.oninventory();
+  r.yields.layer.onreveal();
+  await settle();
+  expect([...barState(r, mark), completions()]).toEqual(['desk', true, null, [], [], 2]);
+  // The zoom-out by Back, held: the control has just gone.
+  mark = r.cues.length;
+  r.screens.back();
+  await settle();
+  r.yields.layer.oninventory();
+  await settle();
+  expect([...barState(r, mark), completions()]).toEqual(['study', false, null, [], [], 3]);
+  // At rest the bar opens at once.
+  mark = r.cues.length;
+  r.yields.layer.oninventory();
+  expect([...barState(r, mark), completions()]).toEqual(['study', false, { kind: 'inventory' }, ['inventory'], ['panel-open:inventory'], 3]);
+  r.yields.dispose();
+});
+
+test('yields: a bar tap during an ordinary walk opens at once', async () => {
+  const r = rig({ world: viewWorld(), late: true });
+  const completions = d7Tap(r);
+  await inLateHall(r);
+  // The walk into the study, held on its load: the bar did not move, so a slow load never swallows the tap.
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_study'));
+  await settle();
+  r.yields.layer.oninventory();
+  expect([...barState(r, mark), completions()]).toEqual(['study', false, { kind: 'inventory' }, ['inventory'], ['panel-open:inventory'], 0]);
+  // The batch was still running (waiting on its load, its move not yet played); released, it ends as usual.
+  expect(keysOf(r, mark).filter((k) => k === 'ui-state:waiting' || k === 'ui-state:waited' || k.startsWith('move:'))).toEqual(['ui-state:waiting']);
+  await atRest(r);
+  expect(keysOf(r, mark).filter((k) => k === 'ui-state:waited' || k.startsWith('move:'))).toEqual(['ui-state:waited', 'move:walk']);
+  r.yields.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
 // GM3p: the puzzle cues (engine plan §8.1 "The frame's flags and its ends", point 11; §8.6 `frameShown`)
 
 const PIECES = 'pieces' as PuzzleLocalId;
