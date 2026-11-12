@@ -2290,6 +2290,61 @@ test('yields: a bar tap during an ordinary walk opens at once', async () => {
   r.yields.dispose();
 });
 
+// RULINGS 308's "while the layer was already shown": a batch that flips `inView` under a hidden layer had no bar on
+// screen, so nothing slid under the finger and its bar taps open at once, its load-wait included.
+
+test('yields: a bar tap during a resume into a view opens at once', async () => {
+  const r = rig({ world: viewWorld() });
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.to_study'));
+  await settle();
+  r.yields.layer.ontap(key('study.to_desk'));
+  await settle();
+  const inDesk = r.yields.world();
+  r.yields.dispose();
+  // A fresh session resumes into the desk: its room batch flips `inView` to true with no layer shown before it.
+  const x = rig({ world: viewWorld(), late: true });
+  const completions = d7Tap(x);
+  x.yields.restore(inDesk, null, { kind: 'explore', section: MANOR });
+  let resumed = false;
+  const resuming = x.host.tap(() => x.yields.onYield({ kind: 'explore', section: MANOR })).then(() => {
+    resumed = true;
+  });
+  await settle();
+  const mark = x.cues.length;
+  x.yields.layer.oninventory();
+  expect([...barState(x, mark), completions(), resumed]).toEqual(['desk', true, { kind: 'inventory' }, ['inventory'], ['panel-open:inventory'], 0, false]);
+  await atRest(x);
+  await resuming;
+  x.yields.dispose();
+});
+
+test('yields: a bar tap during a resume out of a view opens at once', async () => {
+  const r = rig({ world: viewWorld(), late: true });
+  const completions = d7Tap(r);
+  await inLateHall(r);
+  r.yields.layer.ontap(key('hall.to_study'));
+  await atRest(r);
+  const inStudy = r.yields.world();
+  r.yields.layer.ontap(key('study.to_desk'));
+  await atRest(r);
+  expect([roomOf(r), r.explore.inView, completions()]).toEqual(['desk', true, 0]);
+  // A live-session resume (a return to a save) into the study: `restore` hides the layer and keeps `inView` true, so
+  // the resume's room batch flips it to false under a hidden layer.
+  r.yields.restore(inStudy, null, { kind: 'explore', section: MANOR });
+  let resumed = false;
+  const resuming = r.host.tap(() => r.yields.onYield({ kind: 'explore', section: MANOR })).then(() => {
+    resumed = true;
+  });
+  await settle();
+  const mark = r.cues.length;
+  r.yields.layer.oninventory();
+  expect([...barState(r, mark), completions(), resumed]).toEqual(['study', false, { kind: 'inventory' }, ['inventory'], ['panel-open:inventory'], 0, false]);
+  await atRest(r);
+  await resuming;
+  r.yields.dispose();
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // GM3p: the puzzle cues (engine plan §8.1 "The frame's flags and its ends", point 11; §8.6 `frameShown`)
 
