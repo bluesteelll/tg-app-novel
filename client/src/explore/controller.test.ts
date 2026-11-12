@@ -644,6 +644,24 @@ test('controller: Back in a view of a view leaves one level', () => {
   expect(h.c.state().room).toBe('p');
 });
 
+test('controller: a controller disposed in a view answers Back with false', () => {
+  const h = harness(zoom());
+  h.c.enter(sec('zoom'), at('v', 'zoom'));
+  h.c.roomShown();
+  const calls: boolean[] = [];
+  h.c.onPath((walkable) => calls.push(walkable));
+  // Live, the view offers Back to its parent whatever the path.
+  expect(calls).toEqual([true]);
+  h.c.dispose();
+  // Dispose keeps the state, so the room is still the view: only the dead check keeps Back out of the view branch (the
+  // contract's false), and the call reaches no scene call, no effect and no path report.
+  const end = h.log.length;
+  expect(h.c.back()).toBe(false);
+  expect(h.c.state().room).toBe('v');
+  expect(h.log.slice(end)).toEqual([]);
+  expect(calls).toEqual([true]);
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // C3: the `room:<id>` holders (X13, the cut addendum): releases inside the call, requests once the room is shown
 
