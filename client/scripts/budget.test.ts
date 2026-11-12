@@ -1932,6 +1932,16 @@ describe('budget assets', () => {
       valueBytes: STEADY_CAP_BYTES - 10 * u + 5 * u,
       note: 'bg + 0 props + max(neighbour bg + props, close-up); preloads 2 of 4 neighbours (on tap: s1, s2)',
     });
+    // (F) Two orders reach the least count with different refusals (triage r1 F1; R's own set leaves 10u, exits c 3u,
+    // a 6u, b 6u): exit order, "from c" and "from a" refuse b, "from b" refuses a. The first order in enumeration (exit
+    // order, then arrived from each neighbour in exit order) that reaches the least count names the room on tap.
+    const tie = inputsWith({ 'bg/r': sized('bg/r', STEADY_CAP_BYTES - 10 * u), 'bg/c': sized('bg/c', 3 * u), 'bg/a': sized('bg/a', 6 * u), 'bg/b': sized('bg/b', 6 * u) });
+    const cab = { [m('r')]: { bg: 'bg/r', to: [m('c'), m('a'), m('b')] }, [m('c')]: { bg: 'bg/c', to: back('r') }, [m('a')]: { bg: 'bg/a', to: back('r') }, [m('b')]: { bg: 'bg/b', to: back('r') } };
+    expect(roomRow(tie, cab, 'r')).toMatchObject({
+      status: 'PASS',
+      valueBytes: STEADY_CAP_BYTES - 10 * u + 6 * u,
+      note: 'bg + 0 props + max(neighbour bg + props, close-up); preloads 2 of 3 neighbours (on tap: b)',
+    });
   });
 
   test('budget: a loop prop atlas is held to its own limits', () => {
