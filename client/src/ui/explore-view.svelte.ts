@@ -70,6 +70,8 @@ export type ExploreLayerActions = {
   ondeselect: () => void;
   /** A hotspot tapped while an item is selected: `use {item, target}` (§6.1 "Action"), instead of a tap. */
   onuse: (item: ItemId, target: HotspotKey) => void;
+  /** Another ribbon slot tapped while an item is selected: `combine {a: the selected, b: the tapped}` (§6.2 UI). */
+  oncombine: (a: ItemId, b: ItemId) => void;
   /**
    * The view bar's leave control (engine plan §6.3, GM4u): the root back's own press, so in a view it zooms out one
    * level. Required: it is the second way out of a view if the root-back registration regresses.
@@ -93,6 +95,7 @@ export function forwardLayer(get: () => ExploreLayerActions | undefined): Explor
     onselect: (item) => get()?.onselect(item),
     ondeselect: () => get()?.ondeselect(),
     onuse: (item, target) => get()?.onuse(item, target),
+    oncombine: (a, b) => get()?.oncombine(a, b),
     onleaveview: () => get()?.onleaveview(),
   };
 }

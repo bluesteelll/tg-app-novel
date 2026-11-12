@@ -89,7 +89,7 @@
       </button>
     {/each}
     {#if !covered}
-      <Ribbon {lang} items={view.items} selected={view.selected ?? null} onselect={actions.onselect} ondeselect={actions.ondeselect} />
+      <Ribbon {lang} items={view.items} selected={view.selected ?? null} onselect={actions.onselect} ondeselect={actions.ondeselect} oncombine={actions.oncombine} />
     {/if}
     <div class="bar">
       {#if view.inView}

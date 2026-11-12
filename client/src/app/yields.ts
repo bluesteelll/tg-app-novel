@@ -318,8 +318,8 @@ export const coreCue = (name: CoreCueName, at: HotspotKey | null, item: ItemId |
 const cause = (verb: CauseVerb, at: HotspotKey | null = null, item: ItemId | null = null): Cause => ({ verb, at, item, via: null });
 
 /**
- * The cause of a dispatched action's cues; a use acts at its target with its item (§6.1); a lock puzzle's run acts at its
- * lock, so its cues land on the lock's box.
+ * The cause of a dispatched action's cues; a use acts at its target with its item (§6.1); a combine acts at no hotspot
+ * with the selected item (§6.2); a lock puzzle's run acts at its lock, so its cues land on the lock's box.
  */
 const causeOf = (a: SectionAction, w: WorldPublic | null): Cause =>
   a.kind === 'tap'
@@ -328,7 +328,9 @@ const causeOf = (a: SectionAction, w: WorldPublic | null): Cause =>
       ? cause('insert', a.hotspot, a.item)
       : a.kind === 'use'
         ? cause('use', a.target, a.item)
-        : cause(
+        : a.kind === 'combine'
+          ? cause('combine', null, a.a)
+          : cause(
             a.kind === 'puzzle-ended' && a.outcome === 'solved' ? 'solve' : 'fail',
             'puzzle' in a && w !== null ? (worldIndex(w).puzzleLock.get(a.puzzle) ?? null) : null,
           );
@@ -1333,7 +1335,8 @@ export function createYields(h: YieldsHost): Yields {
       screens.back(); // the overlay's own close is a Back press; screensChanged follows it
     },
     onselect: (item) => {
-      // Another item: the old one settles back first; the selected one again: off.
+      // The ribbon calls it with nothing selected (a tap on the selected item is `ondeselect`, on another one
+      // `oncombine`); the settle-back and the `again` check keep it total for any other caller.
       const again = explore.selected === item;
       deselect();
       if (!again) {
@@ -1347,6 +1350,13 @@ export function createYields(h: YieldsHost): Yields {
       void h.tap(async () => {
         deselect();
         await dispatchNow({ kind: 'use', item, target });
+      }); // the outcome is on screen
+    },
+    oncombine: (a, b) => {
+      // One block, as a use: the selection settles back, then the combine's writes and cues (§6.2 "Action").
+      void h.tap(async () => {
+        deselect();
+        await dispatchNow({ kind: 'combine', a, b });
       }); // the outcome is on screen
     },
     onleaveview: back, // the BackButton's own press (§6.3): one level up in a view, Back's walk elsewhere

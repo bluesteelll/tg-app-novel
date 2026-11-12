@@ -1960,6 +1960,85 @@ function useWorld(): WorldPublic {
   return { ...toPublic(r.value), mods: r.value.mods, version: '3333333333333333' };
 }
 
+/** The hall gives the shard, the glue and the coin; the shard and the glue make the vase, with a say. */
+function combineWorld(): WorldPublic {
+  const raw = {
+    format: 1,
+    items: {
+      shard: { name: txt('Осколок'), desc: txt('d'), glyph: 'key' },
+      glue: { name: txt('Клей'), desc: txt('d'), glyph: 'key' },
+      coin: { name: txt('Монета'), desc: txt('d'), glyph: 'coin' },
+      vase: { name: txt('Ваза'), desc: txt('d'), glyph: 'key' },
+    },
+    docs: {},
+    puzzles: {},
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: { hall: { bg: 'hall', title: txt('Hall'), onEnter: [], hotspots: [take('shard', 'shard', null), take('glue', 'glue', null), take('coin', 'coin', null)] } },
+      },
+    },
+    recipes: [{ a: 'shard', b: 'glue', gives: 'vase', say: txt('Ваза склеена.') }],
+  };
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the combine fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods, version: '4444444444444444' };
+}
+
+/** The hall of `combineWorld` with each of `takes` taken. */
+async function holding(r: Rig, ...takes: string[]): Promise<void> {
+  await inHall(r);
+  for (const t of takes) {
+    r.yields.layer.ontap(key(`hall.${t}`));
+    await settle();
+  }
+}
+
+/** The note toasts a look or a gift shows, as [key, message]. */
+const notes = (r: Rig): Array<[string, string]> => r.vm.toasts.flatMap((e): Array<[string, string]> => (e.kind === 'note' && (e.key === 'got' || e.key === 'look') ? [[e.key, e.message]] : []));
+
+test('yields: a ribbon item tapped onto another combines them', async () => {
+  const r = rig({ world: combineWorld() });
+  await holding(r, 'shard', 'glue');
+  const shard = 'shard' as ItemId;
+  r.yields.layer.onselect(shard);
+  const mark = r.cues.length;
+  r.yields.layer.oncombine(shard, 'glue' as ItemId);
+  await settle();
+  // The inputs leave the hands for the product, the selection with them.
+  expect([r.yields.world().held, r.yields.world().used, r.explore.selected]).toEqual([['vase'], ['shard', 'glue'], null]);
+  // Its toasts: the product's name, then the say.
+  expect(notes(r)).toEqual([
+    ['got', 'Ваза'],
+    ['look', 'Ваза склеена.'],
+  ]);
+  // One block: the selection settles, then the writes' fact cues (no module cue: a run has none, 08b).
+  expect(keysOf(r, mark)).toEqual(['ui-state:deselect', 'fact:held:removed', 'fact:held:removed', 'fact:used:added', 'fact:used:added', 'fact:held:added']);
+  r.yields.dispose();
+});
+
+test('yields: a refused combine shakes both items and writes nothing', async () => {
+  const r = rig({ world: combineWorld() });
+  await holding(r, 'shard', 'coin');
+  const before = r.yields.world();
+  const toasts = r.vm.toasts;
+  r.yields.layer.onselect('shard' as ItemId);
+  const mark = r.cues.length;
+  r.yields.layer.oncombine('shard' as ItemId, 'coin' as ItemId);
+  await settle();
+  // Nothing written, no toast; the selection settles, then the selected item shakes and the tapped one with it.
+  expect([r.yields.world(), r.explore.selected, r.vm.toasts]).toEqual([before, null, toasts]);
+  expect(r.cues.slice(mark).map((e) => [keyOf(e.cue), e.cue.kind === 'module' || e.cue.kind === 'ui-state' ? e.cue.item : null, e.box])).toEqual([
+    ['ui-state:deselect', 'shard', null],
+    ['module:combine:refused', 'shard', null],
+    ['module:combine:refused-with', 'coin', null],
+  ]);
+  r.yields.dispose();
+});
+
 /** The ribbon's selection cues the bus carried from the `from`-th cue on: [name, item]. */
 const selections = (r: Rig, from: number): Array<[string, string | null]> =>
   r.cues.slice(from).flatMap((e): Array<[string, string | null]> => (e.cue.kind === 'ui-state' && (e.cue.name === 'select' || e.cue.name === 'deselect') ? [[e.cue.name, e.cue.item]] : []));
