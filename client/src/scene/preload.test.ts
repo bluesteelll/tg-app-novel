@@ -1002,6 +1002,20 @@ test("preload: a refused need evicts the next chapter's holders", async () => {
   expect(h.registry.stats().bytes).toBe(CU + mib(10.169));
 });
 
+test("preload: a refused need never evicts a next chapter's tag that holds a need id", async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  await h.visible('bg/cu_b', 'scene:b');
+  h.s.preload('next:ch7', ['prop/x6', 'bg/close'].map(asId));
+  await h.settle();
+  expect(['prop/x6', 'bg/close'].map(h.state)).toEqual(['live', 'live']);
+  // 29.349 MiB; CU C would make 42.052. Step 6 (c) spares the tag (it holds x6, a need id): CU C is deferred.
+  h.s.want(stage({ need: ['prop/x6', 'bg/cu_c'] }));
+  await h.settle();
+  expect(['bg/cu_c', 'bg/close'].map(h.state)).toEqual(['none', 'live']);
+  expect(h.log).not.toContain('release next:ch7');
+});
+
 test('preload: next-chapter preloads queue after hope', async () => {
   const h = harness('deferred', { hold: true });
   h.s.setChapter(wm);
@@ -1071,6 +1085,65 @@ test('preload: an onEnter event whose room only the window holds keeps it', asyn
   // 38.527 MiB + the face file: the hall goes, the cellar stays (28.898 MiB).
   expect(['face/f', 'bg/hall', 'bg/cellar', 'prop/cellar'].map(h.state)).toEqual(['live', 'none', 'live', 'live']);
   expect(h.registry.stats().bytes).toBe(mib(11.262) + mib(3.3) + CU + mib(1.633));
+});
+
+test("preload: step 6 (d) releases the window's event-room holders before EN's tags that hold the room", async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('room:hall', [asId('bg/hall')]);
+  h.s.preload('state:hall', [asId('prop/hall')]);
+  await h.settle();
+  await h.visible('bg/cu_a', 'scene:a');
+  // 27.265 MiB; x6 (6.477) is refused. (d): the window's holders free nothing while EN holds the room, then EN's most
+  // recent tag, state:hall, frees enough; room:hall stays.
+  h.s.want(stage({ need: ['bg/cu_a', 'prop/x6'], eventRoom: ['bg/hall', 'prop/hall'] }));
+  await h.settle();
+  expect(h.state('prop/x6')).toBe('live');
+  expect(h.log).toContain('release state:hall');
+  expect(h.log).not.toContain('release room:hall');
+  expect(h.s.stats().rooms).toEqual(['room:hall']);
+});
+
+test('preload: step 6 (d) never evicts an EN tag of the event room that holds a need id', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('room:hall', [asId('bg/hall')]);
+  h.s.preload('state:hall', ['prop/hall', 'prop/p3'].map(asId));
+  await h.settle();
+  await h.visible('bg/cu_a', 'scene:a');
+  // 30.265 MiB; x6 (6.477) is refused. (d): the window's holders, then room:hall; state:hall holds p3, a need id.
+  h.s.want(stage({ need: ['bg/cu_a', 'prop/p3', 'prop/x6'], eventRoom: ['bg/hall', 'prop/hall'] }));
+  await h.settle();
+  expect(h.state('prop/x6')).toBe('live');
+  expect(h.log).toContain('release room:hall');
+  expect(h.log).not.toContain('release state:hall');
+  expect(h.state('prop/hall')).toBe('live');
+});
+
+test('preload: a hope item evicted for a need queues again and is admitted while it fits', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: ['bg/wide', 'prop/s1'] }));
+  await h.settle();
+  await h.visible('bg/cu_a', 'scene:a');
+  // 22.972 MiB; CU B would make 35.675. Step 6 (a), the last first: s1 frees too little, the wide enough. Both queue
+  // again: s1 fits, the wide does not.
+  h.s.want(stage({ need: ['bg/cu_a', 'bg/cu_b'], hope: ['bg/wide', 'prop/s1'] }));
+  await h.settle();
+  expect(['bg/cu_b', 'bg/wide', 'prop/s1'].map(h.state)).toEqual(['live', 'none', 'live']);
+});
+
+test('preload: an event-room item evicted for a need queues again and is admitted while it fits', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.want(stage({ eventRoom: ['bg/hall', 'prop/s1'] }));
+  await h.settle();
+  await h.visible('bg/cu_a', 'scene:a');
+  // 24.065 MiB; CU B would make 36.768. Step 6 (d), the last first: s1 frees too little, the hall enough. Both queue
+  // again: s1 fits, the hall does not.
+  h.s.want(stage({ need: ['bg/cu_a', 'bg/cu_b'], eventRoom: ['bg/hall', 'prop/s1'] }));
+  await h.settle();
+  expect(['bg/cu_b', 'bg/hall', 'prop/s1'].map(h.state)).toEqual(['live', 'none', 'live']);
 });
 
 test('preload: a warm decode that does not fit evicts nothing', async () => {
