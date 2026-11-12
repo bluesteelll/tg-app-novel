@@ -22,7 +22,7 @@ import type {
 } from '../../src/story/catalog.ts';
 import type { AssetId, ChapterId } from '../../src/story/staging.ts';
 import { decodeWorldSource } from '../../src/world/decode.ts';
-import type { StoryUsage } from '../story/emit.ts';
+import type { StoryRoomUsage, StoryUsage } from '../story/emit.ts';
 import type { ShotUsage } from '../story/shots/usage.ts';
 import { decodeLook, decodeShotRigs } from '../../src/story/shots.ts';
 import { decodeLoops } from '../../src/story/shots.ts';
@@ -68,13 +68,8 @@ const SHA256_RE = /^[0-9a-f]{64}$/;
 
 /** `<ch>/<section>/<room>` (PUZZLES-PLAN "Build outputs"). */
 export type RoomKey = string;
-/** A room's images (PUZZLES-PLAN `budget/room-set`); `neighbours` are the neighbour rooms' bg ids. */
-export type RoomUsage = {
-  bg: AssetId;
-  props: readonly AssetId[];
-  closeups: readonly AssetId[];
-  neighbours: readonly AssetId[];
-};
+/** A room's images (PUZZLES-PLAN `budget/room-set`): the story tool's own shape, so the two cannot drift. */
+export type RoomUsage = StoryRoomUsage;
 /** What one chapter names: ink tags, its world, and (with a shot list) every shot file it needs (shots §2.6). */
 export type ChapterUsage = { ink: readonly AssetId[]; world: readonly AssetId[]; shots?: readonly AssetId[] };
 export type AssetUsage = {

@@ -84,17 +84,25 @@ export type ServerMeta = {
     >
   >;
 };
-/** A room's images (PUZZLES-PLAN `budget/room-set`): its bg, its props, its locks' closeups, its neighbours' bgs. */
+/**
+ * A room's images (PUZZLES-PLAN `budget/room-set`): its bg, its props, its locks' closeups, its neighbours' bgs (sorted,
+ * one per plate), and its neighbour rooms: the keys of the rooms its exits lead to, by the explore controller's rule
+ * (`neighbours()`, D9: distinct, in hotspot order, a locked exit included, a story exit and the room itself not), so
+ * the budget can price the transition pair and model the preload order (engine plan §6.3).
+ */
 export type StoryRoomUsage = {
   bg: AssetId;
   props: readonly AssetId[];
   closeups: readonly AssetId[];
   neighbours: readonly AssetId[];
+  neighbourRooms: readonly string[];
 };
 /**
  * server/content/build/usage.json: per chapter, the union of its knots' assets and per knot the K9 index; for a
  * chapter with a world also `worldAssets` (every asset its world names), and `rooms` keyed `<ch>/<section>/<room>`
  * when some room exists. Both are written only then, and optional on read: a pre-LW3 usage.json still decodes (D4).
+ * A room's `neighbourRooms` is required: a usage.json written before it is refused, never read as a room with no
+ * neighbour (a smaller `room-set`); `npm run story` writes it again.
  */
 export type StoryUsage = {
   chapters: Record<
@@ -344,7 +352,11 @@ function worldAssets(w: KernelWorld): AssetId[] {
   return assetSet(ids);
 }
 
-/** Per room `<ch>/<section>/<room>`: its bg, every image it can show, its locks' closeups, its neighbours' bgs. */
+/**
+ * Per room `<ch>/<section>/<room>`: its bg, every image it can show, its locks' closeups, its neighbours' bgs and its
+ * neighbour rooms. The neighbour rooms restate `neighbours()` of `client/src/explore/controller.ts` (the order the
+ * controller preloads them in); same-section only, which on a built world is every exit to a room.
+ */
 function roomUsage(ch: ChapterId, w: KernelWorld): Array<[string, StoryRoomUsage]> {
   return Object.entries(w.sections).flatMap(([sid, s]) =>
     Object.entries(s.rooms).map(([rid, room]): [string, StoryRoomUsage] => {
@@ -354,12 +366,21 @@ function roomUsage(ch: ChapterId, w: KernelWorld): Array<[string, StoryRoomUsage
         const closeup = puzzle === null || !Object.hasOwn(w.puzzles, puzzle) ? null : (w.puzzles[puzzle]?.closeup ?? null);
         return closeup === null ? [] : [`cg/${closeup}`];
       });
-      const neighbours = room.hotspots.flatMap((h) => {
+      const neighbours: string[] = [];
+      const neighbourRooms: string[] = [];
+      for (const h of room.hotspots) {
         const to = h.kind === 'exit' && 'room' in h.to ? h.to.room : null;
         const next = to === null || !Object.hasOwn(s.rooms, to) ? undefined : s.rooms[to]; // a cross-section exit is `world/cross-section-exit`
-        return next === undefined ? [] : [`bg/${next.bg}`];
-      });
-      const usage = { bg: `bg/${room.bg}` as AssetId, props: assetSet(props), closeups: assetSet(closeups), neighbours: assetSet(neighbours) };
+        if (to === null || next === undefined) {
+          continue;
+        }
+        neighbours.push(`bg/${next.bg}`);
+        const key = `${ch}/${sid}/${to}`;
+        if (to !== rid && !neighbourRooms.includes(key)) {
+          neighbourRooms.push(key);
+        }
+      }
+      const usage = { bg: `bg/${room.bg}` as AssetId, props: assetSet(props), closeups: assetSet(closeups), neighbours: assetSet(neighbours), neighbourRooms };
       return [`${ch}/${sid}/${rid}`, usage];
     }),
   );
@@ -578,7 +599,7 @@ function decodeRooms(raw: unknown, chapters: Readonly<Record<string, unknown>>, 
       issues.push(`${path}: not an object`);
       continue;
     }
-    keysExactly(room, ['bg', 'props', 'closeups', 'neighbours'], `${path}.`, issues);
+    keysExactly(room, ['bg', 'props', 'closeups', 'neighbours', 'neighbourRooms'], `${path}.`, issues);
     const bg = room['bg'];
     if (typeof bg !== 'string' || !inNamespace('bg')(bg)) {
       issues.push(`${path}.bg: ${JSON.stringify(bg) ?? 'undefined'} is not a bg asset id`);
@@ -588,7 +609,16 @@ function decodeRooms(raw: unknown, chapters: Readonly<Record<string, unknown>>, 
       props: list(room['props'], `${path}.props`, issues, inNamespace('prop'), 'a prop asset id') as AssetId[], // by the pattern
       closeups: list(room['closeups'], `${path}.closeups`, issues, inNamespace('cg'), 'a cg asset id') as AssetId[], // by the pattern
       neighbours: list(room['neighbours'], `${path}.neighbours`, issues, inNamespace('bg'), 'a bg asset id') as AssetId[], // by the pattern
+      neighbourRooms: list(room['neighbourRooms'], `${path}.neighbourRooms`, issues, (s) => ROOM_KEY_RE.exec(s)?.[1] === ch, `a room key of ${ch}`),
     };
+  }
+  // Once every room is known: a neighbour room names a room of this very file (the budget reads its images there).
+  for (const [key, room] of Object.entries(rooms)) {
+    room.neighbourRooms.forEach((n, i) => {
+      if (!Object.hasOwn(rooms, n)) {
+        issues.push(`rooms.${key}.neighbourRooms.${i}: ${JSON.stringify(n)} is not a room of usage.json`);
+      }
+    });
   }
   return rooms;
 }

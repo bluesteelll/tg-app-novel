@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { brotliCompressSync, constants } from 'node:zlib';
 
-import type { AssetCatalog, AssetEntry, AssetManifest, ChapterListEntry, ChapterMeta, CoverManifest, ImageEntry } from '../src/story/catalog.ts';
+import type { AssetCatalog, AssetEntry, AssetManifest, ChapterListEntry, ChapterMeta, CoverManifest, ImageEntry, Result } from '../src/story/catalog.ts';
 import type { AssetId, ChapterId, PropId } from '../src/story/staging.ts';
 import {
   PIXI_ENV_SRCS,
@@ -22,7 +22,7 @@ import {
   urlPath,
   worldHasSections,
 } from './assets/manifest.ts';
-import type { AssetUsage } from './assets/manifest.ts';
+import type { AssetUsage, RoomUsage } from './assets/manifest.ts';
 import { imageKind } from './assets/placeholder.ts';
 import type { ImageKind } from './assets/placeholder.ts';
 import { decodeChapterList, decodeStoryUsage } from './story/emit.ts';
@@ -1095,7 +1095,77 @@ export function imgIds(manifest: AssetManifest, bg: AssetId): AssetId[] {
   return Object.hasOwn(manifest.assets, sheet) ? [bg, sheet] : [bg];
 }
 
-/** PUZZLES-PLAN `budget/room-set`: per room, img(bg) + props + max(largest neighbour img, largest close-up). */
+/**
+ * R's neighbour rooms in exit order, each with its usage; else the first key usage.json lacks, which only a hand-built
+ * input can name (the decoder refuses one): its row FAILs rather than pass smaller.
+ */
+function neighbourRoomsOf(rooms: AssetUsage['rooms'], room: RoomUsage): Result<Array<readonly [string, RoomUsage]>, string> {
+  const out: Array<readonly [string, RoomUsage]> = [];
+  for (const k of room.neighbourRooms) {
+    const n = Object.hasOwn(rooms, k) ? rooms[k] : undefined;
+    if (n === undefined) {
+      return { ok: false, error: k };
+    }
+    out.push([k, n]);
+  }
+  return { ok: true, value: out };
+}
+
+/** One neighbour room of R for the preload note: its key, the room keys its own exits lead to, its images img(n). */
+type PreloadNeighbour = { key: string; to: readonly string[]; ids: readonly AssetId[] };
+
+/**
+ * Engine plan §6.3 "Preload (m2)": how many of R's neighbour rooms the registry admits as preloads once R's own
+ * records are in (`roomShown` asks for R's bg and images, then each neighbour's bg). Each neighbour's img(n) is admitted
+ * first-fit while used + need <= `cap` (the registry refuses a preload over the steady cap, never evicts for one, and
+ * goes on), an id already in the set at no byte (a live or queued id joins). The order is the worst the runtime meets:
+ * plain exit order (a first entry), or, arrived from t, t and the neighbours R shares with t first (the move keeps R's
+ * neighbours, so they are live at arrival), then the rest in exit order. `onTap` lists, in exit order, the rooms the
+ * first order reaching the least count refuses. Characters on stage and a keep set wider than that are not modelled.
+ */
+function neighbourPreloads(own: ReadonlySet<AssetId>, near: readonly PreloadNeighbour[], bytes: ReadonlyMap<AssetId, number>, cap: number): { k: number; n: number; onTap: string[] } {
+  const refusedIn = (order: readonly PreloadNeighbour[]): ReadonlySet<string> => {
+    const live = new Set(own);
+    let used = [...live].reduce((s, id) => s + (bytes.get(id) ?? 0), 0);
+    const refused = new Set<string>();
+    for (const n of order) {
+      const need = [...new Set(n.ids)].filter((id) => !live.has(id)).reduce((s, id) => s + (bytes.get(id) ?? 0), 0);
+      if (used + need <= cap) {
+        n.ids.forEach((id) => live.add(id));
+        used += need;
+      } else {
+        refused.add(n.key);
+      }
+    }
+    return refused;
+  };
+  const arrivedFrom = (t: PreloadNeighbour): PreloadNeighbour[] => {
+    const first = [t, ...near.filter((n) => n !== t && t.to.includes(n.key))];
+    return [...first, ...near.filter((n) => !first.includes(n))];
+  };
+  let worst = refusedIn(near);
+  for (const t of near) {
+    const refused = refusedIn(arrivedFrom(t));
+    if (refused.size > worst.size) {
+      worst = refused;
+    }
+  }
+  return { k: near.length - worst.size, n: near.length, onTap: near.filter((n) => worst.has(n.key)).map((n) => n.key) };
+}
+
+/** `; preloads <k> of <n> neighbours`, and the rooms that load on tap by their last key segment. */
+function preloadNote(p: { k: number; n: number; onTap: readonly string[] }): string {
+  const onTap = p.onTap.map((key) => key.slice(key.lastIndexOf('/') + 1));
+  return `; preloads ${p.k} of ${p.n} neighbours${onTap.length > 0 ? ` (on tap: ${onTap.join(', ')})` : ''}`;
+}
+
+/**
+ * PUZZLES-PLAN `budget/room-set`, engine plan §6.3 "Gates" (O5): per room R, img(R) + props(R) + max(the transition
+ * pair, the largest close-up), the pair being the largest img(n) + props(n) over R's neighbour rooms n: a crossfade has
+ * both rooms' sets on stage (`syncProps` fades both). Every image term goes through `imgIds` (reconcile r1); a close-up
+ * is a CG, never a key of it. An id R and a neighbour share is counted in both terms: an upper bound. A summed row
+ * notes how many neighbours preload (`neighbourPreloads`): a report, never a FAIL (decision table O5).
+ */
 function roomRows(a: AssetInputs, limits: Limits): Row[] {
   const rows: Row[] = [];
   for (const [key, room] of Object.entries(a.rooms).sort(([x], [y]) => (x < y ? -1 : 1))) {
@@ -1106,19 +1176,29 @@ function roomRows(a: AssetInputs, limits: Limits): Row[] {
       rows.push(failed(name, limits.roomSet, `no manifest for ${ch}`, 'MiB'));
       continue;
     }
+    const near = neighbourRoomsOf(a.rooms, room);
+    if (!near.ok) {
+      rows.push(failed(name, limits.roomSet, `neighbour room ${near.error} not in usage.json`, 'MiB'));
+      continue;
+    }
+    const neighbourRooms = near.value.map(([, n]) => n);
     const lacking: string[] = [];
     const sum = (ids: readonly AssetId[]): number => [...decodedOf(manifest.value, ids, lacking).values()].reduce((s, b) => s + b, 0);
     const max = (ids: readonly AssetId[]): number => Math.max(0, ...decodedOf(manifest.value, ids, lacking).values());
     const img = (bg: AssetId): AssetId[] => imgIds(manifest.value, bg);
-    const neighbour = Math.max(0, ...room.neighbours.map((n) => sum(img(n))));
-    const total = sum(img(room.bg)) + sum(room.props) + Math.max(neighbour, max(room.closeups));
-    const sheets = [room.bg, ...room.neighbours].some((bg) => img(bg).length > 1);
-    const note = `bg + ${room.props.length} props + max(neighbour bg, close-up)${sheets ? ' (+ sheets)' : ''}`;
-    rows.push(
-      lacking.length > 0
-        ? failed(name, limits.roomSet, `not in ${ch}'s manifest: ${lacking.join(', ')}`, 'MiB')
-        : measured(name, total, limits.roomSet, note, 'MiB'),
-    );
+    const pair = Math.max(0, ...neighbourRooms.map((n) => sum(img(n.bg)) + sum(n.props)));
+    const total = sum(img(room.bg)) + sum(room.props) + Math.max(pair, max(room.closeups));
+    const sheets = [room.bg, ...neighbourRooms.map((n) => n.bg)].some((bg) => img(bg).length > 1);
+    const note = `bg + ${room.props.length} props + max(neighbour bg + props, close-up)${sheets ? ' (+ sheets)' : ''}`;
+    if (lacking.length > 0) {
+      rows.push(failed(name, limits.roomSet, `not in ${ch}'s manifest: ${lacking.join(', ')}`, 'MiB'));
+      continue;
+    }
+    const own = new Set([...img(room.bg), ...room.props]);
+    const preloadNeighbours = near.value.map(([k, n]) => ({ key: k, to: n.neighbourRooms, ids: img(n.bg) }));
+    const bytes = decodedOf(manifest.value, [...own, ...preloadNeighbours.flatMap((n) => n.ids)], []); // every id summed above
+    const preloads = neighbourPreloads(own, preloadNeighbours, bytes, STEADY_CAP_BYTES);
+    rows.push(measured(name, total, limits.roomSet, `${note}${preloadNote(preloads)}`, 'MiB'));
   }
   const sectioned = a.chapters.filter((c) => c.world?.hasSections === true);
   for (const c of sectioned.filter((ch) => !Object.keys(a.rooms).some((key) => key.startsWith(`${ch.id}/`)))) {
@@ -1185,7 +1265,9 @@ function transferHalfRow(c: ChapterInputs, limits: Limits): Row {
 
 /**
  * First-load to the first line, per story (STORIES-PLAN "Budgets and validation"): the head of every chain (a free
- * chapter that no `next` names). The JS is entry + engine closures; PENDING while the engine source is absent.
+ * chapter that no `next` names). The JS is entry + engine closures; PENDING while the engine source is absent. The
+ * chapter's files are those `loadFree` awaits (`client/src/story/chapters.ts`): story, meta, manifest, the public world
+ * when the chapter has one, and the en table (RULINGS 172).
  */
 function firstLoadRows(dist: BudgetInputs, a: AssetInputs, limits: Limits): Row[] {
   const sizes = new Map(dist.files.map((f) => [f.path, f.brBytes]));
@@ -1210,6 +1292,9 @@ function firstLoadRows(dist: BudgetInputs, a: AssetInputs, limits: Limits): Row[
     const cs = c === undefined || isLegacy(a, c.id) || a.shots === null ? undefined : a.shots.chapters[c.id];
     const first = c === undefined ? null : cs === undefined ? firstKnotAvif(c) : firstStepHalf(c, cs);
     const label = cs === undefined ? 'first knot images' : 'first step images (half)';
+    // RULINGS 172 (Q1): the first line also awaits the public world (a chapter with a world source) and the en table,
+    // which `loadFree` fetches for an en-UI player (`withEn`); the row counts that case, both files.
+    const world = c !== undefined && c.world !== null;
     const parts: ReadonlyArray<readonly [string, number | null]> = [
       [js.ok ? 'JS' : `JS (${js.problem})`, js.ok ? js.bytes : null],
       ['index.html', html ?? null],
@@ -1218,6 +1303,8 @@ function firstLoadRows(dist: BudgetInputs, a: AssetInputs, limits: Limits): Row[
       [`${head.id} story`, c?.story?.brBytes ?? null],
       [`${head.id} meta`, c?.meta?.brBytes ?? null],
       [`${head.id} manifest`, c?.manifest?.brBytes ?? null],
+      ...(world ? [[`${head.id} world`, c?.world?.public?.brBytes ?? null] as const] : []),
+      [`${head.id} en`, c?.en?.brBytes ?? null],
       [first?.ok === false ? `${label} (${first.problem})` : label, first?.ok === true ? first.bytes : null],
     ];
     const missing = parts.filter(([, bytes]) => bytes === null).map(([part]) => part);
@@ -1225,7 +1312,7 @@ function firstLoadRows(dist: BudgetInputs, a: AssetInputs, limits: Limits): Row[
       return failed(name, limits.firstLoad, `cannot sum: ${missing.join(', ')} missing`);
     }
     const bytes = parts.reduce((s, [, b]) => s + (b ?? 0), 0) + css + TWA_BYTES + coverAvifs;
-    const note = `JS + CSS + html + TWA + catalog + covers + chapter + ${cs === undefined ? 'first knot' : 'first step (half)'}`;
+    const note = `JS + CSS + html + TWA + catalog + covers + chapter + ${world ? 'world + ' : ''}en + ${cs === undefined ? 'first knot' : 'first step (half)'}`;
     return partialRow(name, bytes, limits.firstLoad, js.ok && js.partial, note);
   });
 }
@@ -1245,16 +1332,17 @@ const STEP_WINDOW_LEVERS =
 /** How many failing windows a row names before it counts the rest. */
 const NAMED_FAILURES = 5;
 
-/** One window's terms (shots §3.4 "The gate step-window"), in bytes. */
-type WindowSum = { key: string; cur: number; certain: number; possible: number; labels: number; total: number };
+/** One window's terms (shots §3.4 "The gate step-window"), in bytes, and the ids it lists that are no image of the manifest. */
+type WindowSum = { key: string; cur: number; certain: number; possible: number; labels: number; total: number; lacking: ReadonlySet<AssetId> };
 
 /**
  * `cur` at full, + the certain files due at the next step (`certainDist` 1) at full, + the other openers at their kept
  * bytes, each file counted once; + one label bound when a room is in effect and one per usage room whose plate is
  * certain at the next step and not in effect (build/shots.json's `labels` is the window's own room only). An id that
- * is not an image of `manifest` is added to `lacking`.
+ * is not an image of `manifest` is listed in the window's own `lacking`.
  */
-function windowSum(key: string, w: WindowRefs, manifest: AssetManifest, roomsByBg: ReadonlyMap<AssetId, number>, lacking: Set<AssetId>): WindowSum {
+function windowSum(key: string, w: WindowRefs, manifest: AssetManifest, roomsByBg: ReadonlyMap<AssetId, number>): WindowSum {
+  const lacking = new Set<AssetId>();
   const sum = (ids: ReadonlySet<AssetId>, bytes: (e: ImageEntry) => number): number => {
     let total = 0;
     for (const id of ids) {
@@ -1277,7 +1365,7 @@ function windowSum(key: string, w: WindowRefs, manifest: AssetManifest, roomsByB
     possible: sum(possible, (e) => Math.max(e.avif.bytes, e.webp.bytes)),
     labels: ((w.labels ? 1 : 0) + rooms) * LABELS_BOUND,
   };
-  return { key, ...t, total: t.cur + t.certain + t.possible + t.labels };
+  return { key, ...t, total: t.cur + t.certain + t.possible + t.labels, lacking };
 }
 
 /** MiB to two decimals, the unit the window terms print in. */
@@ -1285,23 +1373,30 @@ function mib2(bytes: number): string {
   return (bytes / MIB).toFixed(2);
 }
 
-/** The largest window of `keys`; a FAIL names the code, the failing windows worst first, and the levers. */
+/**
+ * The largest window of `keys`; a FAIL names the code, the failing windows worst first, and the levers. A window that
+ * lists a file the manifest lacks cannot be summed: the FAIL prints the largest such window's terms (SH3b review M2:
+ * the window that names the file, not the chapter's largest) and every lacking id.
+ */
 function stepWindowRow(name: string, ch: ChapterId, keys: readonly string[], cs: ChapterShots, manifest: AssetManifest, roomsByBg: ReadonlyMap<AssetId, number>, limit: number): Row {
-  const lacking = new Set<AssetId>();
   const sums = keys
     .flatMap((k) => {
       const w = cs.look[k as keyof ChapterShots['look']]; // a key of this very record
-      return w === undefined ? [] : [windowSum(k, w, manifest, roomsByBg, lacking)];
+      return w === undefined ? [] : [windowSum(k, w, manifest, roomsByBg)];
     })
     .sort((x, y) => y.total - x.total || (x.key < y.key ? -1 : 1));
   const worst = sums[0];
   if (worst === undefined) {
     return failed(name, limit, `${STEP_WINDOW_CODE}: no story window in ${SHOT_USAGE_FILE}`, 'MiB');
   }
-  const terms = `${worst.key}: cur ${mib2(worst.cur)} + certain ${mib2(worst.certain)} (at 1) + possible ${mib2(worst.possible)} + labels ${mib2(worst.labels)} MiB`;
-  if (lacking.size > 0) {
-    return failed(name, limit, `${STEP_WINDOW_CODE}: ${terms}; not in ${ch}'s manifest: ${[...lacking].sort().join(', ')}`, 'MiB');
+  const termsOf = (s: WindowSum): string =>
+    `${s.key}: cur ${mib2(s.cur)} + certain ${mib2(s.certain)} (at 1) + possible ${mib2(s.possible)} + labels ${mib2(s.labels)} MiB`;
+  const lacks = sums.find((s) => s.lacking.size > 0);
+  if (lacks !== undefined) {
+    const lacking = new Set(sums.flatMap((s) => [...s.lacking]));
+    return failed(name, limit, `${STEP_WINDOW_CODE}: ${termsOf(lacks)}; not in ${ch}'s manifest: ${[...lacking].sort().join(', ')}`, 'MiB');
   }
+  const terms = termsOf(worst);
   if (worst.total <= limit) {
     return measured(name, worst.total, limit, terms, 'MiB');
   }
