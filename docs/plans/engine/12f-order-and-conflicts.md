@@ -45,24 +45,29 @@ done:      M3c (a6365a8), docs-errata-8 (be6c348), LRF (a93fe54), docs (d31f720,
            after docs-errata-16 (main 768fc9d): docs-errata-16 (1b85605, RULINGS 272), SH3c sh3c-shot-extract
            (5d3013e, RULINGS 277; after fix3, RULINGS 271, 273), GM4g gm4g-mech-room-set-pair (56cc302, RULINGS 284;
            after fix2, RULINGS 283), SH4 sh4-shot-view (768fc9d, RULINGS 290; after fix2, RULINGS 289; engine R 2.306)
-in flight: (as of 768fc9d) GM4 gm4-mech-views (lane A; launched from 56cc302, RULINGS 285, the cut amended RULINGS
-           286 and 288, implement RULINGS 287, in its implement stage and rounds; lock 19: new
-           mechanics/{data,rules}/view.ts, new scripts/story/mechanics/view.ts, new mechanics/view.test.ts, the
-           three mechanics index files (mechanics/{data,rules}/index.ts, scripts/story/mechanics/index.ts),
-           explore/{controller,controller.test}.ts, app/{yields,yields.test}.ts, scripts/story/emit.ts; admitted by
-           RULINGS 286 Q1: mechanics/registry.test.ts, mechanics/rules/core.ts,
-           scripts/story/{softlock,playthrough,build.test}.ts, scripts/story/shots/shots.test.ts; admitted by RULINGS
-           288 Q10: scripts/story/world.test.ts), docs-errata-17 (lane C; launched from 768fc9d, RULINGS 291; docs
-           only); two lanes at most while the resets recur (RULINGS 255, 276)
-next:      GM4u mech-view-ui after GM4, in lane A (GM4u's row: after GM4 on yields.ts; GM3u and GM3b merged; the
-           critical path, RULINGS 241); shots SH5a shot-preload in lane C after docs-errata-17 (SH5a's row: after SH4,
-           SH1 and GM3b, all merged; RULINGS 291); Y only on the merge-time trigger (carried below)
+           after docs-errata-17 (main 48489b7): GM4 gm4-mech-views (d695053, RULINGS 292; engine R 2.009),
+           docs-errata-17 (65f3e56, RULINGS 294), GM4u gm4u-mech-view-ui (aac7a97, RULINGS 304; engine R 2.666),
+           GM5 gm5-mech-combine (5190235, RULINGS 312; after fix2, RULINGS 310; engine R 2.90), SH5a
+           sh5a-shot-preload (48489b7, RULINGS 314; after fix4, RULINGS 311; merged after GM5 on a tree tested as
+           merged; engine R 2.603)
+in flight: (as of 48489b7) GM5q gm5q-mech-place-quotient (lane A; the conditional lane, triggered by P2-b, RULINGS
+           309; launched from 5190235, RULINGS 313; its branch fast-forwarded to 48489b7 and the cut amend and
+           critique relaunched, RULINGS 316; lock 5: mechanics/rules/search.ts, mechanics/view.test.ts,
+           scripts/story/spike-p2.test.ts, explore/explore.test.ts; admitted by RULINGS 316 Q1:
+           scripts/story/softlock.ts), docs-errata-18 (lane C; launched from 48489b7, RULINGS 315; docs only); two
+           lanes at most while the resets recur (RULINGS 255, 276)
+next:      GM5f mech-flags after GM5q, in lane A (GM5f's row: after GM5, merged, and GM5q on spike-p2.test.ts and
+           explore.test.ts; GM2b merged; the critical path, RULINGS 241); shots SH5b shot-entry in lane C after
+           docs-errata-18 (SH5b's row: after SH5a, merged; RULINGS 314); Y only on the merge-time trigger (carried
+           below)
 carried:   L2, the entry lever (shelved, RULINGS 142 / 158; return line: entry headroom < 0.5 KB br, §15 item 15; it
-           does not hold on 768fc9d: 0.836 KB left, RULINGS 290);
-           the preload-priority lane (RULINGS 152 Q14 (b); scene/{registry,preload}.ts, the scene/* tail);
+           does not hold on 48489b7: 0.837 KB left, RULINGS 314);
+           the preload-priority lane (RULINGS 152 Q14 (b); scene/{registry,preload}.ts, the scene/* tail); it holds
+           GM4's Q5, Q9, O2 and the navmem question (RULINGS 292), GM4u's M-MEM-2 (with SH11; RULINGS 304) and
+           SH5a's F2, V1, V2, V5 (with SH5b; RULINGS 311, 314);
            the lever Y (with S folded in; RULINGS 201): an approved design on the shelf (Y r2, RULINGS 222); it runs
            before the next engine-adding cut once Ledger 4 or Ledger 1 leaves < 1.0 KB at a merge (none does on
-           768fc9d: 11.598 and 12.434 KB left, RULINGS 290); the trigger gates launches only (RULINGS 230);
+           48489b7: 10.189 and 11.026 KB left, RULINGS 314); the trigger gates launches only (RULINGS 230);
            GM3b's engine-lever candidate (the visual decoder reusing world/decode.ts's key / rect / id checks;
            RULINGS 253, 258): measured once Ledger 4 or Ledger 1 is within 2.0 KB;
            probe G withdrawn by the path rule (RULINGS 201; its return is a ruling at the queue's end)
@@ -134,6 +139,22 @@ engine-lever candidate is measured once Ledger 4 or Ledger 1 is within 2.0 KB (R
 hold (0.836 KB left). SH3c's and SH4's merges were each held by the orchestrator's independent pre-merge lens verifiers
 (RULINGS 271, 289), and each fix round ran before the merge. Two lanes at most while the resets recur (RULINGS 255,
 276). The block's state lines at `768fc9d` are group B's
+([§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)).
+
+**Ruled since: RULINGS 285-288, 292-312, 314** — merged since `768fc9d`: GM4 (`d695053`, lane A, the critical
+mechanics chain, RULINGS 241), docs-errata-17 (`65f3e56`, lane C), GM4u (`aac7a97`, lane A), GM5 (`5190235`, lane A,
+after its fix round fix2) and SH5a (`48489b7`, lane C, after its fix round fix4, merged after GM5 on a tree tested as
+merged); their rows: GM4, GM4u, GM5 and SH5a in the tables below. The locks as ruled: GM4 19 (RULINGS 286 Q1, 288
+Q10), GM4u 14 (RULINGS 293, 296 Q1), GM5 22 (RULINGS 305, 306 Q1), SH5a 15 (RULINGS 297 Q3)
+([12d](12d-lanes-gm4-gm5.md#gm4-mech-views), [shots §9.6](../shots/09c-lanes-sh4-sh5b.md#96-sh5a-shot-preload-client-runtime-windows-warm-rooms)).
+P2-b ruled GM5q `mech-place-quotient` in (RULINGS 309): the conditional lane is triggered and runs next in lane A. The
+engine R is **2.603** (n 18; GM4u's pair sample 4.60 replaced GM4's 1.711, GM5's 2.90 and SH5a's net 1.27 joined;
+RULINGS 296 Q2, 302 Q9, 312, 314). On `48489b7`: Ledger 4 **219.811 / 230.0**, Ledger 2 **39.163 / 40.0**, Ledger 1
+**258.974 / 270.0**; 5.961 KB of engine terms remain and no entry term. The trigger does not hold: Y stays on the
+shelf until a ledger is within 1.0 KB; GM3b's engine-lever candidate is measured once Ledger 4 or Ledger 1 is within
+2.0 KB (RULINGS 253). L2's return line does not hold (0.837 KB left). The pre-merge lens verifiers (RULINGS 289) ran
+at all four code merges; GM5's and SH5a's were held for test gaps and fixed in a round before the merge (RULINGS 310,
+311). Two lanes at most while the resets recur (RULINGS 255, 276). The block's state lines at `48489b7` are group B's
 ([§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)).
 
 Changed by RULINGS 159-173 (as of `9a83251`; docs lane `docs-errata-10`, group B): the block above is the state at
@@ -295,6 +316,34 @@ merge (RULINGS 285), the next mechanics lane on the critical path. Beside pairs 
 launch); GM4 and `docs-errata-17` (RULINGS 291). The rows below keep SH3c, GM4g and SH4 as the predecessors they name;
 all three have merged.
 
+Changed by RULINGS 292-316 (as of `48489b7`; docs lane `docs-errata-18`, group B): the block above is the state at
+`48489b7` (SHAs from `git log --first-parent main`). GM4, `docs-errata-17`, GM4u, GM5 and SH5a moved to `done:`; no
+orchestrator docs commit landed in that range. The `in flight:` line read "(as of 768fc9d) GM4 gm4-mech-views (lane A;
+launched from 56cc302, RULINGS 285, the cut amended RULINGS 286 and 288, implement RULINGS 287, in its implement stage
+and rounds; lock 19: new mechanics/{data,rules}/view.ts, new scripts/story/mechanics/view.ts, new
+mechanics/view.test.ts, the three mechanics index files (mechanics/{data,rules}/index.ts,
+scripts/story/mechanics/index.ts), explore/{controller,controller.test}.ts, app/{yields,yields.test}.ts,
+scripts/story/emit.ts; admitted by RULINGS 286 Q1: mechanics/registry.test.ts, mechanics/rules/core.ts,
+scripts/story/{softlock,playthrough,build.test}.ts, scripts/story/shots/shots.test.ts; admitted by RULINGS 288 Q10:
+scripts/story/world.test.ts), docs-errata-17 (lane C; launched from 768fc9d, RULINGS 291; docs only); two lanes at most
+while the resets recur (RULINGS 255, 276)", the `next:` line read "GM4u mech-view-ui after GM4, in lane A (GM4u's row:
+after GM4 on yields.ts; GM3u and GM3b merged; the critical path, RULINGS 241); shots SH5a shot-preload in lane C after
+docs-errata-17 (SH5a's row: after SH4, SH1 and GM3b, all merged; RULINGS 291); Y only on the merge-time trigger (carried
+below)", and the `carried:` line's L2 item read "it does not hold on 768fc9d: 0.836 KB left, RULINGS 290", its
+preload-priority item ended at "the scene/* tail)", and its lever item read "(none does on 768fc9d: 11.598 and 12.434 KB
+left, RULINGS 290)". Both `next:` lanes ran as that line read: GM4u took lane A after GM4's merge (RULINGS 293; lock 14,
+RULINGS 296 Q1), and SH5a took lane C after `docs-errata-17`'s merge (RULINGS 295; lock 15, RULINGS 297 Q3). GM5 then
+took lane A after GM4u (RULINGS 305; lock 22, RULINGS 306 Q1), and P2-b, measured in GM5, triggered GM5q (RULINGS 309),
+which took lane A at GM5's merge (RULINGS 313). GM5's merge was held for its fix round fix2 (RULINGS 310) and SH5a's for
+fix4 (RULINGS 311), each after the orchestrator's independent pre-merge lens verifiers (RULINGS 289); GM4's and GM4u's
+lenses held nothing. Beside pairs as they ran: GM4 and `docs-errata-17` (RULINGS 291-294); GM4u and `docs-errata-17`
+(RULINGS 293, 294); GM4u and SH5a (RULINGS 295-304); GM5 and SH5a (RULINGS 305-312); GM5q and SH5a (RULINGS 313, 314);
+GM5q and `docs-errata-18` (RULINGS 315); the table lists none of them (each row's Beside is "-"; locks checked disjoint
+at each launch). Also ready by their rows on `48489b7`, with no slot ruled (two lanes at most): GM7r (after GM5, GM3p
+and GM1c, all merged; Beside GM5f) and per-player GM6c1a (its world-chain predecessor GM4 merged; never beside GM5f on
+`scripts/story/mechanics/index.ts`). The rows below keep GM4, GM4u, GM5 and SH5a as the predecessors they name; all four
+have merged.
+
 **The one order across the three designs (reconcile r1; RULINGS 143, 152, 153; design-shots §9.14 and I-2,
 adopted with one change; it replaces the paragraph "Animation and shot lanes" that earlier sections cite).** The **A(f)** placeholders of rounds 4-14 ("every lane of an adopted animation or shot design
 that holds file f") are retired: `design-shots` is the adopted design (RULINGS 143) and its §9.14 names its lanes, so
@@ -335,10 +384,10 @@ re-located at each holder's cut.
 | GM3p | GM3u (`yields.ts`, `controls.test.ts`, the e2e), GM3w (`PuzzleHost.svelte`, `puzzle-view.svelte.ts`, round 9: `puzzle-host.svelte.test.ts`), GM3s (round 9: the `CueStage.svelte` its real-flush tests render). Changed by RULINGS 226, 230, 232, 234 (as of `0b91acc`; docs lane `docs-errata-15`, group A): GM3u merged `33b4f8d` with Q62's fix (the `aria-hidden` stage layer), so this lane takes no Q62 item; after O5 (merged `9a0ae2d`: its request walk reads `game.ts`'s new request starts, RULINGS 232); lock 12 (12c), launched from `8d388ba`. Changed by RULINGS 243 (as of `a064399`; docs lane `docs-errata-16`, group A): merged `d478384`, the lock of 12 exactly ([12c GM3p](12c-lanes-gm3.md#gm3p-mech-puzzle-cues)) | - |
 | GM3b | GM3p (`yields.ts`, the e2e), GM2b (`emit.ts`), GM1d (`story/ch1/world.json`, `build.test.ts`); **per-player GM6a**. Changed by RULINGS 210, 223 (as of `52e328e`; docs lane `docs-errata-14`, group A): GM3k (merged `3131844`: `KernelWorld.mods` required). Changed by RULINGS 245, 250, 258 (as of `a064399`; docs lane `docs-errata-16`, group A): lock **18** (12c's 16, + `mechanics/registry.test.ts` and `scripts/story/world.test.ts`, test-only, RULINGS 245 Q1, 250 Q9); after GM3p (merged `d478384`), beside Q67's fix, SH3a and Q69's fix (locks disjoint at each launch); merged `ac9cab1` ([12c GM3b](12c-lanes-gm3.md#gm3b-mech-state-visuals)) | - |
 | GM4g | GM3b (`emit.ts`, `build.test.ts`), GM3s (`budget.ts`); reconcile r1: SH3b (`budget.ts`, `budget.test.ts`, the sheet helper, I-3), SH3a -> SH3c (`scripts/assets/manifest.ts`, `assets.test.ts`). Changed by RULINGS 278, 281, 283, 284 (as of `768fc9d`; docs lane `docs-errata-17`, group A): launched from `5d3013e` in lane A beside SH4 (disjoint locks); lock 6, five files changed (`assets.test.ts` untouched); merged `56cc302` after fix2 ([12d GM4g](12d-lanes-gm4-gm5.md#gm4g-mech-room-set-pair-new)) | - |
-| GM4 | GM4g (`emit.ts`), GM3b (`controller.ts`, `yields.ts`, index files); P2-a read | - |
-| GM4u | GM4 (`yields.ts`), GM3u (`ExploreView.svelte`), GM3b (`story/ch1/world.json`) | - |
-| GM5 | GM4u (`yields.ts`, the explore view files, the e2e), GM3 (`motions.ts`), GM1b (`spike-p2.test.ts`) | - |
-| GM5q (round 4; only if P2-b demands it) | GM5 (`spike-p2.test.ts`, P2-b), GM4 (`mechanics/view.test.ts`), GM3 (`explore.test.ts`), GM1d (`rules/search.ts`); all earlier than GM5 already | - |
+| GM4 | GM4g (`emit.ts`), GM3b (`controller.ts`, `yields.ts`, index files); P2-a read. Changed by RULINGS 285, 286, 287, 288, 292 (as of `48489b7`; docs lane `docs-errata-18`, group A): launched from `56cc302` in lane A beside SH4 (disjoint locks); lock 19 (RULINGS 286 Q1, 288 Q10); merged `d695053` ([12d GM4](12d-lanes-gm4-gm5.md#gm4-mech-views)) | - |
+| GM4u | GM4 (`yields.ts`), GM3u (`ExploreView.svelte`), GM3b (`story/ch1/world.json`). Changed by RULINGS 293, 296, 298, 300, 304 (as of `48489b7`; docs lane `docs-errata-18`, group A): launched from `d695053` in lane A beside docs-errata-17, then SH5a; lock 14 (`world.ts` / `world.test.ts` by RULINGS 286 Q2, `controller.test.ts` test-only, A-1's two, one `stage.svelte.test.ts` line); merged `aac7a97` ([12d GM4u](12d-lanes-gm4-gm5.md#gm4u-mech-view-ui-new)) | - |
+| GM5 | GM4u (`yields.ts`, the explore view files, the e2e), GM3 (`motions.ts`), GM1b (`spike-p2.test.ts`). Changed by RULINGS 305, 306, 307, 308, 310, 312 (as of `48489b7`; docs lane `docs-errata-18`, group A): launched from `aac7a97` in lane A beside SH5a; lock 22 (RULINGS 305, 306 Q1), E_engine 0.2 (306 Q3); merged `5190235` after fix2 ([12d GM5](12d-lanes-gm4-gm5.md#gm5-mech-combine)) | - |
+| GM5q (round 4; only if P2-b demands it) | GM5 (`spike-p2.test.ts`, P2-b), GM4 (`mechanics/view.test.ts`), GM3 (`explore.test.ts`), GM1d (`rules/search.ts`); all earlier than GM5 already. **Ruled: RULINGS 309** (as of `48489b7`; docs lane `docs-errata-18`, group A): P2-b demands it (`views+recipes-real` at the cap on every seed, [§7.6](07-puzzle-types.md#76-state-space-budget-and-spike-p2-r2-m4)); it runs next in lane A after GM5's merge, before GM5f | - |
 | GM5f | GM5 (index files, `motions.ts`, `spike-p2.test.ts`), GM5q when it runs (`spike-p2.test.ts`, `explore.test.ts`), GM2b (`reconcile.ts`); Changed by RULINGS 190 (as of `837b1ed`; docs lane `docs-errata-12`, group A, fix round 1): GM2b also on `mechanics/core.ts` (GM2b cut Q1), and never beside per-player GM6c1b (`mechanics/core.ts`) | GM7r |
 | GM7r | GM5 (`yields.ts`), GM3p (`puzzle-view.svelte.ts`, `PuzzleHost.svelte`, `puzzle-host.svelte.test.ts`), GM1c (`session.ts`, `registry.ts`); never beside per-player GM6c2 | GM5f |
 | GM7p | GM7r (`registry.ts`), GM1d (`clues.ts`, `shape.ts`), GM3c (`clues.ts`; **Ruled: RULINGS 192**, the `clues.ts` row), GM1c (`scripts/story/puzzles/index.ts`, round 4), GM4g (`budget.ts`), GM3u (`arch.test.ts`), GM3p (`puzzle-types.svelte.test.ts`); **per-player GM6k** | GM8i |
@@ -366,7 +415,7 @@ the table is the error to fix (the rule of this section's first paragraph).
 | SH3b | SH3a and GM3s (`budget.ts`, `budget.test.ts`), SH2 (`shots/lint.ts`, `STAGING-DSL.md`). Changed by RULINGS 259, 262 (as of `a064399`; docs lane `docs-errata-16`, group A): merged `e1e7637` (lane A, its 4 lock files) | SH3c; SH4 if SH4 waits only for SH3a |
 | SH3c | SH3a (`scripts/assets/**`, `assets.test.ts`). Changed by RULINGS 263, 264, 267, 271, 273, 277 (as of `768fc9d`; docs lane `docs-errata-17`, group A): launched from `e1e7637` in lane A, lock 8 (the plan's 7 and `scripts/assets/manifest.ts`, pre-ruled for R8's world read); merged `5d3013e` after its fix round fix3 ([shots §9.3c](../shots/09b-lanes-sh3a-sh3b.md#93c-sh3c-shot-extract-client-asset-tool-real-art-from-src-rev-4-w5)) | SH3b, SH4 |
 | SH4 | SH1 (`scene/*`), SH3a (`story/shots.ts`'s decoders); first holder of `story/ch4/main.ink`, `client/e2e/shots.spec.ts`. Changed by RULINGS 274, 275, 279, 280, 282, 289, 290 (as of `768fc9d`; docs lane `docs-errata-17`, group A): launched from `1b85605` in lane C beside SH3c, then GM4g; lock 17: the plan's 12, `graph.ts` and `graph-shot.test.ts` (SH2 cut Q4, RULINGS 274, 279), one `app/game.ts` line (`imageIds`' context, RULINGS 275 Q1), `client/e2e/handover.spec.ts` (its fixture only, RULINGS 279) and one `client/scripts/story.ts` hunk (`:684`, RULINGS 280 Q5); merged `768fc9d` ([shots §9.5](../shots/09c-lanes-sh4-sh5b.md#95-sh4-shot-view-client-runtime)) | SH3b, SH3c |
-| SH5a | SH4 (`scene/*`, `registry.ts`), SH1 (`game.ts`, `game.test.ts`), GM3b (I-11's `Yields.roomFor`) | - |
+| SH5a | SH4 (`scene/*`, `registry.ts`), SH1 (`game.ts`, `game.test.ts`), GM3b (I-11's `Yields.roomFor`). Changed by RULINGS 295, 297, 302, 311, 314 (as of `48489b7`; docs lane `docs-errata-18`, group A): launched from `65f3e56` in lane C beside GM4u, then GM5 (disjoint locks); lock 15 (`perf.spec.ts` pre-admitted for one hunk, RULINGS 297 Q3); merged `48489b7` after fix4 and after GM5, on a tree tested as merged ([shots §9.6](../shots/09c-lanes-sh4-sh5b.md#96-sh5a-shot-preload-client-runtime-windows-warm-rooms)) | - |
 | SH5b | SH5a (`scene/*`, `game.ts`, `loader.ts`, `preload.ts`, the e2e) | - |
 | SH6 | SH5b (`scene/*`, `registry.ts`), SH4 (`story/ch4/main.ink`); `arch.test.ts` by launch, never beside GM1c, GM3m, GM3s, GM3u, GM7p, GM7g, GM8a, GM8b | - |
 | SH7 | SH6 (`scene/*`), SH5b (`game.ts`); GM3s (the `sceneCues` seam it implements, I-4), GM3m (`FRAME_OPEN_MS`, I-7); GM3p (reconcile r2: always merged by SH7's cut, since SH5a needs GM3b, which follows GM3p; `requests.test.ts`, its `scene/motion/` `import()` row, §30 item 11; and `YieldsHost.frameShown`, the edge its cover follows, RC-W5); reconcile r2 (RC-W3): **SH3b** (the `scene-motion chunk (br)` row its Gates leave PENDING and **M-SH7d**'s red reads, [shots §9.8 SH7 `shot-idle`](../shots/09d-lanes-sh6-sh10.md#98-sh7-shot-idle-client-runtime), [shots §9.8 SH7 `shot-idle`](../shots/09d-lanes-sh6-sh10.md#98-sh7-shot-idle-client-runtime), [shots §9.8 SH7 `shot-idle`](../shots/09d-lanes-sh6-sh10.md#98-sh7-shot-idle-client-runtime)) | - |

@@ -580,3 +580,26 @@ export interface PuzzleTypeLint<P> {
   visual-only facts out of the key (built into derived `reads`); (3) a section split, the authoring rule, with the
   per-section budget written into AUTHORING from P2's measured factors (`world/state-cap` already fails an oversized
   section); (4) a cap raise only on a measured budget-Android timing of the runtime search, outside these lanes.
+- **Changed by RULINGS 306, 307, 309, 312 (as of `48489b7`; docs lane `docs-errata-18`, group A): P2-b, MEASURED**
+  (GM5 `5190235`, its commit C2; `client/scripts/story/spike-p2.test.ts`; cap 5,000, "cap" = a 5,001st state found;
+  ms per section not measured: lane C was running, not a quiet machine). P2-a's seven configurations reproduce seed by
+  seed. States per seed:
+
+  | Configuration | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+  |---|---|---|---|---|---|---|---|---|
+  | base | 406 | 406 | 406 | 528 | 460 | 406 | 440 | 460 |
+  | `views-real` (asserted: `spike p2: real views at 2 per room fit the cap at ch1 density`) | 1,174 | 1,174 | 1,174 | 1,456 | 1,300 | 1,174 | 1,252 | 1,300 |
+  | `recipes-real` (reported) | 1,868 | 1,868 | 2,030 | 2,112 | 1,976 | 2,030 | 1,936 | 2,300 |
+  | `views+recipes-real` (reported) | cap | cap | cap | cap | cap | cap | cap | cap |
+  | `full-mix-real` (reported) | cap | cap | cap | cap | cap | cap | cap | cap |
+
+  `views-real` equals P2-a's emulated `views` on every seed (x2.76-2.89 of base; a leave is core's `arrive` to the
+  parent and `viewReads` is []), so no STOP (RULINGS 306 Q2). One real recipe (two takes and a product) costs x4.0-5.0
+  of base (P2-a's emulation x7.0-9.0: emulated recipes over base, seed by seed, `gm5-mech-combine/p2b.md:14`, `:18`). Views at 2 per room **and** one real recipe reach the cap on every seed (by
+  independence ~5,400-6,500). The real CLI with one recipe in ch1 reads 540 -> 1,284 states (GM5 merge lens, paid).
+  No committed chapter has a recipe, so no gate fails today (`gm5-mech-combine/p2b.md`).
+- **Ruled: RULINGS 309** — P2-b ruled: **GM5q `mech-place-quotient` runs** (response (1)), next in lane A after GM5's
+  merge, lock 12d's 4. Response (3) alone would force a split for every recipe in a room with zoom views, the genre's
+  core loop. GM5q's STOP: `views+recipes-real` still at the cap on any seed with the quotient, back to the orchestrator
+  for (3). Response (3)'s per-section budget is in AUTHORING from P2-b's factors, provisional until GM5q's measurement
+  ([AUTHORING](../../AUTHORING.md#world-lint-codes-and-soft-lock-counterexamples), "A per-section budget").

@@ -371,6 +371,22 @@ Rev. 7 (critique r6):
   designed (S36, §5.8 steps 1b-1c). The cut verifies only that `game.ts:1018` is still the one release of `next:<id>`
   at a handover; if not, the cut names the other caller, and commit 4 removes it too.
 
+**Ruled since: RULINGS 295, 297, 299, 301, 302, 303, 304, 309, 310, 311, 314** — launched from `65f3e56` in lane C
+(lock 14 re-located, plus `client/e2e/perf.spec.ts` for one conditional hunk: 15). The cut ran four rounds (Q0 the
+worktree; W1-W3 the shed of an in-flight decode, `stats.pending`, one seat for the window deps; W4 the lamp-room e2e
+held from `launch`; W5 one fetch -> decode path with named arms), then implement: riders R1 / R2 (R2 closes SH4's
+non-owner 403 carry: `shots: a player without ch4 gets 403 for its sheet, face and talk files`), C1-C7 and C7b.
+**Ruled: RULINGS 302** — Q9: the engine STOP judged on the net delta (shots
+[§5.8](05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry), "Ruled since"); Q8 (one
+wasted decode per warm file decoded under `next:<id>` at a handover) carried to SH5b. Rounds 1-3 RED on unpinned arms
+of the new preload code (test-only fixes), round 4 GREEN; the pre-merge lenses (RULINGS 311) found no product defect
+and three unpinned new rules (G22, G58, G15), pinned with eleven more in fix4 (test-only). Merged `48489b7` after GM5
+on a tree tested as merged (RULINGS 314): 15 files, 104 new vitest names (tag SH5A; 1904) and 3 e2e (109); story log,
+story-gen and content identical to main; engine +2,286 B on the merge tree (+1,657 net on its base, sample 1.27);
+entry +20 B (hash text only, P-entry). The design as built, the desk view's 26.7 MB and the open points:
+[§5.8](05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry) and
+[§5.9](05b-preload-memory-download.md#59-memory-ledger-and-arithmetic-gate-counts--decoded--the-larger-kept-file-budgetts806-808).
+
 ### 9.6b SH5b `shot-entry` (client, runtime: the half-tier entry; rev. 4 split)
 
 **Goal:** §5.8 "Entry at the half tier" (rev. 3, C1) with rev. 4's order (W1): the entry window admitted beside the

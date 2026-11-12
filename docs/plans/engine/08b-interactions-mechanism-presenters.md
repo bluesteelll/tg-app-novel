@@ -27,7 +27,7 @@
 | (round 7, W1) no control: the wallet changes under an open ladder (a pack bought over it) | none | `puzzle:ladder` at the screens change that re-reads it (`yields.ts:858-860`) |
 | (round 7, W1) Back while the ladder's request is in flight | none of its own | `ui-state:panel-close` (hints) and `ui-state:waited` (the hold ends with the sheet) |
 | get more, `HintLadder.svelte:57` | `ui:hint-more` | the wallet overlay's own motion (meta, overlay half) |
-| new: ribbon item (GM3u) | `ui:ribbon-item` (item; `click`) | `ui-state:select` / `deselect`; `combine` cues |
+| new: ribbon item (GM3u) | `ui:ribbon-item` (item; `click`) | `ui-state:select` / `deselect`; `combine` cues (Changed by RULINGS 306 (as of `48489b7`; docs lane `docs-errata-18`, group A): `module:combine:refused` and `module:combine:refused-with`, one refusal, two cues, one error haptic) |
 | new: bare art catcher (GM3u) | `ui:bare-art` (point; `click`) | `ui-state:deselect` when an item was selected |
 | new: view bar leave control (GM4u) | `ui:view-leave` (`click`) | `move:zoom-out` |
 | new per type, each with its trigger (W5; declared in the type's data half `controls`): `path-cell` (`click`, tap-by-tap), `path-stroke` (**gesture**: one cue per cell the stroke enters), `grid-cell`, `grid-symbol` (`click`), `lever` (`click`: a tap throws), `setting-part`, `setting-pull` (`click`), `push` (`pointerdown`: the button sinks at touch, `sequence` / `ritual`), `sequence-replay` (`click`, round 4 m7: play the order again); the device bar (inside the room, round 3 W1; at the top, round 4 m10) reuses `puzzle-hint`, after a failed host or type chunk `puzzle-retry`, and (round 5 W3) `puzzle-try` while a reach device's reached answer awaits after an offline reply; it has no give-up (m10) | `ui:<name>` (index) | `puzzle:input` / `puzzle:blocked` (a refused cell, a press on a full or busy sequence), `fact:work:added`, `reached`, `wrong`, `reset`; a wrong ring: `fact:attempt:added` and at the limit `fact:failed:added` (W2); `sequence-replay`: `puzzle:demo` per step; a full `ritual`: `puzzle:checking` then the outcome (round 4 m8) |
@@ -45,6 +45,23 @@ through `oncue` and never through the root listener (W5).
   `ui/meta/**`). **They have no planned owner today (m7):** RULINGS 116 and 124 plan only the character and room halves
   of `design-animation`; "overlay half" exists only in the mechanics documents. Orchestrator Q4 asks for a ruling; this
   file's `data-cue` gate (§8.3) and motion gate (§8.5) are the proposed enforcement for those directories.
+- **Ruled: RULINGS 307, 308** (as built, GM5 `5190235`) — the bar Inventory and Reveal rows: the bar stays centred
+  (the leave control's coming or going re-centres it), and a tap on Inventory or Reveal goes through `h.tap` only in
+  a room batch that flips `explore.inView` over a shown layer (`barTap`, `client/src/app/yields.ts:1334-1340`): it
+  completes that batch and opens nothing. During a zoom's art load-wait such a tap is swallowed (the fade completes; a
+  load in progress continues). Elsewhere, at rest and in every other batch, they open at once
+  ([§6.3](06-mechanics-as-modules.md#63-view-full-screen-zoom-views-gm4-o5), "Ruled: RULINGS 307, 308").
+- **Open: the selection after a refusal** (carried by RULINGS 310 to this file and the next holder of `yields.ts`'
+  selection; GM5 player lens F1 / F3). As built, the hand empties after a refused `use` and after a refused `combine`
+  alike (`yields.ts:1382-1395` deselects before the dispatch). Whether the item stays in hand after a refusal is ONE
+  question for both. The lens's numbers: switching the selected item takes 2 taps (a tap on another item now
+  combines, and in ch1, with no recipe, refuses); trying pairs from one item takes 2 taps per attempt instead of 1.
+- **Open: haptics per cue or per player action** (carried by RULINGS 309 (c), 310 to MR1 and this file / 08c; GM5
+  player lens F2, reviewer Q1). The stage fires one haptic per cue it plays (`client/src/cues/stage/player.ts:374-376`),
+  so a refused `combine` plays 3 in one flush (light, light, error: the `ui:ribbon-item` press, `ui-state:deselect`,
+  `module:combine:refused`) and a successful one 5 (four lights, then success); a refused `use` plays 2. Whether the
+  rule is one haptic per player action (for example, the strongest of a flush) or one per cue, as built, is MR1's to
+  rule with [§8.5](08c-motion-gate-and-contracts.md#85-the-motion-gate-fails-on-a-missing-or-no-op-motion).
 
 ### 8.3 The mechanism (GM3m, GM3s, GM3u, GM3p)
 
@@ -223,7 +240,7 @@ maximum (RULINGS 114, 122). The haptic column adds touch feedback **on top of** 
 | `fact:story:removed` (an event knot returns: `pendingStory` pops) | `vignette` opens + the room layer's `layer-in` | the room pulls back from the push-in and brightens | - |
 | `fact:flag:removed` (GM5f; only a section reset clears a flag) | `sweep` reversed | the state crossfade where visible; a room light pulse otherwise | - |
 | `move:walk` | `sweep` toward the exit side of the `via` box | slide by exit side | - |
-| `move:zoom-in` / `move:zoom-out` (GM4) | `iris` from / to the `via` box | bg zoom from / to the rect | - |
+| `move:zoom-in` / `move:zoom-out` (GM4) | `iris` from / to the `via` box. **Ruled: RULINGS 298, 300** (as built, GM4u `aac7a97`): a zoom-out made by no exit (`leave-view`: the leave control or the BackButton) irises to the box of the parent's first shown exit into the view just left, the zoom-in's box read backwards (`exitBoxInto`, `client/src/app/yields.ts:517-521`, `:592`), and the batch's hold breathes on the same box; a zoom-out by an exit keeps its `via` box. A view no parent exit enters cannot be reached at runtime (a save standing in it restarts its section), so the null-box cue (the centre landing, counted) is a defensive fallback only | bg zoom from / to the rect | - |
 | `move:enter` / `move:return` / `move:resume` | `vignette` open | establishing push-in (scale 1.04 -> 1) | - |
 | `move:leave` (W3; a section left for a knot) | `vignette` close + the room layer's `layer-out` | the room pushes out and fades | - |
 | `module:core:look` | `glint` at the box | a glint on the object | - |
@@ -233,6 +250,7 @@ maximum (RULINGS 114, 122). The haptic column adds touch feedback **on top of** 
 | `module:use:refused` (GM3; Changed by RULINGS 212, 217 (as of `52e328e`; docs lane `docs-errata-14`, group A): as merged, `motions.ts:215`, also on a failed fit, `refused { reason: 'no-fit' }`) | `wobble` at the target + `fly` back to the ribbon | as core refused | error |
 | `module:use:said` (GM3; Changed by RULINGS 212, 217 (as of `52e328e`; docs lane `docs-errata-14`, group A): as merged, `motions.ts:216`; the toast is the rule's `look` effect, not the cue's) | `glint` at the target + the toast | a glint on the target | - |
 | `module:combine:refused` (GM5) | both ribbon items `shake` | the room's light dips once | error |
+| `module:combine:refused-with` (GM5; Changed by RULINGS 306 (as of `48489b7`; docs lane `docs-errata-18`, group A): as built, `motions.ts:220`) | the tapped item's `shake` (the selected item's is `refused`'s, `motions.ts:219`): one refusal, two cues, one error haptic | no cell of its own (RULINGS 306: `refused`'s "the room's light dips once" covers the refusal, once; Q7, its cell when `ScenePending` becomes `never`, carried to MR1 / SH10) | - (the error haptic is `refused`'s) |
 | `module:devices:done` (GM8i, round 3 m10; arrival at a solved device) | `glint` at the device box | the device's light settles | - |
 | `module:devices:jammed` (GM8i, round 3 m10; arrival at a failed device) | `jam` at the device box | the parts shudder and settle in their jammed state | error |
 | `ui:<control>` (every control cue, gesture steps included; `UI_MOTIONS`, §8.5) | default `press` on the control, a gesture step `pulse` at the step's cell; overrides in GM3m for core controls (`bare-art`: `ripple` at the point; `ribbon-item`: `lift`); a type or module control may name its own preset in its `ControlDecl`; round 10 (the critic's `hotspot` question): on a hit area (`data-cue-hit`: a hotspot button, the catcher, a device part) an element-site motion plays on the area's painted ghost (its clone at its box with the hit outline), so a take, look or object tap dips a visible outline at once (§8.5 "Hit areas") | `hotspot`: its anchor dips; `bare-art`: dust at the point; bar and panel controls: a light pulse across the room; puzzle controls: the device part or the close-up nudges | from the declaration: `ribbon-item`, `lever`, `push`: light |
