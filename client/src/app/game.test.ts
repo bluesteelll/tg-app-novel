@@ -5882,6 +5882,19 @@ test('game: each presented step hands its window to the scene with its batch', a
   h.game.dispose();
 });
 
+test('game: an end step hands the empty window', async () => {
+  const h = harness({ chapters: [lookedCh1()] });
+  await playManorCh1(h);
+  expect(windowHeld(h)).toEqual(['preload:win:bg/garden=bg/garden']);
+  await h.game.advance(); // END: ch2 is not owned, so the paywall
+  await settle();
+  expect(h.vm.screens.overlays.map((o) => o.kind)).toEqual(['paywall']);
+  // D1: an end step is a presented step, so its swap ends the last line's window; no chapter change follows to do it.
+  expect(h.scene.windows.at(-1)?.window).toEqual(NO_WINDOW);
+  expect(windowHeld(h)).toEqual([]);
+  h.game.dispose();
+});
+
 test("game: a resume asks for the resumed line's window", async () => {
   const h = harness({ chapters: [lookedCh1()] });
   await startManor(h); // l001: the start knot's entry autosave
