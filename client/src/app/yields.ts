@@ -45,6 +45,8 @@ import type { Gift, HotspotKey, ItemId, RoomId, WorldPublic, WorldText } from '.
 
 /** X12: the door fade of a room batch. */
 export const ROOM_FADE_MS = 400;
+/** Engine plan §6.3 "Transition": a zoom into or out of a view crossfades the bg (reconcile r1 I-5). */
+export const VIEW_FADE_MS = 400;
 /** B-001 / X11 / §6.4: a state batch (a taken prop leaving included) crossfades the props over this long; the bg stays. */
 export const TAKE_FADE_MS = 300;
 /** The close-up's fade in and out (a puzzle with a `closeup`). */
@@ -424,8 +426,17 @@ export function createYields(h: YieldsHost): Yields {
     }
   };
 
-  /** A room batch to run (D9): its move cue, built at the effect, and the cues of the entry that pushed it (D8). */
-  type RoomJob = { readonly room: RoomId; readonly sfx: Extract<ExploreEffect, { kind: 'room' }>['sfx']; readonly move: CueEvent; cues: readonly CueEvent[] };
+  /**
+   * A room batch to run (D9): how its move enters the room, its move cue, built at the effect, and the cues of the entry
+   * that pushed it (D8).
+   */
+  type RoomJob = {
+    readonly room: RoomId;
+    readonly sfx: Extract<ExploreEffect, { kind: 'room' }>['sfx'];
+    readonly how: MoveHow;
+    readonly move: CueEvent;
+    cues: readonly CueEvent[];
+  };
   /**
    * One controller entry (D8): its cause, the box of the hotspot it acts on, how a move it makes enters its room, the
    * cues it maps, the first room job it pushes, which carries them to its batch's start (§8.1 round 5), and the room's
@@ -555,9 +566,11 @@ export function createYields(h: YieldsHost): Yields {
     const w = h.chapter()?.world ?? null;
     switch (e.kind) {
       case 'room': {
-        // D9: from the room the last batch showed, by the entry's hotspot (an exit) or by its kind (Back: none).
-        const move = cueEvent({ kind: 'move', from: shown, to: e.room, via: scope.cause.at, how: scope.how }, scope.box);
-        const job: RoomJob = { room: e.room, sfx: e.sfx, move, cues: [] };
+        // D9: from the room the last batch showed, by the entry's hotspot (an exit) or by its kind (Back: none). A zoom
+        // says so itself (§6.3: core's `moveHow`, `leave-view` included); any other move is the entry's kind.
+        const how: MoveHow = e.how === 'zoom-in' || e.how === 'zoom-out' ? e.how : scope.how;
+        const move = cueEvent({ kind: 'move', from: shown, to: e.room, via: scope.cause.at, how }, scope.box);
+        const job: RoomJob = { room: e.room, sfx: e.sfx, how, move, cues: [] };
         if (scope.cues !== null) {
           scope.job ??= job;
         }
@@ -709,10 +722,11 @@ export function createYields(h: YieldsHost): Yields {
       return;
     }
     const stage = h.scene.snapshot();
+    const zoom = j.how === 'zoom-in' || j.how === 'zoom-out'; // §6.3: a view crossfades over its parent, no door dip
     const visual: VisualCommand[] =
       stage.bg === entry.room.bg && stage.cg === null && sameProps(stage.props, props)
         ? [] // the stage already shows the room: no fade
-        : [{ kind: 'bg', bg: entry.room.bg, t: 'fade', ms: ROOM_FADE_MS }, { kind: 'props', props }];
+        : [zoom ? { kind: 'bg', bg: entry.room.bg, t: 'crossfade', ms: VIEW_FADE_MS } : { kind: 'bg', bg: entry.room.bg, t: 'fade', ms: ROOM_FADE_MS }, { kind: 'props', props }];
     const audio: AudioCommand[] = [];
     const music = w.sections[entry.section]?.bgm ?? null;
     if (music !== null && h.bgm()?.track !== music) {

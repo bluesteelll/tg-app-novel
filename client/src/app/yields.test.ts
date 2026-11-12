@@ -33,7 +33,7 @@ import type { CueStageProps } from '../ui/state.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import type { WaitRow } from '../requests.test.ts';
-import { ROOM_FADE_MS, TAKE_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
+import { ROOM_FADE_MS, TAKE_FADE_MS, VIEW_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
 import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
 import yieldsSource from './yields.ts?raw';
 
@@ -1100,6 +1100,60 @@ test('yields: a move cue plays when its batch starts', async () => {
     { cue: { kind: 'move', from: 'hall', to: null, via: 'hall.out', how: 'leave' }, box: out },
   ]);
   expect(r.explore.layer).toBeNull();
+  r.yields.dispose();
+});
+
+/** The hall (an exit into the desk, the medal with its prop) and the desk, a zoom view of the hall with no exit back. */
+function zoomWorld(): WorldPublic {
+  const raw = {
+    format: 1,
+    items: { medal: { name: txt('Медаль'), desc: txt('d'), glyph: 'sun' } },
+    docs: {},
+    puzzles: {},
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: { bg: 'hall', title: txt('Hall'), onEnter: [], hotspots: [exit('to_desk', 'desk'), take('medal', 'medal', 'medal')] },
+          desk: { bg: 'cellar', title: txt('Desk'), onEnter: [], hotspots: [look('blotter')], view: { of: 'hall' } },
+        },
+      },
+    },
+  };
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the zoom fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods, version: '6666666666666666' };
+}
+
+test('yields: a zoom move crossfades the bg', async () => {
+  const r = rig({ world: zoomWorld() });
+  await inHall(r);
+  const moves = (from: number): Array<Pick<CueEvent, 'cue' | 'box'>> =>
+    r.cues
+      .slice(from)
+      .filter((e) => e.cue.kind === 'move')
+      .map((e) => ({ cue: e.cue, box: e.box }));
+  // The zoom-in: the desk crossfades over the hall (engine plan §6.3), its move cue at the exit's box.
+  const door = boxOf(r, 'hall.to_desk');
+  let at = r.batches.length;
+  let mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_desk'));
+  await settle();
+  expect(roomOf(r)).toBe('desk');
+  expect(r.batches.slice(at)).toEqual([[{ kind: 'bg', bg: 'cellar', t: 'crossfade', ms: VIEW_FADE_MS }, { kind: 'props', props: [] }]]);
+  expect(moves(mark)).toEqual([{ cue: { kind: 'move', from: 'hall', to: 'desk', via: 'hall.to_desk', how: 'zoom-in' }, box: door }]);
+  // The root back leaves the view by `leave-view`: a zoom-out by no exit, so its cue has no box.
+  expect(r.vm.screens.backVisible).toBe(true);
+  at = r.batches.length;
+  mark = r.cues.length;
+  r.screens.back();
+  await settle();
+  expect(roomOf(r)).toBe('hall');
+  expect(r.batches.slice(at)).toEqual([[{ kind: 'bg', bg: 'hall', t: 'crossfade', ms: VIEW_FADE_MS }, { kind: 'props', props: [{ prop: 'medal', rect: RECT, at: 'hall.medal' }] }]]);
+  expect(moves(mark)).toEqual([{ cue: { kind: 'move', from: 'desk', to: 'hall', via: null, how: 'zoom-out' }, box: null }]);
   r.yields.dispose();
 });
 
