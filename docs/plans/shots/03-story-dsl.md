@@ -28,6 +28,15 @@ fx: shake|flash [ms=N]
 
 Default ms values: E; the owner tunes them (OQ12).
 
+**Ruled: RULINGS 279, 280** — SH2's cut Q4 taken by SH4 (`768fc9d`): on a shot chapter (a chapter that shows a shot
+with a cast, STAGING-DSL §14.1) a `face:` names **no knot asset**. The knot graph's `assetOf` gives none there
+(`client/scripts/story/graph.ts:117-128`; the chapter test `isShotChapter` `:506`, fed the declared shots by the one
+caller, `client/scripts/story.ts:684`), so the knot index and its preload list never name `char/<c>/<x>` for it. Its
+drawn files are the shot pass's (`build/shots.json` `assets`, §3.6): each batch ensures the face file before its
+line (`imageIds`, §5.2), and the step windows' preload of them is SH5a's and SH5b's (planned). On a legacy chapter a `face:` still names its
+sprite. Pinned by `graph: a face on a shot chapter names no asset` and `graph: a face on a chapter whose shots have no
+cast names its sprite` (`client/scripts/story/graph-shot.test.ts:87`, `:97`).
+
 **Batch order** (extends `executor.ts:143-187`):
 1. scene
 2. bg (the cut)

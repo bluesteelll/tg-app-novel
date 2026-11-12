@@ -56,6 +56,14 @@ sprites live in `content` (PPL I-9), so they follow all three.
 - `setExpr` takes the expression's layer and its `MotionSet` (rev. 2: own or reused rest members, §4.5). Rev. 4: the
   batch that changes an expression ensures that face file (drawn: GameSession awaits it, `game.ts:647-654`); the talk
   file is motion and never awaited: until it is live the face speaks with its mouth still, then flaps.
+  **Ruled: RULINGS 275** — as built (SH4 `768fc9d`): the route is `imageIds(visual, { stage, manifest })`
+  (`client/src/app/stage-route.ts:80`), its one caller `stage()` (`client/src/app/game.ts:708`, the one `game.ts` line
+  admitted, Q1 (a)); the plan's `speaker` argument is dropped (it decided talk files, which are never ensured). With
+  the stage before the batch and the chapter's manifest (its rigs), a shot chapter's batch that cuts or changes a face
+  ensures the shot in effect after the cut with its persisted faces: the plate, the sheet by its rule and every
+  visible face file not at rest, never a talk file (`shotSlots`, `client/src/scene/shot-view.ts:109`); without rigs the
+  ids are the sprite stage's. The alternative, a second route rule in `game.ts`, was rejected (a second home for the
+  rule, and over-ensuring persisted faces).
 - (rev. 5, m1) **Face and talk files are slots of the logical stage**: `slotsOf` (`client/src/scene/executor.ts:118-134`)
   gains, per visible face cast member of the shot in effect, `face:<c>` -> `face/<s>/<c>/<x>` (no slot at rest) and
   `talk:<c>` -> `talk/<s>/<c>/<x>` (when the rig's `exprs[x].motion.talk` names that file), both under

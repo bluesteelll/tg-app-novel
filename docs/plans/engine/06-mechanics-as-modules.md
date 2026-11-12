@@ -97,6 +97,20 @@
   iris or sweep plays with the scene's crossfade, not 1 s before it. Fetch: 300,000 B AVIF at an assumed 10 Mbit/s =
   0.24 s, at 2 Mbit/s 1.2 s (ARITHMETIC; the link speed is CLAIM); decode: verify on the budget Android at GM4's cut. `roomRows` notes per room "preloads k of n neighbours"
   (ARITHMETIC from the same inputs, GM4g; a report, not a failure), so the author sees which rooms load on tap.
+  **Ruled: RULINGS 281, 284** — the note as built (GM4g `56cc302`, cut D3 and its O2 model). On `768fc9d`
+  `neighbours()` (`client/src/explore/controller.ts:173-181`) is exit (hotspot) order alone: the distinct rooms R's
+  exits lead to, a locked exit included, a story exit and R itself not ("Back's target first" and a view's child views
+  are GM4's). `roomShown` (`:241-266`) asks for `room:<R>`, `state:<R>`, each neighbour's bg in that order, then each
+  tracked neighbour's `state:` set. The note (`neighbourPreloads`, `client/scripts/budget.ts:1126`) starts from R's own
+  set, img(R) ∪ props(R), and admits each neighbour room's img(n) (its plate and sheet; the runtime preloads a
+  neighbour's bg alone, never its props) first-fit while used + need <= `STEADY_CAP_BYTES`, skipping a refused one, an
+  id already in the set at no byte. k is the worst over a first entry (exit order) and every arrival from a neighbour t
+  (t and the neighbours R shares with t first, then the rest in exit order); `on tap` lists, in exit order, the rooms
+  the first order reaching that k refuses. **The exactness condition:** live at arrival is the room arrived from plus the
+  neighbours it shares with R; a wider keep set is not modelled, and GM4's Back-first changes the request order, not
+  the keep set. **Characters are out:** the usage carries no stage (on the base the hall keeps 901,432 B with two
+  characters on stage, GM4g cut §4.3; the restage removes them, RULINGS 154). A kept `state:` set is asked for after
+  every neighbour bg and the registry never evicts a preload for a preload, so it cannot lower k.
 - **Transition:** a zoom move is a `bg` **crossfade** of `VIEW_FADE_MS` (new constant, 400 ms like `ROOM_FADE_MS`,
   `yields.ts:39`) on today's executor path (`executor.ts:569-578`); the overlay iris from the `via` box is the GM3m
   motion; the scene zoom (`bg-zoom` from the `via` rect) is MR1's (`ScenePending`, §8.5).
@@ -130,6 +144,21 @@
   - GM4's `emit.ts` hunk adds views and `of` to the usage neighbours; every view room gets its own row automatically;
   - **knot-set** (`budget.ts:823-849`): unchanged. A knot entered from a view carries the view's bg as its one carried
     bg (`carriedBound`, `:813-821`).
+  - **Ruled: RULINGS 281, 284** — as built (GM4g `56cc302`, cut D1, D2). `room-set` (`roomRows`,
+    `client/scripts/budget.ts:1169`) = img(R) + props(R) + max(the pair, the largest close-up), the pair the largest
+    img(n) + props(n) over R's neighbour rooms (0 with none); every image through `imgIds` (`:1093`), a close-up never
+    (a CG); an id R and a neighbour share is counted in both terms (an upper bound); a neighbour key not in usage.json
+    FAILs the row. The labels terms stay GM6d2's. **Wording:** a room move is a dip under black, not a crossfade: the
+    room batch is a `bg` with `t: 'fade'` (`client/src/app/yields.ts:715`), whose midpoint swaps the bg and syncs the
+    props (`client/src/scene/executor.ts:923-927`), and both rooms' sets are resident while the move's batch loads
+    (`held`, `yields.ts:726`); that is what the pair bounds. A crossfade with both prop sets fading is a state batch
+    inside one room (`yields.ts:752`, `executor.ts:929-940`). The usage rooms' `neighbourRooms`
+    (`client/scripts/story/emit.ts:93-99`, written by `roomUsage` `:360-387`) are the neighbour room keys in exit order,
+    distinct, a locked exit included, the room itself and a story exit not; they are required on read (`decodeRooms`
+    `:585-624`: a usage.json written before GM4g is refused, never read as rooms with no neighbours), and
+    `RoomUsage = StoryRoomUsage` (`client/scripts/assets/manifest.ts:72`). MEASURED at the merge (RULINGS 284): the
+    hall 17,708,296 -> 20,666,516 B (16.9 -> 19.7 MiB), the cellar 18,695,032 and the study 20,668,128 unchanged, all
+    PASS under 32.0, each noting `preloads 2 of 2` (the hall) or `1 of 1`.
 - **Lints:** depth, section, entry, exits, a view's hotspots inside the safe frame; a device's puzzle has no close-up
   (`world/device-closeup`, GM8i, round 5 W2) and its part rects lie inside the safe frame and below the device bar's
   derived band (`world/device-parts-frame`, round 5 m5, §7.5).
@@ -352,6 +381,15 @@ export function roomImages(w: WorldPublic, room: RoomId): readonly PropId[];
     after V's neighbours. Otherwise P's set is requested again: at V in the background, one request per image whose
     record ended, or at P's return when refused at V. A priority between preload holders would keep a fitting set with
     no new request; that is the carried preload-priority lane (RULINGS 152 Q14 (b)), which W1 does not need.
+  - **RULINGS 245 Q8, as built** (Changed by RULINGS 290 (as of `768fc9d`; docs lane `docs-errata-17`, group A);
+    SH4 `768fc9d`, rider R3): a prop that moves keeps its live record, drawn at its new anchor in the same batch with
+    no new take, whether into an anchor the target names or out of one to its own key (`syncProps`,
+    `client/src/scene/executor.ts:769-791`); and one prop may sit at two anchors, since the logical stage keys a
+    placement by its anchor and prop (`at ?? prop`, `reduce` `:233-235`), so both stay. Pinned by `executor: a prop
+    moving to another anchor shows at its new key in the same batch` (`client/src/scene/executor.test.ts:1793`),
+    `executor: one prop at two anchors keeps both` (`:1837`), and the restore pins `executor: a restore re-keys a
+    multi-view anchor without a new anchor` (`:1810`) and `executor: a restore re-keys a multi-view anchor by its patch
+    alone` (`:1823`). Q2's shared-prop lint stays carried (`client/scripts/story/world.test.ts`).
   - **The tests' mutations** as restated are [12c GM3b](12c-lanes-gm3.md#gm3b-mech-state-visuals)'s; MEASURED at the
     merge (RULINGS 258): `drawer_open` 6,495 B AVIF / 10,034 B WebP, the study's room-set row 18.8 -> 19.7 MiB. The
     chapter `transfer` row is 12,000,000 B since SH3b (`client/scripts/budget.ts:178`; RULINGS 154 OQ5, 262), not the
