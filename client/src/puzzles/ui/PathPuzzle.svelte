@@ -1,19 +1,30 @@
 <script lang="ts">
-  // The `path` puzzle (engine plan §7.2, §8.3; GM7p D8): one line from end to end through every open cell. The grid is
-  // one surface of square cells in row-major order, each a part (`data-cue-part`); an open cell is a button named by its
-  // row and column (an end says so), pressed while the line holds it, a blocked cell is no button. The ends carry a
-  // knob and the drawn cells a tint, with the line drawn through their centres, so nothing relies on colour alone.
-  // Presentational: the line is the `answer` prop, and every step leaves as a fresh array through `onchange`; the line's
-  // end is always the prop's last cell. A cell's activation steps as `touch` does. The report is the reach edge's
+  // The `path` puzzle (engine plan §7.2, §8.3; GM7p D8-D10): one line from end to end through every open cell. The
+  // grid is one surface of square cells in row-major order, each a part (`data-cue-part`); an open cell is a button
+  // named by its row and column (an end says so), pressed while the line holds it, a blocked cell is no button. The ends
+  // carry a knob and the drawn cells a tint, with the line drawn through their centres, so nothing relies on colour
+  // alone. Presentational: the line is the `answer` prop, and every step leaves as a fresh array through `onchange`; the
+  // line's end is always the prop's last cell, never the stroke's. The report is the reach edge's
   // (`puzzles/play/reach.ts`) over the `answer` prop, never a handler's: once per turn to reached, the canonical form.
   // Params that do not decode as a path puzzle render nothing actionable.
+  //
+  // The stroke (D9): the surface takes the pointer's capture at a down and reads every pointer event by its
+  // coordinates over its own box in visual px (so the column's `transform: scale` cancels out), never by the event's
+  // target. A down touches the cell under it; each move enters every cell its segment crosses, each through `advance`,
+  // with one `path-stroke` cue per accepted step and one `onchange` per event. The cells take no pointer events, so a
+  // tap is one step on every engine and its click lands on the surface, which handles none; a cell's own click is a
+  // keyboard or an assistive press. A stroke is live while the surface holds its pointer's capture: an up releases it,
+  // and the user agent releases it right after a cancel (Pointer Events 3 §4.1.3.3), which ends the stroke with no
+  // listener of its own (D9a: a cancel attribute is no delegated event, and its runtime would join the entry chunk).
+  // Every handler is delegated to the mount root, so none outlives the component.
   import { mechT } from '../../i18n/mechanics.ts';
-  import { PATH_PLAY, touch } from '../play/path.ts';
+  import { PATH_PLAY, advance, cellAt, cellsAlong, touch } from '../play/path.ts';
+  import type { GridPoint } from '../play/path.ts';
   import { reachEdge } from '../play/reach.ts';
   import type { PuzzleUiProps } from '../registry.ts';
   import { PUZZLE_RULES } from '../rules/index.ts';
 
-  let { params, answer, busy, lang, onchange, onreach }: PuzzleUiProps = $props();
+  let { params, answer, busy, lang, onchange, onreach, oncue }: PuzzleUiProps = $props();
 
   const uid = $props.id();
   const grid = $derived.by(() => {
@@ -51,6 +62,88 @@
       onchange(next);
     }
   }
+
+  /** The surface (bound inside the decoded block, so it comes and goes with it); read by the pointer handlers only. */
+  let surface: HTMLElement | undefined = $state();
+  /** The stroke: its pointer and its last point in grid units; null between strokes. No render reads it. */
+  let stroke: { readonly id: number; last: GridPoint } | null = null;
+
+  /** The live stroke: one whose pointer the surface still captures (an up or the user agent's release ends it). */
+  function live(): boolean {
+    return stroke !== null && surface !== undefined && surface.hasPointerCapture(stroke.id);
+  }
+
+  /** The event's point in grid units over the surface's box, or null without a usable box. */
+  function pointOf(e: PointerEvent): GridPoint | null {
+    if (grid === null || surface === undefined) {
+      return null;
+    }
+    const r = surface.getBoundingClientRect();
+    if (!(r.width > 0 && r.height > 0 && Number.isFinite(r.width) && Number.isFinite(r.height))) {
+      return null;
+    }
+    return { x: ((e.clientX - r.left) / r.width) * grid.cols, y: ((e.clientY - r.top) / r.height) * grid.rows };
+  }
+
+  function down(e: PointerEvent): void {
+    // A pointer cannot go down twice without an up or a cancel: its earlier stroke ended unseen (a recycled id).
+    if (stroke !== null && stroke.id === e.pointerId) {
+      stroke = null;
+    }
+    // Busy, a mouse's other buttons, or a second pointer while a stroke is live: no stroke.
+    if (grid === null || surface === undefined || busy || (e.pointerType === 'mouse' && e.button !== 0) || live()) {
+      return;
+    }
+    const at = pointOf(e);
+    const cell = at === null ? null : cellAt(grid, at.x, at.y);
+    if (at === null || cell === null) {
+      return;
+    }
+    const next = touch(grid, answer, cell);
+    // A stroke starts where it can draw: on a cell it steps to, or on the line's end.
+    if (next === null && cell !== answer.at(-1)) {
+      return;
+    }
+    stroke = { id: e.pointerId, last: at };
+    surface.setPointerCapture(e.pointerId);
+    if (next !== null) {
+      oncue?.('path-stroke', cell);
+      onchange(next);
+    }
+  }
+
+  function move(e: PointerEvent): void {
+    if (grid === null || stroke === null || e.pointerId !== stroke.id || busy || !live()) {
+      return;
+    }
+    const at = pointOf(e);
+    if (at === null) {
+      return;
+    }
+    // The steps run on a local copy: the prop updates between events, never within one.
+    let a = answer;
+    for (const cell of cellsAlong(grid, stroke.last, at)) {
+      const next = advance(grid, a, cell);
+      if (next !== null) {
+        a = next;
+        oncue?.('path-stroke', cell);
+      }
+    }
+    stroke.last = at;
+    if (a !== answer) {
+      onchange(a);
+    }
+  }
+
+  function up(e: PointerEvent): void {
+    if (stroke === null || e.pointerId !== stroke.id) {
+      return;
+    }
+    stroke = null;
+    if (surface?.hasPointerCapture(e.pointerId) === true) {
+      surface.releasePointerCapture(e.pointerId);
+    }
+  }
 </script>
 
 {#if grid !== null}
@@ -64,6 +157,10 @@
     style:aspect-ratio="{grid.cols} / {grid.rows}"
     style:grid-template-columns="repeat({grid.cols}, 1fr)"
     style:grid-template-rows="repeat({grid.rows}, 1fr)"
+    bind:this={surface}
+    onpointerdown={down}
+    onpointermove={move}
+    onpointerup={up}
   >
     {#each cells as cell (cell)}
       {#if grid.blocked.includes(cell)}
@@ -114,6 +211,7 @@
     gap: 0;
   }
 
+  /* No pointer event targets a cell: every hit, a tap's click included, is the surface's on every engine (CQ-c). */
   .cell {
     position: relative;
     display: flex;
@@ -126,6 +224,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
+    pointer-events: none;
   }
 
   /* The gutter is drawn inside each cell: the tile is inset, the cell box itself has no gap. */

@@ -17,6 +17,7 @@ import CodeLock from './CodeLock.svelte';
 import codeLockSource from './CodeLock.svelte?raw';
 import OrderPuzzle from './OrderPuzzle.svelte';
 import PathPuzzle from './PathPuzzle.svelte';
+import pathSource from './PathPuzzle.svelte?raw';
 
 // svelteTesting()'s auto-cleanup does not reach the `dom` project (L14a), so each test unmounts what it rendered here.
 afterEach(() => cleanup());
@@ -337,4 +338,254 @@ test("path: a cell's keyboard activation steps like a tap", async () => {
   // Params that do not decode render nothing actionable.
   const { queryAllByRole } = render(PathPuzzle, props({ params: { cols: 1, rows: 2, ends: [0, 1], blocked: [] }, answer: [] }));
   expect(queryAllByRole('button')).toEqual([]);
+});
+
+// The stroke (D9, D9a): happy-dom lays nothing out and does no hit testing, so the surface's box is stubbed and the
+// pointer events are dispatched on the surface (or a cell, to show the target is never read), bubbling to the mount
+// root that Svelte's delegated handlers listen on; happy-dom keeps each element's captured pointer ids.
+
+type PointerKind = 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel';
+
+/** A drawn PathPuzzle's surface with its box stubbed (300 x 200 by default: a 3 x 2 grid of 100 px cells). */
+function rig(d: ReturnType<typeof drawn>, box: { x: number; y: number; w: number; h: number } = { x: 0, y: 0, w: 300, h: 200 }) {
+  const surface = d.view.container.querySelector<HTMLElement>('[data-cue-gesture="path-stroke"]');
+  if (surface === null) {
+    throw new Error('invariant: the stroke surface is rendered');
+  }
+  vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue(new DOMRect(box.x, box.y, box.w, box.h));
+  /** Cell `c`'s centre in the stubbed box of the 3 x 2 grid. */
+  const centre = (c: number): { clientX: number; clientY: number } => ({
+    clientX: box.x + ((c % 3) + 0.5) * (box.w / 3),
+    clientY: box.y + (Math.floor(c / 3) + 0.5) * (box.h / 2),
+  });
+  /** One pointer event at cell `c`'s centre (or where `init` says), from pointer `id`, then Svelte's flush. */
+  const at = (type: PointerKind, c: number, id = 1, init: PointerEventInit = {}, on: Element = surface): void => {
+    on.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: id, ...centre(c), ...init }));
+    flushSync();
+  };
+  /** The cancel as the user agent delivers it: `pointercancel`, then the capture's implicit release (§4.1.3.3). */
+  const cancel = (c: number, id = 1): void => {
+    at('pointercancel', c, id);
+    surface.releasePointerCapture(id);
+  };
+  return { surface, at, cancel };
+}
+
+test('path: a stroke that reaches the end reports once', () => {
+  // N2: one stroke over every cell reports the canonical form once; moves inside the end cell add nothing.
+  const d = drawn();
+  const s = rig(d);
+  s.at('pointerdown', 0);
+  for (const c of [1, 2, 5, 4, 3]) {
+    s.at('pointermove', c);
+  }
+  expect(d.changes.at(-1)).toEqual(P32_SOLVE);
+  expect(d.reports).toEqual([P32_SOLVE]);
+  s.at('pointermove', 3, 1, { clientX: 20, clientY: 180 });
+  s.at('pointermove', 3, 1, { clientX: 80, clientY: 120 });
+  expect(d.reports).toEqual([P32_SOLVE]);
+  // Back to 4 and in again to 3: a new turn to reached, reported again.
+  s.at('pointermove', 4);
+  s.at('pointermove', 3);
+  s.at('pointerup', 3);
+  expect(d.changes.slice(-2)).toEqual([[0, 1, 2, 5, 4], P32_SOLVE]);
+  expect(d.reports).toEqual([P32_SOLVE, P32_SOLVE]);
+});
+
+test("path: a stroke starts only on the path's end or an end cell", () => {
+  const d = drawn();
+  const s = rig(d);
+  // An empty path: a down on a cell that is no end starts nothing, and its moves draw nothing.
+  s.at('pointerdown', 1);
+  s.at('pointermove', 2);
+  s.at('pointerup', 2);
+  expect([d.changes, d.cues, s.surface.hasPointerCapture(1)]).toEqual([[], [], false]);
+  // A mouse's other buttons start nothing either; its primary button does.
+  s.at('pointerdown', 0, 1, { pointerType: 'mouse', button: 2 });
+  expect([d.changes, s.surface.hasPointerCapture(1)]).toEqual([[], false]);
+  s.at('pointerdown', 0, 1, { pointerType: 'mouse', button: 0 });
+  s.at('pointermove', 1, 1, { pointerType: 'mouse', button: 0 });
+  s.at('pointerup', 1, 1, { pointerType: 'mouse', button: 0 });
+  expect(d.changes).toEqual([[0], [0, 1]]);
+  // A down on the line's end starts a stroke that steps nothing until it moves; on the other end it restarts there.
+  s.at('pointerdown', 1);
+  expect([d.changes.length, s.surface.hasPointerCapture(1)]).toEqual([2, true]);
+  s.at('pointerup', 1);
+  s.at('pointerdown', 3);
+  s.at('pointermove', 4);
+  s.at('pointerup', 4);
+  expect(d.changes.slice(-2)).toEqual([[3], [3, 4]]);
+  // A mismatch resets the prop mid-stroke (yields' reset to the start answer): the stroke draws nothing more.
+  s.at('pointerdown', 4);
+  d.p.answer = [];
+  flushSync();
+  s.at('pointermove', 5);
+  s.at('pointermove', 2);
+  s.at('pointerup', 2);
+  expect(d.changes).toHaveLength(4);
+});
+
+test('path: a stroke back onto the previous cell takes the last cell back', () => {
+  const d = drawn();
+  const s = rig(d);
+  s.at('pointerdown', 0);
+  s.at('pointermove', 1);
+  s.at('pointermove', 2);
+  s.at('pointermove', 1);
+  expect(d.changes).toEqual([[0], [0, 1], [0, 1, 2], [0, 1]]);
+  // The step's cue lands at the cell entered.
+  expect(d.cues).toEqual(['path-stroke@0', 'path-stroke@1', 'path-stroke@2', 'path-stroke@1']);
+});
+
+test('path: a move across cells enters each cell it crosses', () => {
+  const d = drawn();
+  const s = rig(d);
+  s.at('pointerdown', 0);
+  // One fast move from cell 0's centre to cell 2's: both cells entered, one cue each, one onchange.
+  s.at('pointermove', 2);
+  expect(d.changes).toEqual([[0], [0, 1, 2]]);
+  expect(d.cues).toEqual(['path-stroke@0', 'path-stroke@1', 'path-stroke@2']);
+  // Back the same way: each cell crossed is a step through advance, here two steps back, still one onchange.
+  s.at('pointermove', 0);
+  expect(d.changes).toEqual([[0], [0, 1, 2], [0]]);
+  expect(d.cues.slice(3)).toEqual(['path-stroke@1', 'path-stroke@0']);
+});
+
+test('path: a stroke that leaves the grid continues when it returns', () => {
+  const d = drawn();
+  const s = rig(d);
+  s.at('pointerdown', 0);
+  s.at('pointermove', 0, 1, { clientX: -50, clientY: 50 });
+  s.at('pointermove', 0, 1, { clientX: -80, clientY: 260 });
+  expect([d.changes, s.surface.hasPointerCapture(1)]).toEqual([[[0]], true]);
+  s.at('pointermove', 1);
+  expect(d.changes).toEqual([[0], [0, 1]]);
+});
+
+test('path: a cancelled stroke keeps its cells and the next starts from the end', () => {
+  // Script B (08b:172-173), ids 1 then 2: down 0, move 1, cancel, down 1, move 2, up gives [0, 1, 2].
+  const d = drawn();
+  const s = rig(d);
+  s.at('pointerdown', 0, 1);
+  expect(s.surface.hasPointerCapture(1)).toBe(true);
+  s.at('pointermove', 1, 1);
+  // A second pointer while the stroke is live: refused, no capture.
+  s.at('pointerdown', 4, 2);
+  expect([d.changes, s.surface.hasPointerCapture(2)]).toEqual([[[0], [0, 1]], false]);
+  // The cancel: the stroke ends by the release, the drawn cells stay and nothing posts.
+  s.cancel(1, 1);
+  expect([s.surface.hasPointerCapture(1), d.changes.length, d.reports]).toEqual([false, 2, []]);
+  s.at('pointerdown', 1, 2);
+  s.at('pointermove', 2, 2);
+  s.at('pointerup', 2, 2);
+  expect(d.changes.at(-1)).toEqual([0, 1, 2]);
+  expect(d.cues).toEqual(['path-stroke@0', 'path-stroke@1', 'path-stroke@2']);
+  expect(s.surface.hasPointerCapture(2)).toBe(false);
+  // O1: an id recycled after a cancel, its new down under implicit capture (§9.4), restarts the stroke: the down steps.
+  s.at('pointerdown', 2, 3);
+  s.cancel(2, 3);
+  s.surface.setPointerCapture(3);
+  s.at('pointerdown', 1, 3);
+  expect(d.changes.at(-1)).toEqual([0, 1]);
+  expect(d.cues.at(-1)).toBe('path-stroke@1');
+  // D9a: no listener for an event Svelte does not delegate (its runtime would join the entry chunk).
+  expect(pathSource).not.toMatch(/\bon(?:pointercancel|lostpointercapture|gotpointercapture|pointerleave|pointerenter|pointerout|pointerover)\s*=/);
+});
+
+test('path: a second pointer is ignored while a stroke is live', () => {
+  const d = drawn();
+  const s = rig(d);
+  s.at('pointerdown', 0, 1);
+  s.at('pointermove', 1, 1);
+  // The control: the first pointer's stroke draws.
+  expect(d.changes).toEqual([[0], [0, 1]]);
+  // A second finger: no capture, and neither its down nor its moves step.
+  s.at('pointerdown', 4, 2);
+  s.at('pointermove', 2, 2);
+  s.at('pointermove', 5, 2);
+  s.at('pointerup', 5, 2);
+  expect([d.changes, s.surface.hasPointerCapture(2), s.surface.hasPointerCapture(1)]).toEqual([[[0], [0, 1]], false, true]);
+  // The first stroke goes on.
+  s.at('pointermove', 2, 1);
+  expect(d.changes.at(-1)).toEqual([0, 1, 2]);
+});
+
+test('path: input while busy changes nothing', () => {
+  const d = drawn({ busy: true });
+  const s = rig(d);
+  s.at('pointerdown', 0);
+  s.at('pointermove', 1);
+  s.at('pointerup', 1);
+  expect([d.changes, d.cues, s.surface.hasPointerCapture(1)]).toEqual([[], [], false]);
+  // The control: the same input, not busy, steps and captures.
+  d.p.busy = false;
+  flushSync();
+  s.at('pointerdown', 0);
+  expect([d.changes, d.cues, s.surface.hasPointerCapture(1)]).toEqual([[[0]], ['path-stroke@0'], true]);
+  // Busy mid-stroke: moves step nothing, and an up still ends the stroke.
+  d.p.busy = true;
+  flushSync();
+  s.at('pointermove', 1);
+  s.at('pointerup', 1);
+  expect([d.changes, s.surface.hasPointerCapture(1)]).toEqual([[[0]], false]);
+});
+
+test('path: a tap steps once and its click adds nothing', () => {
+  const d = drawn({ answer: [0] });
+  const s = rig(d);
+  // A tap next to the end: down and up with no move, one step through the down's touch.
+  s.at('pointerdown', 1);
+  s.at('pointerup', 1);
+  expect([d.changes, d.cues]).toEqual([[[0, 1]], ['path-stroke@1']]);
+  // Its click lands on the surface (the cells take no pointer events): nothing more.
+  s.surface.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1, clientX: 150, clientY: 50 }));
+  flushSync();
+  expect([d.changes, d.cues]).toEqual([[[0, 1]], ['path-stroke@1']]);
+  // CQ-c, read from the source (happy-dom does no hit testing): no pointer event targets a cell.
+  expect(declarationsFor(pathSource, 'cell').get('pointer-events')).toBe('none');
+});
+
+test("path: the cell under the pointer comes from the surface's box", () => {
+  // The column below 360 px is `transform: scale` (RULINGS 242): the box at half scale, offset, maps the same cells.
+  const d = drawn();
+  const s = rig(d, { x: 10, y: 20, w: 150, h: 100 });
+  s.at('pointerdown', 0);
+  expect(d.changes).toEqual([[0]]);
+  // A move whose target is cell 4 but whose point is in cell 1: the point decides.
+  s.at('pointermove', 1, 1, {}, d.cell(4));
+  expect(d.changes).toEqual([[0], [0, 1]]);
+  // The box arithmetic assumes the surface's box is the grid's: no padding and no border on it.
+  const box = declarationsFor(pathSource, 'surface');
+  expect([box.get('padding'), box.get('border'), box.get('gap')]).toEqual(['0', '0', '0']);
+});
+
+test('path: a step that changes nothing calls no onchange', () => {
+  const d = drawn({ answer: [0, 1] });
+  const s = rig(d);
+  // V2: a down on the end, a move inside its cell, and a click on the end change nothing and call nothing.
+  s.at('pointerdown', 1);
+  s.at('pointermove', 1, 1, { clientX: 120, clientY: 30 });
+  s.at('pointermove', 1, 1, { clientX: 180, clientY: 70 });
+  d.cell(1).click();
+  flushSync();
+  expect([d.changes, d.cues]).toEqual([[], []]);
+  // The control: a step that changes the line calls onchange once.
+  s.at('pointermove', 2);
+  expect(d.changes).toEqual([[0, 1, 2]]);
+});
+
+test('path: a pointer event after unmount reports nothing', () => {
+  const d = drawn();
+  const s = rig(d);
+  s.at('pointerdown', 0);
+  // The control: a move before unmount draws.
+  s.at('pointermove', 1);
+  expect(d.changes).toEqual([[0], [0, 1]]);
+  d.view.unmount();
+  // O-a: every handler is delegated to the mount root, which a detached surface's events never reach.
+  s.at('pointermove', 2);
+  s.at('pointermove', 5);
+  s.at('pointerup', 5);
+  s.at('pointercancel', 5);
+  expect([d.changes, d.cues, d.reports]).toEqual([[[0], [0, 1]], ['path-stroke@0', 'path-stroke@1'], []]);
 });

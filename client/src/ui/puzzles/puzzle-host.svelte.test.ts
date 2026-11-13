@@ -547,9 +547,55 @@ test('puzzles: every declared control emits its cue', () => {
       }
     }
   }
+  // A gesture control's cues are its steps (GM7p): scripts A and B of 08b:171-173 on a path frame whose answer follows
+  // `onchange` as the session's does, each over two parts or more, so each step's element must be its own cell (G1:
+  // the host resolves `[data-cue-part="<index>"]` per step). B's cancel is the user agent's: the event, then the release.
+  const scripts: ReadonlyArray<readonly [string, ReadonlyArray<readonly [string, number, number]>]> = [
+    ['A', [['pointerdown', 0, 1], ['pointermove', 1, 1], ['pointermove', 2, 1], ['pointerup', 2, 1]]],
+    ['B', [['pointerdown', 0, 1], ['pointermove', 1, 1], ['pointercancel', 1, 1], ['pointerdown', 1, 2], ['pointermove', 2, 2], ['pointerup', 2, 2]]],
+  ];
+  for (const [script, steps] of scripts) {
+    const played: string[] = [];
+    const els: Array<Element | null> = [];
+    const props: PuzzleHostProps = $state(
+      hostProps({
+        frame: frameOf({ mode: 'explore', type: 'path', params: { cols: 3, rows: 2, ends: [0, 3], blocked: [] }, answer: [], awaiting: false, ui: PathPuzzle }),
+        onchange: (a: readonly number[]) => {
+          if (props.frame !== null) {
+            props.frame.answer = a;
+          }
+        },
+        oncue: (e: CueEvent) => {
+          if (e.cue.kind === 'ui') {
+            played.push(`ui:${e.cue.control}${e.cue.index === null ? '' : `@${e.cue.index}`}`);
+            els.push(e.el);
+          }
+        },
+      }),
+    );
+    const { container, unmount } = render(PuzzleHost, props);
+    const surface = must(container.querySelector('[data-cue-gesture="path-stroke"]'), 'the stroke surface');
+    // happy-dom lays nothing out: a 300 x 200 box, cell c's centre at ((c % 3) * 100 + 50, row * 100 + 50).
+    vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 300, 200));
+    for (const [type, cell, id] of steps) {
+      surface.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: id, clientX: (cell % 3) * 100 + 50, clientY: Math.floor(cell / 3) * 100 + 50 }));
+      if (type === 'pointercancel') {
+        surface.releasePointerCapture(id);
+      }
+      flushSync();
+    }
+    expect(played, script).toEqual(['ui:path-stroke@0', 'ui:path-stroke@1', 'ui:path-stroke@2']);
+    const cells = [0, 1, 2].map((i) => must(container.querySelector(`[data-cue-part="${i}"]`), `cell ${i}`));
+    expect(els, script).toEqual(cells);
+    expect(new Set(els).size, script).toBe(3);
+    for (const key of played) {
+      names.add(key.replace(/@.*$/, ''));
+    }
+    unmount();
+  }
   // Every control the frame family declares was shown and tapped (the controls gate holds each name to its type).
   expect([...names].sort()).toEqual(
-    ['dial-down', 'dial-up', 'give-up-ask', 'give-up-no', 'give-up-yes', 'hint-more', 'hint-use', 'order-slot', 'path-cell', 'puzzle-hint', 'puzzle-retry', 'puzzle-try'].map(
+    ['dial-down', 'dial-up', 'give-up-ask', 'give-up-no', 'give-up-yes', 'hint-more', 'hint-use', 'order-slot', 'path-cell', 'path-stroke', 'puzzle-hint', 'puzzle-retry', 'puzzle-try'].map(
       (n) => `ui:${n}`,
     ),
   );
