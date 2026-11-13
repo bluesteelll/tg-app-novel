@@ -169,7 +169,17 @@ test('time to first line under throttling', async ({ page, browser, baseURL, vie
     .toBe(true);
   const chunkStart = entries.find((e) => e.path === metaChunk)?.start ?? 0;
   const ch1Story = entries.find((e) => /^\/assets\/ch1\.story-[^/]+\.json$/.test(e.path));
-  const batch = entries.filter((e) => firstKnotImages.has(e.path) && e.start < lineAt);
+  // Shots §5.8 (lane SH5b): a fresh start is a chapter entry, so an image whose half was fetched before the line is
+  // staged from it, and its full files are its upgrade, which nothing awaits: not files of the batch.
+  const staged = (ch1Meta.knots[ch1Meta.firstKnot]?.assets ?? []).flatMap((id) => {
+    const a = ch1Assets.assets[id];
+    const half = a?.half;
+    const halves = half === undefined ? [] : [half.avif.url, half.webp.url];
+    const full = [a?.avif?.url, a?.webp?.url].filter((u): u is string => u !== undefined);
+    return a?.kind === 'image' && entries.some((e) => halves.includes(e.path) && e.start < lineAt) ? [{ id, halves, full }] : [];
+  });
+  const upgrades = new Set(staged.flatMap((s) => s.full));
+  const batch = entries.filter((e) => firstKnotImages.has(e.path) && e.start < lineAt && !upgrades.has(e.path));
   console.log(
     `G2: the meta controller chunk requested at ${chunkStart.toFixed(0)} ms; ch1's story JSON ended at ` +
       `${ch1Story?.end.toFixed(0) ?? 'none'} ms; first batch ${batch.map((e) => `${e.path} ended ${e.end.toFixed(0)} ms`).join(', ')}`,
@@ -179,6 +189,32 @@ test('time to first line under throttling', async ({ page, browser, baseURL, vie
   expect(chunkStart, "the meta controller chunk is requested after the first line's chapter and its first batch's images").toBeGreaterThanOrEqual(
     Math.max(ch1Story?.end ?? Number.POSITIVE_INFINITY, ...batch.map((e) => e.end)),
   );
+  // Shots §5.8 step 3 (lane SH5b): an upgrade starts at its batch's swap point, which follows the build, which follows
+  // `ensure`'s resolution, which follows each awaited half's decode and so its response's end. The swap may come after
+  // the read above (a dip's black), so the entries are read again until every staged image's upgrade answered.
+  expect(staged.length, "ch1's first batch staged from its halves: a chapter entry on a full-tier session").toBeGreaterThan(0);
+  const halfPaths = new Set(staged.flatMap((s) => s.halves));
+  let after = entries;
+  await expect
+    .poll(
+      async () => {
+        after = await timings();
+        return staged.every((s) => after.some((e) => s.full.includes(e.path)));
+      },
+      { timeout: LINE_MS, message: "every staged image's upgrade answered" },
+    )
+    .toBe(true);
+  const halvesEnd = Math.max(...after.filter((e) => halfPaths.has(e.path) && e.start < lineAt).map((e) => e.end));
+  console.log(
+    `G2: staged ${staged.map((s) => s.id).join(', ')}; first-knot entries ` +
+      `${after
+        .filter((e) => firstKnotImages.has(e.path))
+        .map((e) => `${e.path} started ${e.start.toFixed(0)} ended ${e.end.toFixed(0)} ms`)
+        .join(', ')}; the staged halves' latest end ${halvesEnd.toFixed(0)} ms`,
+  );
+  for (const e of after.filter((x) => upgrades.has(x.path))) {
+    expect(e.start, `${e.path} (an upgrade) starts after every staged half's response ended`).toBeGreaterThanOrEqual(halvesEnd);
+  }
 
   // Critique W5: the throttle was live. The engine chunk's bytes cannot arrive faster than the emulated link.
   const timing = await engineTiming(page, engine);
