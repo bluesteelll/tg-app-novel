@@ -5787,7 +5787,7 @@ test('game: a save inside an owned chapter whose load fails other than 403 shows
   }
   // ch2 still owned, its load failing other than the server's 403: the paywall shows only on a 403 (cut D-r6-4,
   // principle 1), so a transient failure gets chapterFailed's notice and its Retry, never a paywall over a bought chapter.
-  const failures: readonly ChapterLoadError[] = [{ kind: 'network', detail: 'offline' }, { kind: 'not-found' }, { kind: 'session-expired' }];
+  const failures: readonly ChapterLoadError[] = [{ kind: 'network', detail: 'offline' }, { kind: 'not-found' }, { kind: 'session-expired' }, { kind: 'http', status: 500 }];
   const rows: unknown[] = [];
   for (const failure of failures) {
     const h = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'], slots: new Map([['s1', saved]]) });
@@ -5801,7 +5801,102 @@ test('game: a save inside an owned chapter whose load fails other than 403 shows
     ['network', false, [], 'error', false],
     ['not-found', false, [], 'error', false],
     ['session-expired', false, [], 'reopen', false],
+    ['http', false, [], 'error', false],
   ]);
+});
+
+/** A ch2 owner's manual save `s1` at ch2's second line: a body inside ch2 with its ink, at a line other than the first. */
+async function savedInsideCh2(): Promise<SaveFull> {
+  const first = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'] });
+  await playManorCh1(first);
+  await first.game.advance(); // END: the change, then ch2's first line
+  await first.game.advance(); // l002
+  await first.game.save('s1');
+  const saved = first.save().slots.get('s1');
+  first.game.dispose();
+  if (saved === undefined) {
+    throw new Error('invariant: the owner session saved s1');
+  }
+  const body = decodeSave(saved.body);
+  expect(body.ok ? [body.value.chapterId, body.value.ink !== null, body.value.at.lineId] : body).toEqual([CH2, true, 'ch2.study.l002']);
+  return saved;
+}
+
+test('game: a save inside a paid chapter refunded again between its purchase and its resume opens the paywall again, and a later purchase resumes it', async () => {
+  const saved = await savedInsideCh2();
+  const h = harness({ chapters: [manorCh1(), manorCh2()], slots: new Map([['s1', saved]]), invoice: ['paid', 'paid'] });
+  expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 's1' })).ok).toBe(true);
+  expect([overlayKinds(h), h.vm.stageTap], 'refunded since: the paywall').toEqual([['paywall'], true]);
+  const go = holdLoad(h, 'ch2'); // startPending's resume of the saved body
+  h.game.buy();
+  await settle();
+  await settle();
+  expect([h.vm.paywall, h.vm.stageTap], 'paid: the resume loads').toEqual([null, false]);
+  h.owned.delete('ch2'); // refunded in between: the server answers the held load with 403 (the server wins, P9)
+  go();
+  await settle();
+  await settle();
+  expect([overlayKinds(h), lineOf(h.vm), h.vm.stageTap, h.vm.notice?.kind ?? null], 'the paywall again, no error notice').toEqual([['paywall'], null, true, null]);
+  h.game.buy();
+  await settle();
+  await settle();
+  expect([h.vm.paywall, lineOf(h.vm)], 'bought again: the save resumes as saved').toEqual([null, 'ch2.study.l002']);
+  h.game.dispose();
+});
+
+test("game: a saved body's resume follows the server's answer for its chapter, whatever the client's list says", async () => {
+  const saved = await savedInsideCh2();
+  type Server = 'delivered' | 'not-entitled' | 'network';
+  const servers: readonly Server[] = ['delivered', 'not-entitled', 'network'];
+  const answer = (server: Server): Result<LoadedChapter, ChapterLoadError> => {
+    switch (server) {
+      case 'delivered':
+        return { ok: true, value: manorCh2() };
+      case 'not-entitled':
+        return { ok: false, error: { kind: 'not-entitled' } };
+      case 'network':
+        return { ok: false, error: { kind: 'network', detail: 'offline' } };
+      default: {
+        const never: never = server;
+        return never;
+      }
+    }
+  };
+  // [started.ok, overlays, line, notice, stage tap]. The model has no list term on purpose: the server is the source
+  // of truth for entitlements (principle 1, cut D-r6-4), and the client's list is a cache that may disagree either way.
+  // The body resumes as saved when the chapter is delivered, the paywall opens on the server's 403 only, and any other
+  // failure gets chapterFailed's notice.
+  const model = (server: Server): unknown[] => {
+    switch (server) {
+      case 'delivered':
+        return [true, [], 'ch2.study.l002', null, false];
+      case 'not-entitled':
+        return [true, ['paywall'], null, null, true];
+      case 'network':
+        return [false, [], null, 'error', false];
+      default: {
+        const never: never = server;
+        return never;
+      }
+    }
+  };
+  const lists: readonly (readonly [string, readonly string[]])[] = [
+    ['owned', ['ch2']],
+    ['not owned', []],
+  ];
+  const rows: unknown[] = [];
+  for (const [list, owned] of lists) {
+    for (const server of servers) {
+      const h = harness({ chapters: [manorCh1(), manorCh2()], owned, slots: new Map([['s1', saved]]) });
+      const load = h.loader.load;
+      h.loader.load = async (ch, o) => (ch.id === CH2 ? answer(server) : load(ch, o));
+      const started = await h.game.start({ kind: 'slot', story: MANOR, slot: 's1' });
+      rows.push([list, server, started.ok, overlayKinds(h), lineOf(h.vm), h.vm.notice?.kind ?? null, h.vm.stageTap]);
+      h.game.dispose();
+    }
+  }
+  expect(rows).toHaveLength(6);
+  expect(rows).toEqual(lists.flatMap(([list]) => servers.map((server) => [list, server, ...model(server)])));
 });
 
 test("game: a resume of another save or an exit to the stories withdraws the stage's tap", async () => {
