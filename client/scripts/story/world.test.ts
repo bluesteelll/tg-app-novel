@@ -633,6 +633,17 @@ test('lint: world/var-type red on fixture', () => {
   expect(found.map((f) => f.message).sort()).toEqual(['VAR it_medal_sun is declared int: the projection writes a bool (X2)', 'VAR pz_drawer is declared bool: the projection writes an int (X2)']);
 });
 
+test('story: fl_<flag> is a bool projection', () => {
+  // Module `flags` (engine plan §6.5): `fl_<f>` is written as a bool, so a VAR declared int is refused at the flag's
+  // declaration; an undeclared flag's VAR is no projection.
+  const w = base();
+  w['flags'] = { f: { section: 'manor' } };
+  const found = of(lint(w, { declared: { fl_f: 'int', fl_g: 'int' } }), 'world/var-type');
+  expect(found.map((f) => [f.line, f.message])).toEqual([[jsonLine(w, '"f": {'), 'VAR fl_f is declared int: the projection writes a bool (X2)']]);
+  // The positive control: declared bool, no finding.
+  expect(of(lint(w, { declared: { fl_f: 'bool' } }), 'world/var-type')).toEqual([]);
+});
+
 /** A lock whose third medallion sits behind that same lock; the hall's hatch, which takes the moon, is the other way out. */
 function softlockWorld(section = 's'): Json {
   return mini({

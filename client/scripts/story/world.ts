@@ -719,6 +719,9 @@ export function lintWorld(
   for (const id of Object.keys(w.docs)) {
     varType(`dc_${id}`, 'bool', `docs.${id}`);
   }
+  for (const id of Object.keys(w.mods.flags.flags)) {
+    varType(`fl_${id}`, 'bool', `flags.${id}`);
+  }
 
   // Line IDs belong to the chapter (STAGING-DSL §4), a module's too: one module walk feeds this and the texts gate.
   const modules = moduleTextsOf(w, texts);

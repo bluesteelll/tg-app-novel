@@ -89,6 +89,8 @@ type WorldSpec = {
   docs?: string[];
   puzzles?: Record<string, Json>;
   sections: Record<string, { start: string; rooms: Record<string, Json> }>;
+  /** Module `flags`' declarations: flag -> its section. */
+  flags?: Record<string, string>;
 };
 
 function world(spec: WorldSpec): KernelWorld {
@@ -99,6 +101,7 @@ function world(spec: WorldSpec): KernelWorld {
     docs: named(spec.docs ?? [], () => ({ title: txt(), body: [txt()] })),
     puzzles: spec.puzzles ?? {},
     sections: Object.fromEntries(Object.entries(spec.sections).map(([id, s]) => [id, { start: s.start, bgm: null, rooms: s.rooms }])),
+    ...(spec.flags === undefined ? {} : { flags: Object.fromEntries(Object.entries(spec.flags).map(([f, section]) => [f, { section }])) }),
   };
   const r = decodeWorldSource(raw);
   if (!r.ok) {
@@ -722,6 +725,27 @@ test('project: puzzle outcome codes', () => {
   );
   const all = declared('pz_a', 'pz_b', 'pz_c', 'pz_d', 'pz_a_hints', 'pz_b_hints', 'pz_d_hints');
   expect(project(w, s, all)).toEqual({ pz_a: 1, pz_b: 2, pz_c: 3, pz_d: 0, pz_a_hints: 0, pz_b_hints: 1, pz_d_hints: 0 });
+});
+
+test('project: fl_<flag> is projected when declared', () => {
+  // Module `flags` (engine plan §6.5): `fl_<f>` (bool) is whether S's flag `f` is set, written only when declared.
+  const spec: WorldSpec = {
+    flags: { f: 's', g: 's' },
+    sections: { s: { start: 'r', rooms: { r: room([look('mark', [{ set: 'f' }]), exit('out', { story: 'end' })]) } } },
+  };
+  const w = world(spec);
+  const names = declared('fl_f', 'fl_g', 'fl_h', 'it_none');
+  const before = at('r', {}, 's');
+  expect(project(w, before, names)).toEqual({ fl_f: false, fl_g: false });
+  const after = run(w, before, tap('r.mark')).state;
+  expect(after.flags).toEqual(['f']);
+  expect(project(w, after, names)).toEqual({ fl_f: true, fl_g: false });
+  // An undeclared VAR is absent: `fl_g` is not written when the chapter does not declare it.
+  expect(project(w, after, declared('fl_f'))).toEqual({ fl_f: true });
+  // A world without flags writes no `fl_`, whatever the state holds; the projection of its other kinds is unchanged.
+  const plain = world({ sections: spec.sections });
+  expect(project(plain, after, names)).toEqual({});
+  expect(project(plain, after, declared('fl_f', 'pz_x'))).toEqual({});
 });
 
 // ---------------------------------------------------------------------------------------------------------------
