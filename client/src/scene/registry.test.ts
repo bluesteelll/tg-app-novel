@@ -1542,6 +1542,26 @@ test('registry: an undecodable half file leaves the full file free after demote'
   expect(h.registry.state(asId('prop/a'))).toBe('pending');
 });
 
+test('registry: a warm join of a live record is never refused, on a load-only registry too', async () => {
+  // Review M2 (lane SH5b rider R2): the join path comes before the warm refusal of a registry with no `hold`.
+  const h = harness();
+  const x = h.acquire('prop/x', prop('x'), 'preload:k', 'preload');
+  h.succeedAll();
+  expect((await x).ok).toBe(true);
+  const joined = await h.registry.acquire(asId('prop/x'), 'preload:warm:prop/x', { entry: prop('x'), priority: 'warm' });
+  expect(joined).toEqual({ ok: true, value: null });
+  expect(h.registry.state(asId('prop/x'))).toBe('live');
+  // Both holders stay: the warm one keeps the record (shed to its file) once the decoding one leaves.
+  h.registry.release(asId('prop/x'), 'preload:k');
+  expect(h.registry.state(asId('prop/x'))).toBe('held');
+  h.registry.release(asId('prop/x'), 'preload:warm:prop/x');
+  expect(h.registry.state(asId('prop/x'))).toBe('none');
+  // A new warm record is refused at once: a load-only registry has no file to hold.
+  const fresh = await h.registry.acquire(asId('prop/y'), 'preload:warm:prop/y', { entry: prop('y'), priority: 'warm' });
+  expect(fresh).toMatchObject({ ok: false, error: { kind: 'decode' } });
+  expect(h.calls.map((c) => c.url)).toEqual(['/assets/x.avif']);
+});
+
 test('registry: the real loader holds a file at its fetched size', async () => {
   // loader.ts's hold form over a fake FetchAsset: no bitmap is made until a decode, so it runs here as in the WebView.
   const hold = createImageLoader({ fetchAsset: async () => ({ ok: true, value: new Blob([new Uint8Array(1234)]) }), upload: () => null });

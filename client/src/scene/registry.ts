@@ -132,9 +132,9 @@ export function pixiFrames<T extends { readonly source: unknown; destroy(destroy
 
 export interface AssetRegistry<T> {
   /**
-   * A `warm` holder: resolves once the id's file is held (no texture). It joins a record in any state at no byte and is
-   * never refused; a new record is admitted for its file under the steady cap. Refused `decode` at once by a registry
-   * with no `hold`, and for a file marked undecodable.
+   * A `warm` holder: resolves once the id's file is held (no texture). It joins an existing record in any state at no
+   * byte, never refused. A new record is admitted for its file under the steady cap; a registry with no `hold` refuses a
+   * new warm record `decode` at once, as it does for a file marked undecodable.
    */
   acquire(id: AssetId, holder: string, o: AcquireOptions & { priority: 'warm' }): Promise<Result<null, AssetError>>;
   /**
