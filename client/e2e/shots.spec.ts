@@ -534,7 +534,8 @@ test('shots: a resume shows the half tier first and sharpens', async ({ page, re
   await launch(page, UID_SHARPEN);
   await play(page, 'stories.continue');
   await expect(page.locator(`.dialogue[data-line-id="${LAMP_LINE}"]`)).toBeVisible({ timeout: LINE_MS });
-  // One sample is enough: a001's first upgrade starts at its swap, and its full file is FULL_DELAY_MS late.
+  // One sample is enough: the upgrades run one at a time and each full file is FULL_DELAY_MS late, so a preview is
+  // still listed long after the line, wherever the first upgrade started.
   const atLine = await windowScene(page);
   expect(atLine.previews, `previews at ${LAMP_LINE}`).toBeGreaterThan(0);
   const half = await answered(page, [plate.half.avif.url, plate.half.webp.url]);
