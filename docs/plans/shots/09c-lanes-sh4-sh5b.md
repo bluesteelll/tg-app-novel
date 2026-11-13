@@ -426,7 +426,10 @@ upgrade, its `need` files as half-tier previews, each sharpened after the visibl
      previews, ~3.19 MiB, below `lamp_wide`'s plate alone (8,847,360 - 2,211,840 = 6,635,520 B), so the bound still
      fails there. Round 3's "the stage pixel at the face box changes to the full file's value" could not pass on
      placeholder content, whose face states are flat rectangles in one hue (§4.2 step 8), equal at both tiers; the
-     resume is at ch4's a001, SH4's restage);
+     resume is at ch4's a001, SH4's restage. Changed by RULINGS 321 (as of `f6487fc`; docs lane `docs-errata-19`, group
+     A, fix round 1): as built, F5 asserts the at-rest bound instead (Q2): with `previews === 0`, `liveBytes` at rest
+     is at least the plate's and the sheet's full decodes (`client/e2e/shots.spec.ts:631-632`); the rise is only logged
+     (`:627-629`), [§5.8 "Ruled since"](05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry));
    - (rev. 4, W1) `shots: after an entry the first cut's half files are requested beside the upgrade` (rev. 6, ledger
      F6: the resume at ch4's a001, whose window's `need` holds `lamp_keeper_cu`'s files, SH4's restage; the test first
      reads that window in Node and fails "fixture shape absent" otherwise)

@@ -338,7 +338,7 @@
     (`SearchStats` `:528`). `world/state-cap` names the bound it passed (`client/scripts/story/softlock.ts:92-96`);
     the count text is byte-identical.
   - **The soft-lock path** prints each hop's walk, then its step, each described from the state before it
-    (`softlock.ts:60-135`): a legal path, shortest in place hops, not in taps (RULINGS 323 A1).
+    (`softlock.ts:61-135`): a legal path, shortest in place hops, not in taps (RULINGS 323 A1).
   - **No `RULES_VERSION` bump** (RULINGS 316 Q4, 317 O1's rule: a bump is owed when the concrete relation or a
     reachable save's answer can change, not for a key, search or bound change that keeps both). ch1's story log moved
     540 -> 406 states (`desk_view` merges); story-gen, `server/content` and the usage files stayed byte-identical.

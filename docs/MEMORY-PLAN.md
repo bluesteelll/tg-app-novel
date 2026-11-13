@@ -709,7 +709,7 @@ props, the largest close-up), every image through `imgIds` (`roomRows` `:1169`),
 (a report, never a FAIL). The step model's runtime (§8 below) is still planned (SH5a, SH5b).
 Changed by RULINGS 314, 346 (as of `f6487fc`; docs lane `docs-errata-19`, group A): the step model's runtime is built.
 SH5a (`48489b7`) added the step windows, the warm form and the room windows; SH5b (`f6487fc`) added the half-tier
-entry and its in-place upgrade (4.C below). The runtime's rules as built are shots
+entry and its in-place upgrade (4.C above). The runtime's rules as built are shots
 [§5.8](plans/shots/05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry)'s two "Ruled
 since" blocks; the gates above are unchanged by either lane.
 

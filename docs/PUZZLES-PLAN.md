@@ -157,6 +157,7 @@ to end, locally against the mock Telegram environment:
   | `pz_<puzzle>_hints` | int | hint tiers opened in this run |
   | `it_<item>` | bool | the item was ever obtained |
   | `dc_<doc>` | bool | the document was found |
+  | `fl_<flag>` | bool | the flag is set (Changed by RULINGS 328 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1); as merged, GM5f `402d4d8`: any declared flag, any section, [project.ts:39-42](../client/src/explore/project.ts#L39)) |
 
   - A projection VAR is written only if the chapter declares it (`meta.vars`) with the matching type (lint
     `world/var-type`). `enter()` refuses an undeclared name or a type mismatch with an error value, never a throw.
@@ -1292,7 +1293,7 @@ Staging tag lines above it merge into the yield step's batch (§3.5) and run bef
 | `world/puzzle-multi-lock` | E | a puzzle named by the `puzzle` field of more than one lock, in one section or in several; prints every lock that names it. X15, X9 step 5's premise, reducer rule `puzzle-ended` (revision 5) | LW3 |
 | `world/cross-section-exit` | E | a room→room exit whose `to.room` is a defined room of another section than the exit's own; prints every such exit, so a crossing pair is two findings. A room that is not defined stays `world/unknown-ref`. X15, X12, X9 step 5's premise, reducer move rule (revision 6) | LW3 |
 | `world/fail-without-effect` | E | a lock puzzle with `maxAttempts` and an empty `onFail` | LW3 |
-| `world/var-type` | E | a declared projection VAR with the wrong type (`pz_*` int, `it_*` / `dc_*` bool) | LW3 |
+| `world/var-type` | E | a declared projection VAR with the wrong type (`pz_*` int, `it_*` / `dc_*` bool; Changed by RULINGS 328 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1): `fl_*` bool, GM5f, [world.ts:761](../client/scripts/story/world.ts#L761)) | LW3 |
 | `world/softlock` | E | the model checker found a reachable state (over `successors`, closed puzzles included) with no path to a `leave` effect; prints the action path (as merged, LW2 `38bc717`: the shortest path from entry in BFS order, e.g. `tap hall.gate → insert hall.gate medal_sun → …`; a `closed` / `puzzle-ended` step prints as the action that opened the puzzle plus the outcome, `tap hall.gate → gate failed`) | LW3 |
 | `world/unreachable` | W | an item, doc, room or puzzle no reachable state touches | LW3 |
 | `world/state-cap` | E | the checker exceeded `RESUME_STATE_CAP` (5,000) states: the section is too large to prove at resume (X9); split it. Changed by RULINGS 317, 326 (as of `f6487fc`; docs lane `docs-errata-19`, group A): or 40,000 successor evaluations (`RESUME_WORK_PER_STATE` = 8 per state of the cap, GM5q); the message names the bound passed ("The cost") | LW3 |

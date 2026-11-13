@@ -76,10 +76,9 @@
 - **Ruled since: RULINGS 342, 344, 345** — **lock 19** (RULINGS 342: 18 = these 14 + `client/src/ui/puzzles/
   puzzle-host.svelte.test.ts`, `client/src/puzzles/session.test.ts`, `client/scripts/story/world.test.ts` (test-only,
   stated scopes) + `client/src/i18n/mechanics.ts` (the cells' accessible names); RULINGS 344 Q1: +
-  `client/src/ui/explore/explore.svelte.test.ts`'s key-set line `:1308`, test-only); the author's `solution` is checked
-  against `solve(p)` at build time (`world/solution`); the three reach codes in a generic reach pass in `clues.ts`;
-  puzzle-type roots by a directory listing; **E_engine 0.45** (engine STOP +1,805 B at R 2.90) and **E_type 1.8 KB**
-  (the new root's chunk STOP 4,149 B at R 2.027) (RULINGS 345). GM7p's lock is a ruling; its docs come with its merge.
+  `client/src/ui/explore/explore.svelte.test.ts`'s key-set line `:1308`, test-only); **E_engine 0.45** (engine STOP +1,805 B at R 2.90) and **E_type 1.8 KB**
+  (the new root's chunk STOP 4,149 B at R 2.027) (RULINGS 345). GM7p's lock is a ruling; its docs, the design defaults RULINGS 342 pre-ruled among them, come with its
+  merge.
 - **Commits:** (1) rules + canonical (`path: a reversed path posts its canonical form`); the path UI reports through
   GM7r's `reachEdge` (round 5, W3: `path: a stroke that reaches the end reports once`); (2) lints (two-solution and
   mismatch seeds red), `story: a path whose solution visits 17 cells is refused` (the W3 pin through a real type; a

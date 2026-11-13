@@ -520,6 +520,11 @@ A room is `{ bg, title, onEnter, hotspots }`. A hotspot is `{ id, kind, rect, la
 | `exit` | `to` (`{ "room": … }` or `{ "story": "<knot>" }`), `lock`, `sfx` | locked: the lock; open: move to the room, or leave the section into the knot |
 | `object` | `lock`, `then`, `look`, `prop` | locked: the lock; open: runs `then` once |
 
+Every kind also takes an optional `when` (Changed by RULINGS 328 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1); as merged, GM5f `402d4d8`): a gating condition, the hotspot's presence. The hotspot is
+shown, tapped, filled and used only while the condition holds; no `when`, or `when: null`, is always present
+([data/flags.ts:26-27](../client/src/mechanics/data/flags.ts#L26)). See **Flags** under [Effects and the once
+rule](#effects-and-the-once-rule).
+
 The study's three hotspots: an exit, an object and a take (the hall's `clock` is the example's `look`):
 
 ```json
@@ -633,6 +638,12 @@ An effect is an object with exactly one key ([decode.ts:230-247](../client/src/w
 - `{ "unlock": "<room>.<hotspot>" }`: opens that hotspot's lock by force; only a hotspot of the same section
   (`world/cross-section-effect`);
 - `{ "story": "<knot>" }`: runs that knot, an **event knot** ([Event knots](#event-knots)).
+- `{ "set": "<flag>" }` (Changed by RULINGS 328 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1); as merged, GM5f `402d4d8`): sets a declared flag ([data/flags.ts:115-120](../client/src/mechanics/data/flags.ts#L115)).
+  It stands in a room's `onEnter`, a hotspot's `then` and a lock's `onOpen` or `onFail`, and only the declaring
+  section's effects may set it (`world/flag-scope`). A `use` rule's `do` refuses it
+  ([data/use.ts:52-53](../client/src/mechanics/data/use.ts#L52): `world/schema`, "not an effect with exactly one key
+  of give, unlock, story"), and a recipe has no effect list. A trigger whose only effect is a `set` fires once, like
+  any other. **Flags** below has the rules.
 
 Effects live in triggers: a room's `onEnter`, the `then` of a `look`, `take` or `object` hotspot, and a lock's
 `onOpen` and `onFail`. **Every trigger fires at most once** (PUZZLES-PLAN "Effects"). Re-entering the study does not
@@ -884,7 +895,7 @@ The full list of `world/*`, `puzzle/*` and `explore/*` codes is the second table
 `world/softlock`.
 
 For each section the gate explores every state a player can reach and proves that each one can still reach a leave
-([softlock.ts:60-135](../client/scripts/story/softlock.ts#L60)). The `world:` line reports
+([softlock.ts:61-135](../client/scripts/story/softlock.ts#L61)). The `world:` line reports
 `softlock OK (<n> states)`, or `softlock FAIL (<k> of <n> sections)`. A failure prints a path from the section's
 entry to the first stuck state. Changed by RULINGS 323 (as of `f6487fc`; docs lane `docs-errata-19`, group A): the
 path is the shortest in steps between **places** (a free zoom view and its parent count as one place, see "Zoom
@@ -1107,7 +1118,12 @@ E story/locales/en/story.json:0 catalog/stories chapters.ch2: paid chapter ch2's
   **A room's rename moves no hotspot:** list `"<old room>.<id>": "<new room>.<id>"` under `hotspots` for every
   hotspot the room keeps. No lint can see a forgotten entry; a save then loses that hotspot's progress. The four
   `world/renamed-*` codes are in [Module and type lint codes](#module-and-type-lint-codes); `flags` and `puzzles`
-  entries are refused for now.
+  entries are refused for now. Changed by RULINGS 328 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix
+  round 1); as merged, GM5f `402d4d8`: a `flags` entry is accepted when its target is a declared flag
+  ([core.ts:39-40](../client/scripts/story/mechanics/core.ts#L39)), and the load maps a saved flag through it
+  ([reconcile.ts:196](../client/src/explore/reconcile.ts#L196)). **Rename a shipped flag only with its `renamed.flags`
+  entry:** without it an old save drops the old flag as undeclared, and a flag set by an object's `then` comes back
+  only when the player taps the object again. `puzzles` entries stay refused (`world/renamed-puzzles`, R-E4).
 - **Never remove a shipped recipe or change its `gives`** (Changed by RULINGS 310 (as of `48489b7`; docs lane
   `docs-errata-18`, group A)). An old save past the recipe restarts that section when the player next resumes or
   enters it (the area-reset toast), and the old product stays in hand as an orphan nothing uses. To rename a product,

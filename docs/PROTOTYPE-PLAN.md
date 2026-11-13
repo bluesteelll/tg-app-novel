@@ -3840,12 +3840,15 @@ beside them.
   [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts). No server lane is on
   it. The owner keeps the order (RULINGS 241): the mechanics chain is the path, the shot chain runs beside it. GM5q,
   GM5f and GM7r have merged (`5142d5d`, `402d4d8`, `9516951`; RULINGS 326, 334, 341), so the path runs through the
-  puzzle types: GM7p (running, RULINGS 342, 344, 345) → GM7g (after GM7p) → GM8h (after GM8i and GM7g) → GM8a → GM8b →
-  GM8d → GM9r (the rows of the one order). GM8i (after GM5f, GM4 and GM3c, all merged) is not beside GM7p (RULINGS
+  puzzle types and on into the shot tail: GM7p (running, RULINGS 342, 344, 345) → GM7g (after GM7p) → GM8h (after GM8i
+  and GM7g) → GM8a → GM8b → GM8d → GM9r → per-player GM6c4 (after GM9r on `story/ch1/world.json`) → SH9 (after GM6c4 on
+  `explore/controller.ts`) → SH11 → SH12a → SH12b (the rows of the one order): 12 serial lanes from GM7p, the chain of
+  RULINGS 333's census less GM7r, merged since. GM8i (after GM5f, GM4 and GM3c, all merged) is not beside GM7p (RULINGS
   342); it runs after GM7p's merge or beside GM7g, before GM8h; GM9p follows GM8i and may run beside GM8a, GM8b or
   GM8d. Per-player GM6c1a's row is met; it never runs beside GM7p or GM7g (`scripts/story/puzzles/index.ts`). Shots
   SH5b has merged (`f6487fc`, RULINGS 346) and SH6 (after SH5b and SH4) heads the rest of the shot chain, SH6 → SH7 →
-  …; it never runs beside GM7p or GM7g (`arch.test.ts`). Y joins the path only while the merge-time trigger holds (it
+  SH8 → SH10 beside the path; SH9, SH11, SH12a and SH12b sit on it after GM6c4 (above). SH6 never runs beside GM7p or
+  GM7g (`arch.test.ts`). Y joins the path only while the merge-time trigger holds (it
   does not on `f6487fc`: an approved design on the shelf, RULINGS 346).
 - The docs lane `docs-errata-18` (`053ccd1`), GM5q, GM5f, GM7r and SH5b have merged (`5142d5d`, `402d4d8`, `9516951`,
   `f6487fc`).

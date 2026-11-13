@@ -139,6 +139,10 @@ export type CamState =
     held, but an item a kept cell still holds stays used.
   - `renamed.flags` decodes and maps, but `world/renamed-target` refuses every flags entry until module `flags`
     declares flags (GM5f; cut Q1).
+    Changed by RULINGS 328 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1): GM5f (`402d4d8`) declares
+    flags, so a `flags` entry whose target is a declared flag passes `world/renamed-target`
+    (`client/scripts/story/mechanics/core.ts:39-40`, `liveIds`) and the load maps it (`flags: ids(r.flags, s.flags)`,
+    `client/src/explore/reconcile.ts:196`).
 
 ### 5.4 World JSON bytes (R6)
 

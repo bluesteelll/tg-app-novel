@@ -48,7 +48,8 @@ lanes at most (RULINGS 255, 276); the rest is planned, in the one order below.
 Changed by RULINGS 317-347 (as of `f6487fc`; docs lane `docs-errata-19`, group B): built since also engine GM5q
 (`5142d5d`; the place quotient), GM5f (`402d4d8`; flags) and GM7r (`9516951`; the reach runtime), and shots SH5b
 (`f6487fc`; the half-tier entry; engine R 2.551, RULINGS 346); GM5q's, GM5f's and SH5b's merges each followed fix rounds
-the orchestrator's pre-merge verifiers asked for (RULINGS 323, 331, 333, 332, 336, 343); the lever Y stays an approved
+the orchestrator's pre-merge verifiers asked for (RULINGS 323, 331, 333, 332, 343; SH5b's fix3 came from fix2's round
+cap, RULINGS 336); the lever Y stays an approved
 design on the shelf (RULINGS 346); engine GM7p runs (lane A, RULINGS 342, 344, 345) and carries the critical path, and
 the docs lane `docs-errata-19` runs in lane C (RULINGS 347); next, engine GM7g after GM7p in lane A; no lane of the
 rows may start beside GM7p in lane C (shots SH6, engine GM8i and per-player GM6c1a), so lane C's next plan lane follows

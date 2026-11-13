@@ -349,13 +349,13 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   2.90, 3.025, 3.131, **3.364**, 3.513, 3.546, 4.000, 4.60, 5.96, 11.1; the median is the 11th; RULINGS 346); at
   RULINGS 337 Q2 (GM5f's 3.364 joined) it was **2.90** (n 19). GM7r kept its spec's 2.603 STOP and GM7p keeps its
   ruled STOP (+1,805 B at 2.90, RULINGS 345); later lanes use 2.551. Remaining engine terms (ARITHMETIC): 5.961 after
-  SH5a; GM5f's restated 0.25 (RULINGS 306 Q3) booked and spent at its merge; **5.651** after GM7r's 0.31 (the whole
+  SH5a; GM5f's restated 0.25 (RULINGS 306 Q3; the value RULINGS 328 Q2) booked and spent at its merge; **5.651** after GM7r's 0.31 (the whole
   §3.5 GM7r / GM7p / GM7g row, RULINGS 337 Q1; GM7p and GM7g restate their data halves at their cuts); **6.101** with
   GM7p's running 0.45 (RULINGS 345), unchanged at SH5b's merge (RULINGS 346). Projection at `f6487fc` (RULINGS 346):
   **Ledger 4** 206.708 + 6.101 x 2.551 = 206.708 + 15.564 = **222.272 / 230.0 (7.728 left)**; **Ledger 1** 245.880 +
   15.564 = **261.444 / 270.0 (8.556 left)**; **Ledger 2** **39.172 / 40.0 (0.828 left)**. The trigger does not hold
-  (no ledger within 1.0 KB; the engine-lever candidate waits for Ledger 4 or 1 within 2.0 KB, RULINGS 253); L2's
-  return line does not hold.
+  (neither Ledger 4 nor Ledger 1 within 1.0 KB; the engine-lever candidate waits for Ledger 4 or 1 within 2.0 KB,
+  RULINGS 253); L2's return line does not hold.
 - **The path rule (RULINGS 201; the union rule, budget round r198 design §3.1).** Ledgers 1 and 4 count every JS chunk
   that some supported WebView requests **automatically before its first line** on the boot -> chapter -> first-line
   path, a capability fallback included (Pixi's three renderer facades: a device requests one by what it is): the
@@ -637,9 +637,12 @@ Per-merge rows: the `48489b7` bullet above.
 230.0** (7.728 left), **Ledger 1 261.444 / 270.0** (8.556 left), **Ledger 2 39.172 / 40.0** (0.828 left), with 6.101
 KB of engine terms and no entry term left. **The trigger does not hold**; the engine-lever candidate waits for Ledger 4
 or 1 within 2.0 KB (RULINGS 253); L2 stays shelved. The entry row moved only by hash text, judged by module identity
-(RULINGS 269). The pre-merge lens check (RULINGS 289) ran at GM5f (G1, closed by fix3, RULINGS 333), GM7r (no product
-defect, RULINGS 341) and SH5b (P1, an upgrade drew no frame, closed by fix2; the delta lenses, RULINGS 343). Per-merge
-rows: the `f6487fc` bullet above.
+(RULINGS 269). The pre-merge lens check (RULINGS 289) ran at all four code merges and held three: GM5q (unpinned stated
+rules, closed by fix2, RULINGS 323), GM5f twice (S1, a flag set on a trigger that was empty in an old version is never
+re-armed, closed by fix2, RULINGS 331; then G1 on the delta lenses, closed by fix3, RULINGS 333) and SH5b twice (P1, an
+upgrade drew no frame, and two pin gaps, closed by fix2, RULINGS 332; then one pin gap on the delta lenses, closed by
+fix4, RULINGS 343). SH5b's fix3 was fix2's loop stopping at the lane's round cap, not a lens hold (RULINGS 336). GM7r's
+lenses found no product defect (RULINGS 341). Per-merge rows: the `f6487fc` bullet above.
 
 **One owner per figure (reconcile r2, RC-W1).** This section owns the sums, headrooms and verdicts of the three
 designs; each design owns its own lane terms (EN §3.5, per-player §10 "Ledgers", the shots §9 / §10 with this

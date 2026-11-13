@@ -385,6 +385,10 @@ cut r1-r8, `sh5b-shot-entry/cut.md`; as of `f6487fc`; docs lane `docs-errata-19`
   `restore` before it, from the half files (`ensure` / `apply` / `restore` with `preview`, the registry's
   `previewing`, `scene/registry.ts:174`, :814; `AcquireOptions.preview` :103). A step's preview arm, the executor's
   options and the holders at return are `applyStep` / `restoreStep` (`scene/controller.ts:279`, :296).
+  Changed by RULINGS 324 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1): the entry has three ends, whichever comes first
+  (fork r3-1, `Session.entry`'s doc `game.ts:370-374`): its first windowed stage (`stage`, :729-731; a windowless
+  entry stage hands `KEEP_WINDOW` and keeps the entry), the next `present` (:782), or a resume inside the current
+  chapter (:1051).
 - **Step 3 as built: the chain runs in the scheduler, not the controller, and starts at the swap point** (RULINGS 330).
   `scene/preload.ts`'s `kick` (:462) upgrades one preview at a time, outside the scheduler's two slots (`upgrade`
   :435-451): visible records first, then the others, each by `UPGRADE_ORDER` (:104: cg, bg, sheet, face, talk, char,
@@ -393,6 +397,11 @@ cut r1-r8, `sh5b-shot-entry/cut.md`; as of `f6487fc`; docs lane `docs-errata-19`
   carries the chain ("upgrades start at the swap point; settles only carry the chain"). On a fresh ch1 start the first
   full file moves from just after the line to the `scene:` dip's black, about 400 ms after `apply`; at a handover or an
   in-session load no full file starts while the first step's halves are awaited.
+- **R1, a warm decode kept across step 1c** (Changed by RULINGS 321, 322, 324 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1); RULINGS 302 Q8,
+  RULINGS 322 O3, 324 r3-4; commit `f166f21`). When `want` ends the entry tag (`scene/preload.ts:627-641`, only while
+  `entry !== null`), each warm file of the window that the entry tag holds and that is still `live` joins its window
+  holder at decode rank, so the release never sheds it to its file for step 3 to decode again. Only the entry tag's
+  own records, and only at that release.
 - **Step 3's swap.** `registry.upgrade(id, signal)` (`scene/registry.ts:185`) through the loader's in-place
   `upgrade` (`scene/loader.ts:138-166`): the same texture, its `resize` at the full canvas, and the stored box checked
   against the decoded size (a mismatch is a `decode` failure and the half stays). Upgrade admission evicts nothing: it
@@ -412,7 +421,10 @@ cut r1-r8, `sh5b-shot-entry/cut.md`; as of `f6487fc`; docs lane `docs-errata-19`
   (`chapterFailed`). No paid byte is fetched after a refund (Principle 0).
 - **Memory (review M1, memory F2; F5's label).** `RegistryStats.bytes` counts the full file and decode an upgrade in
   flight reserves, so `liveBytes` (`bytes - keptBytes`) includes upgrade reservations (`registry.ts:104-109`); e2e
-  F5 logs `shots F5: entry reservation peak liveBytes ...` (`client/e2e/shots.spec.ts:619`). MEASURED at ch4's a001:
+  F5 logs `shots F5: entry reservation peak liveBytes ...` (`client/e2e/shots.spec.ts:619`). Changed by RULINGS 321 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1):
+  F5 asserts the at-rest bound (RULINGS 321 Q2): once `previews === 0` (`shots.spec.ts:600-612`), `liveBytes` at rest
+  is at least the full decodes of the wide shot's plate and sheet (`:631-632`); the rise from the line to rest is only
+  logged (`:627-629`), not asserted. MEASURED at ch4's a001:
   the reservation peak 23,497,523 B (22.41 MiB), the GPU textures 22,637,784 B (21.59 MiB), above this section's
   19.08 MiB model and the ≈ 20.6 MiB model row (the step-window row plus the one half); the runtime a001 bound is
   F5's measured peak, beside SH5a's memory F1 (the step model does not see the entry's one-half transient; carried to
