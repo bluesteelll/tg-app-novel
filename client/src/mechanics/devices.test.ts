@@ -3,17 +3,21 @@
 // is pending), with the same `puzzle` effect the device's own tap reaches, so the proof's states are unchanged; an
 // ended device plays its outcome's cue instead. A part move (`device-moved`) writes the device's run's `work` through
 // the writer, a `work` fact per moved part, and a part's picture is a decor state chosen by the visual atom `part` over
-// that saved work. Fixture worlds are written in the source format and decoded with the
+// that saved work. The story gate's devices lint places a view type only on a device and a device only in a view, with
+// the types as a parameter (no registered type is a view before GM8a). Fixture worlds are written in the source format and decoded with the
 // real registries; a proof world carries the decoded `mods`, as the explore controller's and the story gate's do.
 import { expect, test } from 'vitest';
 
+import { DEVICE_BAND_Y, DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS, devicesFindings, deviceBandY } from '../../scripts/story/mechanics/devices.ts';
+import type { WorldLintInput } from '../../scripts/story/mechanics/index.ts';
 import { RESUME_STATE_CAP } from '../explore/reduce.ts';
 import type { ExploreAction, ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { PuzzleRun, WorldState } from '../explore/state.ts';
 import { PUZZLE_TYPES } from '../puzzles/rules/index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from '../puzzles/rules/index.ts';
-import type { KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
+import type { AssetCatalog } from '../story/catalog.ts';
+import type { ChapterId, KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, RoomId } from '../world/types.ts';
 import type { DecodeCtx, FlagId, KernelWorld, OwnedAt, RulesRegistry, SectionAction } from './contract.ts';
@@ -402,4 +406,116 @@ test("search: a device's arrival adds no state", () => {
   expect(kinds(lit, all)).toEqual(['tap', 'closed', 'puzzle-ended', 'puzzle-ended', 'tap']);
   // Unlit, the device is hidden: its arrival opens nothing.
   expect(kinds(at('hall'), all)).toEqual(['tap', 'tap', 'tap']);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The story gate: placement lints (each a code of the module's own table) and the band
+
+const CATALOG: AssetCatalog = { bg: {}, chars: {}, cg: {}, bgm: {}, sfx: {}, prop: {}, cover: {} };
+
+/** The devices lint over `raw` decoded with the fixture types, `yielded` the puzzles the chapter yields: each finding as
+ *  `<code> <message>` (a message starts with its path). */
+function lint(raw: Json, yielded: readonly string[] = []): string[] {
+  const r = decodeWorldSource(raw, { types: TYPES });
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  const paths: string[] = [];
+  const input: WorldLintInput = {
+    chapter: { id: 'ch1' as ChapterId, paid: false, entry: 'ch1/main.ink' },
+    file: 'story/ch1/world.json',
+    text: '',
+    world: r.value,
+    catalog: CATALOG,
+    knots: null,
+    yielded: new Set(yielded.map(pz)),
+    declared: new Map(),
+    line: (path) => (paths.includes(path) ? paths.indexOf(path) : paths.push(path) - 1) + 1,
+    moduleLines: new Map(),
+  };
+  return devicesFindings(input, TYPES).map((f) => {
+    expect([f.severity, f.file, paths[f.line - 1] !== undefined && f.message.startsWith(`${paths[f.line - 1] ?? ''}: `)]).toEqual(['E', 'story/ch1/world.json', true]);
+    return `${f.code} ${f.message}`;
+  });
+}
+
+/**
+ * A lint fixture: the hall and its device view `panel`, whose device hotspot `dial` carries `o.dial` (default: a zero-slot
+ * lock with the view-type puzzle `dial`); `o.hall` adds hotspots to the hall, `o.panel` keys to the panel, `o.puzzles`
+ * puzzles beside `dial` (a `LEVERS` puzzle of four parts unless replaced).
+ */
+function deviceWorld(o: { dial?: Json; hall?: readonly Json[]; panel?: Json; puzzles?: Json } = {}): Json {
+  return source(
+    {
+      hall: room([exit('to_panel', 'panel'), exit('out', { story: 'end' }), ...(o.hall ?? [])]),
+      panel: room([o.dial ?? object('dial', lock('dial'))], { view: { of: 'hall' }, device: 'dial', ...o.panel }),
+    },
+    { puzzles: { dial: levers(4), ...o.puzzles } },
+  );
+}
+
+test('story: a device room without a zero-slot lock is refused', () => {
+  const TYPE = 'world/device-type sections.s.rooms.panel.device: hotspot';
+  const ZERO = "a device's hotspot carries a zero-slot lock with its puzzle (§7.5)";
+  expect(lint(deviceWorld())).toEqual([]);
+  // No lock (the view-type puzzle is then on no lock: its own site finding too).
+  expect(lint(deviceWorld({ dial: object('dial', null) }))).toEqual([
+    `${TYPE} 'dial' carries no lock: ${ZERO}`,
+    "world/view-type-site puzzles.dial: view-type puzzle 'dial' is on no lock: a view type is played only by its device, never as a linear yield (§7.5)",
+  ]);
+  // A lock with slots (its puzzle is then on a slot lock).
+  expect(lint(deviceWorld({ dial: object('dial', lock('dial', ['key'])) }))).toEqual([
+    `${TYPE} 'dial' carries a lock with slots: ${ZERO}`,
+    "world/view-type-site sections.s.rooms.panel.hotspots.0.lock.puzzle: view-type puzzle 'dial' is on a lock with slots: a view type is the puzzle of its device's zero-slot lock (§7.5)",
+  ]);
+  // A lock with no puzzle (the view-type puzzle is then on no lock).
+  expect(lint(deviceWorld({ dial: object('dial', lock(null)) }))).toEqual([
+    `${TYPE} 'dial' carries a lock with no puzzle: ${ZERO}`,
+    "world/view-type-site puzzles.dial: view-type puzzle 'dial' is on no lock: a view type is played only by its device, never as a linear yield (§7.5)",
+  ]);
+  // A `device` that names no hotspot of its room is the DSL's unknown reference.
+  expect(lint(deviceWorld({ panel: { device: 'lever' } }))).toEqual([
+    "world/unknown-ref sections.s.rooms.panel.device: device 'lever' names no hotspot of room 'panel'",
+    "world/view-type-site sections.s.rooms.panel.hotspots.0.lock.puzzle: view-type puzzle 'dial' is on a lock that is no view room's device: a view type is the puzzle of its device's zero-slot lock (§7.5)",
+  ]);
+});
+
+test('story: a device whose lock puzzle is an overlay type is refused', () => {
+  expect(lint(deviceWorld({ puzzles: { dial: code(4) } }))).toEqual([
+    "world/device-type sections.s.rooms.panel.device: puzzle 'dial' is a code puzzle: a device's puzzle is of a view type (§7.5)",
+  ]);
+});
+
+test('story: a view-type puzzle outside a device lock is refused', () => {
+  // Three sites the view type cannot be played from: a linear yield, an ordinary room lock, a slot lock.
+  const w = deviceWorld({
+    hall: [object('safe', lock('safe')), object('box', lock('box', ['key']))],
+    puzzles: { loose: levers(2), safe: levers(2), box: levers(1) },
+  });
+  expect(lint(w, ['loose'])).toEqual([
+    "world/view-type-site puzzles.loose: view-type puzzle 'loose' is on no lock: a view type is played only by its device, never as a linear yield (§7.5)",
+    "world/view-type-site sections.s.rooms.hall.hotspots.2.lock.puzzle: view-type puzzle 'safe' is on a lock that is no view room's device: a view type is the puzzle of its device's zero-slot lock (§7.5)",
+    "world/view-type-site sections.s.rooms.hall.hotspots.3.lock.puzzle: view-type puzzle 'box' is on a lock with slots: a view type is the puzzle of its device's zero-slot lock (§7.5)",
+  ]);
+  // A `device` on a room that is no view.
+  const flat = source({ hall: room([object('dial', lock('dial')), exit('out', { story: 'end' })], { device: 'dial' }) }, { puzzles: { dial: levers(4) } });
+  expect(lint(flat)).toEqual([
+    "world/view-type-site sections.s.rooms.hall.device: room 'hall' is no view: a device sits in a view room (§7.5)",
+    "world/view-type-site sections.s.rooms.hall.hotspots.0.lock.puzzle: view-type puzzle 'dial' is on a lock that is no view room's device: a view type is the puzzle of its device's zero-slot lock (§7.5)",
+  ]);
+});
+
+test('story: a device puzzle with a close-up is refused', () => {
+  expect(lint(deviceWorld({ puzzles: { dial: { ...levers(4), closeup: 'cabinet' } } }))).toEqual([
+    "world/device-closeup puzzles.dial.closeup: view-type puzzle 'dial' has close-up 'cabinet': a device is played in its room, never under a close-up (§7.5)",
+  ]);
+});
+
+test("devices: the band constant follows the bar's bound", () => {
+  // 07 §7.5 round 6: 64 canonical px cropped at the top of a 320 px 9:16 cover, then 8 + bar + inset CSS px at 3.375
+  // canonical px each, rounded up.
+  expect([DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS]).toEqual([120, 0]);
+  expect([deviceBandY(120, 0), deviceBandY(120, 1)]).toEqual([496, 500]);
+  expect(DEVICE_BAND_Y).toBe(deviceBandY(DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS));
+  expect(DEVICE_BAND_Y).toBe(496);
 });
