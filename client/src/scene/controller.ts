@@ -58,6 +58,8 @@ export type SceneStats = {
   /** Records with a warm holder, and the file bytes of the ones held undecoded. */
   warm?: number;
   warmBytes?: number;
+  /** Live preview records (shots §5.8 step 5): a chapter entry's files still at their half, before their upgrade. */
+  previews?: number;
 };
 
 export interface SceneController {
@@ -68,18 +70,22 @@ export interface SceneController {
    * the entry tag, which the chapter's first window ends once it joined its files (shots §5.8 step 1c).
    */
   setChapter(m: AssetManifest): void;
-  /** Resolves after transitions + wait. `window`: the step's preload window, wanted at the batch's swap point. */
-  apply(batch: readonly VisualCommand[], o: { instant: boolean; window?: StageWindow }): Promise<void>;
+  /**
+   * Resolves after transitions + wait. `window`: the step's preload window, wanted at the batch's swap point.
+   * `preview` (shots §5.8 step 1): a chapter entry's first step: the batch's new takes start from their halves, and its
+   * window carries the flag.
+   */
+  apply(batch: readonly VisualCommand[], o: { instant: boolean; window?: StageWindow; preview?: boolean }): Promise<void>;
   /** A tap during a transition. */
   complete(): void;
-  /** Instant. */
-  restore(s: SceneSnapshot): Promise<void>;
+  /** Instant. `preview`: a chapter entry's restore (shots §5.8 step 1), whose new takes start from their halves. */
+  restore(s: SceneSnapshot, o?: { preview?: boolean }): Promise<void>;
   snapshot(): SceneSnapshot;
   /** Background, cancellable; ids resolve in `from` (the next chapter's manifest, F5) or else the current one. */
   preload(tag: string, ids: readonly AssetId[], from?: AssetManifest): void;
   releasePreload(tag: string): void;
-  /** The blocking load of a batch's assets. */
-  ensure(ids: readonly AssetId[], signal: AbortSignal): Promise<Result<void, SceneError>>;
+  /** The blocking load of a batch's assets. `preview`: a chapter entry's first step (shots §5.8 step 1). */
+  ensure(ids: readonly AssetId[], signal: AbortSignal, o?: { preview?: boolean }): Promise<Result<void, SceneError>>;
   /** Context-loss check + rebuild. */
   onActivated(): Promise<void>;
   pause(): void;
@@ -530,7 +536,12 @@ export function createSceneController(): SceneController {
       if (core === null) {
         return Promise.resolve();
       }
-      const done = core.executor.apply(batch, o);
+      const { executor } = core;
+      // Shots §5.8 step 1: the executor takes every changed slot synchronously inside apply, so the scope marks them.
+      const done =
+        o.preview === true
+          ? core.registry.previewing(() => executor.apply(batch, o.window === undefined ? { instant: o.instant } : { instant: o.instant, window: { ...o.window, preview: true } }))
+          : executor.apply(batch, o);
       // D7: the slot holders are taken by now, so the batch's ensure holder can go.
       core.registry.releaseHolder(ENSURE_HOLDER);
       return done;
@@ -538,11 +549,12 @@ export function createSceneController(): SceneController {
     complete() {
       core?.executor.complete();
     },
-    restore(s) {
+    restore(s, o) {
       if (core === null) {
         return Promise.resolve();
       }
-      const done = core.executor.restore(s);
+      const { executor } = core;
+      const done = o?.preview === true ? core.registry.previewing(() => executor.restore(s)) : executor.restore(s);
       core.registry.releaseHolder(ENSURE_HOLDER);
       return done;
     },
@@ -555,8 +567,8 @@ export function createSceneController(): SceneController {
     releasePreload(tag) {
       core?.scheduler.releasePreload(tag);
     },
-    ensure(ids, signal) {
-      return core === null ? Promise.resolve(fail(`ensure while ${state}`)) : core.scheduler.ensure(ids, signal);
+    ensure(ids, signal, o) {
+      return core === null ? Promise.resolve(fail(`ensure while ${state}`)) : core.scheduler.ensure(ids, signal, o);
     },
     onActivated() {
       const c = core;
@@ -591,7 +603,7 @@ export function createSceneController(): SceneController {
       const counters = { rebuilds, gen, staleFrames, visibleReviveMs };
       if (core === null) {
         const none = { liveTextures: 0, liveBytes: 0, pendingLoads: 0, activeTimelines: 0, overCap: 0 };
-        const windows = { window: { pending: 0, ids: [] }, rooms: [], warm: 0, warmBytes: 0 };
+        const windows = { window: { pending: 0, ids: [] }, rooms: [], warm: 0, warmBytes: 0, previews: 0 };
         return { ...none, openBitmaps: 0, stale: 0, reviveFailed: 0, reviving: false, ...counters, ...windows };
       }
       const r = core.registry.stats();
@@ -609,6 +621,7 @@ export function createSceneController(): SceneController {
         ...counters,
         ...core.scheduler.stats(),
         ...core.registry.warmStats(),
+        previews: core.registry.previews().length,
       };
     },
     debugForceContextLoss(mode) {

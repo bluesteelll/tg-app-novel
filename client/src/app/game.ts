@@ -21,6 +21,7 @@ import type { ManualSlot, SaveError, SaveService, SaveState, SaveWrite } from '.
 import { summaryOf } from '../saves/summary.ts';
 import type { SceneController } from '../scene/controller.ts';
 import type { VisualCommand } from '../scene/executor.ts';
+import { KEEP_WINDOW } from '../scene/preload.ts';
 import type { StageWindow } from '../scene/preload.ts';
 import type { SceneError } from '../scene/registry.ts';
 import type { Settings, SettingsStore } from '../settings/store.ts';
@@ -366,6 +367,12 @@ type Session = {
   inkErrors: number;
   /** The yields of this session: the world, the explore controller, the open puzzle (PZ "Resource lifetime"). */
   readonly yields: Yields;
+  /**
+   * Shots §5.8 "Entry at the half tier": `'entered'` by enterChapter, `'first'` from the next `present` (the entry's
+   * first step, its restore included before it), `'none'` from its first windowed stage, the next `present` or a resume
+   * inside the chapter. While not `'none'` the stages and the restore load previews.
+   */
+  entry: 'entered' | 'first' | 'none';
 };
 
 /**
@@ -710,12 +717,19 @@ export function createGame(deps: GameDeps): Game {
    * the step's preload window, wanted at the batch's swap point (shots §5.8); none keeps the previous one.
    */
   const stage = async (s: Session, visual: readonly VisualCommand[], instant: boolean, window?: StageWindow): Promise<{ done: Promise<void> }> => {
+    const preview = s.entry !== 'none';
     const ids = imageIds(visual, { stage: scene.snapshot(), manifest: s.ch?.assets ?? null });
     if (ids.length > 0) {
       // F1 step 9: an asset that fails to load is skipped by the scene, and the story goes on.
-      await scene.ensure(ids, s.abort.signal);
+      await scene.ensure(ids, s.abort.signal, { preview });
     }
-    return { done: scene.apply(visual, { instant, window }) };
+    // An entry's windowless stage hands the keep window, so its swap upgrades the previews (shots §5.8 step 3); the
+    // first windowed stage ends the entry.
+    const done = scene.apply(visual, { instant, window: window ?? (preview ? KEEP_WINDOW : undefined), preview });
+    if (window !== undefined) {
+      s.entry = 'none';
+    }
+    return { done };
   };
 
   /** The world's section and room, which a step's window reads (an event's room) and a room batch keys on. */
@@ -764,6 +778,8 @@ export function createGame(deps: GameDeps): Game {
     if (ch === null) {
       return;
     }
+    // The first step after a chapter entry keeps the entry; any later step ends it (shots §5.8 step 1).
+    s.entry = s.entry === 'entered' ? 'first' : 'none';
     const instant = vm.mode === 'skip';
     const before = stagingNow();
     const batch = splitBatch(step.commands);
@@ -934,6 +950,7 @@ export function createGame(deps: GameDeps): Game {
    */
   const enterChapter = async (s: Session, ch: LoadedChapter, clear: boolean): Promise<void> => {
     s.torn = true; // the chapter and the world change here; the runner and the position follow
+    s.entry = 'entered'; // its first step and the restore before it load previews (shots §5.8 step 1)
     s.yields.chapterChanged(); // D11 / PZ F10: the puzzle session, then the controller; the world starts empty
     s.ch = ch;
     s.assets = manifestIndex(ch.assets);
@@ -1029,6 +1046,8 @@ export function createGame(deps: GameDeps): Game {
       if (session !== s) {
         return err({ kind: 'busy' });
       }
+    } else {
+      s.entry = 'none'; // a resume inside the current chapter is no entry: it loads the full tier
     }
     const r = resume(body, ch, s.assets, minLevel === undefined ? {} : { minLevel });
     if (!r.ok) {
@@ -1056,7 +1075,7 @@ export function createGame(deps: GameDeps): Game {
       screens.close('paywall');
     }
     // D12: the audio's chapter is set (enterChapter) before its restore.
-    await scene.restore(resumed.staging);
+    await scene.restore(resumed.staging, { preview: s.entry !== 'none' });
     audioOnce().restore(resumed.staging.bgm);
     if (session !== s) {
       return err({ kind: 'busy' });
@@ -1594,6 +1613,7 @@ export function createGame(deps: GameDeps): Game {
       handover: null,
       pending: null,
       inkErrors: 0,
+      entry: 'none',
     };
     self = s;
     s.offSaves = saves.onState((st) => onSaveState(s, st));
