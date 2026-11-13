@@ -990,6 +990,9 @@ test('story: module and type lint codes are unique and none is a DSL code', () =
     'world/clue-declared E',
     'world/reach-has-clue E',
     'world/clue-reachable E',
+    'world/unique-solution E',
+    'world/reach-solution E',
+    'world/attempts-without-wrong E',
     'world/answer-len E',
     'world/cross-section-cond E',
     'world/visual-only-atom E',
@@ -1142,6 +1145,72 @@ test('story: a shown-goal puzzle with a clue is refused', () => {
   // Without the clue the shown goal is clean, and a lock holding it asks for none.
   delete at(w, 'puzzles.drawer')['clues'];
   expect(clueFindings(passInput(w, types), types)).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM7p: the reach lints (engine plan §7.4, R8, R8b) through the full runner and the real registries, on the demo manor
+// whose drawer is a path: 3 x 2, ends 0 and 3, its one solution 0 1 2 5 4 3, no clue (a shown goal), no attempt count.
+
+const PATH_DRAWER: Json = { cols: 3, rows: 2, ends: [0, 3], blocked: [] };
+/** The codes a reach puzzle's source can raise, and the solution check's. */
+const REACH_SEEN = ['world/unique-solution', 'world/reach-solution', 'world/attempts-without-wrong', 'world/reach-has-clue', 'world/solution'] as const;
+
+function pathBase(): Json {
+  const w = base();
+  const drawer = at(w, 'puzzles.drawer');
+  drawer['type'] = 'path';
+  drawer['params'] = { ...PATH_DRAWER };
+  drawer['solution'] = [0, 1, 2, 5, 4, 3];
+  drawer['maxAttempts'] = null;
+  delete drawer['clues'];
+  return w;
+}
+
+/** The findings of `REACH_SEEN`'s codes, as `code: message`. */
+function reachSeen(w: Json): string[] {
+  return lint(w)
+    .filter((f) => (REACH_SEEN as readonly string[]).includes(f.code))
+    .map((f) => `${f.code}: ${f.message}`);
+}
+
+test('story: a path with two solutions is refused', () => {
+  // The control: the drawer as a path with one solution is a clean world.
+  expect(run(pathBase(), { declared: { pz_drawer: 'int', pz_gate_hints: 'int', it_medal_sun: 'bool', dc_letter: 'bool' } }).findings).toEqual([]);
+  // N3: 3 x 3 with ends 0 and 8 has two paths (the fixture is checked first): the solution cannot be the one posted.
+  const two = { cols: 3, rows: 3, ends: [0, 8] as const, blocked: [] };
+  expect(PUZZLE_LINTS.path.countSolutions(two, 2)).toBe(2);
+  const w = pathBase();
+  at(w, 'puzzles.drawer')['params'] = two;
+  at(w, 'puzzles.drawer')['solution'] = [0, 1, 2, 5, 4, 3, 6, 7, 8];
+  // One root cause, one finding: the solution check leaves two solutions to world/unique-solution.
+  expect(reachSeen(w)).toEqual(["world/unique-solution: puzzle 'drawer' (path) has two or more solutions: a reach puzzle posts its one solution (§7.4)"]);
+  expect(of(lint(w), 'world/unique-solution')).toEqual([expect.objectContaining({ severity: 'E', line: jsonLine(w, '"params": {') })]);
+});
+
+test('story: a reach puzzle with maxAttempts is refused', () => {
+  const w = pathBase();
+  at(w, 'puzzles.drawer')['maxAttempts'] = 2;
+  // The path has no wrong answer, so its count would never move; the gate's order puzzle (3 attempts) posts wrong ones.
+  expect(reachSeen(w)).toEqual(["world/attempts-without-wrong: puzzle 'drawer' (path) has maxAttempts 2, but its type has no wrong answer: the count never moves"]);
+  expect(at(w, 'puzzles.gate')['maxAttempts']).toBe(3);
+});
+
+test('story: a path solution other than its canonical solve is refused', () => {
+  // A wiring pin (H1 (2) through the real runner): PATH_LINT.validateSolution reports as world/solution.
+  const w = pathBase();
+  at(w, 'puzzles.drawer')['solution'] = [3, 4, 5, 2, 1, 0];
+  expect(reachSeen(w)).toEqual([
+    "world/solution: puzzle 'drawer': the solution is written from its higher-index end: a path is posted from its lower-index end, [0, 1, 2, 5, 4, 3]",
+  ]);
+  at(w, 'puzzles.drawer')['solution'] = [0, 1, 2, 5, 3, 4];
+  expect(reachSeen(w)).toEqual(["world/solution: puzzle 'drawer': the solution is not the path's solve [0, 1, 2, 5, 4, 3]"]);
+});
+
+test('story: a path puzzle with a clue is refused', () => {
+  // A wiring pin: the real type's shown goal activates world/reach-has-clue (§7.3) once it is registered.
+  const w = pathBase();
+  at(w, 'puzzles.drawer')['clues'] = [{ doc: 'letter' }];
+  expect(reachSeen(w)).toEqual(["world/reach-has-clue: puzzle 'drawer' (path) draws its goal: it declares no clue (§7.3)"]);
 });
 
 /** The line of clue `i` of puzzle `pid` in a fixture's JSON text: each clue is a one-key object over three lines. */

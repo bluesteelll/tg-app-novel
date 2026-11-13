@@ -110,8 +110,10 @@ const PURE_WORLD_FILES = [
   'puzzles/rules/index.ts',
   'puzzles/rules/code.ts',
   'puzzles/rules/order.ts',
+  'puzzles/rules/path.ts',
   'puzzles/play/code.ts',
   'puzzles/play/order.ts',
+  'puzzles/play/path.ts',
   'explore/state.ts',
   'explore/reduce.ts',
   'explore/project.ts',
@@ -1129,6 +1131,7 @@ test('arch: pure world modules', () => {
 const LAZY_COMPONENTS = [
   'puzzles/ui/CodeLock.svelte',
   'puzzles/ui/OrderPuzzle.svelte',
+  'puzzles/ui/PathPuzzle.svelte',
   'ui/puzzles/PuzzleHost.svelte',
   'ui/puzzles/HintLadder.svelte',
   'ui/explore/ExploreView.svelte',
@@ -1172,6 +1175,7 @@ test('arch: lazy ui only by dynamic import', () => {
   expect(dynamicLazyTargets('puzzles/registry.ts', SOURCES['puzzles/registry.ts'] ?? '')).toEqual([
     'puzzles/ui/CodeLock.svelte',
     'puzzles/ui/OrderPuzzle.svelte',
+    'puzzles/ui/PathPuzzle.svelte',
   ]);
   // The meta chunks (RULINGS 105): boot imports the controller, the controller its overlays, each by `import()`.
   expect(dynamicLazyTargets('app/boot.ts', SOURCES['app/boot.ts'] ?? '')).toEqual(['app/meta.ts']);
@@ -2116,7 +2120,7 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     // A mechanics file no list names: the directory alone makes it pure.
     ['mechanics/rules/writer.ts', 'const t = Date.now();'],
     // A type's play half no list names: the directory alone makes it pure.
-    ['puzzles/play/path.ts', 'const t = Date.now();'],
+    ['puzzles/play/unlisted.ts', 'const t = Date.now();'],
     // The cue channel's pure three: no clock, no DOM, no Svelte, no value import of the stage chunk.
     ['cues/bus.ts', 'const t = setTimeout(flush, 0);'],
     ['cues/visible.ts', 'const r = document.body;'],

@@ -386,6 +386,7 @@ test('session: unknown puzzle is an error value', () => {
 const SAMPLE_PARAMS: { readonly [T in PuzzleType]: ParamsOf<T> } = {
   code: { dials: 4 },
   order: { pieces: ['sun', 'moon', 'star'] as ItemId[] }, // a fixture's ids, as decoded
+  path: { cols: 3, rows: 2, ends: [0, 3], blocked: [] },
 };
 
 test('session: an instance answers initial and shape for every type', () => {

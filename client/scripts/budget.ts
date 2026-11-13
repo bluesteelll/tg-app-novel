@@ -68,7 +68,10 @@ export type BudgetInputs = {
   gameSourceExists: boolean;
   /** `src/scene/controller.ts` exists: the importer of the scene's motion chunk (shots §10, W6). */
   sceneSourceExists: boolean;
-  /** The LAZY_FAMILIES roots that exist under client/, by their manifest `src`. */
+  /**
+   * The LAZY_FAMILIES roots that exist under client/, by their manifest `src`: the literal roots, plus every `*.svelte`
+   * file listed in a family's `rootsUnder` directory.
+   */
   lazySources: ReadonlySet<string>;
   /** Dist paths of the re-export-only JS files: Rolldown's facades, which hold no code of their own (RULINGS 92). */
   facades: ReadonlySet<string>;
@@ -220,6 +223,12 @@ export const SCENE_SRC = 'src/scene/controller.ts';
 export type LazyFamily = {
   name: string;
   roots: readonly string[];
+  /**
+   * A directory (`src` prefix, ending in `/`) whose every `*.svelte` file is a root as well (engine plan 11:11, 03:500):
+   * a type UI added there is measured with no edit here, and one imported statically by mistake stays visible as a FAIL
+   * ("no dynamic entry") instead of dropping out of the row.
+   */
+  rootsUnder?: string;
   limit:
     | 'puzzleTypeChunkBr'
     | 'puzzleHostChunkBr'
@@ -239,9 +248,11 @@ export type LazyFamily = {
  * controller out of that set): each is counted once, through its own row.
  */
 export const LAZY_FAMILIES: readonly LazyFamily[] = [
+  // Each type UI is its own root: the directory listing finds them (GM7p, H3), so a new type needs no edit here.
   {
     name: 'puzzle-type chunk (br)',
-    roots: ['src/puzzles/ui/CodeLock.svelte', 'src/puzzles/ui/OrderPuzzle.svelte'],
+    roots: [],
+    rootsUnder: 'src/puzzles/ui/',
     limit: 'puzzleTypeChunkBr',
     measure: 'largest',
     importer: YIELDS_SRC,
@@ -705,9 +716,11 @@ function lazyMeasure(inputs: BudgetInputs, family: LazyFamily, entryClosure: Clo
   if (!importers[family.importer]) {
     return { kind: 'pending', note: `${family.importer} absent` };
   }
-  const present = family.roots.filter((root) => inputs.lazySources.has(root));
+  const under = family.rootsUnder;
+  const listed = under === undefined ? [] : [...inputs.lazySources].filter((src) => src.startsWith(under));
+  const present = [...new Set([...family.roots.filter((root) => inputs.lazySources.has(root)), ...listed])].sort();
   if (present.length === 0) {
-    return { kind: 'pending', note: `no source of ${family.roots.join(', ')}` };
+    return { kind: 'pending', note: under === undefined ? `no source of ${family.roots.join(', ')}` : `no source under ${under}` };
   }
   if (inputs.manifest === null) {
     return { kind: 'failed', problem: 'dist/.vite/manifest.json missing' };
@@ -1733,6 +1746,19 @@ export function readInputs(distDir: string, clientRoot: string): { inputs: Budge
   const gameSourceExists = sourceExists(GAME_SRC);
   const sceneSourceExists = sourceExists(SCENE_SRC);
   const lazySources = new Set([...LAZY_ROOTS].filter(sourceExists));
+  // The listed families' roots, read here and never at module top level (e2e/scene-env.spec.ts and
+  // scripts/assets/assets.test.ts import this module).
+  for (const dir of LAZY_FAMILIES.flatMap((f) => (f.rootsUnder === undefined ? [] : [f.rootsUnder]))) {
+    const abs = path.join(clientRoot, ...dir.split('/'));
+    if (!existsSync(abs)) {
+      continue;
+    }
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith('.svelte')) {
+        lazySources.add(`${dir}${entry.name}`);
+      }
+    }
+  }
   return {
     inputs: {
       manifest,

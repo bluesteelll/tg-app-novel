@@ -1,5 +1,5 @@
 // LP2 in happy-dom: the puzzle frame and the hint ladder (PUZZLES-PLAN X8, X14, X18; META-PLAN M21, M27, F24), the
-// view store's BackButton rule, and the reader rules over the four puzzle components (no literal text, no I/O). Events
+// view store's BackButton rule, and the reader rules over the five puzzle components (no literal text, no I/O). Events
 // are built by hand where it matters: a raw tap is pointerdown + click with the DOM not yet updated (a double tap).
 import { cleanup, render } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
@@ -21,6 +21,7 @@ import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import CodeLock from '../../puzzles/ui/CodeLock.svelte';
 import OrderPuzzle from '../../puzzles/ui/OrderPuzzle.svelte';
+import PathPuzzle from '../../puzzles/ui/PathPuzzle.svelte';
 import type { PuzzleUiProps } from '../../puzzles/registry.ts';
 import type { HintTierView } from '../../puzzles/session.ts';
 import type { PuzzleLocalId } from '../../story/staging.ts';
@@ -527,6 +528,13 @@ test('puzzles: every declared control emits its cue', () => {
       }),
     ],
     ['load failed', hostProps({ frame: frameOf({ ui: null, loadFailed: true }) })],
+    // A reach frame: a path's cells (its Try is off while nothing awaits).
+    [
+      'path',
+      hostProps({
+        frame: frameOf({ mode: 'explore', type: 'path', params: { cols: 3, rows: 2, ends: [0, 3], blocked: [4] }, answer: [0], awaiting: false, ui: PathPuzzle }),
+      }),
+    ],
   ];
   const names = new Set<string>();
   for (const [name, props] of states) {
@@ -539,9 +547,55 @@ test('puzzles: every declared control emits its cue', () => {
       }
     }
   }
+  // A gesture control's cues are its steps (GM7p): scripts A and B of 08b:171-173 on a path frame whose answer follows
+  // `onchange` as the session's does, each over two parts or more, so each step's element must be its own cell (G1:
+  // the host resolves `[data-cue-part="<index>"]` per step). B's cancel is the user agent's: the event, then the release.
+  const scripts: ReadonlyArray<readonly [string, ReadonlyArray<readonly [string, number, number]>]> = [
+    ['A', [['pointerdown', 0, 1], ['pointermove', 1, 1], ['pointermove', 2, 1], ['pointerup', 2, 1]]],
+    ['B', [['pointerdown', 0, 1], ['pointermove', 1, 1], ['pointercancel', 1, 1], ['pointerdown', 1, 2], ['pointermove', 2, 2], ['pointerup', 2, 2]]],
+  ];
+  for (const [script, steps] of scripts) {
+    const played: string[] = [];
+    const els: Array<Element | null> = [];
+    const props: PuzzleHostProps = $state(
+      hostProps({
+        frame: frameOf({ mode: 'explore', type: 'path', params: { cols: 3, rows: 2, ends: [0, 3], blocked: [] }, answer: [], awaiting: false, ui: PathPuzzle }),
+        onchange: (a: readonly number[]) => {
+          if (props.frame !== null) {
+            props.frame.answer = a;
+          }
+        },
+        oncue: (e: CueEvent) => {
+          if (e.cue.kind === 'ui') {
+            played.push(`ui:${e.cue.control}${e.cue.index === null ? '' : `@${e.cue.index}`}`);
+            els.push(e.el);
+          }
+        },
+      }),
+    );
+    const { container, unmount } = render(PuzzleHost, props);
+    const surface = must(container.querySelector('[data-cue-gesture="path-stroke"]'), 'the stroke surface');
+    // happy-dom lays nothing out: a 300 x 200 box, cell c's centre at ((c % 3) * 100 + 50, row * 100 + 50).
+    vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 300, 200));
+    for (const [type, cell, id] of steps) {
+      surface.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: id, clientX: (cell % 3) * 100 + 50, clientY: Math.floor(cell / 3) * 100 + 50 }));
+      if (type === 'pointercancel') {
+        surface.releasePointerCapture(id);
+      }
+      flushSync();
+    }
+    expect(played, script).toEqual(['ui:path-stroke@0', 'ui:path-stroke@1', 'ui:path-stroke@2']);
+    const cells = [0, 1, 2].map((i) => must(container.querySelector(`[data-cue-part="${i}"]`), `cell ${i}`));
+    expect(els, script).toEqual(cells);
+    expect(new Set(els).size, script).toBe(3);
+    for (const key of played) {
+      names.add(key.replace(/@.*$/, ''));
+    }
+    unmount();
+  }
   // Every control the frame family declares was shown and tapped (the controls gate holds each name to its type).
   expect([...names].sort()).toEqual(
-    ['dial-down', 'dial-up', 'give-up-ask', 'give-up-no', 'give-up-yes', 'hint-more', 'hint-use', 'order-slot', 'puzzle-hint', 'puzzle-retry', 'puzzle-try'].map(
+    ['dial-down', 'dial-up', 'give-up-ask', 'give-up-no', 'give-up-yes', 'hint-more', 'hint-use', 'order-slot', 'path-cell', 'path-stroke', 'puzzle-hint', 'puzzle-retry', 'puzzle-try'].map(
       (n) => `ui:${n}`,
     ),
   );
@@ -887,7 +941,7 @@ test('puzzle host: the frame layer takes taps only on the frame and the load not
 
 // ---------------------------------------------------------------------------------------------------------------
 // The reader rules (spec 2, K26): copies of L14b's readers (menus.svelte.test.ts; RULINGS 55 accepts copies) over the
-// four puzzle components, with an exact import list per component (critique W2): a value import beyond it, such as
+// five puzzle components, with an exact import list per component (critique W2): a value import beyond it, such as
 // the Telegram facade, is an offender.
 
 const COMPONENT_SOURCES = import.meta.glob<string>(['./*.svelte', '../../puzzles/ui/*.svelte'], { query: '?raw', import: 'default', eager: true });
@@ -898,6 +952,7 @@ const VALUE_IMPORTS: Readonly<Record<string, readonly string[]>> = {
   './HintLadder.svelte': ['../../i18n/index.ts'],
   '../../puzzles/ui/CodeLock.svelte': ['../../i18n/index.ts', '../rules/index.ts'],
   '../../puzzles/ui/OrderPuzzle.svelte': ['../../i18n/index.ts', '../../ui/glyphs.ts', '../rules/index.ts'],
+  '../../puzzles/ui/PathPuzzle.svelte': ['../../i18n/mechanics.ts', '../play/path.ts', '../play/reach.ts', '../rules/index.ts'],
 };
 const COMPONENTS = Object.keys(VALUE_IMPORTS);
 
@@ -948,7 +1003,7 @@ function literalText(source: string): string[] {
 }
 
 test('puzzle ui: components hold no literal text', () => {
-  // Non-vacuous: exactly the four components are read.
+  // Non-vacuous: exactly the five components are read.
   expect(Object.keys(COMPONENT_SOURCES).sort()).toEqual([...COMPONENTS].sort());
   const offenders: string[] = [];
   for (const name of COMPONENTS) {
