@@ -299,6 +299,18 @@ chapter handover; its entry preview draws half files on AVERAGE / HIGH phones un
 exception to I6 (QO11, RULINGS 143) —
 [shots §5.8 Preload policy for cuts](plans/shots/05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry),
 [shots §13 Questions for the orchestrator](plans/shots/13-orchestrator-questions.md#13-questions-for-the-orchestrator-engineering-each-with-a-recommendation).
+Changed by RULINGS 320-325, 330, 332, 336, 340, 343, 346 (as of `f6487fc`; docs lane `docs-errata-19`, group A): built
+(SH5b `f6487fc`), at every chapter entry, not only a handover. The first step after a fresh start, a resume, a
+handover or an in-session chapter load stages its images from their half files as preview records (`Session.entry`,
+`client/src/app/game.ts:375`), on AVERAGE / HIGH phones too; on LOW the session tier is already `half`, so nothing
+changes there. After the entry's first swap point each preview is upgraded in place to its full file, one at a time
+outside the scheduler's slots (`upgrade`, `client/src/scene/registry.ts:185`; the swap at the stored box, resolution 1,
+`client/src/scene/loader.ts:138`); a record whose upgrade fails `UPGRADE_TRIES` = 3 times (`registry.ts:31`; an upgrade
+not answered within `UPGRADE_DEADLINE_MS` = 20 s, `:39`, is a failed try) keeps its half for its life. So the bounded
+exception to I6 lasts from the first line to the last upgrade of the entry; the rest of this lever (the files, the
+decoder's halving, the layout) is unchanged. As built:
+[shots §5.8](plans/shots/05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry), "Ruled
+since: RULINGS 320-325, 330, 332, 336, 340, 343, 346".
 
 **What.** Every bg, cg and prop, and every char on the canonical 768 x 1536 canvas, gets a second file pair at exactly
 0.5 x per side of its **stored** file (bg 540 x 1024; a 466 x 1394 trimmed placeholder sprite gives 233 x 697). A char
@@ -695,6 +707,11 @@ rows against `STEADY_CAP_BYTES`, `:183`) and `budget/entry-step` (`:1489`, the `
 GM4g (`56cc302`) made `room-set` count the transition pair, img(R) + props(R) + max(the largest neighbour room's img +
 props, the largest close-up), every image through `imgIds` (`roomRows` `:1169`), and note "preloads k of n neighbours"
 (a report, never a FAIL). The step model's runtime (§8 below) is still planned (SH5a, SH5b).
+Changed by RULINGS 314, 346 (as of `f6487fc`; docs lane `docs-errata-19`, group A): the step model's runtime is built.
+SH5a (`48489b7`) added the step windows, the warm form and the room windows; SH5b (`f6487fc`) added the half-tier
+entry and its in-place upgrade (4.C below). The runtime's rules as built are shots
+[§5.8](plans/shots/05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry)'s two "Ruled
+since" blocks; the gates above are unchanged by either lane.
 
 | | Registry (runtime invariant) | `budget/knot-set` (static gate) | Equivalence (I2) |
 |---|---|---|---|
@@ -718,6 +735,12 @@ through step windows (`need`, `warm`, `hope`, `eventRoom`; the event's own room 
 `state:<room>` holders follow `room:*`'s keep set —
 [shots §5.8 Preload policy for cuts](plans/shots/05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry),
 [engine §6.4 `visual`: state-derived room pictures](plans/engine/06-mechanics-as-modules.md#64-visual-state-derived-room-pictures-gm3b-replaces-lfu3s-b-001-fix).
+Changed by RULINGS 314, 346 (as of `f6487fc`; docs lane `docs-errata-19`, group A): built, the step windows and room
+windows by SH5a (`48489b7`) and the half-tier entry with its in-place upgrade by SH5b (`f6487fc`; 4.C). An upgrade
+swaps the record's `resource` in place as the revive below does (A2), keeps its `TextureHandle`, and asks the render
+loop for one frame when it lands (`sharpened`, `client/src/scene/preload.ts:122`, wired to `loop.requestRender()` at
+`client/src/scene/controller.ts:530`); a revive aborts every upgrade in flight, and an upgrade asked during a revive
+answers `false` and waits for the next swap point.
 
 **A1 load (M2).**
 1. The registry admits `need = decodedBytes + ref.bytes`.

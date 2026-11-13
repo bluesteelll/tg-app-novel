@@ -150,6 +150,19 @@
   merge, with this lock (4). Its STOP: `views+recipes-real` still at the cap on any seed with the quotient, back to the
   orchestrator for §7.6's response (3). The ms per section only on a quiet machine. (Its launch and cut are RULINGS
   313's, after this docs lane's scope.)
+- **Ruled since: RULINGS 313, 316, 317, 318, 322, 323, 326** — merged `5142d5d` (lane A, launched from `5190235`, its
+  branch fast-forwarded to `48489b7` before any commit, RULINGS 316). **Lock 5:** the four above plus
+  `client/scripts/story/softlock.ts` (RULINGS 316 Q1: the soft-lock path prints walk + step;
+  `git diff --name-only 5142d5d^1 5142d5d` lists exactly these 5). **Commits:** C0 `c555e2e` (`search: a work bound
+  beside the place cap (8 successor evaluations per state of the cap)`, RULINGS 317 W2), C1 `7b84f96` (`search: the
+  place quotient for views (equal quotient keys have equal successor keys)`), C2 `ee72f65` (`spike p2: real views and a
+  recipe fit the cap with the place quotient`), and fix2 `b8607a8`, `d2ee252`, `3b14b6e` (RULINGS 323: the work
+  check's order, an excluded successor's work, a foreign view entry, ch1's place map, a resume inside the merged desk
+  view, `exclude`'s doc). No STOP fired: every real view merges and `views+recipes-real` equals `recipes-real` under
+  both bounds. ch1's story log 540 -> 406; explore-ui +485 B (all `search.ts`, under the +500 B STOP); no
+  `RULES_VERSION` bump (RULINGS 316 Q4). The design as built:
+  [§6.3](06-mechanics-as-modules.md#63-view-full-screen-zoom-views-gm4-o5), "Ruled since: RULINGS 316, 317, 318, 322,
+  323, 326"; P2: [§7.6](07-puzzle-types.md#76-state-space-budget-and-spike-p2-r2-m4).
 
 ### GM5f `mech-flags`
 - **Goal:** §6.5 (round 3: `fact:flag:removed` gets its row, §8.4).
@@ -161,3 +174,15 @@
 - **Commits:** `flags: a set effect sets a flag once`, `project: fl_<flag> is projected when declared`, `story: a flag
   set outside its section is refused`, `search: a visual-only flag adds no states` (red: states double).
 - **Gates:** check, test, story, build.
+- **Ruled since: RULINGS 327, 328, 329, 331, 333, 334** — merged `402d4d8` (lane A, from `5142d5d`). **Lock 27**
+  (RULINGS 327's 18 = the 12 above plus `client/src/cues/stage/motions.test.ts`, `client/src/mechanics/contract.ts`,
+  `client/scripts/story/world.ts`, `client/scripts/story/world.test.ts`, `client/src/mechanics/registry.test.ts`,
+  `client/scripts/story/mechanics/core.ts`; plus RULINGS 328 Q1's 9: `client/src/mechanics/rules/{writer,search,core,use,visual}.ts`,
+  `client/src/explore/controller.ts`, `client/src/explore/controller.test.ts`, `client/src/world/decode.test.ts`
+  (fixtures only), `client/src/mechanics/conditions.test.ts` (the probe rename only); `git diff --name-only 402d4d8^1
+  402d4d8` lists exactly these 27). 23 commits: implement (C1-C7 with C2b and the riders R1, R2), fix2 (RULINGS 331:
+  the re-arm from event facts, D6' and D6''), fix3 (RULINGS 333, 334: test-only plus comments). The "states double" red
+  is D7's: a trigger whose effects are all a module's has no `fired` key fact, so a visual-only flag adds no states.
+  E_engine 0.25 (RULINGS 328 Q2); engine +841 B (STOP +1,151), explore-ui +723 B (STOP +1,428); no `RULES_VERSION`
+  bump (RULINGS 317 O1's rule, checked by the critique, RULINGS 329). The design as built:
+  [§6.5](06-mechanics-as-modules.md#65-flags-gm5f), "Ruled since: RULINGS 327, 328, 329, 331, 333, 334".

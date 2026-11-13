@@ -311,6 +311,40 @@
     a zoom's art load-wait such a tap is swallowed (the fade completes; a load in progress continues): the scene's
     `complete()` reaches enqueued batches only, so on a slow network the bar stays dead until the view's art arrives
     (GM5 player lens F4; views are exit neighbours, so preloading makes it rare).
+- **Ruled since: RULINGS 316, 317, 318, 322, 323, 326** — the place quotient as built (GM5q `5142d5d`, lock 5; cut r3
+  1.3-1.13; the "State" point above: "the place quotient is the fallback" is now built). Where "State" and the points
+  below differ, the points hold.
+  - **A free view keys under its parent's place** (`placesOf`, `client/src/mechanics/rules/search.ts:105-128`;
+    `sectionPlaces` `:309` lists them). A view V of room P merges iff (a) its entry is ungated: (a2) every exit of the
+    section's rooms into V lies in P, has no lock and (since GM5f) no `when`, and at least one does, which implies (a1)
+    P is a room of the section; (a3) no module of the registry has a `tap` hook; (b) `enter:V` has no kernel effect
+    (by key) and no module effect; (c) its only way out is `leave-view`: (c1) every exit of V leads into a child view
+    of V, (c2) the registry offers `leave-view`; (d) no module's `reads` names `visited: V`. (a), (a3), (b) and (d)
+    are soundness conditions the property test sees; (c2) one it cannot see (a trapped view would get its parent's way
+    out; its red is a search count); (c1) is policy (RULINGS 316 Q2). A merged view of a merged view joins the same
+    place (depth 2); a view that does not merge is a place of its own; a cycle's views stay places of their own.
+  - **The key and the search:** `sectionKey`'s room part names the place's root; no other key part changes.
+    `successors` is unchanged; the search expands a dequeued state over every member of its place, walking to each by
+    the free moves (the first lockless parent exit, `leave-view`) and handing `onEdge` the walk as a 5th argument. I-P:
+    every reachable state in a merged view has arrived at its root (a view is entered only from its parent, a section
+    never starts in one), so the walk writes nothing the key encodes.
+  - **Save and resume:** the save format is unchanged (`s.room` is the room the player stands in). A resume admits by
+    the place key and resumes in the view itself. Every reachable save gets today's answer, with one new 'yes'
+    (RULINGS 316 Q6, accepted): a save from another world version standing with a knot pending in another member of
+    the place than the one where the knot was queued admits through its place twin; its future equals the twin's.
+  - **Two bounds** (RULINGS 317 W2, 318): places <= `RESUME_STATE_CAP` and work <= cap x `RESUME_WORK_PER_STATE` (8)
+    = 40,000 successor evaluations (`search.ts:535`, `:574`; one `reduce` per returned successor, one per walk move
+    beyond the first member), one rule for build and runtime; `onStats` reports expansions, work and the bound
+    (`SearchStats` `:528`). `world/state-cap` names the bound it passed (`client/scripts/story/softlock.ts:92-96`);
+    the count text is byte-identical.
+  - **The soft-lock path** prints each hop's walk, then its step, each described from the state before it
+    (`softlock.ts:60-135`): a legal path, shortest in place hops, not in taps (RULINGS 323 A1).
+  - **No `RULES_VERSION` bump** (RULINGS 316 Q4, 317 O1's rule: a bump is owed when the concrete relation or a
+    reachable save's answer can change, not for a key, search or bound change that keeps both). ch1's story log moved
+    540 -> 406 states (`desk_view` merges); story-gen, `server/content` and the usage files stayed byte-identical.
+  - P2 with the quotient: [§7.6](07-puzzle-types.md#76-state-space-budget-and-spike-p2-r2-m4). Carried (`carry.md`
+    "GM5q carries"): the first rules module lane that adds a `tap` hook restates (a3) for the keys it can claim
+    (RULINGS 316 Q3); the next `rules/search.ts` holder watches explore-ui (11,870 B at the merge, row limit 16,000).
 
 ### 6.4 `visual`: state-derived room pictures (GM3b; replaces LFU3's B-001 fix)
 
@@ -537,6 +571,78 @@ export function roomImages(w: WorldPublic, room: RoomId): readonly PropId[];
   `fl_<flag>` projected as a bool kernel fact kind (`project.ts:15-39` gains it); `normalize` drops undeclared flags.
 - **m4:** `reads` lists a flag only where a gating condition reads it; a flag read only by `is` / `decor` costs 0
   states. Test `search: a visual-only flag adds no states`.
+- **Ruled since: RULINGS 327, 328, 329, 331, 333, 334** — as built (GM5f `402d4d8`, lock 27; cut r4, its §7-§9 patches
+  and the implement addenda; D1-D11, D6', D6''). Where the two points above and the points below differ, the points
+  hold.
+  - **The data** (`client/src/mechanics/data/flags.ts`; the module's entry `client/src/mechanics/data/index.ts:65-74`):
+    `"flags": { "<flag>": { "section": "<section>" } }` at the world's top; a `{ "set": "<flag>" }` effect inside a
+    kernel trigger list (`onEnter`, `then`, `onOpen`, `onFail`), kept by `<trigger>#<source index>`; a hotspot's
+    `when`, its presence, any gating condition (kernel atoms or flags); the atom `{ "flag": "<flag>" }`. The fact kind
+    `flag` is the module's (`owns.facts`), saved in `WorldState.flags`; `fl_<flag>` is projected (bool) for every
+    declared flag (`client/src/explore/project.ts:39-40`).
+  - **The runner and A1's rule** (D2): a **kernel effect is defined by its key** (`give`, `unlock`, `story`;
+    `isKernelEffect`, `client/src/mechanics/rules/writer.ts:23`), because the proof form keeps a module's owned
+    `{ set }` in the kernel lists; `fire` (`writer.ts:48`) runs the module effects at their source index among the
+    kernel ones, and fires a trigger whose only effects are a module's. A `set` adds its flag once and records
+    `fact:flag:added` (`client/src/mechanics/rules/flags.ts:32-39`), the stage's `sweep` (`client/src/cues/stage/motions.ts:170`).
+  - **Presence** (D3): `present` (`rules/flags.ts:84`) is read by core (a tap, `client/src/mechanics/rules/core.ts:135`;
+    an insert, `:225`; `actions`, `:465`), use (`rules/use.ts:46`), visual (`rules/visual.ts:53`), the search (a gated
+    entry merges no view, `gated` `rules/flags.ts:91`) and the explore controller. A hidden hotspot is no action, draws
+    nothing, has no hit area, is no Back route and no free zoom entry. **Presence is not monotone** (a `when` may read
+    `held` or `not`): D10, the lock panel closes when its lock goes absent (`shutLock`,
+    `client/src/explore/controller.ts:295`); D11, a way back that goes absent clears Back's path (`prune`, `:403`; X12
+    W4's rule, PUZZLES-PLAN X12).
+  - **Reset and scope** (D4): a section's reset clears the flags it declares (`flagScope`, `rules/flags.ts:74`;
+    `ModuleScope.flags`, `client/src/mechanics/contract.ts:200`). The lints `world/flag-unknown-ref` and
+    `world/flag-scope` (`client/scripts/story/mechanics/flags.ts:29-32`): a `set` or a gating `flag` atom names only a
+    flag its own section declares; a visual site or a clue reads any flag of the chapter; a hotspot `when` is also a
+    gating condition of its section (`world/cross-section-cond`). D9: `world/fail-without-effect` counts a module
+    effect, so an `onFail` that only sets a flag passes (`client/scripts/story/world.ts:695-699`).
+  - **D7, the key, and its invariant (S3):** core's `reads` lists `fired` for a trigger only when it has a kernel
+    effect by key (`hasKernelEffect`, `rules/core.ts:378`, used `:422-424`). It is sound because no condition atom
+    reads `fired`, a set-only trigger writes only idempotent flags, and flags' own `reads` key each flag a gating rule
+    reads (m4); and only while **every set-only trigger that has run has set its flags**, which the runner does on
+    every played state and D6 restores on a reconciled one.
+  - **D6, D6', D6'': the re-arm** (`normalizeFlags`, `client/src/mechanics/data/flags.ts:155`, run by reconcile after
+    its kernel steps, `client/src/explore/reconcile.ts:327-331`). A declared flag is set **iff a current setter of it
+    has run**: its trigger is in `fired`, or the trigger has no kernel effect and the fact its own event writes holds
+    for its target and the hotspot's current kind (`triggerRan`, `reconcile.ts:57`): `visited` for `enter:<room>`,
+    `examined` for a look's `then`, `taken` for a take's `then`, `open` for `open:<key>`, the puzzle's failed outcome
+    for `fail:<key>`; an object's `then` has no such fact (an `unlock` opens an object without it). An undeclared flag
+    is dropped (`flags:<id>`); a flag no current setter has run goes silently (D6''). The re-arm writes no `fired`.
+  - **Resume answers that change (X9 classes, recorded; no committed world declares a flag, so none is reachable on
+    shipped content today):**
+    - A6 (D7): a reconciled `fired` key of a trigger that lost its kernel effects resumes instead of restarting
+      (`no` -> `yes`); sound, the same direction GM5q accepted;
+    - S1 / D6' (fix2): a `set` added to a trigger that was empty in the save's version reaches old saves through the
+      trigger's event fact; before fix2 the flag was lost for good;
+    - P6 / N7: where a setter that reconcile's step 3 un-fired held the flag, D6'' clears it, and S2's restart becomes
+      a resume;
+    - W1 (cut §8.1): where the new version moved a flag's only setter to a trigger the save has not run, D6'' clears
+      the flag, and a save that holds a fact producible only with the flag restarts where keeping it resumed; the
+      remedy is the authoring rule "keep the old `set` beside the new one" (AUTHORING "Flags");
+    - D1 (cut §9.8): a failed outcome carried from an older version (the puzzle was linear then, or at another lock)
+      counts as the current lock's failure, as the kernel already treats it: the lock's `onFail` flags re-arm at load
+      and the save resumes with that lock's puzzle already failed;
+    - D2 (recorded, not changed): a re-armed set-only trigger runs once more at its next event: one extra
+      `fact:fired:added` cue (a pulse; the `enter` row's sweep on re-entry) and a dirty write, keys, flags and answers
+      unchanged; that run also delivers any other non-kernel effect the new version gave the trigger.
+  - **No `RULES_VERSION` bump** (RULINGS 317 O1's rule, applied with the evidence of cut D7 and checked by the
+    critique, RULINGS 329): `RULES_VERSION` (`client/src/explore/reduce.ts:35`) gates only the stored "proved" answer
+    (a section's absence from `unproved`); the concrete relation is unchanged on every committed world (none has a
+    `flags` key), and A6's state sits only in an `unproved` section, answered live, so a bump would change no answer
+    and only cost every player a reconcile. The save format needed no bump either: `flags` came with format 2 (GM2a,
+    §5.2's "one bump").
+  - **Cost** (author m5): a visual-only flag adds 0 states; two gating flags measured x1.95-3.12 states and x1.98-3.60
+    work at ch1's density (spike P2's `flags-real` 896-1,410 states against base 406-528), not "about x2" per flag.
+  - **Carried** (`carry.md` "GM5f carries"): Q4's demo flag and the optional `world/flag-unset` warning (widened per
+    author m1: a hotspot that can never appear is silent today) to the next ch1 world holder (GM9r); the two kernel-effect
+    predicates (`isKernelEffect`, reconcile's by-key copy `reconcile.ts:41`) to the next `reconcile.ts` / `writer.ts`
+    holder (O1); `fact:flag:removed` has no emitter (the reset path emits `module:core:reset` only) to SH10 / MR1;
+    A7's AND clue (`{ all: [{ flag: f }, { held: x }] }` refused by `world/clue-reachable` while no gating rule reads
+    f) with the `examined` / `visited` class; and, unchanged, reconcile's step 1 drops a module trigger's `fired` key at
+    a version change (the GM3 carry, RULINGS 210 Q5). Author m6: the flag sweep equals a walk's sweep, and a revealed
+    hotspot with no prop shows no visible signal (to MR1).
 
 ### 6.6 `carry`: items across chapters, required allowed (GM9p proof, GM9r runtime; O6 / R9)
 

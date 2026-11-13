@@ -576,6 +576,21 @@ view is ch1's `desk_view`: the study's exit `to_desk` enters it, and it has no e
 - **Enter every view from its parent.** A view no exit enters builds with `world/unreachable` (W) only. If a story
   update removes a view's only entering exit, every save standing in that view **restarts its section** on load (the
   area-reset toast) and loses that section's progress (RULINGS 300).
+- **A free view costs no states** (Changed by RULINGS 316, 317, 323, 326 (as of `f6487fc`; docs lane `docs-errata-19`,
+  group A); as merged, GM5q `5142d5d`). The soft-lock gate counts a view together with its parent, as one **place**,
+  when all of these hold ([search.ts:105-128](../client/src/mechanics/rules/search.ts#L105), `placesOf`):
+  - its only way in is a parent's exit with no lock and no `when`;
+  - its `onEnter` is empty;
+  - it has no exit except into its own child views (an exit back to the parent, or a story exit, makes it a place of
+    its own);
+  - no gating condition (a `use` rule's, a recipe's or a hotspot's `when`) reads `visited` of it.
+
+  A free view of a free view joins the same place. A view that is not free costs states as a room does (about x2.8-2.9
+  at 2 per room). An exit back from a view is allowed, but it un-frees the view; Back and the leave control already
+  lead out of every view. A free view still adds its hotspots' moves to the work bound ("World lint codes" below). In
+  the story log ch1's `desk_view` is free: ch1 counts 406 places, 540 states without the quotient.
+  Two engine conditions also hold today and need nothing from you: no mechanic takes a tap before core does (a `tap`
+  hook), and the view module is registered (it offers `leave-view`).
 - **Art.** A view's `bg` is a room background; in a shot chapter its shot has frame `room` (`shot/room-frame`,
   [STAGING-DSL §14.3](STAGING-DSL.md#143-shot-lint-codes)). The budget pairs a view with its parent: a view's
   neighbours are its parent first, then the rooms of its exits ([STAGING-DSL §8](STAGING-DSL.md#8-assets-and-preloading),
@@ -605,7 +620,8 @@ The lint's lock rules ([world.ts:633-703](../client/scripts/story/world.ts#L633)
 - a puzzle belongs to at most one lock (`world/puzzle-multi-lock`), and a lock's puzzle is never also yielded by a
   `puzzle` tag (`puzzle/in-section`);
 - a lock's puzzle has no Give up (`world/giveup-in-section`);
-- a lock's puzzle with `maxAttempts` needs a non-empty `onFail` (`world/fail-without-effect`);
+- a lock's puzzle with `maxAttempts` needs a non-empty `onFail` (`world/fail-without-effect`; since GM5f a `set` counts,
+  "Flags" below);
 - an `order` puzzle's `pieces` are exactly the lock's slot items (`world/order-pieces`);
 - an item obtained in one section is never required by a lock or puzzle of another (`world/cross-section-item`).
 
@@ -644,6 +660,57 @@ player selects an item in the ribbon and taps another one onto it, in either ord
   puzzle or section, and the gate reports `id/missing` at it.
 - A recipe multiplies the states the soft-lock check explores ([World lint codes and soft-lock
   counterexamples](#world-lint-codes-and-soft-lock-counterexamples), the per-section budget).
+
+**Flags** (Changed by RULINGS 327-329, 331, 333, 334 (as of `f6487fc`; docs lane `docs-errata-19`, group A); as merged,
+GM5f `402d4d8`; no committed chapter declares one yet). A flag is a named fact that a trigger sets and nothing clears
+but its section's reset. Declare it with its section at the world's top, set it with a `set` effect in any trigger,
+and gate a hotspot on it with `when` ([data/flags.ts:18-30](../client/src/mechanics/data/flags.ts#L18)):
+
+```json
+"flags": { "lamp_lit": { "section": "house" } }
+```
+
+```json
+{ "id": "switch", "kind": "object", "rect": [100, 400, 200, 200], "label": { "id": "ch1.house.l020", "ru": "Switch" },
+  "look": null, "prop": null, "lock": null, "then": [ { "set": "lamp_lit" } ] }
+```
+
+```json
+{ "id": "oil", "kind": "take", "rect": [500, 900, 200, 200], "label": { "id": "ch1.house.l021", "ru": "Oil can" },
+  "gives": { "item": "oil" }, "prop": "oil", "when": { "flag": "lamp_lit" } }
+```
+
+- **One section per flag.** Only the effects of the declaring section set it, and only that section's gating
+  conditions (a hotspot's `when`, a `uses.when`, a recipe's `when`) read it (`world/flag-scope`); a visual `is` rule
+  or a clue may read any flag of the chapter. An undeclared flag anywhere is `world/flag-unknown-ref`
+  ([Module and type lint codes](#module-and-type-lint-codes)). Ink reads it as `fl_<flag>` (Projection variables).
+- **`when` is presence.** While its condition does not hold, the hotspot is not there: no tap, no insert, no `use`, no
+  picture, no hit area, no way back through it. A `when` may read `held` or `not`, so a hotspot can disappear again:
+  an open lock panel then closes, and Back stops walking through an exit that went away. The reveal button shows
+  hotspots, so a hotspot that a flag brings in with no prop or picture state of its own gives the player no visible
+  sign: give it a prop or an `is` state.
+- **Cost.** A flag read only by pictures (an `is` rule or a decor) costs no states. A flag a gating condition reads
+  can multiply the section's states: two such flags measured x1.95-3.12 states and x1.98-3.60 work at ch1's density.
+- **A clue that ANDs a flag with another fact** (`{ "all": [ { "flag": "f" }, { "held": "x" } ] }`) can be refused by
+  `world/clue-reachable` while no gating rule reads the flag, like a clue on `examined` or `visited`
+  ([clues.ts:113-119](../client/scripts/story/mechanics/clues.ts#L113), `unseenClues`). A clue on the flag alone works.
+- **A lock's `onFail` that only sets a flag** counts as an effect for `world/fail-without-effect`; the soft-lock check
+  still judges whether the flag opens a way on.
+
+**Changing flags in a shipped world** (old saves meet the new world at load):
+- **Adding a `set`.** On a take's `then`, a look's `then`, a room's `onEnter`, a lock's `onOpen` or a lock puzzle's
+  `onFail`, a save that already passed that event gets the flag at load. On an object's `then` it gets it at its next
+  tap of the object (an `unlock` can open an object without its `then`, so there is no event to read); where old saves
+  that cannot return must have the flag, put the `set` on a trigger with an event. A `set` beside a `give`, `unlock`
+  or `story` on a trigger the save passed while it was empty follows that trigger: it runs again at its next event, or
+  the section restarts.
+- **Moving or removing a setter** clears the flag where no current setter has run, and a save that already used what
+  the flag gates then restarts its section. To move a setter, keep the old `set` beside the new one: a flag stays while
+  any current setter has run.
+- **Attaching a puzzle to a lock in an update** (a once-linear puzzle, or one moved from another lock) credits its old
+  failures: a save that failed it gets the lock's `onFail` flags at load and resumes with that lock's puzzle already
+  failed; an `onFail` `give`, `unlock` or `story` follows its record (the section restarts). For a fresh lock, give the
+  lock a new puzzle id.
 
 ### The safe frame and target sizes
 
@@ -784,6 +851,7 @@ table:
 | `pz_<puzzle>_hints` | int | hint tiers opened in this run |
 | `it_<item>` | bool | the item was ever obtained |
 | `dc_<doc>` | bool | the document was found |
+| `fl_<flag>` | bool | the flag is set (Changed by RULINGS 327, 334 (as of `f6487fc`; docs lane `docs-errata-19`, group A): GM5f, any declared flag of the chapter; an ink `VAR` of an undeclared flag is never written) |
 
 Declare them in the chapter's entry file with the right type, and read them like any variable:
 
@@ -816,9 +884,13 @@ The full list of `world/*`, `puzzle/*` and `explore/*` codes is the second table
 `world/softlock`.
 
 For each section the gate explores every state a player can reach and proves that each one can still reach a leave
-([softlock.ts:60-117](../client/scripts/story/softlock.ts#L60)). The `world:` line reports
-`softlock OK (<n> states)`, or `softlock FAIL (<k> of <n> sections)`. A failure prints the shortest action path to
-the first stuck state.
+([softlock.ts:60-135](../client/scripts/story/softlock.ts#L60)). The `world:` line reports
+`softlock OK (<n> states)`, or `softlock FAIL (<k> of <n> sections)`. A failure prints a path from the section's
+entry to the first stuck state. Changed by RULINGS 323 (as of `f6487fc`; docs lane `docs-errata-19`, group A): the
+path is the shortest in steps between **places** (a free zoom view and its parent count as one place, see "Zoom
+views"), not in taps. The free moves into and out of such a view are printed as ordinary steps (`tap <parent>.<exit>`,
+`leave view <room>`), so a printed path can be longer in taps than the shortest one. Every printed path is a legal
+playthrough that ends stuck.
 
 Give the example's `desk` three attempts and an `onFail` that does not open it (`"maxAttempts": 3`,
 `"onFail": [ { "story": "study_voice" } ]`):
@@ -833,7 +905,7 @@ path, not the symptom: here `"onFail": [ { "unlock": "study.desk" } ]` forces th
 gate reports `softlock OK (26 states)`. The steps are `tap <room>.<hotspot>`, `insert <room>.<hotspot> <item>`,
 `return from <knot>` and `<step> → <puzzle> closed|solved|failed|abandoned`; as merged (GM3, GM4, GM5) also
 `use <item> on <target>`, `leave view <room>` and `combine <a> + <b>`
-([softlock.ts:28-57](../client/scripts/story/softlock.ts#L28)). A playthrough's step names `leave-view` as
+([softlock.ts:29-59](../client/scripts/story/softlock.ts#L29), `describe`). A playthrough's step names `leave-view` as
 `leave-view (current room)` ([playthrough.ts:121-125](../client/scripts/story/playthrough.ts#L121), `stepName`).
 
 A section with more than 5,000 states is `world/state-cap`: split it into smaller sections
@@ -841,17 +913,45 @@ A section with more than 5,000 states is `world/state-cap`: split it into smalle
 `world/unreachable` (W). Both are rows of [STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces), second table, like
 `world/softlock`.
 
-**A per-section budget** (provisional until GM5q's measurement with the place quotient; Changed by RULINGS 309 (as of
-`48489b7`; docs lane `docs-errata-18`, group A); spike P2-b, MEASURED on eight seeds at ch1's density: 3 rooms, 11
-hotspots, 2 locks). Each feature multiplies a section's states roughly:
-- a section like that alone: 406-528 states;
-- zoom views at 2 per room: x2.8-2.9 (1,174-1,456 states);
-- one recipe (two takes and a product): x4.0-5.0 (1,868-2,300 states);
-- views at 2 per room **and** one recipe: over 5,000 on every seed, so `world/state-cap` fails. The real ch1 with one
-  recipe went from 540 to 1,284 states.
+Changed by RULINGS 317, 318, 323, 326 (as of `f6487fc`; docs lane `docs-errata-19`, group A): `world/state-cap` has
+**two bounds**, and whichever a section passes first fires
+([softlock.ts:92-96](../client/scripts/story/softlock.ts#L92); the work bound `RESUME_WORK_PER_STATE`,
+[search.ts:535](../client/src/mechanics/rules/search.ts#L535)):
+- **more than 5,000 places.** A place is what the gate counts as one state: a free zoom view counts with its parent
+  ("Zoom views"). The message: `section <s>: more than 5000 states (RESUME_STATE_CAP), too large to prove at resume
+  (X9); split it into sections`.
+- **more than 40,000 successor evaluations** (8 per place of the cap). One evaluation is one move a player could make
+  in one reachable state: a tap on each hotspot shown, an insert of each held item a slot takes, a `use`, a combine, a
+  puzzle's close and each of its outcomes; a free view adds its own hotspots' moves to its parent's place. The message:
+  `section <s>: more than 40000 successor evaluations (8 per state of RESUME_STATE_CAP), too large to prove at resume
+  (X9); split it into sections`.
 
-Until GM5q lands, keep a section's product of factors under 5,000: put a recipe in a section with few views, or split
-the section (the `softlock OK (<n> states)` line shows where you stand).
+Splitting the section helps only when its rooms are many. When one dense room or one place (a room and its free views)
+is the load, splitting does not help: fewer hotspots, fewer inserts a slot accepts, or fewer views in that room do.
+Neither message prints the count it reached.
+
+**A per-section budget** (Changed by RULINGS 309 (as of `48489b7`; docs lane `docs-errata-18`, group A); Changed by
+RULINGS 316, 317, 322, 326 (as of `f6487fc`; docs lane `docs-errata-19`, group A): MEASURED with the place quotient,
+GM5q `5142d5d`, spike P2 on eight seeds at ch1's density: 3 rooms, 11 hotspots, 2 locks; `p2q.md` of its lane). In
+places and in work:
+
+| A section like that with | Places | Work (successor evaluations) |
+|---|---|---|
+| nothing more | 406-528 | 1,321-1,741 |
+| free zoom views at 2 per room | 406-528 (the same: each view folds into its room) | 3,625-4,525 (about x2.6-2.7: a view's hotspots still cost moves) |
+| one recipe (two takes and a product) | 1,868-2,300 | 7,012-8,428 |
+| free views at 2 per room **and** one recipe | 1,868-2,300 | 18,580-21,868 (at most 55 % of the 40,000) |
+
+A free view adds no places, but it adds work: at 2 free views per room a place costs about 9 evaluations (9.5-10 with
+a recipe), against 2.4-4.1 per state without a free view. So with views the work bound, not the place count, is
+the one a dense section meets first: at about 9.5-10 per place it passes 40,000 near 4,000-4,200 places (an
+extrapolation; no measured section stopped there). Views that are not free (see "Zoom views") still multiply places
+by about x2.8-2.9, as before GM5q. The real ch1 with one recipe went from 540 to 1,284 states before GM5q (measured);
+with the place quotient about 965 places and about 4,200 work are estimates, not measurements.
+
+The `softlock OK (<n> states)` line counts places only, never work
+([story.ts:411](../client/scripts/story.ts#L411)), so it does not show how close a section is to the work bound. Keep
+a section with views and a recipe near the table's last row, or below it.
 
 ### Module and type lint codes
 
@@ -860,7 +960,8 @@ their own codes, outside that table, so a new mechanic never edits it
 ([engine §3.2](plans/engine/03-module-contract.md#32-the-two-halves-and-the-registries), "Lint codes"). The gate prints
 them like any other finding. As merged at `837b1ed` (every one is an error, E); Changed by RULINGS 217, 292, 312 (as
 of `48489b7`; docs lane `docs-errata-18`, group A): the rows from `world/use-unknown-ref` on are GM3's `use`, GM4's
-`view` and GM5's `combine`, and `world/keep-consumed` is a warning (W):
+`view` and GM5's `combine`, and `world/keep-consumed` is a warning (W); Changed by RULINGS 327, 334 (as of `f6487fc`; docs
+lane `docs-errata-19`, group A): the two `world/flag-*` rows are GM5f's `flags` (`FLAGS_LINT`, both E):
 
 | Code | Registered by | What the gate refuses |
 |---|---|---|
@@ -872,7 +973,7 @@ of `48489b7`; docs lane `docs-errata-18`, group A): the rows from `world/use-unk
 | `world/reach-has-clue` | `clues` | a clue on a puzzle whose goal the screen shows |
 | `world/clue-reachable` | `clues` | a clue that names no fact of this world, or holds in no state of the lock's section reached before the puzzle is solved or failed |
 | `world/answer-len` | `puzzle-shape` ([puzzles/shape.ts:22](../client/scripts/story/puzzles/shape.ts#L22)) | a puzzle whose posted answer is outside 1..16 entries |
-| `world/cross-section-cond` | `conditions` ([mechanics/conditions.ts:24](../client/scripts/story/mechanics/conditions.ts#L24)) | a gating condition atom naming an id outside its section |
+| `world/cross-section-cond` | `conditions` ([mechanics/conditions.ts:24](../client/scripts/story/mechanics/conditions.ts#L24)) | a gating condition atom naming an id outside its section (since GM5f a hotspot's `when` is a gating condition of its section too) |
 | `world/visual-only-atom` | `conditions` | a visual-only module atom inside a gating condition |
 | `world/cond-size` | `conditions` | a condition deeper than 4 or with more than 16 atoms (clues included) |
 | `world/text-unwalked` | `texts` ([mechanics/texts.ts:76](../client/scripts/story/mechanics/texts.ts#L76)) | a text inside a module's data that no text walker returns |
@@ -885,11 +986,13 @@ of `48489b7`; docs lane `docs-errata-18`, group A): the rows from `world/use-unk
 | `world/view-exits` | `view` | an exit of a view to a room other than its `of` or its own child view (a story exit is allowed) |
 | `world/recipe-unknown-ref` | `combine` ([mechanics/combine.ts:34](../client/scripts/story/mechanics/combine.ts#L34)) | a recipe naming an item the world does not have |
 | `world/recipe-scope` | `combine` | a recipe whose inputs no one section gives; a product with another giver (a take, a trigger, a `use` rule or another recipe, in any section); a product another section's lock accepts (X15) |
+| `world/flag-unknown-ref` | `flags` ([mechanics/flags.ts:29](../client/scripts/story/mechanics/flags.ts#L29)) | a flag declared with a section the world lacks; a `set`, or a `flag` atom at any condition site, naming an undeclared flag |
+| `world/flag-scope` | `flags` | a `set` in a trigger of another section than the flag's; a `flag` atom in a gating condition (a hotspot `when`, a `uses.when`, a recipe `when`) of another section than the flag's |
 
-The registry is `MECHANIC_LINTS` ([mechanics/index.ts:60](../client/scripts/story/mechanics/index.ts#L60)). The
+The registry is `MECHANIC_LINTS` ([mechanics/index.ts:61](../client/scripts/story/mechanics/index.ts#L61), ten passes since GM5f). The
 puzzle types' own tables in `PUZZLE_LINTS` ([puzzles/index.ts:30](../client/scripts/story/puzzles/index.ts#L30)) are
 empty for `code` and `order`: their `world/solution*` codes are STAGING-DSL §11's. The test `story: module and type
-lint codes are unique and none is a DSL code` ([world.test.ts:960](../client/scripts/story/world.test.ts#L960)) keeps
+lint codes are unique and none is a DSL code` ([world.test.ts:971](../client/scripts/story/world.test.ts#L971)) keeps
 each code in one table. This table is written by hand; no test compares it with the registries.
 
 ## Part 3: stories

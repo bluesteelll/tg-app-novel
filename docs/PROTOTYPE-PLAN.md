@@ -2883,7 +2883,9 @@ are in [STORIES-PLAN.md](STORIES-PLAN.md), section "Integration".
 - **At most 2 lanes in parallel**, always one client lane ∥ one server lane, or two client lanes with disjoint lock
   sets. Changed by RULINGS 18 (recorded by STORIES-PLAN, SQ8): at most **3** lanes — one server lane and two client
   / doc / narrative lanes whose locks are disjoint. Changed by RULINGS 255 (as of `a064399`; docs lane
-  `docs-errata-16`, group A): **two lanes at most** while the machine's resets recur.
+  `docs-errata-16`, group A): **two lanes at most** while the machine's resets recur. Changed by RULINGS 276, 338 (as
+  of `f6487fc`; docs lane `docs-errata-19`, group A): the eighth (2026-11-12) and the ninth (2026-11-13, dumpless)
+  resets of November left the rule unchanged: two lanes.
 - Lock sets are paths. A file outside a lane's set is a STOP (lane.js).
 - **Parent files.** Every lane's lock holds the parent module file (`mod.rs` / `lib.rs`) of each `.rs` file it
   creates. Shared files no later lane needs to touch are pre-declared by L2 in full: `server/src/config.rs` and
