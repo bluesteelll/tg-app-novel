@@ -6,10 +6,13 @@ import { GRID_PLAY } from '../../../src/puzzles/play/grid.ts';
 import { GRID_RULES } from '../../../src/puzzles/rules/grid.ts';
 import type { GridParams } from '../../../src/puzzles/rules/grid.ts';
 import { PUZZLE_TYPES, instanceOf, shapeProblem } from '../../../src/puzzles/rules/index.ts';
-import type { PuzzleTypes } from '../../../src/puzzles/rules/index.ts';
+import type { PuzzleTypeData, PuzzleTypes } from '../../../src/puzzles/rules/index.ts';
 import type { ChapterId, PuzzleLocalId } from '../../../src/story/staging.ts';
 import { decodeWorldSource, toServer } from '../../../src/world/decode.ts';
 import { GRID_LINT, GRID_SEARCH_STEPS, countFills, searchFills } from './grid.ts';
+import { PUZZLE_LINTS } from './index.ts';
+import { answerLenIssues, postedLength } from './shape.ts';
+import type { PuzzleLintRegistry } from './shape.ts';
 
 const zeros = (n: number): number[] => Array.from({ length: n }, () => 0);
 
@@ -167,4 +170,69 @@ test("grid: the posted answer has the instance's shape and the server's length",
   expect(server.answerMax).toBe(3);
   expect(server.solution).toEqual(GRID_LINT.solve(params.value));
   expect(GRID_LINT.validateSolution(params.value, decoded.solution)).toBeNull();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Solver F3 (RULINGS 350, 354): the answer bound measures a reach type by its `solve`, or by its answer shape when the
+// lint half has no `solve` or its `solve` returns null, so no reach instance goes unmeasured.
+
+/** `params.n` of the fixture type's instance (its params decode as written). */
+function nOf(params: unknown): number {
+  const n = (params as { n?: unknown }).n; // the fixture type's params: { n }
+  if (typeof n !== 'number') {
+    throw new Error('invariant: a fixture instance writes params.n');
+  }
+  return n;
+}
+
+/** A fixture reach type whose answer shape posts `params.n` entries. */
+const TALL: PuzzleTypeData<string, unknown> = Object.freeze({
+  type: 'tall',
+  check: 'reach',
+  goal: 'shown',
+  presentation: 'overlay',
+  wrong: 'none',
+  commit: 'control',
+  decodeParams: (raw: unknown) => ({ ok: true, value: raw }) as const,
+  answerShape: (p: unknown) => ({ len: nOf(p), max: 1 }),
+  initial: () => [],
+  startShown: () => null,
+});
+
+test('story: a reach type without a solve is bounded by its answer shape', () => {
+  const types: PuzzleTypes = [...PUZZLE_TYPES, TALL];
+  /** A one-puzzle source world whose puzzle `fuse` is a TALL of `n` entries, decoded beside the real types. */
+  const world = (n: number) => {
+    const fuse = {
+      type: 'tall',
+      title: { id: 'ch1.fuse.0001', ru: 'Щиток' },
+      prompt: { id: 'ch1.fuse.0002', ru: 'Провод' },
+      closeup: null,
+      params: { n },
+      maxAttempts: null,
+      giveUp: false,
+      solution: [1],
+      hints: [],
+    };
+    const r = decodeWorldSource({ format: 1, items: {}, docs: {}, sections: {}, puzzles: { fuse } }, { types });
+    if (!r.ok) {
+      throw new Error(`invariant: the fixture decodes: ${JSON.stringify(r.error)}`);
+    }
+    return r.value;
+  };
+  // Both readings of "no solve", each its own lints entry beside the real ones: the hook absent, and a solve that
+  // returns null (F3's own case).
+  const readings: ReadonlyArray<readonly [string, PuzzleLintRegistry]> = [
+    ['no solve', { ...PUZZLE_LINTS, tall: { countSolutions: () => 1 } }],
+    ['a solve that returns null', { ...PUZZLE_LINTS, tall: { solve: () => null, countSolutions: () => 1 } }],
+  ];
+  for (const [reading, lints] of readings) {
+    const w = world(65);
+    expect(answerLenIssues(w, lints, types), reading).toEqual([
+      { path: 'puzzles.fuse.params', reason: 'range', detail: "puzzle 'fuse' posts 65 entries: 1..64 (the server refuses longer, §7.4)" },
+    ]);
+    const fuse = w.puzzles['fuse' as PuzzleLocalId];
+    expect(fuse === undefined ? 'no fuse' : postedLength(fuse, lints, types), reading).toBe(65);
+    expect(answerLenIssues(world(64), lints, types), reading).toEqual([]);
+  }
 });
