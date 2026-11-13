@@ -7,6 +7,7 @@ import type { PuzzleRun } from '../../explore/state.ts';
 import type { Result } from '../../story/catalog.ts';
 import { CODE_RULES } from './code.ts';
 import { ORDER_RULES } from './order.ts';
+import { PATH_RULES } from './path.ts';
 
 /**
  * The data half of one puzzle type: what the engine reads without loading the type's UI. Every member that takes
@@ -47,7 +48,7 @@ export interface PuzzleTypeData<T extends string, P> {
 export type PuzzleTypes = readonly PuzzleTypeData<string, unknown>[];
 
 /** Every puzzle type, one data half each; `PuzzleType` derives from it. */
-export const PUZZLE_TYPES = [CODE_RULES, ORDER_RULES] as const satisfies PuzzleTypes;
+export const PUZZLE_TYPES = [CODE_RULES, ORDER_RULES, PATH_RULES] as const satisfies PuzzleTypes;
 
 export type PuzzleType = (typeof PUZZLE_TYPES)[number]['type'];
 /** The decoded `params` of type `T`: what its data half's `decodeParams` returns. */
@@ -58,6 +59,7 @@ export type ParamsOf<T extends PuzzleType> =
 export const PUZZLE_RULES: { readonly [T in PuzzleType]: PuzzleTypeData<T, ParamsOf<T>> } = Object.freeze({
   code: CODE_RULES,
   order: ORDER_RULES,
+  path: PATH_RULES,
 });
 
 /** One puzzle as the runtime sees its type, built once from the type's data half: no consumer switches on type. */

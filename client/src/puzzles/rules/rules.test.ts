@@ -1,6 +1,8 @@
 import { expect, test } from 'vitest';
 
 import { PUZZLE_LINTS } from '../../../scripts/story/puzzles/index.ts';
+import { UI_MOTIONS, uiMotion } from '../../cues/stage/motions.ts';
+import type { ControlCue, GestureCue } from '../../cues/types.ts';
 import type { ChapterId, LineId, PuzzleLocalId } from '../../story/staging.ts';
 import { decodeWorldPublic, decodeWorldSource, toServer } from '../../world/decode.ts';
 import type { ItemId, SourcePuzzle } from '../../world/types.ts';
@@ -238,6 +240,24 @@ test('rules: no path step turns one reached answer into another', () => {
   expect(steps).toBeGreaterThan(8);
 });
 
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+/** The gesture set derives from the registry: `path-stroke` is its one member (tsc: `never` before the type lands). */
+const PATH_GESTURE: Equal<GestureCue, 'path-stroke'> = true;
+/** The cell's control joins `ControlCue` through the registry, with no cues/types.ts edit. */
+const PATH_CELL: 'path-cell' extends ControlCue ? true : false = true;
+
+test('puzzles: path declares its cell and its stroke', () => {
+  expect([PATH_GESTURE, PATH_CELL]).toEqual([true, true]);
+  expect(PATH_RULES.controls).toEqual([
+    { name: 'path-cell', on: 'click' },
+    { name: 'path-stroke', on: 'gesture' },
+  ]);
+  // Each resolves its trigger kind's default motion: the stroke's step a gesture's, the cell's activation a control's.
+  expect(uiMotion('path-stroke')).toEqual(UI_MOTIONS.gesture);
+  expect(uiMotion('path-cell')).toEqual(UI_MOTIONS.control);
+  expect(UI_MOTIONS.gesture).not.toEqual(UI_MOTIONS.control);
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // The type registry (engine plan §7.1, §7.3): the pins every type's data half keeps, each checked against fixtures
 // that break it, so a checker that lost a rule is red here and not only on a future type.
@@ -304,7 +324,7 @@ test('puzzles: every type has a data half, a loader and a lint', () => {
   const types = PUZZLE_TYPES.map((t) => t.type);
   expect(new Set(types).size).toBe(types.length);
   const sorted = [...types].sort();
-  expect(sorted).toEqual(['code', 'order']);
+  expect(sorted).toEqual(['code', 'order', 'path']);
   expect(Object.keys(PUZZLE_RULES).sort()).toEqual(sorted);
   expect(Object.keys(PUZZLE_UI).sort()).toEqual(sorted);
   expect(Object.keys(PUZZLE_LINTS).sort()).toEqual(sorted);
@@ -312,13 +332,15 @@ test('puzzles: every type has a data half, a loader and a lint', () => {
     // The keyed view is the registry's own object, not a copy that could drift from it.
     expect(PUZZLE_RULES[t.type], t.type).toBe(t);
     expect(PUZZLE_UI[t.type], t.type).toBeTypeOf('function');
-    // `code` and `order` save no working configuration and demonstrate nothing (§7.2).
+    // `code`, `order` and `path` save no working configuration and demonstrate nothing (§7.2).
     expect('workFits' in t, t.type).toBe(false);
     expect('demo' in t, t.type).toBe(false);
   }
-  // Their start configuration is shown before any input (§7.1 `startShown`; per-player's floor excludes it).
+  // The commit types' start configuration is shown before any input (§7.1 `startShown`; per-player's floor excludes
+  // it); a path shows no full-length configuration before input.
   expect(code.startShown(DIALS4)).toEqual(code.initial(DIALS4));
   expect(order.startShown(MEDALS)).toEqual(order.initial(MEDALS));
+  expect(PUZZLE_RULES.path.startShown(P32)).toBeNull();
 });
 
 test('puzzles: a commit type posts its wrong answers; a reach type has none or a local one', () => {
@@ -390,7 +412,7 @@ test('puzzles: a fixture type passed as types decodes in a world', () => {
     expect(r.value.puzzles[GATE]?.params).toBe(TUMBLER_PARAMS);
   }
   // Without `types` the decoder knows PUZZLE_TYPES only, and names them.
-  const issue = { ok: false, error: [{ path: 'puzzles.gate.type', reason: 'shape', detail: '"tumbler" is not code or order' }] };
+  const issue = { ok: false, error: [{ path: 'puzzles.gate.type', reason: 'shape', detail: '"tumbler" is not code or order or path' }] };
   expect(decodeWorldPublic(publicRaw)).toEqual(issue);
   expect(decodeWorldSource(sourceRaw)).toEqual(issue);
 });

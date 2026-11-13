@@ -1,10 +1,13 @@
-// LP2 in happy-dom: the two puzzle type UIs (PUZZLES-PLAN X17) and their lazy loader (X14). Both components are
-// presentational: the answer comes in as a prop and every change leaves as a fresh array through `onchange`.
+// LP2 in happy-dom: the puzzle type UIs (PUZZLES-PLAN X17; engine plan §7.2 `path`, GM7p) and their lazy loader (X14).
+// Each is presentational: the answer comes in as a prop and every change leaves as a fresh array through `onchange`.
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { flushSync } from 'svelte';
 import { afterEach, expect, test, vi } from 'vitest';
 
+import type { GestureCue } from '../../cues/types.ts';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
+import { mechT } from '../../i18n/mechanics.ts';
 import { GLYPH_PATHS } from '../../ui/glyphs.ts';
 import type { Glyph, ItemId } from '../../world/types.ts';
 import { loadPuzzleUi, PUZZLE_UI } from '../registry.ts';
@@ -13,6 +16,7 @@ import type { PuzzleType } from '../rules/index.ts';
 import CodeLock from './CodeLock.svelte';
 import codeLockSource from './CodeLock.svelte?raw';
 import OrderPuzzle from './OrderPuzzle.svelte';
+import PathPuzzle from './PathPuzzle.svelte';
 
 // svelteTesting()'s auto-cleanup does not reach the `dom` project (L14a), so each test unmounts what it rendered here.
 afterEach(() => cleanup());
@@ -174,6 +178,8 @@ test('order: each slot shows its piece glyph beside the name', async () => {
 const PART_FIXTURES: { readonly [T in PuzzleType]: { readonly params: unknown; readonly answer: readonly number[]; readonly parts: number } } = {
   code: { params: { dials: 4 }, answer: [0, 0, 0, 0], parts: 4 },
   order: { params: { pieces: PIECES }, answer: [0, 1, 2], parts: 3 },
+  // A blocked cell is a part too: every cell, in row-major order.
+  path: { params: { cols: 3, rows: 2, ends: [0, 3], blocked: [4] }, answer: [0, 1], parts: 6 },
 };
 
 test('puzzles: every type UI marks its parts', async () => {
@@ -196,16 +202,21 @@ test('puzzles: every type UI marks its parts', async () => {
 test('registry: each type loads its own component', async () => {
   const code = await loadPuzzleUi('code');
   const order = await loadPuzzleUi('order');
-  if (!code.ok || !order.ok) {
-    throw new Error(`expected both chunks to load: ${JSON.stringify([code, order])}`);
+  const path = await loadPuzzleUi('path');
+  if (!code.ok || !order.ok || !path.ok) {
+    throw new Error(`expected every chunk to load: ${JSON.stringify([code, order, path])}`);
   }
   expect(code.value).toBe(CodeLock);
   expect(order.value).toBe(OrderPuzzle);
+  expect(path.value).toBe(PathPuzzle);
   const lock = render(code.value, props({ params: { dials: 3 }, answer: [0, 0, 0] }));
   expect(lock.getAllByRole('button', { name: t('en', 'puzzle.dial_up') })).toHaveLength(3);
   lock.unmount();
   const slots = render(order.value, props({ params: { pieces: PIECES }, answer: [0, 1, 2], item }));
   expect(slots.getAllByRole('button').map((b) => b.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'false']);
+  slots.unmount();
+  const grid = render(path.value, props({ params: { cols: 3, rows: 2, ends: [0, 3], blocked: [] }, answer: [0] }));
+  expect(grid.getAllByRole('button').map((b) => b.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false', 'false', 'false', 'false']);
 });
 
 test('registry: chunk failure is an error value', async () => {
@@ -225,4 +236,105 @@ test('registry: chunk failure is an error value', async () => {
     vi.doUnmock('./OrderPuzzle.svelte');
     vi.resetModules();
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The `path` type UI (engine plan §7.2, §8.3; GM7p D8-D10): the line is the `answer` prop, which follows `onchange` here
+// as the session's does; the report is the reach edge's over that prop.
+
+/** 3 x 2, ends 0 and 3: `0 1 2 / 3 4 5`; its one path is 0 1 2 5 4 3. */
+const P32 = { cols: 3, rows: 2, ends: [0, 3], blocked: [] };
+const P32_SOLVE = [0, 1, 2, 5, 4, 3];
+
+/** PathPuzzle with its `answer` following `onchange` (a `$state` props object, as the frame's); every call recorded. */
+// The return type is inferred: it carries the render result's own query types.
+function drawn(over: Partial<PuzzleUiProps> = {}) {
+  const changes: (readonly number[])[] = [];
+  const reports: (readonly number[])[] = [];
+  const cues: string[] = [];
+  const p: PuzzleUiProps = $state({
+    ...props({ params: P32, answer: [] }),
+    onchange: (a: readonly number[]) => {
+      changes.push([...a]);
+      p.answer = a;
+    },
+    onreach: (c: readonly number[]) => {
+      reports.push([...c]);
+    },
+    oncue: (name: GestureCue, index: number) => {
+      cues.push(`${name}@${index}`);
+    },
+    ...over,
+  });
+  const view = render(PathPuzzle, p);
+  const cell = (i: number): HTMLElement => {
+    const el = view.container.querySelector<HTMLElement>(`[data-cue-part="${i}"]`);
+    if (el === null) {
+      throw new Error(`invariant: cell ${i} is rendered`);
+    }
+    return el;
+  };
+  return { p, view, changes, reports, cues, cell };
+}
+
+test('path: a reversed path posts its canonical form', async () => {
+  // N1: drawn from the higher-index end, the reached line reports its canonical form, once.
+  const d = drawn();
+  for (const i of [3, 4, 5, 2, 1, 0]) {
+    await fireEvent.click(d.cell(i));
+  }
+  expect(d.changes.at(-1)).toEqual([3, 4, 5, 2, 1, 0]);
+  expect(d.reports).toEqual([P32_SOLVE]);
+  // Not reported before it reached, and a click that changes nothing adds no report.
+  await fireEvent.click(d.cell(0));
+  expect(d.reports).toEqual([P32_SOLVE]);
+  // Taken back and reached again: one report per turn to reached.
+  await fireEvent.click(d.cell(1));
+  await fireEvent.click(d.cell(0));
+  expect(d.reports).toEqual([P32_SOLVE, P32_SOLVE]);
+});
+
+test("path: a cell's keyboard activation steps like a tap", async () => {
+  const blocked = { cols: 3, rows: 2, ends: [0, 3], blocked: [4] };
+  for (const lang of LANGS) {
+    const d = drawn({ params: blocked, answer: [0, 1], lang });
+    const buttons = d.view.getAllByRole('button');
+    // Every open cell is a button named by its row and column, an end as an end; a blocked cell is none.
+    expect(buttons.map((b) => b.getAttribute('aria-label')), lang).toEqual([
+      mechT(lang, 'mech.path_end', { r: 1, c: 1 }),
+      mechT(lang, 'mech.path_cell', { r: 1, c: 2 }),
+      mechT(lang, 'mech.path_cell', { r: 1, c: 3 }),
+      mechT(lang, 'mech.path_end', { r: 2, c: 1 }),
+      mechT(lang, 'mech.path_cell', { r: 2, c: 3 }),
+    ]);
+    expect(d.cell(4).tagName, lang).toBe('SPAN');
+    expect(d.cell(4).getAttribute('aria-hidden'), lang).toBe('true');
+    expect(d.view.getByText(mechT(lang, 'mech.path_rule')), lang).toBeDefined();
+    // aria-pressed follows the line.
+    const pressed = (): string[] => d.view.getAllByRole('button').map((b) => b.getAttribute('aria-pressed') ?? '');
+    expect(pressed(), lang).toEqual(['true', 'true', 'false', 'false', 'false']);
+    // A cell's activation is a touch: it extends onto a neighbour of the end, restarts on the other end, takes back
+    // the previous cell, and changes nothing elsewhere (past the far end, on a blocked cell).
+    await fireEvent.click(d.cell(2));
+    expect(d.changes, lang).toEqual([[0, 1, 2]]);
+    expect(pressed(), lang).toEqual(['true', 'true', 'true', 'false', 'false']);
+    await fireEvent.click(d.cell(3));
+    await fireEvent.click(d.cell(0));
+    expect(d.changes, lang).toEqual([[0, 1, 2], [3], [3, 0]]);
+    await fireEvent.click(d.cell(1));
+    await fireEvent.click(d.cell(4));
+    expect(d.changes, lang).toHaveLength(3);
+    await fireEvent.click(d.cell(3));
+    expect(d.changes.at(-1), lang).toEqual([3]);
+    // Busy: every cell is disabled and steps nothing.
+    d.p.busy = true;
+    flushSync();
+    expect(d.view.getAllByRole('button').every((b) => (b as HTMLButtonElement).disabled), lang).toBe(true);
+    await fireEvent.click(d.cell(1));
+    expect(d.changes, lang).toHaveLength(4);
+    d.view.unmount();
+  }
+  // Params that do not decode render nothing actionable.
+  const { queryAllByRole } = render(PathPuzzle, props({ params: { cols: 1, rows: 2, ends: [0, 1], blocked: [] }, answer: [] }));
+  expect(queryAllByRole('button')).toEqual([]);
 });
