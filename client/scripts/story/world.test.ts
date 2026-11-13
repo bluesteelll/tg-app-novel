@@ -2175,6 +2175,36 @@ test('story: a flag reference names a declared flag', () => {
   ]);
 });
 
+test('story: a flag set outside its section is refused at an onEnter and at a lock trigger', () => {
+  // The set form at the other kernel triggers: t's yard sets s's `fs` on entry; s's chest (a coin lock) sets t's `ft`
+  // in its onOpen and its onFail. An `enter` trigger's section is its room's, a lock trigger's its hotspot's.
+  const w = flagWorld();
+  at(w, 'sections.t.rooms.yard')['onEnter'] = [{ set: 'fs' }];
+  const lock = obj(spot(w, 'hall', 'chest', 's')['lock']);
+  lock['onOpen'] = [{ set: 'ft' }];
+  lock['onFail'] = [{ set: 'ft' }];
+  const found = lint(w).filter((f) => f.code === 'world/flag-scope');
+  const scope = (f: string, s: string, t: string): string => `flag '${f}' is declared in section ${s} and set in section ${t}: a flag is set only by its own section's effects (X15)`;
+  // Each at its line, in the file's order (the runner sorts by line).
+  expect(found.map((f) => [f.code, f.line, f.message])).toEqual([
+    ['world/flag-scope', lineAfter(w, '"onOpen": [', '"set": "ft"'), `${HALL}.4.lock.onOpen.0.set: ${scope('ft', 't', 's')}`],
+    ['world/flag-scope', lineAfter(w, '"onFail": [', '"set": "ft"'), `${HALL}.4.lock.onFail.0.set: ${scope('ft', 't', 's')}`],
+    ['world/flag-scope', lineAfter(w, '"yard": {', '"set": "fs"'), `sections.t.rooms.yard.onEnter.0.set: ${scope('fs', 's', 't')}`],
+  ]);
+});
+
+test('story: an undeclared flag in a decor picture is refused', () => {
+  // The visual site of a room's decor: the hall's rug follows the undeclared `ghost`.
+  const w = flagWorld();
+  at(w, 'sections.s.rooms.hall')['decor'] = [
+    { id: 'rug', prop: 'rug', rect: [0, 0, 100, 100], z: 1, states: { worn: { prop: null } }, is: [{ when: { flag: 'ghost' }, state: 'worn' }] },
+  ];
+  const found = lint(w).filter((f) => f.code.startsWith('world/flag-'));
+  expect(found.map((f) => [f.code, f.line, f.message])).toEqual([
+    ['world/flag-unknown-ref', lineAfter(w, '"decor": [', '"when": {'), "sections.s.rooms.hall.decor.0.is.0.when: flag 'ghost' is not declared"],
+  ]);
+});
+
 test('story: a declared flag is a valid rename target', () => {
   // GM2b Q1: a rename's target must be live; a declared flag is (`liveIds`), so the chain to it raises nothing.
   const w = renamedBase({ flags: { fl_a: 'fl_b' } });
