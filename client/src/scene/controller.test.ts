@@ -134,16 +134,19 @@ test("controller: a step lets go of the batch's ensure holder once its slots are
   // after a scene); the shown one stays live under its slot. Two fetches, one per ensured id: the slot takes the
   // ensured record, so the holder goes only after the slots are taken (a release before them re-fetches bg/x). An
   // apply without a window (a yield step's, game.ts windowOf) lets go too, and a windowed one has let go by its swap
-  // point, where the scheduler plans the window against the caps.
+  // point, where the scheduler plans the window against the caps. An animated apply lets go the same way: every step
+  // outside skip mode is one (game.ts present: instant = vm.mode === 'skip'), so a holder kept on it would pile up
+  // every ensured id of a chapter played normally.
   const rows: unknown[] = [];
-  for (const step of ['apply', 'windowless apply', 'restore'] as const) {
+  for (const step of ['apply', 'apply (animated)', 'windowless apply', 'windowless apply (animated)', 'restore'] as const) {
     const p = parts();
     const ensured = await Promise.all([BG_X, BG_Y].map((id) => p.registry.acquire(id, ENSURE_HOLDER, { entry: X, priority: 'visible' })));
     const before = [p.registry.state(BG_X), p.registry.state(BG_Y)];
-    if (step === 'apply') {
-      await applyStep(p, [CUT], { instant: true, window: W });
-    } else if (step === 'windowless apply') {
-      await applyStep(p, [CUT], { instant: true });
+    const instant = !step.endsWith('(animated)');
+    if (step === 'apply' || step === 'apply (animated)') {
+      await applyStep(p, [CUT], { instant, window: W });
+    } else if (step === 'windowless apply' || step === 'windowless apply (animated)') {
+      await applyStep(p, [CUT], { instant });
     } else {
       await restoreStep(p, { bg: 'x' as BgId, cg: null, chars: [], props: [] });
     }
@@ -151,7 +154,9 @@ test("controller: a step lets go of the batch's ensure holder once its slots are
   }
   expect(rows).toEqual([
     ['apply', [true, true], ['live', 'live'], 'live', 'none', 2, ['none']],
+    ['apply (animated)', [true, true], ['live', 'live'], 'live', 'none', 2, ['none']],
     ['windowless apply', [true, true], ['live', 'live'], 'live', 'none', 2, []],
+    ['windowless apply (animated)', [true, true], ['live', 'live'], 'live', 'none', 2, []],
     ['restore', [true, true], ['live', 'live'], 'live', 'none', 2, []],
   ]);
 });
@@ -161,14 +166,15 @@ test("controller: a preview step lets go of the batch's ensure holder once its s
   // restores) inside the preview scope: that arm lets go of the holder too, or an ensured id the step does not show
   // stays live and counts as visible for the upgrades. Two fetches, one per ensured id: the slot takes the ensured
   // record, so the holder goes only after the slots are taken. The apply has let go by its swap point: the entry's
-  // swap kicks the upgrades, which would otherwise fetch the unshown bg/y's full file first.
+  // swap kicks the upgrades, which would otherwise fetch the unshown bg/y's full file first. An entry's first step is
+  // animated outside skip mode, and it lets go the same way.
   const rows: unknown[] = [];
-  for (const step of ['apply', 'restore'] as const) {
+  for (const step of ['apply', 'apply (animated)', 'restore'] as const) {
     const p = parts();
     const ensured = await Promise.all([BG_X, BG_Y].map((id) => p.registry.acquire(id, ENSURE_HOLDER, { entry: X, priority: 'visible', preview: true })));
     const before = [p.registry.state(BG_X), p.registry.state(BG_Y)];
-    if (step === 'apply') {
-      await applyStep(p, [CUT], { instant: true, preview: true, window: W });
+    if (step === 'apply' || step === 'apply (animated)') {
+      await applyStep(p, [CUT], { instant: step === 'apply', preview: true, window: W });
     } else {
       await restoreStep(p, { bg: 'x' as BgId, cg: null, chars: [], props: [] }, { preview: true });
     }
@@ -176,6 +182,7 @@ test("controller: a preview step lets go of the batch's ensure holder once its s
   }
   expect(rows).toEqual([
     ['apply', [true, true], ['live', 'live'], 'live', 'none', 2, ['none']],
+    ['apply (animated)', [true, true], ['live', 'live'], 'live', 'none', 2, ['none']],
     ['restore', [true, true], ['live', 'live'], 'live', 'none', 2, []],
   ]);
 });
