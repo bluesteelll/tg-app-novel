@@ -346,17 +346,20 @@ test("path: a cell's keyboard activation steps like a tap", async () => {
 
 type PointerKind = 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel';
 
-/** A drawn PathPuzzle's surface with its box stubbed (300 x 200 by default: a 3 x 2 grid of 100 px cells). */
-function rig(d: ReturnType<typeof drawn>, box: { x: number; y: number; w: number; h: number } = { x: 0, y: 0, w: 300, h: 200 }) {
+/**
+ * A drawn PathPuzzle's surface with its box stubbed (300 x 200 by default: a 3 x 2 grid of 100 px cells); `rows` sets
+ * the row count of the 3-column grid the box holds.
+ */
+function rig(d: ReturnType<typeof drawn>, box: { x: number; y: number; w: number; h: number } = { x: 0, y: 0, w: 300, h: 200 }, rows = 2) {
   const surface = d.view.container.querySelector<HTMLElement>('[data-cue-gesture="path-stroke"]');
   if (surface === null) {
     throw new Error('invariant: the stroke surface is rendered');
   }
   vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue(new DOMRect(box.x, box.y, box.w, box.h));
-  /** Cell `c`'s centre in the stubbed box of the 3 x 2 grid. */
+  /** Cell `c`'s centre in the stubbed box of the 3-column grid. */
   const centre = (c: number): { clientX: number; clientY: number } => ({
     clientX: box.x + ((c % 3) + 0.5) * (box.w / 3),
-    clientY: box.y + (Math.floor(c / 3) + 0.5) * (box.h / 2),
+    clientY: box.y + (Math.floor(c / 3) + 0.5) * (box.h / rows),
   });
   /** One pointer event at cell `c`'s centre (or where `init` says), from pointer `id`, then Svelte's flush. */
   const at = (type: PointerKind, c: number, id = 1, init: PointerEventInit = {}, on: Element = surface): void => {
@@ -572,6 +575,45 @@ test('path: a step that changes nothing calls no onchange', () => {
   // The control: a step that changes the line calls onchange once.
   s.at('pointermove', 2);
   expect(d.changes).toEqual([[0, 1, 2]]);
+  d.view.unmount();
+
+  // V2 holds per event, not only per step: a move whose steps cancel out (back onto the previous cell, then in again)
+  // leaves a line equal to the prop and calls nothing. B: one stroke over a 3 x 3 grid (ends 0 and 8) from an empty
+  // path reaches the far end early; the moves to 7 and 4 are refused by the far-end stop, and the move from 4's centre
+  // to 8's crosses 5 (back) and 8 (in again).
+  const b = drawn({ params: { cols: 3, rows: 3, ends: [0, 8], blocked: [] }, answer: [] });
+  const sb = rig(b, { x: 0, y: 0, w: 300, h: 300 }, 3);
+  sb.at('pointerdown', 0);
+  for (const c of [3, 4, 5, 8]) {
+    sb.at('pointermove', c);
+  }
+  expect(b.changes.at(-1)).toEqual([0, 3, 4, 5, 8]);
+  const drawnB = b.changes.length;
+  for (const c of [7, 4, 8]) {
+    sb.at('pointermove', c);
+  }
+  sb.at('pointerup', 8);
+  expect(b.changes.slice(drawnB)).toEqual([]);
+  b.view.unmount();
+  // A: the same from a reached line (D3's reached -> reached): from the end 3, the moves to 0, 2 and 5 are refused, and
+  // the move back to 3 crosses 4 (back) and 3 (in again).
+  const a = drawn({ answer: P32_SOLVE });
+  const sa = rig(a);
+  sa.at('pointerdown', 3);
+  for (const c of [0, 2, 5, 3]) {
+    sa.at('pointermove', c);
+  }
+  expect(a.changes).toEqual([]);
+  // The control: the stroke is still live, and a move back to 4 changes the line.
+  sa.at('pointermove', 4);
+  expect(a.changes).toEqual([[0, 1, 2, 5, 4]]);
+  a.view.unmount();
+  // An equal length is no equal line: from [3, 4, 1, 2] one move from 2's centre to 0's takes 2 back and enters 0.
+  const e = drawn({ answer: [3, 4, 1, 2] });
+  const se = rig(e);
+  se.at('pointerdown', 2);
+  se.at('pointermove', 0);
+  expect(e.changes).toEqual([[3, 4, 1, 0]]);
 });
 
 test('path: a pointer event after unmount reports nothing', () => {

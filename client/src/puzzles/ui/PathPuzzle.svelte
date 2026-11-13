@@ -11,8 +11,9 @@
   // The stroke (D9): the surface takes the pointer's capture at a down and reads every pointer event by its
   // coordinates over its own box in visual px (so the column's `transform: scale` cancels out), never by the event's
   // target. A down touches the cell under it; each move enters every cell its segment crosses, each through `advance`,
-  // with one `path-stroke` cue per accepted step and one `onchange` per event. The cells take no pointer events, so a
-  // tap is one step on every engine and its click lands on the surface, which handles none; a cell's own click is a
+  // with one `path-stroke` cue per accepted step and at most one `onchange` per event, only when its steps leave a line
+  // that differs from the prop by content (V2 per event: its steps can cancel out). The cells take no pointer events, so
+  // a tap is one step on every engine and its click lands on the surface, which handles none; a cell's own click is a
   // keyboard or an assistive press. A stroke is live while the surface holds its pointer's capture: an up releases it,
   // and the user agent releases it right after a cancel (Pointer Events 3 §4.1.3.3), which ends the stroke with no
   // listener of its own (D9a: a cancel attribute is no delegated event, and its runtime would join the entry chunk).
@@ -130,7 +131,9 @@
       }
     }
     stroke.last = at;
-    if (a !== answer) {
+    // By content, not by reference: `advance` returns a fresh array per step, so a back onto the previous cell and the
+    // way in again leave a new array equal to the prop, which is no change (V2).
+    if (a.length !== answer.length || a.some((c, i) => c !== answer[i])) {
       onchange(a);
     }
   }
