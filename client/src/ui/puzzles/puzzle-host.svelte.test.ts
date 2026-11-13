@@ -3,6 +3,7 @@
 // are built by hand where it matters: a raw tap is pointerdown + click with the DOM not yet updated (a double tap).
 import { cleanup, render } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
+import type { Component } from 'svelte';
 import ts from 'typescript';
 import { afterEach, expect, test, vi } from 'vitest';
 
@@ -13,13 +14,14 @@ import { CUE_MOTIONS, CUE_TARGET_ATTRS, cueKey } from '../../cues/stage/motions.
 import type { CueTarget } from '../../cues/stage/motions.ts';
 import type { Resolved } from '../../cues/stage/player.ts';
 import { PRESETS } from '../../cues/stage/presets.ts';
-import type { Cue, CueEvent, PuzzleCue, UiStateCue } from '../../cues/types.ts';
+import type { Cue, CueEvent, GestureCue, PuzzleCue, UiStateCue } from '../../cues/types.ts';
 import { LAYER_MOTIONS } from '../../cues/visible.ts';
 import type { Box } from '../../geom/cover.ts';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import CodeLock from '../../puzzles/ui/CodeLock.svelte';
 import OrderPuzzle from '../../puzzles/ui/OrderPuzzle.svelte';
+import type { PuzzleUiProps } from '../../puzzles/registry.ts';
 import type { HintTierView } from '../../puzzles/session.ts';
 import type { PuzzleLocalId } from '../../story/staging.ts';
 import type { ItemId } from '../../world/types.ts';
@@ -252,6 +254,39 @@ test('puzzle-host: a reach frame enables Try only while its answer awaits', asyn
     disabled.push(tryButton().disabled);
   }
   expect(disabled).toEqual(cases.map(([, off]) => off));
+});
+
+/** The props PuzzleHost passed to `EMITTER`, one entry per mount. */
+const emitted: PuzzleUiProps[] = [];
+/**
+ * A hand-written Svelte 5 client component (Svelte calls a component as `component(anchor, props)`): it records its
+ * props and puts one part cell, `data-cue-part="1"`, before its anchor. The cast: a test stand-in for a type UI, as
+ * yields.test.ts's TYPE_UI, so no `.svelte` fixture joins the scanned components.
+ */
+const EMITTER = ((anchor: Comment, props: PuzzleUiProps): void => {
+  emitted.push(props);
+  const cell = document.createElement('span');
+  cell.setAttribute('data-cue-part', '1');
+  anchor.parentNode?.insertBefore(cell, anchor);
+}) as unknown as Component<PuzzleUiProps>;
+
+test('puzzle-host: a gesture step reaches the cue bus through oncue', () => {
+  // Engine plan §8.3 (GM7r): a type UI's `oncue(name, index)` reaches the host's `oncue` as its control's `ui` cue, with
+  // the step's part cell as its element (the stage's `control` target) and no point. GestureCue has no member until
+  // GM7p's `path`, so the name is a fixture's (the cast).
+  const oncue = vi.fn();
+  const { container } = render(PuzzleHost, hostProps({ oncue, frame: frameOf({ ui: EMITTER }) }));
+  const cell = must(container.querySelector('[data-cue-part="1"]'), 'the part cell');
+  must(emitted.at(-1), 'the type UI props').oncue?.('fixture-trace' as GestureCue, 1);
+  expect(oncue.mock.calls).toEqual([[{ cue: { kind: 'ui', control: 'fixture-trace', item: null, index: 1 }, box: null, point: null, diff: [], el: cell }]]);
+  expect((oncue.mock.calls[0]?.[0] as CueEvent | undefined)?.el).toBe(cell);
+});
+
+test("puzzle-host: a type UI's reach report reaches onreach", () => {
+  const onreach = vi.fn();
+  render(PuzzleHost, hostProps({ onreach, frame: frameOf({ ui: EMITTER }) }));
+  must(emitted.at(-1), 'the type UI props').onreach?.([3, 2, 1]);
+  expect(onreach.mock.calls).toEqual([[[3, 2, 1]]]);
 });
 
 test('puzzle-host: the status line is a cue target', () => {
