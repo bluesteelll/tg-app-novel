@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -475,6 +475,26 @@ describe('budget evaluate', () => {
     const gone = rowOf(evaluate({ ...base, files }, LIMITS), 'puzzle-host chunk (br)');
     expect(gone.status).toBe('FAIL');
     expect(gone.note).toContain('assets/PuzzleHost-z.js');
+  });
+
+  test('budget: a new type UI is a root without a budget edit', () => {
+    // GM7p (H3): every source under src/puzzles/ui/ is a root of the puzzle-type row; no list names Probe.svelte.
+    const probe = 'src/puzzles/ui/Probe.svelte';
+    const row = (b: BudgetInputs): Row => rowOf(evaluate(b, LIMITS), 'puzzle-type chunk (br)');
+    expect(row(withLazy(inputs(), { [CODE_LOCK]: { js: 2_000 }, [ORDER]: { js: 1_500 }, [probe]: { js: 9_000 } }))).toMatchObject({
+      status: 'FAIL',
+      valueBytes: 9_000,
+      note: `largest: ${probe}, 1 chunks`,
+    });
+    expect(row(withLazy(inputs(), { [CODE_LOCK]: { js: 2_000 }, [ORDER]: { js: 1_500 }, [probe]: { js: 7_000 } }))).toMatchObject({
+      status: 'PASS',
+      valueBytes: 7_000,
+      note: `largest: ${probe}, 1 chunks`,
+    });
+    // A source with no dynamic entry of its own (imported statically by mistake) stays visible as a FAIL.
+    const missing = row(withLazy(inputs(), { [CODE_LOCK]: { js: 2_000 }, [ORDER]: { js: 1_500 } }, { lazySources: new Set([CODE_LOCK, ORDER, probe]) }));
+    expect(missing.status).toBe('FAIL');
+    expect(missing.note).toContain(`no dynamic entry for ${probe}`);
   });
 
   test('budget: the cue-stage family is measured and refused over its limit', () => {
@@ -983,6 +1003,28 @@ describe('budget cli', () => {
     expect(r.stdout).toContain('overlays chunk (br) | — | 3.0 KB | PENDING | src/app/game.ts absent');
     expect(r.stdout).toContain('scene-motion chunk (br) | — | 8.0 KB | PENDING | src/scene/controller.ts absent');
     expect(r.stdout).toMatch(/^budget: \d+ rows, \d+ PASS, 0 FAIL, \d+ PENDING$/m);
+  }, CLI_TIMEOUT_MS);
+
+  test('budget: the cli measures a type UI no list names', () => {
+    // GM7p (H3): the CLI lists src/puzzles/ui/ under --root's client/, so an over-limit type UI no list names fails.
+    const probe = 'src/puzzles/ui/Probe.svelte';
+    const dist = join(tmp, 'dist');
+    writeDist(dist, 'export const main = 1;\n');
+    writeFileSync(join(dist, 'assets', 'Probe-p.js'), noise(9_000, 7));
+    const manifestPath = join(dist, '.vite', 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, ManifestChunk>;
+    const entry = manifest['index.html'];
+    if (entry === undefined) {
+      throw new Error('invariant: writeDist writes an entry');
+    }
+    manifest['index.html'] = { ...entry, dynamicImports: [...(entry.dynamicImports ?? []), probe] };
+    manifest[probe] = { file: 'assets/Probe-p.js', src: probe, isDynamicEntry: true };
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    const repo = join(tmp, 'repo');
+    writeRepo(repo, { override: { 'client/src/app/yields.ts': 'export {};\n', [`client/${probe}`]: '<p>probe</p>\n' } });
+    const r = runCli(dist, SCRIPT, [], ['--root', repo]);
+    expect(r.status, r.stdout + r.stderr).toBe(1);
+    expect(r.stdout).toMatch(/^puzzle-type chunk \(br\) \| 9\.0 KB \| 8\.0 KB \| FAIL \| largest: src\/puzzles\/ui\/Probe\.svelte/m);
   }, CLI_TIMEOUT_MS);
 
   test('budget: the reader marks re-export-only chunks as facades', () => {
