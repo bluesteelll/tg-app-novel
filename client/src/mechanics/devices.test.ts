@@ -3,11 +3,12 @@
 // is pending), with the same `puzzle` effect the device's own tap reaches, so the proof's states are unchanged; an
 // ended device plays its outcome's cue instead. A part move (`device-moved`) writes the device's run's `work` through
 // the writer, a `work` fact per moved part, and a part's picture is a decor state chosen by the visual atom `part` over
-// that saved work. The story gate's devices lint places a view type only on a device and a device only in a view, keeps
-// the device hotspot a plain, always-present object that only its puzzle opens, and bounds a `part` atom by its room's
-// device, with the types as a parameter (no registered type is a view before GM8a). Fixture worlds are written in the
-// source format and decoded with the real registries; a proof world carries the decoded `mods`, as the explore
-// controller's and the story gate's do.
+// that saved work; at resume a saved work its type judges no longer fits the device is dropped. The story gate's
+// devices lint places a view type only on a device and a device only in a view, keeps the device hotspot a plain,
+// always-present object that only its puzzle opens, and bounds a `part` atom by its room's device, with the types as a
+// parameter (no registered type is a view before GM8a). Fixture worlds are written in the source format and decoded
+// with the real registries; a proof world carries the decoded `mods`, as the explore controller's and the story gate's
+// do.
 import { expect, test } from 'vitest';
 
 import { DEVICE_BAND_Y, DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS, devicesFindings, deviceBandY } from '../../scripts/story/mechanics/devices.ts';
@@ -24,7 +25,7 @@ import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, RoomId } from '../world/types.ts';
 import type { DecodeCtx, FlagId, KernelWorld, OwnedAt, RulesRegistry, SectionAction } from './contract.ts';
 import { decodeCond } from './data/conditions.ts';
-import { decodeDevices, encodeDevices } from './data/devices.ts';
+import { decodeDevices, encodeDevices, fitWork, normalizeDevices } from './data/devices.ts';
 import { reduce } from './rules/core.ts';
 import { partHolds } from './rules/devices.ts';
 import { MECHANIC_RULES } from './rules/index.ts';
@@ -307,6 +308,29 @@ test("writer: a kernel run write keeps a device's work and records no work fact"
   expect(solved.state.puzzles[DIAL]).toEqual({ outcome: 'solved', attempts: 1, hintsOpened: 1, work: [1, 0, 1, 0] });
   expect(facts(solved.effects).filter((f) => f.startsWith('work'))).toEqual([]);
   expect(facts(solved.effects)[0]).toBe('solved added dial');
+});
+
+test('device: a saved work that no longer fits the device is dropped at resume', () => {
+  // A new version's params: `gauge` now has three levers and its save two; `wide` still fits; `drawer` is a code puzzle,
+  // whose type has no `workFits`.
+  const w = kernel(source({ hall: room([exit('out', { story: 'end' })]) }, { puzzles: { gauge: levers(3), wide: levers(2), drawer: code(2) } }), TYPES);
+  const saved = (work: readonly number[]): PuzzleRun => ({ outcome: null, attempts: 1, hintsOpened: 0, work });
+  const s = at('hall', { puzzles: { [pz('gauge')]: saved([0, 1]), [pz('wide')]: saved([2, 0]), [pz('drawer')]: saved([2, 0, 1]) } });
+  const dropped: string[] = [];
+  const r = fitWork(w, s, dropped, TYPES);
+  // The misfit work goes as `work:<p>` and its run stays; a fitting work and a type with no `workFits` keep theirs.
+  expect(r.puzzles).toStrictEqual({ gauge: { outcome: null, attempts: 1, hintsOpened: 0 }, wide: saved([2, 0]), drawer: saved([2, 0, 1]) });
+  expect(dropped).toEqual(['work:gauge']);
+  expect({ ...r, puzzles: s.puzzles }).toEqual(s);
+  // Nothing left to drop: the same state, nothing reported.
+  const none: string[] = [];
+  expect(fitWork(w, r, none, TYPES)).toBe(r);
+  expect(none).toEqual([]);
+  // The registry's normalize judges by the registered types: a type they lack keeps its work (GM8a registers the first
+  // view type), as a type with no `workFits` does.
+  const kept: string[] = [];
+  expect(normalizeDevices(w, s, kept)).toBe(s);
+  expect(kept).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------

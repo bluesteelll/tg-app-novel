@@ -6,8 +6,11 @@
 // never a gating read). Engine half: decoded at chapter load into `world.mods.devices`, written back by `encode` for
 // emission and the version hash. Function declarations and types only: mechanics/data/index.ts builds the entry from
 // them. Its data is plain JSON. Whether the hotspot exists, carries the right lock and sits in a view is the story
-// gate's (client/scripts/story/mechanics/devices.ts). Pure.
-import type { WorldState } from '../../explore/state.ts';
+// gate's (client/scripts/story/mechanics/devices.ts). At resume, normalize drops a saved work its type judges no longer
+// fits the puzzle (`fitWork`). Pure.
+import type { PuzzleRun, WorldState } from '../../explore/state.ts';
+import { PUZZLE_TYPES } from '../../puzzles/rules/index.ts';
+import type { PuzzleTypes } from '../../puzzles/rules/index.ts';
 import type { Result } from '../../story/catalog.ts';
 import type { PuzzleLocalId } from '../../story/staging.ts';
 import type { HotspotId, RoomId } from '../../world/types.ts';
@@ -85,7 +88,31 @@ export function decodePartAtom(v: unknown, path: string, report: IssueReport): P
   return ok ? { puzzle: puzzle as PuzzleLocalId, index: index as number, is: is as number } : undefined;
 }
 
-/** Nothing to drop yet: a device's working state lives in its run. */
-export function normalizeDevices(_w: KernelWorld, s: WorldState): WorldState {
-  return s;
+/**
+ * Every run's saved `work` that its puzzle's type judges no longer fits the puzzle (`workFits` false, a new version's
+ * params) goes, as `work:<puzzle>` in `dropped`; the run itself stays. A type with no `workFits`, or one `types` lacks,
+ * keeps its work: the drop belongs to the type that can judge it (a view type's session seeds from a kept work only
+ * after its own check). `types` is read at call time, so the registry's load order holds (data/index.ts's header).
+ */
+export function fitWork(w: KernelWorld, s: WorldState, dropped: string[], types: PuzzleTypes = PUZZLE_TYPES): WorldState {
+  let puzzles: Record<PuzzleLocalId, PuzzleRun> | null = null;
+  for (const [id, run] of Object.entries(s.puzzles)) {
+    const p = id as PuzzleLocalId; // a key of the state's runs
+    const body = Object.hasOwn(w.puzzles, p) ? w.puzzles[p] : undefined;
+    if (run.work === undefined || body === undefined) {
+      continue; // no work, or a puzzle the world lost (reconcile drops its whole run)
+    }
+    if (types.find((t) => t.type === body.type)?.workFits?.(body.params, run.work) === false) {
+      const { work: _gone, ...kept } = run;
+      puzzles ??= { ...s.puzzles };
+      puzzles[p] = kept;
+      dropped.push(`work:${p}`);
+    }
+  }
+  return puzzles === null ? s : { ...s, puzzles };
+}
+
+/** At resume: a saved work that no longer fits its device goes (`fitWork` over the registered types). */
+export function normalizeDevices(w: KernelWorld, s: WorldState, dropped: string[]): WorldState {
+  return fitWork(w, s, dropped);
 }
