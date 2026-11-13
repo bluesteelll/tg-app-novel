@@ -487,20 +487,23 @@ test('search: a view behind a gated entry keeps its own place', () => {
 
 // ---------------------------------------------------------------------------------------------------------------
 // C4: a save across a world update (X9): after the kernel's steps 1-3, each data module's `normalize` (D5); flags' keeps
-// the declared flags and re-arms one whose setter fired (D6)
+// a declared flag exactly while one of its setters has run, its trigger in `fired` or its event's fact held (D6, D6',
+// D6''; the fix2 tests below)
 
 const NO_KNOTS: ReadonlySet<KnotName> = new Set();
 
 test('reconcile: normalize drops an undeclared flag', () => {
   for (const { form, w } of forms(markWorld())) {
     const v2 = { ...w, version: 'v2' };
+    // Each save is the state the mark's tap produced, so `f` has a setter that ran.
+    const read = { examined: [k('hall.mark')], fired: ['then:hall.mark'] };
     // `ghost` is declared nowhere: it goes, to the end of `dropped` (after the kernel's own drops); `f` stays.
-    const r = reconcile(v2, at('hall', { held: [it('gone')], flags: [fl('ghost'), fl('f')] }), NO_KNOTS, 'v1');
+    const r = reconcile(v2, at('hall', { held: [it('gone')], ...read, flags: [fl('ghost'), fl('f')] }), NO_KNOTS, 'v1');
     expect(r.state.flags, form).toEqual(['f']);
     expect(r.dropped, form).toEqual(['held:gone', 'flags:ghost']);
     // A renamed `old -> f` lands on `f` (step 0), which is declared, so it stays.
     const renamed = { ...v2, renamed: { flags: { [fl('old')]: fl('f') } } };
-    const m = reconcile(renamed, at('hall', { flags: [fl('old')] }), NO_KNOTS, 'v1');
+    const m = reconcile(renamed, at('hall', { ...read, flags: [fl('old')] }), NO_KNOTS, 'v1');
     expect([m.state.flags, m.dropped], form).toEqual([['f'], []]);
   }
 });
@@ -712,5 +715,62 @@ test('reconcile: an event fact re-arms only a trigger with no kernel effect whos
     expect(actions(v2, r.state), `${form} (c)`).toContainEqual(tap('hall.coin'));
     const tapped = reduce(v2, r.state, tap('hall.coin')).state;
     expect([tapped.held, tapped.flags], `${form} (c)`).toEqual([['coin'], ['f']]);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM5f fix2 (D6''): a declared flag stays only while one of its setters has run, by the same test as the re-arm.
+
+test('reconcile: a declared flag none of whose setters has run is dropped', () => {
+  // The chest gives `x` and sets `f`, which gates the note; `g` is declared and set by nothing. The save is v1's state
+  // after the chest's tap, and v2 changed the gift (`x` is held nowhere): step 3 un-fires the chest, so no setter of
+  // `f` has run, and `g` has none. Both go silently: `dropped` lists only what the world no longer has.
+  const raw = rawWorld(
+    { s: ['hall', { hall: room([object('chest', [{ give: 'x' }, { set: 'f' }]), when(look('note'), { flag: 'f' }), exit('out', { story: 'end' })]) }] },
+    ['x'],
+    { f: 's', g: 's' },
+  );
+  for (const { form, w } of forms(raw)) {
+    const v2 = { ...w, version: 'v2' };
+    const r = reconcile(v2, at('hall', { fired: ['then:hall.chest'], flags: [fl('f'), fl('g')] }), NO_KNOTS, 'v1');
+    expect([r.state.fired, r.state.flags, r.dropped], form).toEqual([[], [], []]);
+    // It resumes with the note hidden; the chest's tap gives `x` again and sets `f`, and the note shows.
+    const admitted = admitSection(v2, r.state, S);
+    expect([resets(admitted.effects), actions(v2, admitted.state).some((a) => a.kind === 'tap' && a.hotspot === k('hall.note'))], form).toEqual([false, false]);
+    const tapped = reduce(v2, admitted.state, tap('hall.chest')).state;
+    expect([tapped.held, tapped.flags], form).toEqual([['x'], ['f']]);
+    expect(actions(v2, tapped), form).toContainEqual(tap('hall.note'));
+  }
+});
+
+test('reconcile: a moved setter clears its flag until a current setter runs', () => {
+  // v1's switch sets `lamp_lit`, which gates the oil; v2 moves the set to the lamp. A v1 save that tapped the switch and
+  // took the oil holds a fact producible only with the flag, and no current setter has run (an object's `then` has no
+  // event fact): the flag clears and the section restarts. The old set kept beside the new one keeps it: a resume.
+  const raw = (switchThen: readonly Json[]): Json =>
+    rawWorld(
+      {
+        s: [
+          'hall',
+          { hall: room([object('switch', switchThen), object('lamp', [{ set: 'lamp_lit' }]), when(take('oil', 'oil'), { flag: 'lamp_lit' }), exit('out', { story: 'end' })]) },
+        ],
+      },
+      ['oil'],
+      { lamp_lit: 's' },
+    );
+  const saved = at('hall', { fired: ['then:hall.switch'], flags: [fl('lamp_lit')], taken: [k('hall.oil')], held: [it('oil')] });
+  for (const { form, w } of forms(raw([]))) {
+    const v2 = { ...w, version: 'v2' };
+    const r = reconcile(v2, saved, NO_KNOTS, 'v1');
+    expect([r.state.flags, r.state.fired], form).toEqual([[], ['then:hall.switch']]);
+    const admitted = admitSection(v2, r.state, S);
+    expect([admitted.effects[0], admitted.state.taken, admitted.state.held], form).toEqual([{ kind: 'reset', section: 's' }, [], []]);
+  }
+  for (const { form, w } of forms(raw([{ set: 'lamp_lit' }]))) {
+    const v2 = { ...w, version: 'v2' };
+    const r = reconcile(v2, saved, NO_KNOTS, 'v1');
+    expect(r.state.flags, `${form} (kept beside)`).toEqual(['lamp_lit']);
+    const admitted = admitSection(v2, r.state, S);
+    expect([resets(admitted.effects), admitted.state.taken, admitted.state.flags], `${form} (kept beside)`).toEqual([false, ['hall.oil'], ['lamp_lit']]);
   }
 });

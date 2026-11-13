@@ -757,6 +757,11 @@ function declaring(w: KernelWorld, section: string, ...ids: string[]): KernelWor
   const added = Object.fromEntries(ids.map((f) => [f, { section: sec(section) }]));
   return { ...w, mods: { ...w.mods, flags: { ...w.mods.flags, flags: { ...w.mods.flags.flags, ...added } } } };
 }
+/** `w` with one `{ set }` effect per id of `ids` in kernel trigger `trigger`, at source indices 0.. (module `flags`). */
+function setting(w: KernelWorld, trigger: string, ...ids: string[]): KernelWorld {
+  const added = Object.fromEntries(ids.map((f, i) => [`${trigger}#${i}`, f as FlagId])); // fixture flag ids
+  return { ...w, mods: { ...w.mods, flags: { ...w.mods.flags, sets: { ...w.mods.flags.sets, ...added } } } };
+}
 const V1 = '1111111111111111';
 const V2 = '2222222222222222';
 const MANOR = sec('manor');
@@ -969,10 +974,11 @@ test('reconcile: step 0 maps renamed items, docs, rooms, sections and hotspots b
   expect([control.state.held, control.state.visited, control.state.taken]).toEqual([['medal_sun', 'medal_moon'], ['hall', 'study'], ['study.medal', 'study.letter']]);
 
   // Merges: two held ids onto one keep one entry; of two slot keys (or two lastRoom sections) onto one, the first in
-  // save order stays and the other is dropped, its slot's item back in held; flags map too.
+  // save order stays and the other is dropped, its slot's item back in held; flags map too (each has a setter that ran:
+  // the hall's entry, which the save has visited).
   const merging = stamped(
     {
-      ...declaring(bare, 'estate', 'fl_new', 'fl_keep'),
+      ...setting(declaring(bare, 'estate', 'fl_new', 'fl_keep'), 'enter:hall', 'fl_new', 'fl_keep'),
       renamed: {
         items: { [it('medal_old')]: it('medal_comet'), [it('medal_star')]: it('medal_comet') },
         sections: { [sec('house')]: sec('estate'), [MANOR]: sec('estate') },
@@ -1247,11 +1253,12 @@ const fl = (s: string) => s as FlagId; // a fixture flag id
 
 test('reconcile: a saved work goes only with a puzzle the world lost', () => {
   // Engine plan §5.2: a run's `work` is part of its run, so it stays with a kept puzzle and goes with a lost one;
-  // `fl_a` is a declared flag, which the flags module's own normalize keeps.
+  // `fl_a` is a declared flag whose setter (the study's entry, where the save stands) has run, which the flags
+  // module's own normalize keeps.
   const kept: PuzzleRun = { outcome: null, attempts: 1, hintsOpened: 0, work: [2, 0] };
   const lost: PuzzleRun = { outcome: 'solved', attempts: 0, hintsOpened: 0, work: [1] };
   const s = at('study', { puzzles: { [pz('drawer')]: kept, [pz('safe')]: lost }, flags: [fl('fl_a')] });
-  const r = reconcile(stamped(declaring(manor(), 'manor', 'fl_a'), V2), s, MANOR_KNOTS, V1);
+  const r = reconcile(stamped(setting(declaring(manor(), 'manor', 'fl_a'), 'enter:study', 'fl_a'), V2), s, MANOR_KNOTS, V1);
   expect(r.state.puzzles).toEqual({ drawer: kept });
   expect(r.dropped).toEqual(['puzzles:safe']);
   expect(r.state.flags).toEqual(['fl_a']);

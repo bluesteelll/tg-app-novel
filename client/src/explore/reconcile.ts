@@ -301,8 +301,8 @@ function normalize(w: WorldPublicBody, s: WorldState, knots: ReadonlySet<KnotNam
 /**
  * The load-time reconcile of X9. The same world version → the state unchanged (the same object). Otherwise step 0
  * (`renameIds`), steps 1-3 (`normalize`), then each data module's `normalize` in `MECHANIC_DATA` order (GM5f D5: a
- * module's own facts, read against the kernel's result and `triggerRan` over it; flags' keeps the declared flags and
- * re-arms one a setter of which has run), and step 5: every section joins `unproved`, the current one included.
+ * module's own facts, read against the kernel's result and `triggerRan` over it; flags' keeps a declared flag exactly
+ * while a setter of it has run), and step 5: every section joins `unproved`, the current one included.
  * Step 4 runs at each section's first entry instead (engine plan §3.4), through `admitSection`, or `admitEvent` when
  * an event knot is pending, so the load searches nothing and `reset` is always null. `dropped` lists every
  * `<field>:<id>` the world no longer has, every key a rename merged away and every held id a rename merged onto an
