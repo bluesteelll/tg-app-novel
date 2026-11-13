@@ -2217,3 +2217,22 @@ test('story: a finding after a module effect names its source line', () => {
   expect([lines('world/unknown-ref'), lines('world/cross-section-effect')]).toEqual([[jsonLine(w, '"give": "nope"')], [jsonLine(w, '"unlock": "hall.chest"')]]);
   expect(of(found, 'world/cross-section-effect').map((f) => f.message)).toEqual(['yard.sign then (section t) unlocks hall.chest of section s (X15: a trigger writes only its own section)']);
 });
+
+test('story: a lone flag clue is seen once its setter fires', () => {
+  // A7's pin: the gate's clue is a flag the hall's inscription sets, and no gating rule reads it, so under D7 the flag
+  // is in no key part and the set's successor keys as its parent; the clue is seen at the edge that sets it, as a look's
+  // `examined` is (`unseenClues` observes every reported successor, known ones included).
+  const lone = (set: boolean): Json => {
+    const w = base();
+    w['flags'] = { f: { section: 'manor' } };
+    spot(w, 'hall', 'inscription')['then'] = set ? [{ set: 'f' }] : [];
+    at(w, 'puzzles.gate')['clues'] = [{ flag: 'f' }];
+    return w;
+  };
+  expect(of(lint(lone(true)), 'world/clue-reachable')).toEqual([]);
+  // The negative control (non-vacuity): without the set no state holds `f`, and the clue is refused at its line.
+  const unset = lone(false);
+  expect(of(lint(unset), 'world/clue-reachable').map((f) => [f.line, f.message])).toEqual([
+    [clueLine(unset, 'gate', 0), `puzzle 'gate': clue {"flag":"f"} holds in no state of section manor reached before 'gate' is solved or failed (§7.3)`],
+  ]);
+});

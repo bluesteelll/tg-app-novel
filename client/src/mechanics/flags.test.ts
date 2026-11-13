@@ -8,7 +8,7 @@ import { expect, test } from 'vitest';
 
 import { reconcile } from '../explore/reconcile.ts';
 import { RESUME_STATE_CAP } from '../explore/reduce.ts';
-import type { ExploreEffect } from '../explore/reduce.ts';
+import type { ExploreEffect, Step } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
 import type { KnotName, SectionId } from '../story/staging.ts';
@@ -117,19 +117,26 @@ function flagCues(effects: readonly ExploreEffect[]): unknown[] {
   return effects.flatMap((e) => (e.kind === 'cue' && e.cue.kind === 'fact' && e.cue.fact.kind === 'flag' ? [e.cue] : []));
 }
 
-/** S's search from its entry: `[result, states, expansions, work, bound]`, and every successor state an edge met. */
-function searched(w: KernelWorld, section: SectionId = S): { row: unknown[]; met: WorldState[] } {
+/**
+ * S's search from its entry: `[result, states, expansions, work, bound]`, every successor state an edge met, and the
+ * step of every edge that leaves the section.
+ */
+function searched(w: KernelWorld, section: SectionId = S): { row: unknown[]; met: WorldState[]; left: Step[] } {
   const met: WorldState[] = [];
+  const left: Step[] = [];
   let stats = null as SearchStats | null; // written by `onStats`, which runs once before the search returns
   const r = searchSection(w, sectionEntry(w, EMPTY_WORLD_STATE, section), section, RESUME_STATE_CAP, {
     onEdge: (_from, succ) => {
       met.push(succ.state);
+      if (succ.leaves) {
+        left.push(succ.step);
+      }
     },
     onStats: (x) => {
       stats = x;
     },
   });
-  return { row: [r.result, r.states, stats?.expansions, stats?.work, stats?.bound], met };
+  return { row: [r.result, r.states, stats?.expansions, stats?.work, stats?.bound], met, left };
 }
 
 /** The hotspots of room `room` of section `section` in a public body read as JSON. */
@@ -490,5 +497,50 @@ test('reconcile: a declared flag whose setter fired is set', () => {
     // The positive control: with `x` held the key stays fired, and `f` is set.
     const kept = reconcile(v2, at('hall', { fired: ['then:hall.chest'], held: [it('x')] }), NO_KNOTS, 'v1');
     expect([kept.state.fired, kept.state.flags], form).toEqual([['then:hall.chest'], ['f']]);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// C6: a trigger's `fired` key is a key fact only when the trigger has a kernel effect (D7)
+
+const take = (id: string, item: string): Json => ({ id, kind: 'take', rect: RECT, label: txt(), gives: { item }, prop: null, then: [] });
+
+/** The same form of another source: `forms` keeps the proof form first and the runtime form second. */
+function sameForm(raw: Json, form: Form['form']): KernelWorld {
+  const f = forms(raw).find((x) => x.form === form);
+  if (f === undefined) {
+    throw new Error(`invariant: the ${form} form`);
+  }
+  return f.w;
+}
+
+test('search: a visual-only flag adds no states', () => {
+  // The look `mark` only sets `v`, which the box's picture reads (a visual site): no gating rule reads `v`, and its
+  // trigger has no kernel effect, so neither `v` nor `then:hall.mark` is a key fact. Every state the set reaches keys as
+  // its parent, and the search counts as in the same world without the set and the `is`.
+  const hall = (mark: readonly Json[], box: Json): Json =>
+    rawWorld({ s: ['hall', { hall: room([look('mark', mark), box, take('coin', 'coin'), safe('safe', ['coin']), exit('out', { story: 'end' })]) }] }, ['coin'], { v: 's' });
+  const lit = { ...object('box'), states: { lit: { prop: null } }, is: [{ when: { flag: 'v' }, state: 'lit' }] };
+  for (const { form, w } of forms(hall([{ set: 'v' }], lit))) {
+    const got = searched(w);
+    expect(got.row, form).toEqual(searched(sameForm(hall([], object('box')), form)).row);
+    // The positive control: the search meets a state holding `v` (the set ran, its successors were reported).
+    expect(got.met.some((s) => s.flags.includes(fl('v'))), form).toBe(true);
+    // Key level: the set's state keys as its parent.
+    const s = at('hall');
+    expect(sectionKey(w, { ...s, fired: ['then:hall.mark'], flags: [fl('v')] }, S), form).toBe(sectionKey(w, s, S));
+  }
+});
+
+test('search: a flag a gating condition reads keeps its states apart', () => {
+  // The only way out shows once `g` is set, by a set-only look: `g` is a key fact (flags' `reads`), so the state that
+  // set it is new, the search expands it and reaches the exit's edge. It counts as the variant where the look gives an
+  // item a `has` gate reads (that look's `fired` key is keyed too: its trigger has a kernel effect).
+  const flagged = rawWorld({ s: ['hall', { hall: room([look('mark', [{ set: 'g' }]), when(exit('out', { story: 'end' }), { flag: 'g' })]) }] }, [], { g: 's' });
+  const given = rawWorld({ s: ['hall', { hall: room([look('mark', [{ give: 'x' }]), when(exit('out', { story: 'end' }), { has: 'x' })]) }] }, ['x']);
+  for (const { form, w } of forms(flagged)) {
+    const got = searched(w);
+    expect([got.row[0], got.left], form).toEqual(['exhausted', [tap('hall.out')]]);
+    expect(got.row, form).toEqual(searched(sameForm(given, form)).row);
   }
 });

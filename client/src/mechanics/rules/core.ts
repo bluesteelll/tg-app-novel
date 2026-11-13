@@ -18,13 +18,13 @@ import { hotspotKey, lockOf, own, runOf, runStep, sectionScope, set, worldIndex 
 import type { Draft, ExploreAction, ExploreEffect, HotspotEntry, RunAction, WorldIndex } from '../../explore/reduce.ts';
 import type { PuzzleOutcome, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId, SectionId } from '../../story/staging.ts';
-import type { Hotspot, HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
+import type { Effect, Hotspot, HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
 import type { ArrivalOut, Cause, CauseVerb, FactAtom, KernelWorld, RulesRegistry, SectionAction } from '../contract.ts';
 import { present } from './flags.ts';
 import { APPLY, MECHANIC_RULES } from './index.ts';
 import { keepsSlot } from './use.ts';
 import { moveHow } from './view.ts';
-import { added, arrivalOut, createWriter, fire, openKey } from './writer.ts';
+import { added, arrivalOut, createWriter, fire, isKernelEffect, openKey } from './writer.ts';
 import type { KernelWriter } from './writer.ts';
 
 /** Core's module cue names (its rules entry's `cues`), declared here: derived from the entry, the type would circle
@@ -370,14 +370,42 @@ export function reduce(
   return { state: d.s, effects: d.effects };
 }
 
+/** Whether trigger `fired` (`<kind>:<target>`, a key of S's scope) has a kernel effect in `w`'s lists, by key (A1). */
+function hasKernelEffect(ix: WorldIndex, fired: string): boolean {
+  const colon = fired.indexOf(':');
+  const kind = fired.slice(0, colon);
+  const target = fired.slice(colon + 1);
+  let effects: readonly Effect[] = [];
+  if (kind === 'enter') {
+    effects = ix.rooms.get(target as RoomId)?.room.onEnter ?? []; // a lookup key
+  } else {
+    const h = ix.hotspots.get(target as HotspotKey)?.hotspot; // a lookup key
+    const lock = h === undefined ? null : lockOf(h);
+    if (kind === 'then') {
+      effects = h === undefined || h.kind === 'exit' ? [] : h.then;
+    } else if (lock !== null) {
+      effects = kind === 'open' ? lock.onOpen : lock.onFail;
+    }
+  }
+  return effects.some(isKernelEffect);
+}
+
 /**
  * Every fact core's gating rules read in `section`, the atoms `sectionKey` is derived from: from S's scope (the one
  * definition the key and `resetSection` share), `taken` and `open` per hotspot, `slot` per lock (by key), `fired` per
- * trigger S can write, `solved` per lock puzzle (its whole outcome), `held` and `used` per item S gives, `doc` per doc
- * S gives. `examined` and `visited` stay out: no core rule reads them.
+ * trigger of S with a kernel effect, `solved` per lock puzzle (its whole outcome), `held` and `used` per item S gives,
+ * `doc` per doc S gives. `examined` and `visited` stay out: no core rule reads them.
+ *
+ * GM5f D7: a trigger whose effects are all a module's has no `fired` key fact. No condition atom reads `fired`, such a
+ * trigger writes only its module's facts, and flags' one effect, an idempotent `set`, is keyed by flags' own `reads`
+ * wherever a gating rule reads its flag; so two states that differ only in its `fired` key (and an unread flag) have the
+ * same gating successors. The test is by key (`isKernelEffect`): the proof form keeps a raw `{ set }` in its list, the
+ * runtime form does not, and both key alike (X9: one key, one cap). In a world without module effects such a trigger
+ * never fires, so every key is as before.
  */
 export function reads(w: WorldPublicBody, section: SectionId): readonly FactAtom[] {
   const scope = sectionScope(w, section);
+  const ix = worldIndex(w);
   const atoms: FactAtom[] = [];
   for (const key of scope.hotspots) {
     atoms.push({ kind: 'taken', id: key }, { kind: 'open', id: key });
@@ -386,7 +414,9 @@ export function reads(w: WorldPublicBody, section: SectionId): readonly FactAtom
     atoms.push({ kind: 'slot', id: key });
   }
   for (const fired of scope.fired) {
-    atoms.push({ kind: 'fired', id: fired });
+    if (hasKernelEffect(ix, fired)) {
+      atoms.push({ kind: 'fired', id: fired });
+    }
   }
   for (const p of scope.puzzles) {
     atoms.push({ kind: 'solved', id: p });

@@ -177,6 +177,9 @@ export interface MechanicRules<Id extends string, A extends { readonly kind: str
    * The effects this module's data adds to the trigger `trigger` (an effect key it owns, decoded as
    * `<trigger>#<source index>`), each at its source index, in index order: the kernel's runner (`fire`, rules/writer.ts)
    * runs them among the trigger's kernel effects in source order, and fires a trigger whose only effects are a module's.
+   * Such a trigger's `fired` key is no key fact (core's `reads`, GM5f D7), which is sound only while the module's effects
+   * are idempotent and its own `reads` keys each fact they write wherever a gating rule reads it: a module whose effects
+   * are not idempotent lists its triggers' `fired` keys in its own `reads`.
    */
   effects?(w: KernelWorld, trigger: TriggerKey): readonly ModuleEffect[];
 }
