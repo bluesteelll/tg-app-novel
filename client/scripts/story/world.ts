@@ -8,9 +8,11 @@ import { RESUME_STATE_CAP, hotspotKey, lockOf } from '../../src/explore/reduce.t
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import type { WorldState } from '../../src/explore/state.ts';
 import { HOTSPOT_MIN_SOURCE_PX, HOTSPOT_SAFE_FRAME } from '../../src/geom/cover.ts';
-import type { MechanicId } from '../../src/mechanics/contract.ts';
+import type { MechanicId, TriggerKey } from '../../src/mechanics/contract.ts';
 import type { Cond } from '../../src/mechanics/data/conditions.ts';
+import { MECHANIC_RULES } from '../../src/mechanics/rules/index.ts';
 import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
+import { moduleEffects } from '../../src/mechanics/rules/writer.ts';
 import { PUZZLE_RULES } from '../../src/puzzles/rules/index.ts';
 import type { PuzzleTypeData } from '../../src/puzzles/rules/index.ts';
 import type { AssetCatalog } from '../../src/story/catalog.ts';
@@ -657,7 +659,10 @@ export function lintWorld(
       report('world/puzzle-multi-lock', path, `puzzle '${pid}' is the puzzle of ${locks.length} locks: ${locks.map((l) => l.key).join(', ')} (X15: one lock per puzzle)`);
     }
     for (const l of locks) {
-      if (pz.maxAttempts !== null && l.lock.onFail.length === 0) {
+      // A module's effect in `onFail` (flags' `set`, which the decoder routes out of the kernel list) is an effect too
+      // (GM5f D9): a fail that only sets a flag can reveal a way on, and the soft-lock proof judges it.
+      const failFx = (): number => moduleEffects(MECHANIC_RULES, { ...toPublic(w), mods: w.mods }, `fail:${l.key}` as TriggerKey).length; // the lock's fail trigger
+      if (pz.maxAttempts !== null && l.lock.onFail.length === 0 && failFx() === 0) {
         report('world/fail-without-effect', `${l.lpath}.onFail`, `lock ${l.key}: puzzle '${pid}' has maxAttempts ${pz.maxAttempts} and the lock has no onFail effect`);
       }
       if (pz.type === 'order' && !sameMembers(pz.params.pieces, l.lock.slots.map((s) => s.accepts))) {

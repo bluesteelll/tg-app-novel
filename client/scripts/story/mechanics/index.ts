@@ -17,6 +17,7 @@ import { CLUES_LINT } from './clues.ts';
 import { COMBINE_LINT, COMBINE_TEXTS } from './combine.ts';
 import { CONDITIONS_LINT } from './conditions.ts';
 import { CORE_LINT } from './core.ts';
+import { FLAGS_LINT } from './flags.ts';
 import { TEXTS_LINT } from './texts.ts';
 import type { TextWalker } from './texts.ts';
 import { USE_LINT, USE_STORIES, USE_TEXTS } from './use.ts';
@@ -57,7 +58,7 @@ export type WorldLint<C extends string> = {
   | { readonly runsFrom: 'story' }
 );
 
-export const MECHANIC_LINTS = [CORE_LINT, CLUES_LINT, SHAPE_LINT, CONDITIONS_LINT, TEXTS_LINT, USE_LINT, VISUAL_LINT, VIEW_LINT, COMBINE_LINT] as const satisfies readonly WorldLint<string>[];
+export const MECHANIC_LINTS = [CORE_LINT, CLUES_LINT, SHAPE_LINT, CONDITIONS_LINT, TEXTS_LINT, USE_LINT, VISUAL_LINT, VIEW_LINT, COMBINE_LINT, FLAGS_LINT] as const satisfies readonly WorldLint<string>[];
 
 /**
  * Each data module's text walker (engine plan §3.2 "Module texts"), exhaustive over MECHANIC_DATA ids (an id without
