@@ -143,3 +143,27 @@ test("controller: a step lets go of the batch's ensure holder once its slots are
     ['restore', [true, true], ['live', 'live'], 'live', 'none'],
   ]);
 });
+
+test("controller: a preview step lets go of the batch's ensure holder once its slots are taken (D7)", async () => {
+  // A chapter entry's stage ensures its ids under ENSURE_HOLDER as previews (preload's ensure), then applies (or
+  // restores) inside the preview scope: that arm lets go of the holder too, or an ensured id the step does not show
+  // stays live and counts as visible for the upgrades. Two fetches, one per ensured id: the slot takes the ensured
+  // record, so the holder goes only after the slots are taken.
+  const rows: unknown[] = [];
+  for (const step of ['apply', 'restore'] as const) {
+    const p = parts();
+    const y = 'bg/y' as AssetId; // test fixture id, ensured but not shown
+    const ensured = await Promise.all([BG_X, y].map((id) => p.registry.acquire(id, ENSURE_HOLDER, { entry: X, priority: 'visible', preview: true })));
+    const before = [p.registry.state(BG_X), p.registry.state(y)];
+    if (step === 'apply') {
+      await applyStep(p, [CUT], { instant: true, preview: true, window: W });
+    } else {
+      await restoreStep(p, { bg: 'x' as BgId, cg: null, chars: [], props: [] }, { preview: true });
+    }
+    rows.push([step, ensured.map((r) => r.ok), before, p.registry.state(BG_X), p.registry.state(y), p.urls.length]);
+  }
+  expect(rows).toEqual([
+    ['apply', [true, true], ['live', 'live'], 'live', 'none', 2],
+    ['restore', [true, true], ['live', 'live'], 'live', 'none', 2],
+  ]);
+});
