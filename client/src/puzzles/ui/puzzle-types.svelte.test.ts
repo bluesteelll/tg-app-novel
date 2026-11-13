@@ -659,3 +659,15 @@ test('path: a pointer event after unmount reports nothing', () => {
   s.at('pointercancel', 5);
   expect([d.changes, d.cues, d.reports]).toEqual([[[0], [0, 1]], ['path-stroke@0', 'path-stroke@1'], []]);
 });
+
+test("path: the drawn line, its tint and the surface's label", () => {
+  // D8 as built, on a grid that is not square so a mix-up of rows and columns shows: the line runs through the drawn
+  // cells' centres in grid units (column, then row), each drawn cell carries the tint, and the surface is named by the
+  // rule line its aria-labelledby points at.
+  const d = drawn({ answer: [0, 1, 4] });
+  expect(d.view.container.querySelector('polyline')?.getAttribute('points')).toBe('0.5,0.5 1.5,0.5 1.5,1.5');
+  expect([0, 1, 2, 3, 4, 5].map((i) => d.cell(i).classList.contains('drawn'))).toEqual([true, true, false, false, true, false]);
+  const surface = d.view.container.querySelector('[data-cue-gesture="path-stroke"]');
+  const label = surface?.getAttribute('aria-labelledby') ?? '';
+  expect(d.view.container.querySelector(`[id="${label}"]`)?.textContent).toBe(mechT(d.p.lang, 'mech.path_rule'));
+});
