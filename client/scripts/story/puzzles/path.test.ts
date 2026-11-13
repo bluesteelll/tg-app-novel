@@ -204,17 +204,17 @@ function committedCatalog(): AssetCatalog {
 const CATALOG = committedCatalog();
 
 /**
- * A world whose one puzzle `fuse` has `type` and `params`, decoded with `types` (the real registry by default), as a
- * per-world pass's input; its line lookup numbers each path in the order it is first asked for.
+ * A world whose one puzzle `fuse` has `type`, `params` and `maxAttempts`, decoded with `types` (the real registry by
+ * default), as a per-world pass's input; its line lookup numbers each path in the order it is first asked for.
  */
-function fuseInput(params: unknown, type = 'path', types: PuzzleTypes = PUZZLE_TYPES): WorldLintInput {
+function fuseInput(params: unknown, type = 'path', types: PuzzleTypes = PUZZLE_TYPES, maxAttempts: number | null = null): WorldLintInput {
   const fuse = {
     type,
     title: { id: 'ch1.fuse.0001', ru: 'Щиток' },
     prompt: { id: 'ch1.fuse.0002', ru: 'Провод' },
     closeup: null,
     params,
-    maxAttempts: null,
+    maxAttempts,
     giveUp: false,
     solution: [0],
     hints: [],
@@ -301,4 +301,29 @@ test('story: a seeded reached/solve mismatch is refused', () => {
   expect(reachFindings(fuseInput({ cols: 7, rows: 7, ends: [0, 48], blocked: [13, 24] })).map((f) => `${f.code}: ${f.message}`)).toEqual([
     "world/unique-solution: puzzle 'fuse' (path): the solution search stopped at its bound before it proved one solution (§7.4)",
   ]);
+});
+
+test('story: a reach type with a local wrong state may set maxAttempts', () => {
+  // world/attempts-without-wrong keys on the type's wrong state, not on its check: 07:534's `sequence` (GM8b) is a reach
+  // type that counts its wrong presses locally against maxAttempts, so its count moves.
+  const lints = { ...PUZZLE_LINTS, glow: GLOW_LINT, chime: GLOW_LINT };
+  // The control: a reach type with no wrong answer (unlit at its start, so nothing else is found).
+  const glowTypes: PuzzleTypes = [...PUZZLE_TYPES, { ...GLOW, initial: () => [0] }];
+  expect(reachFindings(fuseInput({}, 'glow', glowTypes, 3), lints, glowTypes).map((f) => f.code)).toEqual(['world/attempts-without-wrong']);
+  const chimeTypes: PuzzleTypes = [...PUZZLE_TYPES, { ...GLOW, type: 'chime', wrong: 'local', initial: () => [0] }];
+  expect(reachFindings(fuseInput({}, 'chime', chimeTypes, 3), lints, chimeTypes)).toEqual([]);
+});
+
+test('story: a lint half that lacks any one reach hook is a finding', () => {
+  // Each hook is checked on its own: a half lacking only one is refused as a finding, never a throw at the missing
+  // hook's first call. The all-absent half above is caught by whichever of the three checks survives.
+  const input = fuseInput({ cols: 3, rows: 2, ends: [0, 3], blocked: [] });
+  const { solve: _solve, ...noSolve } = PATH_LINT;
+  const { reached: _reached, ...noReached } = PATH_LINT;
+  const { canonical: _canonical, ...noCanonical } = PATH_LINT;
+  for (const [hook, half] of Object.entries({ solve: noSolve, reached: noReached, canonical: noCanonical })) {
+    expect(reachFindings(input, { ...PUZZLE_LINTS, path: half }).map((f) => f.message), `a half without ${hook}`).toEqual([
+      "puzzle 'fuse' (path): its type's lint half has no solve, reached or canonical (§7.4)",
+    ]);
+  }
 });
