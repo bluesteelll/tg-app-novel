@@ -187,6 +187,19 @@ test('flags: a set effect sets a flag once', () => {
   }
 });
 
+test('flags: two triggers setting one flag leave it set once', () => {
+  // The lint lets two triggers of one section set one flag; the second set finds it set and adds nothing (the set is
+  // idempotent, D7's premise), so the state, its save and its search key hold the flag once.
+  const raw = rawWorld({ s: ['hall', { hall: room([look('a', [{ set: 'f' }]), look('b', [{ set: 'f' }]), exit('out', { story: 'end' })]) }] }, [], { f: 's' });
+  for (const { form, w } of forms(raw)) {
+    const second = reduce(w, reduce(w, at('hall'), tap('hall.a')).state, tap('hall.b'));
+    // Non-vacuous: the second trigger fired (its `fired` key), so its set ran.
+    expect(second.state.fired, form).toEqual(['then:hall.a', 'then:hall.b']);
+    expect(second.state.flags, form).toEqual(['f']);
+    expect(flagCues(second.effects), form).toEqual([]);
+  }
+});
+
 test('flags: module effects run at their source indices', () => {
   const raw = rawWorld({ s: ['hall', { hall: room([object('box', [{ give: 'x' }, { set: 'f' }, { story: 'k' }]), exit('out', { story: 'end' })]) }] }, ['x'], { f: 's' });
   for (const { form, w } of forms(raw)) {
