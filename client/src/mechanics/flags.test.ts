@@ -591,14 +591,17 @@ const vars = (...names: string[]): ReadonlySet<VarName> => new Set(names as VarN
 const pz = (s: string) => s as PuzzleLocalId;
 /** Whether admitSection restarted the section. */
 const resets = (effects: readonly ExploreEffect[]): boolean => effects.some((e) => e.kind === 'reset');
-/** A code puzzle in the source format. */
+/**
+ * A code puzzle in the source format. It fails after one wrong attempt, so a failed outcome is one play produces (the
+ * search offers `failed` only for a puzzle with `maxAttempts`, rules/search.ts `successors`).
+ */
 const codePuzzle = (): Json => ({
   type: 'code',
   title: txt(),
   prompt: txt(),
   closeup: null,
   params: { dials: 3 },
-  maxAttempts: null,
+  maxAttempts: 1,
   giveUp: false,
   solution: [1, 2, 3],
   hints: [],
@@ -675,6 +678,9 @@ test("reconcile: a set added to a failed lock's onFail re-arms from its puzzle's
     const v2 = { ...w, version: 'v2' };
     const failed = at('hall', { puzzles: { [pz('dial')]: { outcome: 'failed', attempts: 1, hintsOpened: 0 } } });
     expect(reconcile(v2, failed, NO_KNOTS, 'v1').state.flags, form).toEqual(['f']);
+    // The save is one play produces (one wrong attempt fails the dial), and it resumes with the flag.
+    const admitted = admitSection(v2, reconcile(v2, failed, NO_KNOTS, 'v1').state, S);
+    expect([resets(admitted.effects), admitted.state.flags], `${form} (resumed)`).toEqual([false, ['f']]);
     // The controls: the puzzle solved (the box open), and a fresh run.
     const solved = at('hall', { puzzles: { [pz('dial')]: { outcome: 'solved', attempts: 0, hintsOpened: 0 } }, open: [k('hall.box')] });
     expect(reconcile(v2, solved, NO_KNOTS, 'v1').state.flags, form).toEqual([]);
