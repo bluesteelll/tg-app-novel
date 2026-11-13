@@ -497,6 +497,17 @@ describe('budget evaluate', () => {
     expect(missing.note).toContain(`no dynamic entry for ${probe}`);
   });
 
+  test('budget: a lazy UI of another family is no puzzle-type root', () => {
+    // GM7p (D11): the puzzle-type row lists only the sources under its own directory. PuzzleHost's path holds
+    // `puzzles/`, and ExploreView is the larger lazy UI that a wider listing measured as a puzzle type on the real dist;
+    // both stay under the row's limit, so the wrong root shows in the row's bytes and note, not as a FAIL.
+    const rows = evaluate(withLazy(inputs(), { [CODE_LOCK]: { js: 2_000 }, [ORDER]: { js: 1_500 }, [HOST]: { js: 4_000 }, [EXPLORE_VIEW]: { js: 6_000 } }), LIMITS);
+    expect(rowOf(rows, 'puzzle-type chunk (br)')).toMatchObject({ status: 'PASS', valueBytes: 2_000, note: `largest: ${CODE_LOCK}, 1 chunks` });
+    // The controls: each of the other families measures its own root.
+    expect(rowOf(rows, 'puzzle-host chunk (br)')).toMatchObject({ status: 'PASS', valueBytes: 4_000 });
+    expect(rowOf(rows, 'explore-ui chunk (br)')).toMatchObject({ status: 'PASS', valueBytes: 6_000 });
+  });
+
   test('budget: the cue-stage family is measured and refused over its limit', () => {
     // Engine plan §11: the cue stage is its own lazy family, which app/yields.ts import()s (GM3s).
     const row = (b: BudgetInputs): Row => rowOf(evaluate(b, LIMITS), 'cue-stage chunk (br)');
