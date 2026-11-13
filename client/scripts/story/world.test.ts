@@ -1213,6 +1213,61 @@ test('story: a path puzzle with a clue is refused', () => {
   expect(reachSeen(w)).toEqual(["world/reach-has-clue: puzzle 'drawer' (path) draws its goal: it declares no clue (§7.3)"]);
 });
 
+// ---------------------------------------------------------------------------------------------------------------
+// GM7g: the grid through the reach pass and the solution check (engine plan §7.4, H1 (2)), through the full runner and
+// the real registries, on the demo manor whose drawer is a grid: 2 x 2 over 2 symbols, cell 0 given 1, its one fill
+// 1 2 / 2 1, no clue (a shown goal), no attempt count.
+
+const GRID_DRAWER: Json = { rows: 2, cols: 2, symbols: 2, given: [1, 0, 0, 0] };
+
+function gridBase(): Json {
+  const w = base();
+  const drawer = at(w, 'puzzles.drawer');
+  drawer['type'] = 'grid';
+  drawer['params'] = structuredClone(GRID_DRAWER);
+  drawer['solution'] = [1, 2, 2, 1];
+  drawer['maxAttempts'] = null;
+  delete drawer['clues'];
+  return w;
+}
+
+test('story: a grid with two solutions is refused', () => {
+  // The control: the drawer as a grid with one fill is a clean world.
+  expect(run(gridBase(), { declared: { pz_drawer: 'int', pz_gate_hints: 'int', it_medal_sun: 'bool', dc_letter: 'bool' } }).findings).toEqual([]);
+  // A wiring pin: with nothing given the 2 x 2 has two fills (the fixture is checked first), so the solution cannot be
+  // the one posted.
+  const two = { rows: 2, cols: 2, symbols: 2, given: [0, 0, 0, 0] };
+  expect(PUZZLE_LINTS.grid.countSolutions(two, 2)).toBe(2);
+  const w = gridBase();
+  at(w, 'puzzles.drawer')['params'] = two;
+  // One root cause, one finding: the solution check leaves two fills to world/unique-solution.
+  expect(reachSeen(w)).toEqual(["world/unique-solution: puzzle 'drawer' (grid) has two or more solutions: a reach puzzle posts its one solution (§7.4)"]);
+  expect(of(lint(w), 'world/unique-solution')).toEqual([expect.objectContaining({ severity: 'E', line: jsonLine(w, '"params": {') })]);
+});
+
+test('story: a grid whose given cells fill it is refused', () => {
+  // A wiring pin: the decoder admits a fully given grid, and the full runner refuses it twice, by code (in its pass
+  // order): the reach pass's start clause, which reads the type's own `initial`, and the core's solution-is-initial.
+  const w = gridBase();
+  at(w, 'puzzles.drawer')['params'] = { rows: 2, cols: 2, symbols: 2, given: [1, 2, 2, 1] };
+  const found = lint(w)
+    .filter((f) => f.code === 'world/solution-initial' || f.code === 'world/reach-solution')
+    .map((f) => [f.code, f.message]);
+  expect(found).toEqual([
+    ['world/reach-solution', "puzzle 'drawer' (grid) is reached at its start: it would post before any input (§7.4)"],
+    ['world/solution-initial', "puzzle 'drawer': the solution [1, 2, 2, 1] is the initial state (X17)"],
+  ]);
+  expect(reachSeen(w)).toEqual(["world/reach-solution: puzzle 'drawer' (grid) is reached at its start: it would post before any input (§7.4)"]);
+});
+
+test('story: a grid solution other than its fill is refused', () => {
+  // A wiring pin (H1 (2) through the real runner): GRID_LINT.validateSolution reports as world/solution; a Latin fill
+  // that changes the given is not what the device posts.
+  const w = gridBase();
+  at(w, 'puzzles.drawer')['solution'] = [2, 1, 1, 2];
+  expect(reachSeen(w)).toEqual(["world/solution: puzzle 'drawer': the solution is not the grid's fill [1, 2, 2, 1]"]);
+});
+
 /** The line of clue `i` of puzzle `pid` in a fixture's JSON text: each clue is a one-key object over three lines. */
 function clueLine(w: Json, pid: string, i: number): number {
   const lines = `${JSON.stringify(w, null, 2)}\n`.split('\n');
