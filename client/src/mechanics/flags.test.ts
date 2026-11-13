@@ -887,3 +887,14 @@ test("reconcile: another puzzle's failed outcome does not re-arm a lock's onFail
   const failed = { outcome: 'failed', attempts: 1, hintsOpened: 0 } as const;
   keyedByTarget(raw, at('hall', { puzzles: { [pz('wheel')]: failed } }), at('hall', { puzzles: { [pz('dial')]: failed, [pz('wheel')]: failed } }));
 });
+
+test('reconcile: an examined hotspot that is now an object does not re-arm its then', () => {
+  // v1's mark was a look with an empty `then`; v2 makes it an object whose `then` sets `f`. The re-arm reads the
+  // hotspot's CURRENT kind, and an object's `then` has no event fact: no flag at the load, and the next tap sets it.
+  for (const { form, w } of forms(noteHall([object('mark', [{ set: 'f' }])]))) {
+    const v2 = { ...w, version: 'v2' };
+    const r = reconcile(v2, at('hall', { examined: [k('hall.mark')] }), NO_KNOTS, 'v1');
+    expect([r.state.flags, resets(admitSection(v2, r.state, S).effects)], form).toEqual([[], false]);
+    expect(reduce(v2, r.state, tap('hall.mark')).state.flags, `${form} (tap)`).toEqual(['f']);
+  }
+});
