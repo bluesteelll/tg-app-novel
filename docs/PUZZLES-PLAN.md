@@ -157,6 +157,7 @@ to end, locally against the mock Telegram environment:
   | `pz_<puzzle>_hints` | int | hint tiers opened in this run |
   | `it_<item>` | bool | the item was ever obtained |
   | `dc_<doc>` | bool | the document was found |
+  | `fl_<flag>` | bool | the flag is set (Changed by RULINGS 328 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1); as merged, GM5f `402d4d8`: any declared flag, any section, [project.ts:39-42](../client/src/explore/project.ts#L39)) |
 
   - A projection VAR is written only if the chapter declares it (`meta.vars`) with the matching type (lint
     `world/var-type`). `enter()` refuses an undeclared name or a type mismatch with an error value, never a throw.
@@ -492,6 +493,26 @@ the explore-ui chunk. The marks below flag each sentence that places step 4 at t
       50-58 ms in quiet-like runs and 130-158 ms beside LDB1's cargo, against 75 ms unthrottled (≤ 300 ms at CPU
       4×). `RESUME_STATE_CAP` stays 5,000. Re-measure on a quiet machine before LX / L13 rely on it:
       `cd client && npx vitest run scripts/story/softlock -t "just under" --reporter=verbose`.
+    - Changed by RULINGS 316, 317, 318, 326 (as of `f6487fc`; docs lane `docs-errata-19`, group A): **two bounds, as
+      merged** (GM5q `5142d5d`). The search answers `cap` past either one: more than `RESUME_STATE_CAP` (5,000)
+      distinct **places** (a state's key in which a free zoom view folds into its parent's place, engine §6.3), or
+      more than W = cap x `RESUME_WORK_PER_STATE` (8) = 40,000 units of **work**
+      (`client/src/mechanics/rules/search.ts:535`, the check `:574`). One unit is one successor evaluation: one
+      `reduce` per successor `successors` returns (an excluded one included), and one per walk move to a member of
+      the place beyond the first. Build and runtime share both bounds (every product caller passes
+      `RESUME_STATE_CAP`), so on built content the runtime never meets W. W is the estimate's own model above (5,000
+      states x about 8 successors). Counted on the measured fixture `hub(4, 5, 2)` (4,860 states): 12,960 evaluations,
+      2.67 per state, 32.4 % of W. The real ch1 with the quotient: 406 places, work 1,741 (4.35 % of W). With the
+      quotient a place costs about 8.6-9.0 evaluations at 2 real views per room (9.5-10 with one recipe), 4.3 at the
+      real ch1's one view, and 2.4-4.1 per state where no view merges (`gm5q-mech-place-quotient/p2q.md`;
+      [§7.6](plans/engine/07-puzzle-types.md#76-state-space-budget-and-spike-p2-r2-m4)).
+    - **Ruled: RULINGS 318** (Q70) — the measured cost is **3.9-4.5 µs per evaluation** (the fixture's 50-58 ms quiet
+      over its 12,960 counted evaluations, the per-state work amortized in), about twice the 2 µs of the estimate above,
+      which is an upper figure. A section at W (8 successors per state) could take about 150-180 ms unthrottled against
+      the 75 ms budget. The gap predates GM5q, which does not widen it (the place cap alone admits the same section),
+      and no built section is near it (ch1 at about 4 % of W). Default (a): time a fixture near W on a quiet machine
+      and on a low-end Android (§7.6 response (4)) at the device pass (Q54) or the first quiet window, then recalibrate
+      both bounds together with a ruling ([OPEN-QUESTIONS](OPEN-QUESTIONS.md) Q70).
     - Each search runs on the main thread with no input pending. Step 4 runs behind the resume loading state (as merged, GM1a `ef8b4dc`, RULINGS 165: no search runs at the load; the current
       section's search runs at its first entry, like step 5's). Step
       5 runs inside the explore yield, before the room batch starts, so no hotspot is on screen yet; it delays that
@@ -642,6 +663,13 @@ variant drawn at a stable anchor (`visual`), and props, decor and device parts a
 Changed by the engine plan (adopted 2026-11-09, RULINGS 158; planned, not built): with views, a zoom-in pushes the
 room on the path, a zoom-out truncates it, and Back leaves a view (O5) —
 [engine §6.3 `view`: full-screen zoom views](plans/engine/06-mechanics-as-modules.md#63-view-full-screen-zoom-views-gm4-o5).
+Changed by RULINGS 328, 329, 334 (as of `f6487fc`; docs lane `docs-errata-19`, group A): **presence is not monotone**
+(GM5f `402d4d8`). A hotspot's `when` may read `held` or `not`, so an exit or a lock can go absent again; "locks never
+close" below no longer covers exits. D10: the lock panel closes when its lock goes absent, as when its room is left
+(`shutLock`, `client/src/explore/controller.ts:295`). D11: after every settle outside a view, a path whose last room no
+present, open exit reaches is cleared (`prune`, `:403`), W4's rule for a door locked from the other side: Back
+disarms and does not re-arm when the way comes back. A view keeps Back whatever its exits
+([engine §6.5](plans/engine/06-mechanics-as-modules.md#65-flags-gm5f), "Ruled since: RULINGS 327, …, 334").
 - **What:**
   - **Exits.** Doors are `exit` hotspots, as the owner asked [spec 3b]. Every room→room exit has a reverse exit
     (`world/one-way-exit`), so there is no one-way door inside a section [P4 rec. 5]. Every room→room exit leads to
@@ -1265,10 +1293,10 @@ Staging tag lines above it merge into the yield step's batch (§3.5) and run bef
 | `world/puzzle-multi-lock` | E | a puzzle named by the `puzzle` field of more than one lock, in one section or in several; prints every lock that names it. X15, X9 step 5's premise, reducer rule `puzzle-ended` (revision 5) | LW3 |
 | `world/cross-section-exit` | E | a room→room exit whose `to.room` is a defined room of another section than the exit's own; prints every such exit, so a crossing pair is two findings. A room that is not defined stays `world/unknown-ref`. X15, X12, X9 step 5's premise, reducer move rule (revision 6) | LW3 |
 | `world/fail-without-effect` | E | a lock puzzle with `maxAttempts` and an empty `onFail` | LW3 |
-| `world/var-type` | E | a declared projection VAR with the wrong type (`pz_*` int, `it_*` / `dc_*` bool) | LW3 |
+| `world/var-type` | E | a declared projection VAR with the wrong type (`pz_*` int, `it_*` / `dc_*` bool; Changed by RULINGS 328 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1): `fl_*` bool, GM5f, [world.ts:761](../client/scripts/story/world.ts#L761)) | LW3 |
 | `world/softlock` | E | the model checker found a reachable state (over `successors`, closed puzzles included) with no path to a `leave` effect; prints the action path (as merged, LW2 `38bc717`: the shortest path from entry in BFS order, e.g. `tap hall.gate → insert hall.gate medal_sun → …`; a `closed` / `puzzle-ended` step prints as the action that opened the puzzle plus the outcome, `tap hall.gate → gate failed`) | LW3 |
 | `world/unreachable` | W | an item, doc, room or puzzle no reachable state touches | LW3 |
-| `world/state-cap` | E | the checker exceeded `RESUME_STATE_CAP` (5,000) states: the section is too large to prove at resume (X9); split it | LW3 |
+| `world/state-cap` | E | the checker exceeded `RESUME_STATE_CAP` (5,000) states: the section is too large to prove at resume (X9); split it. Changed by RULINGS 317, 326 (as of `f6487fc`; docs lane `docs-errata-19`, group A): or 40,000 successor evaluations (`RESUME_WORK_PER_STATE` = 8 per state of the cap, GM5q); the message names the bound passed ("The cost") | LW3 |
 | `play/event-no-return` | E | a seeded run entered an event knot and stopped without its explore yield | LW3 |
 | `paid/leak` (extended) | E | a hint line ID or hint text under `client/src/story-gen/` | LW3 |
 | `id/*`, `loc/*` (extended) | E/W | world texts follow STAGING-DSL §4 (IDs, uniqueness across ink and world, en entries) | LW3 |
@@ -1698,6 +1726,10 @@ postAttempt(id: PuzzleId, answer: readonly number[]): Promise<Result<AttemptResp
 //   last argument o?: { signal?: AbortSignal } (an abort answers ApiError { kind: 'aborted' }), as getChapter does;
 //   PuzzleId is a local brand in endpoints.ts (`<chapter>.<local>`), and lang is `Lang`
 ```
+
+Changed by RULINGS 335, 341 (as of `f6487fc`; docs lane `docs-errata-19`, group A): as merged (GM7r `9516951`), `AttemptResult` also has `{ kind: 'mismatch' }`
+(`client/src/puzzles/session.ts:28-32`): a reach post answered wrong, the content changed under this client; it
+counts no attempt and dispatches no `attempt-failed` (engine plan §7.4).
 
 ---
 

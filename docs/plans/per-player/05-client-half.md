@@ -665,7 +665,9 @@ digits, enter them on the drawer, expect it open).
     the zero; the clue spans still move at once with their own motion). So every return of the frame to input has
     exactly one cue (engine.md [engine §8.1 The cue union and the bus](../engine/08a-cue-union-and-bus.md#81-the-cue-union-and-the-bus)), `renewed` taking `ready`'s place when the run changed (R-E27 (d)). A zero that
     re-posts (engine.md GM7r's `ready(o)`) starts an attempt (`checking`), whose outcome is the pass; of GM6c2 / GM7r
-    the lane that lands second wires the non-posting zero to `settle` (R-E27 (d)).
+    the lane that lands second wires the non-posting zero to `settle` (R-E27 (d)). Changed by RULINGS 341 (as of `f6487fc`; docs lane `docs-errata-19`, group A):
+    GM7r landed first (`9516951`), so GM6c2 routes the zero's non-posting branch (`client/src/app/yields.ts:1157-1160`)
+    through `settle(o, { line: 'idle' }, 'ready')`.
 
 | Entry of `o.local` | Against the frame | Patch | Cue |
 |---|---|---|---|
