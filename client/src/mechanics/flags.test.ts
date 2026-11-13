@@ -718,6 +718,45 @@ test('reconcile: an event fact re-arms only a trigger with no kernel effect whos
   }
 });
 
+test('reconcile: a trigger whose kernel effect is a give or an unlock follows its record', () => {
+  // Each v2 mark sets `f`, which gates the note, beside a kernel effect, so its record alone says whether it has run
+  // (D6' "Why narrowed", items 1-3): the `examined` fact stays, the flag stays cleared and the save resumes; a flag set
+  // from the fact would sit beside an unfired keyed trigger, a key no play produces (a restart). The next tap runs it.
+  const shut: Json = { slots: [], puzzle: null, locked: txt(), onOpen: [], onFail: [] };
+  const give = rawWorld({ s: ['hall', { hall: room([look('mark', [{ give: 'coin' }, { set: 'f' }]), when(look('note'), { flag: 'f' }), exit('out', { story: 'end' })]) }] }, ['coin'], { f: 's' });
+  const unlock = rawWorld(
+    { s: ['hall', { hall: room([look('mark', [{ unlock: 'hall.box' }, { set: 'f' }]), { ...object('box'), lock: shut }, when(look('note'), { flag: 'f' }), exit('out', { story: 'end' })]) }] },
+    [],
+    { f: 's' },
+  );
+  for (const { form, w } of forms(give)) {
+    const v2 = { ...w, version: 'v2' };
+    // Item 1: v1's mark gave `pebble` (v2 has no such item) and set `f`; step 3 un-fires it to re-give, `examined` stays.
+    const saved = at('hall', { examined: [k('hall.mark')], fired: ['then:hall.mark'], flags: [fl('f')], held: [it('pebble')] });
+    const r = reconcile(v2, saved, NO_KNOTS, 'v1');
+    expect([r.state.flags, r.state.fired, r.dropped], `${form} (give, un-fired)`).toEqual([[], [], ['held:pebble']]);
+    const admitted = admitSection(v2, r.state, S);
+    expect(resets(admitted.effects), `${form} (give, un-fired)`).toBe(false);
+    const tapped = reduce(v2, admitted.state, tap('hall.mark')).state;
+    expect([tapped.held, tapped.flags], `${form} (give, un-fired)`).toEqual([['coin'], ['f']]);
+    expect(actions(v2, tapped), `${form} (give, un-fired)`).toContainEqual(tap('hall.note'));
+    // Item 2: v1's mark had an empty `then`, so the save holds only `examined`.
+    const passed = reconcile(v2, at('hall', { examined: [k('hall.mark')] }), NO_KNOTS, 'v1');
+    expect([passed.state.flags, passed.state.fired], `${form} (give, once empty)`).toEqual([[], []]);
+    expect(resets(admitSection(v2, passed.state, S).effects), `${form} (give, once empty)`).toBe(false);
+  }
+  for (const { form, w } of forms(unlock)) {
+    const v2 = { ...w, version: 'v2' };
+    // Item 2 with an unlock: the box stays shut until the mark's next tap opens it and sets `f`.
+    const r = reconcile(v2, at('hall', { examined: [k('hall.mark')] }), NO_KNOTS, 'v1');
+    expect([r.state.flags, r.state.fired], `${form} (unlock, once empty)`).toEqual([[], []]);
+    const admitted = admitSection(v2, r.state, S);
+    expect(resets(admitted.effects), `${form} (unlock, once empty)`).toBe(false);
+    const tapped = reduce(v2, admitted.state, tap('hall.mark')).state;
+    expect([tapped.open, tapped.flags], `${form} (unlock, once empty)`).toEqual([['hall.box'], ['f']]);
+  }
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // GM5f fix2 (D6''): a declared flag stays only while one of its setters has run, by the same test as the re-arm.
 
