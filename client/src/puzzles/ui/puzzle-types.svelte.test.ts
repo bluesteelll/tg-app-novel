@@ -393,6 +393,14 @@ test('path: a stroke that reaches the end reports once', () => {
   s.at('pointerup', 3);
   expect(d.changes.slice(-2)).toEqual([[0, 1, 2, 5, 4], P32_SOLVE]);
   expect(d.reports).toEqual([P32_SOLVE, P32_SOLVE]);
+  // A reached line re-delivered reports nothing again: the report is the edge's, not the effect's re-run. An equal copy
+  // of the answer (a frame replaced around it, as yields' setFrame does), then params that decode to a new grid.
+  d.p.answer = [...P32_SOLVE];
+  flushSync();
+  expect(d.reports).toEqual([P32_SOLVE, P32_SOLVE]);
+  d.p.params = { ...P32 };
+  flushSync();
+  expect(d.reports).toEqual([P32_SOLVE, P32_SOLVE]);
 });
 
 test("path: a stroke starts only on the path's end or an end cell", () => {
