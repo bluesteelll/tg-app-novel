@@ -43,11 +43,16 @@ const isKernelEffect = (e: Effect): boolean => 'give' in e || 'unlock' in e || '
 /**
  * Whether trigger T has run in `s`, the post-step-3 state (GM5f D6'): its `fired` key is in `s`, or T has no kernel
  * effect in the current world (by key: the proof form keeps a module's raw entry in the kernel list) and the fact its
- * own event writes holds. Each such fact has one writer, which fires T in the same dispatch (mechanics/rules/core.ts,
- * writer.ts `openKey`), so it proves the run: `visited` for `enter:<room>`, `examined` for a look's `then`, `taken` for
- * a take's (a take step 3 re-armed is no longer taken), `open` for `open:<key>`, its puzzle's failed outcome for
- * `fail:<key>`. An object's `then` has no such fact: an `unlock` opens an object without it. A trigger with a kernel
- * effect follows its record alone: step 3 un-fires one to re-give its gift while its event fact stays.
+ * own event writes holds, for T's own target and the hotspot's CURRENT kind: `visited` for `enter:<room>`, `examined`
+ * for a look's `then` (an `examined` of a hotspot that is no longer a look proves nothing), `taken` for a take's (a
+ * take step 3 re-armed is no longer taken), `open` for `open:<key>`, its puzzle's failed outcome for `fail:<key>`.
+ * Within one version each such fact has one writer, which fires T in the same dispatch (mechanics/rules/core.ts,
+ * writer.ts `openKey`), so it proves the run. A fact carried from an older version counts as T's event under the
+ * current world: a failed outcome of puzzle p written while p was linear, or the puzzle of another lock, counts as the
+ * failure of the lock the current `puzzleLock` gives p, as the kernel itself treats any failed outcome (final in
+ * core.ts `puzzleEnded`; the `failed:` atom reads it whatever wrote it). An object's `then` has no such fact: an
+ * `unlock` opens an object without it. A trigger with a kernel effect follows its record alone: step 3 un-fires one to
+ * re-give its gift while its event fact stays.
  */
 function triggerRan(ix: WorldIndex, s: WorldState): TriggerRan {
   return (trigger) => {

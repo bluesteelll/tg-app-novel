@@ -146,7 +146,11 @@ export function encodeFlags(d: FlagsData): OwnedRaw {
  * holds the flag no longer. D6 is load-bearing for D7's key soundness, not only its resume answer: D7 keys no record of
  * a set-only trigger, which is sound only while every such trigger that has run has set its flags; without the re-arm a
  * reconciled save whose setter has run resumes with `f` unset, and `f` is never set (the trigger never runs again), so
- * what `f` gates never shows. A world without the module's data (the mods-less proof body) keeps `s.flags`.
+ * what `f` gates never shows. The re-arm writes no `fired` record (`fired` is the kernel's; this reconciles only the
+ * module's own facts), so a re-armed set-only trigger runs once more at its next event: one `fact:fired:added` cue and
+ * a dirty write, keys, flags and answers unchanged; that run also delivers any other non-kernel effect the new version
+ * gave the trigger, which a written `fired` would withhold. A world without the module's data (the mods-less proof
+ * body) keeps `s.flags`.
  */
 export function normalizeFlags(w: KernelWorld, s: WorldState, dropped: string[], ran: TriggerRan): WorldState {
   const d = w.mods?.flags;
