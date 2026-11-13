@@ -5,7 +5,8 @@
 // another section or of no room. The section search over views (GM5q, synthesis §3.7): a free view keys under its
 // parent's place, a place's state is expanded over every member, an edge from another member carries the walk to it,
 // the soundness property holds over places and turns red when a membership condition is dropped, a soft-lock path
-// prints each walk, and the search's two bounds (places and work) answer 'cap' at the build and the resume alike.
+// prints each walk, and the search's two bounds (places and work) answer 'cap' at the build and the resume alike (the
+// work checked before a member's edges, an excluded successor counted).
 // Fixture worlds are written in the source format and decoded with the real registries; a proof world carries the
 // decoded `mods`, as the explore controller's and the story gate's do.
 import { expect, test } from 'vitest';
@@ -349,6 +350,62 @@ test('softlock: world/state-cap names the bound the section passed', () => {
   expect(workStates).toEqual([null]);
 }, 60_000);
 
+test("search: the work bound is checked before a member's edges", () => {
+  // One room: sixteen lockless objects (known edges), a take (a new place) and a way out, so the start's one member
+  // evaluates 18 successors. The work is checked after a member's successors are evaluated and before its edges: a
+  // member whose evaluation passed the bound hands no edge, neither the take's new place nor a target.
+  const w = kernel(source(rawWorld({ s: ['hall', { hall: room([...ids('o', 16).map((id) => object(id)), take('t', 'i'), exit('out', { story: 'end' })]) }] }, ['i'])));
+  const start = sectionEntry(w, EMPTY_WORLD_STATE, S);
+  const target = sectionKey(w, reduce(w, start, tap('hall.t')).state, S);
+  const spent: SearchStats[] = [];
+  let edges = 0;
+  const onStats = (stats: SearchStats): void => {
+    spent.push(stats);
+  };
+  const onEdge = (): void => {
+    edges++;
+  };
+  // Cap 1, work bound 8: both bounds pass on the start's member (18 evaluations; the take's place would be the 2nd).
+  // The work is checked first, so the search stops at the work bound.
+  expect(searchSection(w, start, S, 1, { onStats, onEdge })).toEqual({ result: 'cap', states: 1 });
+  expect(spent).toEqual([{ expansions: 1, work: 18, bound: 'work' }]);
+  // Cap 2, work bound 16: the take's place is the target, but it lies behind the member's edges.
+  expect(searchSection(w, start, S, 2, { onStats, onEdge, target })).toEqual({ result: 'cap', states: 1 });
+  expect(spent.at(-1)).toEqual({ expansions: 1, work: 18, bound: 'work' });
+  expect(edges).toBe(0);
+  // Cap 3, work bound 24: the 18 evaluations fit, and the take finds the target.
+  expect(searchSection(w, start, S, 3, { target })).toEqual({ result: 'found', states: 2 });
+});
+
+test('search: an excluded successor counts as work', () => {
+  // One room: nine lockless objects and a way out, so the start evaluates 10 successors. The search never takes a step
+  // `exclude` accepts (here every tap but the way out), but it evaluated it: it counts against the work bound.
+  const w = kernel(source(rawWorld({ s: ['hall', { hall: room([...ids('o', 9).map((id) => object(id)), exit('out', { story: 'end' })]) }] })));
+  const start = sectionEntry(w, EMPTY_WORLD_STATE, S);
+  const exclude = (step: Step): boolean => !(step.kind === 'tap' && step.hotspot === k('hall.out'));
+  const spent: SearchStats[] = [];
+  const steps: Step[] = [];
+  const onStats = (stats: SearchStats): void => {
+    spent.push(stats);
+  };
+  // Cap 1, work bound 8: the 10 evaluations pass it, 9 of them excluded.
+  expect(searchSection(w, start, S, 1, { exclude, onStats })).toEqual({ result: 'cap', states: 1 });
+  // Cap 2, work bound 16: they fit, and the only edge is the way out.
+  const r = searchSection(w, start, S, 2, {
+    exclude,
+    onStats,
+    onEdge: (_from, succ) => {
+      steps.push(succ.step);
+    },
+  });
+  expect(r).toEqual({ result: 'exhausted', states: 1 });
+  expect(steps).toEqual([tap('hall.out')]);
+  expect(spent).toEqual([
+    { expansions: 1, work: 10, bound: 'work' },
+    { expansions: 1, work: 10, bound: null },
+  ]);
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // The place quotient (synthesis §3.7, engine plan §6.3; rules/search.ts `placesOf`): a view the player enters by a
 // lockless exit of its parent and leaves only by `leave-view`, with no `onEnter` and no module reading its `visited`,
@@ -675,6 +732,34 @@ test('search: a registry without leave-view merges no view', () => {
   expect(sectionPlaces(w, S)).toEqual({ desk: 'hall' });
   expect(sectionPlaces(w, S, noView)).toEqual({});
   expect(searchSection(w, sectionEntry(w, EMPTY_WORLD_STATE, S, noView), S, RESUME_STATE_CAP, { rules: noView })).toEqual({ result: 'exhausted', states: 3 });
+});
+
+test('search: a view entered from a room outside its parent merges no place', () => {
+  // (a2): every exit into a view lies in its parent. The study's exit into the desk is no free move of the hall's
+  // place. The build lint `world/view-entry` refuses such a world, so the search API is checked directly: the desk stays
+  // a place of its own. Without the study's exit, the same desk merges.
+  const raw = (foreign: boolean): Json =>
+    rawWorld(
+      {
+        s: [
+          'hall',
+          {
+            hall: room([exit('to_desk', 'desk'), exit('to_study', 'study'), exit('out', { story: 'end' })]),
+            desk: view('hall', [take('pen', 'pen')]),
+            study: room([...(foreign ? [exit('to_desk', 'desk')] : []), exit('to_hall', 'hall')]),
+          },
+        ],
+      },
+      ['pen'],
+    );
+  const src = source(raw(true));
+  expect(lint(src)).toEqual([['world/view-entry', 'sections.s.rooms.study.hotspots.0.to.room', 'E']]);
+  const w = kernel(src);
+  expect(sectionPlaces(w, S)).toEqual({});
+  expect(sectionKey(w, at('desk'), S).split('|')[0]).toBe('desk');
+  const linted = source(raw(false));
+  expect(lint(linted)).toEqual([]);
+  expect(sectionPlaces(kernel(linted), S)).toEqual({ desk: 'hall' });
 });
 
 test('view: a soft-lock path describes each step from the state before it', () => {
