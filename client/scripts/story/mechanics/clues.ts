@@ -1,8 +1,11 @@
 // The clue lints of engine plan §7.3 (I4: a secret goal never ships, so the world must show it): a secret puzzle a
 // lock holds declares the clues that show its answer, a shown goal declares none, and each declared clue holds in a
-// state the player reaches before the puzzle is over. A build pass of the world lint registry (§3.2). Build only and
-// pure, no node:*: world.ts imports the registry and scan-dist.ts imports world.ts. Its imports from index.ts and
-// lint.ts are `import type`; it never imports world.ts (index.ts's value graph has no edge back).
+// state the player reaches before the puzzle is over. And the reach lints of §7.4 (GM7p): a reach puzzle has exactly one
+// solution, the type's `solve`, which its play half's own rule reaches and orients and which its start does not
+// already reach; a type with no wrong state takes no attempt count. One build pass of the world lint registry (§3.2).
+// Build only and pure, no node:*: world.ts imports the registry and scan-dist.ts imports world.ts. Its imports from
+// index.ts and lint.ts are `import type`; it never imports world.ts (index.ts's value graph has no edge back), and the
+// puzzle lint registry it reads imports nothing of mechanics/.
 import { RESUME_STATE_CAP, hotspotKey, lockOf } from '../../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../../src/explore/state.ts';
 import type { WorldState } from '../../../src/explore/state.ts';
@@ -17,6 +20,8 @@ import type { PuzzleLocalId, SectionId } from '../../../src/story/staging.ts';
 import { toPublic } from '../../../src/world/decode.ts';
 import type { HotspotKey, WorldSource } from '../../../src/world/types.ts';
 import type { Finding, Severity } from '../lint.ts';
+import { PUZZLE_LINTS } from '../puzzles/index.ts';
+import type { PuzzleLintRegistry } from '../puzzles/shape.ts';
 import type { WorldLint, WorldLintInput } from './index.ts';
 
 /** Every clue code with its severity: all errors, so `npm run story` never passes a secret no player can find. */
@@ -26,6 +31,17 @@ export const CLUE_CODES = {
   'world/clue-reachable': 'E',
 } as const satisfies Readonly<Record<string, Severity>>;
 type ClueCode = keyof typeof CLUE_CODES;
+
+/**
+ * Every reach code with its severity: all errors. A wrong reach solution makes every correct draw a mismatch (the lock
+ * opens for no player, 07:203), and an attempt count on a type with no wrong state never moves.
+ */
+export const REACH_CODES = {
+  'world/unique-solution': 'E',
+  'world/reach-solution': 'E',
+  'world/attempts-without-wrong': 'E',
+} as const satisfies Readonly<Record<string, Severity>>;
+type ReachCode = keyof typeof REACH_CODES;
 
 type HeldBy = { readonly section: SectionId; readonly key: HotspotKey };
 
@@ -183,4 +199,67 @@ export function clueFindings(input: WorldLintInput, types: PuzzleTypes = PUZZLE_
   return out;
 }
 
-export const CLUES_LINT: WorldLint<ClueCode> = { id: 'clues', codes: CLUE_CODES, lint: (input) => clueFindings(input) };
+function same(a: readonly number[], b: readonly number[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/**
+ * The reach findings of one world (§7.4, R8, R8b), per puzzle whose type `types` holds (an unknown type is the
+ * decoder's): `world/attempts-without-wrong` for `maxAttempts` on a type whose `wrong` is 'none'; for a reach type,
+ * `world/unique-solution` for two or more solutions or a search stopped at its bound, and `world/reach-solution` for a
+ * lint half without `solve` / `reached` / `canonical`, no solution (an exhausted search), a `solve` that its play half's
+ * own `reached` refuses or that `canonical` reorders, and a start that already reaches. One root cause, one finding: a
+ * stopped search is only `world/unique-solution`'s. `lints` and `types` are the registries (a fixture type in tests).
+ */
+export function reachFindings(input: WorldLintInput, lints: PuzzleLintRegistry = PUZZLE_LINTS, types: PuzzleTypes = PUZZLE_TYPES): Finding[] {
+  const out: Finding[] = [];
+  const report = (code: ReachCode, path: string, message: string): void => {
+    out.push({ code, severity: REACH_CODES[code], file: input.file, line: input.line(path), message });
+  };
+  for (const [pid, p] of entriesOf(input.world.puzzles)) {
+    const data = types.find((d) => d.type === p.type);
+    if (data === undefined) {
+      continue;
+    }
+    if (data.wrong === 'none' && p.maxAttempts !== null) {
+      const message = `puzzle '${pid}' (${p.type}) has maxAttempts ${p.maxAttempts}, but its type has no wrong answer: the count never moves`;
+      report('world/attempts-without-wrong', `puzzles.${pid}.maxAttempts`, message);
+    }
+    if (data.check !== 'reach') {
+      continue;
+    }
+    const at = `puzzles.${pid}.params`;
+    const lint = Object.hasOwn(lints, p.type) ? lints[p.type] : undefined;
+    if (lint?.solve === undefined || lint.reached === undefined || lint.canonical === undefined) {
+      report('world/reach-solution', at, `puzzle '${pid}' (${p.type}): its type's lint half has no solve, reached or canonical (§7.4)`);
+      continue;
+    }
+    const count = lint.countSolutions(p.params, 2);
+    if (count === 2) {
+      report('world/unique-solution', at, `puzzle '${pid}' (${p.type}) has two or more solutions: a reach puzzle posts its one solution (§7.4)`);
+    } else if (count === null) {
+      report('world/unique-solution', at, `puzzle '${pid}' (${p.type}): the solution search stopped at its bound before it proved one solution (§7.4)`);
+    }
+    const s = lint.solve(p.params);
+    if (s === null) {
+      if (count !== null) {
+        report('world/reach-solution', at, `puzzle '${pid}' (${p.type}) has no solution: no answer reaches its goal (§7.4)`);
+      }
+    } else if (!lint.reached(p.params, s)) {
+      report('world/reach-solution', at, `puzzle '${pid}' (${p.type}): its solve [${s.join(', ')}] does not reach its goal by the device's own rule (R8)`);
+    } else if (!same(lint.canonical(p.params, s), s)) {
+      const posted = lint.canonical(p.params, s);
+      report('world/reach-solution', at, `puzzle '${pid}' (${p.type}): its solve [${s.join(', ')}] is not canonical: the device posts [${posted.join(', ')}] (R8b)`);
+    }
+    if (lint.reached(p.params, data.initial(p.params))) {
+      report('world/reach-solution', at, `puzzle '${pid}' (${p.type}) is reached at its start: it would post before any input (§7.4)`);
+    }
+  }
+  return out;
+}
+
+export const CLUES_LINT: WorldLint<ClueCode | ReachCode> = {
+  id: 'clues',
+  codes: { ...CLUE_CODES, ...REACH_CODES },
+  lint: (input) => [...clueFindings(input), ...reachFindings(input)],
+};

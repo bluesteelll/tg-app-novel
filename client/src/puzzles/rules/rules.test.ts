@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest';
 
 import { PUZZLE_LINTS } from '../../../scripts/story/puzzles/index.ts';
+import type { PuzzleLintRegistry } from '../../../scripts/story/puzzles/shape.ts';
 import { UI_MOTIONS, uiMotion } from '../../cues/stage/motions.ts';
 import type { ControlCue, GestureCue } from '../../cues/types.ts';
 import type { ChapterId, LineId, PuzzleLocalId } from '../../story/staging.ts';
@@ -367,6 +368,49 @@ test('puzzles: a full-commit type is a view commit type and a demonstration show
   // A full-commit device (`ritual`'s shape) and a shown reach view (`sequence`'s) are both valid.
   const ritual = { ...COMMIT, commit: 'full', presentation: 'view', workFits: () => true } as const;
   expect(shapeProblems([COMMIT, REACH_VIEW, ritual])).toEqual([]);
+});
+
+/**
+ * GM1c's carry (RULINGS 178) and §7.4: the lint half's members each check needs. A commit type without
+ * `validateSolution` would skip `world/solution` silently; a reach type without `solve`, `reached` or `canonical` is
+ * one `world/reach-solution` finding per instance instead of a red registry.
+ */
+function hookProblems(types: PuzzleTypes, lints: PuzzleLintRegistry): string[] {
+  return types.flatMap((t) => {
+    const lint = Object.hasOwn(lints, t.type) ? lints[t.type] : undefined;
+    if (lint === undefined) {
+      return [`${t.type}: no lint half`];
+    }
+    const members: ReadonlyArray<readonly [string, boolean]> = [
+      ['validateSolution', lint.validateSolution !== undefined],
+      ['solve', lint.solve !== undefined],
+      ['reached', lint.reached !== undefined],
+      ['canonical', lint.canonical !== undefined],
+    ];
+    const needed = t.check === 'commit' ? ['validateSolution'] : ['solve', 'reached', 'canonical', 'validateSolution'];
+    return members.filter(([m, has]) => needed.includes(m) && !has).map(([m]) => `${t.type}: a ${t.check} type's lint half has no ${m}`);
+  });
+}
+
+test('puzzles: a commit type checks its solution and a reach type solves, reaches and orients', () => {
+  expect(hookProblems(PUZZLE_TYPES, PUZZLE_LINTS)).toEqual([]);
+  // A reach type's lint half reads the play half's own rule (R8, R8b): the device's `reached` and `canonical`.
+  expect(PUZZLE_LINTS.path.reached).toBe(PATH_PLAY.reached);
+  expect(PUZZLE_LINTS.path.canonical).toBe(PATH_PLAY.canonical);
+  // The checker against its own fixtures: each misses one member set; the full ones pass.
+  const count = (): 1 => 1;
+  const valid = (): null => null;
+  expect(hookProblems([COMMIT], {})).toEqual(['fixture: no lint half']);
+  expect(hookProblems([COMMIT], { fixture: { countSolutions: count } })).toEqual(["fixture: a commit type's lint half has no validateSolution"]);
+  expect(hookProblems([REACH_VIEW], { fixture: { validateSolution: valid, countSolutions: count } })).toEqual([
+    "fixture: a reach type's lint half has no solve",
+    "fixture: a reach type's lint half has no reached",
+    "fixture: a reach type's lint half has no canonical",
+  ]);
+  const reach = { solve: () => [0, 1], reached: () => true, canonical: (_p: unknown, a: readonly number[]) => a, countSolutions: count };
+  expect(hookProblems([REACH_VIEW], { fixture: reach })).toEqual(["fixture: a reach type's lint half has no validateSolution"]);
+  expect(hookProblems([COMMIT], { fixture: { validateSolution: valid, countSolutions: count } })).toEqual([]);
+  expect(hookProblems([REACH_VIEW], { fixture: { ...reach, validateSolution: valid } })).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------

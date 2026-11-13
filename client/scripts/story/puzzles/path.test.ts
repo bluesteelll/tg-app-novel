@@ -1,15 +1,25 @@
 // The `path` puzzle's build half (engine plan §7.1 "BUILD", §7.4; GM7p D4, D5, D7): the bounded search, the solution
 // check, and the three equalities of H1 that keep a drawn path from ever posting what the server does not hold.
+import { readFileSync } from 'node:fs';
+
 import { expect, test } from 'vitest';
 
 import { PATH_PLAY, advance, touch } from '../../../src/puzzles/play/path.ts';
 import { PUZZLE_TYPES, instanceOf, shapeProblem } from '../../../src/puzzles/rules/index.ts';
-import type { PuzzleTypes } from '../../../src/puzzles/rules/index.ts';
+import type { PuzzleTypeData, PuzzleTypes } from '../../../src/puzzles/rules/index.ts';
 import { PATH_RULES } from '../../../src/puzzles/rules/path.ts';
 import type { PathParams } from '../../../src/puzzles/rules/path.ts';
+import { decodeAssetCatalog } from '../../../src/story/catalog.ts';
+import type { AssetCatalog } from '../../../src/story/catalog.ts';
 import type { ChapterId, PuzzleLocalId } from '../../../src/story/staging.ts';
 import { decodeWorldSource, toServer } from '../../../src/world/decode.ts';
+import type { SourceChapter } from '../lint.ts';
+import { reachFindings } from '../mechanics/clues.ts';
+import type { WorldLintInput } from '../mechanics/index.ts';
+import { PUZZLE_LINTS } from './index.ts';
+import type { PuzzleTypeLint } from './index.ts';
 import { PATH_LINT, PATH_SEARCH_STEPS, countPaths, searchPaths } from './path.ts';
+import { answerLenFindings } from './shape.ts';
 
 /** 3 x 2, ends 0 and 3: `0 1 2 / 3 4 5`; one path, 0 1 2 5 4 3. */
 const P32: PathParams = { cols: 3, rows: 2, ends: [0, 3], blocked: [] };
@@ -177,4 +187,118 @@ test('path: every drawn answer that reaches the end posts the solve', () => {
     expect([...reachedFrom].sort((x, y) => x - y), JSON.stringify(p)).toEqual([...p.ends].sort((x, y) => x - y));
     expect(seen.size, JSON.stringify(p)).toBeGreaterThan(10);
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM7p's reach lints on a path world (engine plan §7.4, 12e:66-69), through a one-puzzle world's per-world input.
+
+/** The committed asset catalog: a per-world pass's input carries it (these passes read none of it). */
+function committedCatalog(): AssetCatalog {
+  const text = readFileSync(new URL('../../../../assets/catalog.json', import.meta.url), 'utf8');
+  const catalog = decodeAssetCatalog(JSON.parse(text.startsWith(String.fromCharCode(0xfeff)) ? text.slice(1) : text));
+  if (!catalog.ok) {
+    throw new Error('invariant: the committed catalog decodes');
+  }
+  return catalog.value;
+}
+const CATALOG = committedCatalog();
+
+/**
+ * A world whose one puzzle `fuse` has `type` and `params`, decoded with `types` (the real registry by default), as a
+ * per-world pass's input; its line lookup numbers each path in the order it is first asked for.
+ */
+function fuseInput(params: unknown, type = 'path', types: PuzzleTypes = PUZZLE_TYPES): WorldLintInput {
+  const fuse = {
+    type,
+    title: { id: 'ch1.fuse.0001', ru: 'Щиток' },
+    prompt: { id: 'ch1.fuse.0002', ru: 'Провод' },
+    closeup: null,
+    params,
+    maxAttempts: null,
+    giveUp: false,
+    solution: [0],
+    hints: [],
+  };
+  const text = `${JSON.stringify({ format: 1, items: {}, docs: {}, sections: {}, puzzles: { fuse } }, null, 2)}\n`;
+  const r = decodeWorldSource(JSON.parse(text), { types });
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture decodes: ${JSON.stringify(r.error)}`);
+  }
+  const asked: string[] = [];
+  const line = (path: string): number => {
+    const i = asked.indexOf(path);
+    return i >= 0 ? i + 1 : asked.push(path);
+  };
+  const chapter: SourceChapter = { id: 'ch1' as ChapterId, paid: false, entry: 'ch1/main.ink' }; // a fixture chapter id
+  return { chapter, file: 'story/ch1/world.json', text, world: r.value, catalog: CATALOG, knots: null, yielded: null, declared: new Map(), line, moduleLines: new Map() };
+}
+
+test('story: a path whose solution visits 17 cells is refused', () => {
+  // A wiring pin (12e:66-67): GM1d's answer bound reads a reach type's length from its lint half's `solve`, through the
+  // real registries, so a path over 17 open cells is refused until GM7g raises the bound.
+  const p17: PathParams = { cols: 6, rows: 3, ends: [0, 12], blocked: [17] };
+  const p16: PathParams = { cols: 4, rows: 4, ends: [0, 3], blocked: [] };
+  // The fixtures through the search proper, so a lint half without `solve` is red at the bound, not here.
+  expect([searchPaths(p17).paths[0]?.length, searchPaths(p16).paths[0]?.length]).toEqual([17, 16]);
+  expect(answerLenFindings(fuseInput(p17)).map((f) => [f.code, f.message])).toEqual([
+    ['world/answer-len', "puzzle 'fuse' posts 17 entries: 1..16 (the server refuses longer, §7.4)"],
+  ]);
+  expect(answerLenFindings(fuseInput(p16))).toEqual([]);
+});
+
+/** A fixture reach type that starts reached: one cell, lit at the start. */
+const GLOW: PuzzleTypeData<'glow', null> = Object.freeze({
+  type: 'glow',
+  check: 'reach',
+  goal: 'shown',
+  presentation: 'overlay',
+  wrong: 'none',
+  commit: 'control',
+  decodeParams: (raw: unknown) => (JSON.stringify(raw) === '{}' ? ({ ok: true, value: null } as const) : ({ ok: false, error: 'a glow has {}' } as const)),
+  answerShape: () => ({ len: 1, max: 1 }),
+  initial: () => [1],
+  startShown: () => null,
+});
+const GLOW_LINT: PuzzleTypeLint<null> = { solve: () => [1], reached: (_p, a) => a[0] === 1, canonical: (_p, a) => a, countSolutions: () => 1 };
+
+test('story: a reach puzzle reached at its start is refused', () => {
+  // N6 (12e:67-69): a device seeded at its goal would post before any input.
+  const types: PuzzleTypes = [...PUZZLE_TYPES, GLOW];
+  const lints = { ...PUZZLE_LINTS, glow: GLOW_LINT };
+  const input = fuseInput({}, 'glow', types);
+  expect(reachFindings(input, lints, types)).toEqual([
+    {
+      code: 'world/reach-solution',
+      severity: 'E',
+      file: 'story/ch1/world.json',
+      line: input.line('puzzles.fuse.params'),
+      message: "puzzle 'fuse' (glow) is reached at its start: it would post before any input (§7.4)",
+    },
+  ]);
+  // The control: the same type starting unlit.
+  const unlit: PuzzleTypes = [...PUZZLE_TYPES, { ...GLOW, initial: () => [0] }];
+  expect(reachFindings(fuseInput({}, 'glow', unlit), lints, unlit)).toEqual([]);
+});
+
+test('story: a seeded reached/solve mismatch is refused', () => {
+  // N4 (R8, R8b): a lint half whose `solve` the play half's own rule refuses, or does not orient, is refused.
+  const input = fuseInput({ cols: 3, rows: 2, ends: [0, 3], blocked: [] });
+  expect(reachFindings(input)).toEqual([]);
+  const messages = (solve: () => readonly number[]): string[] =>
+    reachFindings(input, { ...PUZZLE_LINTS, path: { ...PATH_LINT, solve } }).map((f) => `${f.code}: ${f.message}`);
+  expect(messages(() => [3, 4, 5, 2, 1, 0])).toEqual([
+    "world/reach-solution: puzzle 'fuse' (path): its solve [3, 4, 5, 2, 1, 0] is not canonical: the device posts [0, 1, 2, 5, 4, 3] (R8b)",
+  ]);
+  expect(messages(() => [0, 1])).toEqual(["world/reach-solution: puzzle 'fuse' (path): its solve [0, 1] does not reach its goal by the device's own rule (R8)"]);
+  // A lint half without the hooks is refused, and no solution at all is one finding.
+  expect(reachFindings(input, { ...PUZZLE_LINTS, path: { countSolutions: () => 1 } }).map((f) => f.message)).toEqual([
+    "puzzle 'fuse' (path): its type's lint half has no solve, reached or canonical (§7.4)",
+  ]);
+  expect(reachFindings(fuseInput({ cols: 2, rows: 2, ends: [0, 3], blocked: [] })).map((f) => `${f.code}: ${f.message}`)).toEqual([
+    "world/reach-solution: puzzle 'fuse' (path) has no solution: no answer reaches its goal (§7.4)",
+  ]);
+  // A search stopped at its bound is world/unique-solution's alone.
+  expect(reachFindings(fuseInput({ cols: 7, rows: 7, ends: [0, 48], blocked: [13, 24] })).map((f) => `${f.code}: ${f.message}`)).toEqual([
+    "world/unique-solution: puzzle 'fuse' (path): the solution search stopped at its bound before it proved one solution (§7.4)",
+  ]);
 });
