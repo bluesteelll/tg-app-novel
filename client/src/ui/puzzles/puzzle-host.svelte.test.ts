@@ -3,6 +3,7 @@
 // are built by hand where it matters: a raw tap is pointerdown + click with the DOM not yet updated (a double tap).
 import { cleanup, render } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
+import type { Component } from 'svelte';
 import ts from 'typescript';
 import { afterEach, expect, test, vi } from 'vitest';
 
@@ -13,13 +14,14 @@ import { CUE_MOTIONS, CUE_TARGET_ATTRS, cueKey } from '../../cues/stage/motions.
 import type { CueTarget } from '../../cues/stage/motions.ts';
 import type { Resolved } from '../../cues/stage/player.ts';
 import { PRESETS } from '../../cues/stage/presets.ts';
-import type { Cue, CueEvent, PuzzleCue, UiStateCue } from '../../cues/types.ts';
+import type { Cue, CueEvent, GestureCue, PuzzleCue, UiStateCue } from '../../cues/types.ts';
 import { LAYER_MOTIONS } from '../../cues/visible.ts';
 import type { Box } from '../../geom/cover.ts';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import CodeLock from '../../puzzles/ui/CodeLock.svelte';
 import OrderPuzzle from '../../puzzles/ui/OrderPuzzle.svelte';
+import type { PuzzleUiProps } from '../../puzzles/registry.ts';
 import type { HintTierView } from '../../puzzles/session.ts';
 import type { PuzzleLocalId } from '../../story/staging.ts';
 import type { ItemId } from '../../world/types.ts';
@@ -81,6 +83,7 @@ function frameOf(over: Partial<PuzzleFrameView> = {}): PuzzleFrameView {
     line: 'idle',
     attemptsLeft: null,
     retryAfter: null,
+    awaiting: null,
     giveUp: true,
     hintTiers: 3,
     ui: CodeLock,
@@ -233,6 +236,59 @@ test('puzzle host: status line, attempts and try', async () => {
   expect(names(container.querySelectorAll('button'))).not.toContain(t('en', 'puzzle.hint'));
 });
 
+test('puzzle-host: a reach frame enables Try only while its answer awaits', async () => {
+  // Engine plan §7.5: a reach frame's Try re-posts its reached answer, so Try is off while nothing is reached
+  // (`awaiting` false), on while a reached answer awaits a decisive reply, off while that reply is in flight; a commit
+  // frame (`awaiting` null) keeps Try as built. CodeLock stands in for the type UI: `canTry` reads frame fields only.
+  const { getByRole, rerender } = render(PuzzleHost, hostProps());
+  const tryButton = (): HTMLButtonElement => getByRole('button', { name: t('en', 'puzzle.try') }) as HTMLButtonElement;
+  const cases: ReadonlyArray<readonly [Partial<PuzzleFrameView>, boolean]> = [
+    [{ awaiting: false }, true],
+    [{ awaiting: true }, false],
+    [{ awaiting: true, busy: true }, true],
+    [{ awaiting: null }, false],
+  ];
+  const disabled: boolean[] = [];
+  for (const [over] of cases) {
+    await rerender({ frame: frameOf(over) });
+    disabled.push(tryButton().disabled);
+  }
+  expect(disabled).toEqual(cases.map(([, off]) => off));
+});
+
+/** The props PuzzleHost passed to `EMITTER`, one entry per mount. */
+const emitted: PuzzleUiProps[] = [];
+/**
+ * A hand-written Svelte 5 client component (Svelte calls a component as `component(anchor, props)`): it records its
+ * props and puts one part cell, `data-cue-part="1"`, before its anchor. The cast: a test stand-in for a type UI, as
+ * yields.test.ts's TYPE_UI, so no `.svelte` fixture joins the scanned components.
+ */
+const EMITTER = ((anchor: Comment, props: PuzzleUiProps): void => {
+  emitted.push(props);
+  const cell = document.createElement('span');
+  cell.setAttribute('data-cue-part', '1');
+  anchor.parentNode?.insertBefore(cell, anchor);
+}) as unknown as Component<PuzzleUiProps>;
+
+test('puzzle-host: a gesture step reaches the cue bus through oncue', () => {
+  // Engine plan §8.3 (GM7r): a type UI's `oncue(name, index)` reaches the host's `oncue` as its control's `ui` cue, with
+  // the step's part cell as its element (the stage's `control` target) and no point. GestureCue has no member until
+  // GM7p's `path`, so the name is a fixture's (the cast).
+  const oncue = vi.fn();
+  const { container } = render(PuzzleHost, hostProps({ oncue, frame: frameOf({ ui: EMITTER }) }));
+  const cell = must(container.querySelector('[data-cue-part="1"]'), 'the part cell');
+  must(emitted.at(-1), 'the type UI props').oncue?.('fixture-trace' as GestureCue, 1);
+  expect(oncue.mock.calls).toEqual([[{ cue: { kind: 'ui', control: 'fixture-trace', item: null, index: 1 }, box: null, point: null, diff: [], el: cell }]]);
+  expect((oncue.mock.calls[0]?.[0] as CueEvent | undefined)?.el).toBe(cell);
+});
+
+test("puzzle-host: a type UI's reach report reaches onreach", () => {
+  const onreach = vi.fn();
+  render(PuzzleHost, hostProps({ onreach, frame: frameOf({ ui: EMITTER }) }));
+  must(emitted.at(-1), 'the type UI props').onreach?.([3, 2, 1]);
+  expect(onreach.mock.calls).toEqual([[[3, 2, 1]]]);
+});
+
 test('puzzle-host: the status line is a cue target', () => {
   // Engine plan §8.5 "Cue targets" (`status`): the status line, and only it, carries the marker the frame's
   // `puzzle:checking` / `wrong` / `offline` / `rate-limited` / `ready` rows land on.
@@ -339,6 +395,9 @@ function recordingHost(tag: string, calls: unknown[][]): PuzzleHostCallbacks {
     oncue: (e) => {
       calls.push([tag, 'oncue', keyOfCue(e)]);
     },
+    onreach: (c) => {
+      calls.push([tag, 'onreach', c]);
+    },
   };
 }
 
@@ -359,6 +418,7 @@ function callEveryCallback(c: PuzzleHostCallbacks): ReturnType<PuzzleHostCallbac
   c.onusehint(2);
   c.ongetmore();
   c.oncue?.(TRY_CUE);
+  c.onreach?.([3, 2, 1]);
   return named;
 }
 
@@ -373,6 +433,7 @@ const everyCallbackOn = (tag: string): unknown[][] => [
   [tag, 'onusehint', 2],
   [tag, 'ongetmore'],
   [tag, 'oncue', 'ui:puzzle-try'],
+  [tag, 'onreach', [3, 2, 1]],
 ];
 
 test("puzzle-view: forwardHost reaches the current session's host and nothing after it ends", () => {
@@ -380,7 +441,7 @@ test("puzzle-view: forwardHost reaches the current session's host and nothing af
   let current: PuzzleHostCallbacks | undefined = recordingHost('a', calls);
   const forward = forwardHost(() => current);
   // One forwarder per callback, no more: a lane adding a callback edits the forwarder and this list.
-  expect(Object.keys(forward).sort()).toEqual(['item', 'onchange', 'oncue', 'ongetmore', 'ongiveup', 'onhint', 'onretry', 'ontry', 'onusehint']);
+  expect(Object.keys(forward).sort()).toEqual(['item', 'onchange', 'oncue', 'ongetmore', 'ongiveup', 'onhint', 'onreach', 'onretry', 'ontry', 'onusehint']);
   expect(callEveryCallback(forward)).toEqual({ name: 'a medal', glyph: 'sun' });
   expect(calls).toEqual(everyCallbackOn('a'));
   // A later session: the same forwarders reach its host only (the getter runs at each call, never at creation).
