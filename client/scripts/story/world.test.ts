@@ -1268,6 +1268,19 @@ test('story: a grid solution other than its fill is refused', () => {
   expect(reachSeen(w)).toEqual(["world/solution: puzzle 'drawer': the solution is not the grid's fill [1, 2, 2, 1]"]);
 });
 
+test('story: a 25-cell grid passes the answer bound', () => {
+  // A wiring pin (12e:108): the answer bound reads a reach type's length from its lint half's `solve`, through the real
+  // registries; a 5 x 5 grid (the cyclic square, its diagonal blank) posts 25 entries, within 1..MAX_ANSWER_LEN.
+  const fill = Array.from({ length: 25 }, (_, c) => ((Math.floor(c / 5) + (c % 5)) % 5) + 1);
+  const params = { rows: 5, cols: 5, symbols: 5, given: fill.map((v, c) => (Math.floor(c / 5) === c % 5 ? 0 : v)) };
+  expect(PUZZLE_LINTS.grid.solve(params)).toEqual(fill);
+  const w = gridBase();
+  at(w, 'puzzles.drawer')['params'] = params;
+  at(w, 'puzzles.drawer')['solution'] = fill;
+  expect(of(lint(w), 'world/answer-len')).toEqual([]);
+  expect(reachSeen(w)).toEqual([]);
+});
+
 /** The line of clue `i` of puzzle `pid` in a fixture's JSON text: each clue is a one-key object over three lines. */
 function clueLine(w: Json, pid: string, i: number): number {
   const lines = `${JSON.stringify(w, null, 2)}\n`.split('\n');
@@ -1398,17 +1411,17 @@ function lengthWorld(type: 'posts' | 'reaches', n: number): Json {
 
 test('story: an answer longer than MAX_ANSWER_LEN is refused', () => {
   const issues = (type: 'posts' | 'reaches', n: number) => answerLenIssues(passInput(lengthWorld(type, n), LENGTH_TYPES).world, LENGTH_LINTS, LENGTH_TYPES);
-  const long = (n: number) => [{ path: 'puzzles.drawer.params', reason: 'range', detail: `puzzle 'drawer' posts ${n} entries: 1..16 (the server refuses longer, §7.4)` }];
-  expect(issues('posts', 17)).toEqual(long(17));
-  expect(issues('posts', 16)).toEqual([]);
+  const long = (n: number) => [{ path: 'puzzles.drawer.params', reason: 'range', detail: `puzzle 'drawer' posts ${n} entries: 1..64 (the server refuses longer, §7.4)` }];
+  expect(issues('posts', 65)).toEqual(long(65));
+  expect(issues('posts', 64)).toEqual([]);
   expect(issues('posts', 1)).toEqual([]);
   expect(issues('posts', 0)).toEqual(long(0));
-  expect(issues('reaches', 17)).toEqual(long(17));
-  expect(issues('reaches', 16)).toEqual([]);
+  expect(issues('reaches', 65)).toEqual(long(65));
+  expect(issues('reaches', 64)).toEqual([]);
   // The pass reports each at the author's line of the puzzle's params.
-  const input = passInput(lengthWorld('posts', 17), LENGTH_TYPES);
+  const input = passInput(lengthWorld('posts', 65), LENGTH_TYPES);
   expect(answerLenFindings(input, LENGTH_LINTS, LENGTH_TYPES)).toEqual([
-    { code: 'world/answer-len', severity: 'E', file: FILE, line: input.line('puzzles.drawer.params'), message: long(17)[0]?.detail },
+    { code: 'world/answer-len', severity: 'E', file: FILE, line: input.line('puzzles.drawer.params'), message: long(65)[0]?.detail },
   ]);
   // The real code and order worlds post within the bound, through the registry too.
   const decoded = decodeWorldSource(base());

@@ -14,10 +14,9 @@ import type { PuzzleTypeLint } from './index.ts';
 
 /**
  * The longest answer the build emits; never above the server's MAX_ANSWER_LEN (server/src/puzzles/mod.rs, 64 since
- * GM6s1; the test `story: the build's answer bound never exceeds the server's MAX_ANSWER_LEN` reads it). GM7g raises
- * it to 64.
+ * GM6s1; the test `story: the build's answer bound never exceeds the server's MAX_ANSWER_LEN` reads it).
  */
-export const MAX_ANSWER_LEN = 16;
+export const MAX_ANSWER_LEN = 64;
 
 export const SHAPE_CODES = { 'world/answer-len': 'E' } as const satisfies Readonly<Record<string, Severity>>;
 
