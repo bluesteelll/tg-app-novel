@@ -1,14 +1,15 @@
 import { expect, test } from 'vitest';
 
+import { checkWorld } from '../../scripts/story/softlock.ts';
 import { motionOf } from '../cues/stage/motions.ts';
 import { SILENT_FIELDS } from '../mechanics/contract.ts';
 import type { FactAtom, FactKind, FlagId, KernelWorld, MechanicRules, SectionAction } from '../mechanics/contract.ts';
 import { actions, reduce } from '../mechanics/rules/core.ts';
 import { MECHANIC_RULES } from '../mechanics/rules/index.ts';
-import { admitSection, inSectionReach, searchSection, sectionEntry, sectionKey, successors } from '../mechanics/rules/search.ts';
+import { admitSection, inSectionReach, searchSection, sectionEntry, sectionKey, sectionPlaces, successors } from '../mechanics/rules/search.ts';
 import type { KnotName, PuzzleLocalId, SectionId, VarName } from '../story/staging.ts';
-import { decodeWorldSource, toPublic } from '../world/decode.ts';
-import type { DocId, HotspotKey, ItemId, RoomId, WorldPublic, WorldPublicBody } from '../world/types.ts';
+import { decodeWorldPublic, decodeWorldSource, toPublic } from '../world/decode.ts';
+import type { DocId, HotspotKey, ItemId, RoomId, WorldPublic, WorldPublicBody, WorldSource } from '../world/types.ts';
 import { project } from './project.ts';
 import { reconcile } from './reconcile.ts';
 import { RESUME_STATE_CAP, RULES_VERSION, own, runOf, runReduce, sectionScope, worldIndex } from './reduce.ts';
@@ -1493,15 +1494,26 @@ test('search: derived sectionKey equals the hand key on ch1 and ch2', () => {
     return [path.replace('../../../', ''), { ...toPublic(r.value), mods: r.value.mods }];
   });
   expect(chapters.map(([path]) => path)).toEqual(expect.arrayContaining(['story/ch1/world.json', 'story/ch2/world.json']));
+  // A free view with a take (GM5q's place quotient): a discovered state stands in the view, so the derived key names
+  // its place, the hall. Its place map is written by hand; the chapters' and the golden's are the search's own.
+  const MERGED_VIEW = 'a merged view with a take';
+  const handPlaces: Readonly<Record<string, Readonly<Record<string, string>>>> = { [MERGED_VIEW]: { desk: 'hall' } };
+  const merged = world({
+    items: ['pen'],
+    sections: { s: { start: 'hall', rooms: { hall: room([exit('to_desk', 'desk'), exit('out', { story: 'end' })]), desk: { ...room([take('pen', { item: 'pen' })]), view: { of: 'hall' } } } } },
+  });
   // Every state each section's search discovers, in every chapter and in the golden fixture. No count of story content
   // is pinned here (the story gate prints those): the two keys must split the states alike, and some must be seen.
   let searched = 0;
-  for (const [path, w] of [...chapters, ['the golden manor fixture', manor({ golden: true })] as const]) {
+  for (const [path, w] of [...chapters, ['the golden manor fixture', manor({ golden: true })] as const, [MERGED_VIEW, merged] as const]) {
     const sections = Object.keys(w.sections) as SectionId[];
     if (sections.length === 0) {
       console.log(`sectionKey pin: ${path} has no section`);
     }
     for (const S of sections) {
+      const places = handPlaces[path] ?? sectionPlaces(w, S);
+      // The hand key names the room; the derived key names its place.
+      const placed = (s: WorldState): WorldState => (s.room === null ? s : { ...s, room: rm(own(places, s.room) ?? s.room) });
       const start = sectionEntry(w, EMPTY_WORLD_STATE, S);
       const reached: WorldState[] = [start];
       const r = searchSection(w, start, S, RESUME_STATE_CAP, {
@@ -1511,9 +1523,9 @@ test('search: derived sectionKey equals the hand key on ch1 and ch2', () => {
           }
         },
       });
-      const off = reached.filter((s) => sectionKey(w, s, S) !== handKey(w, s, S));
-      expect(off.slice(0, 2).map((s) => `${sectionKey(w, s, S)} / ${handKey(w, s, S)}`), `${path} ${S}`).toEqual([]);
-      expect(new Set(reached.map((s) => handKey(w, s, S))).size, `${path} ${S}`).toBe(r.states);
+      const off = reached.filter((s) => sectionKey(w, s, S) !== handKey(w, placed(s), S));
+      expect(off.slice(0, 2).map((s) => `${sectionKey(w, s, S)} / ${handKey(w, placed(s), S)}`), `${path} ${S}`).toEqual([]);
+      expect(new Set(reached.map((s) => handKey(w, placed(s), S))).size, `${path} ${S}`).toBe(r.states);
       searched += r.states;
     }
   }
@@ -1525,6 +1537,85 @@ test('search: derived sectionKey equals the hand key on ch1 and ch2', () => {
   expect(sectionKey(w, turned, MANOR)).toBe(sectionKey(w, s, MANOR));
   const registry = [CORE, reader({ kind: 'fired', id: 'turn:hall.inscription' })];
   expect(sectionKey(w, turned, MANOR, registry)).not.toBe(sectionKey(w, s, MANOR, registry));
+});
+
+/** ch1's committed source world (story/ch1/world.json), its JSON passed through `edit` first, decoded as the story
+ *  tool decodes it. */
+function ch1Source(edit: (raw: Json) => void = () => undefined): WorldSource {
+  const text = STORY_WORLDS['../../../story/ch1/world.json'];
+  if (text === undefined) {
+    throw new Error('invariant: story/ch1/world.json is committed');
+  }
+  const raw = JSON.parse(text) as Json;
+  edit(raw);
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: ch1 decodes: ${JSON.stringify(r.error)}`);
+  }
+  return r.value;
+}
+
+/** The world the runtime loads: the public body the story tool emits, stamped `version`, through `decodeWorldPublic`. */
+function runtimeWorld(src: WorldSource, version: string): WorldPublic {
+  const r = decodeWorldPublic(JSON.parse(JSON.stringify({ ...toPublic(src), version })));
+  if (!r.ok) {
+    throw new Error(`invariant: the emitted body decodes: ${JSON.stringify(r.error)}`);
+  }
+  return r.value;
+}
+
+test("search: ch1's desk view keys under the study's place (406 places, 540 without the quotient)", () => {
+  // The committed ch1 world, as the story tool searches it and as the runtime loads it: its one view, the desk (entered
+  // by the study's lockless exit, with no hotspot, no onEnter and no module reading its `visited`), merges, so the
+  // manor's 540 states of rooms are 406 places, the count the story gate prints. A ch1 content change moves these
+  // numbers on purpose.
+  const src = ch1Source();
+  const proof: KernelWorld = { ...toPublic(src), mods: src.mods };
+  for (const w of [proof, runtimeWorld(src, V1)]) {
+    expect(sectionPlaces(w, MANOR)).toEqual({ desk_view: 'study' });
+    const start = sectionEntry(w, EMPTY_WORLD_STATE, MANOR);
+    expect(searchSection(w, start, MANOR, RESUME_STATE_CAP)).toEqual({ result: 'exhausted', states: 406 });
+    expect(searchSection(w, start, MANOR, RESUME_STATE_CAP, { places: false })).toEqual({ result: 'exhausted', states: 540 });
+  }
+  expect(checkWorld(proof, 'story/ch1/world.json')).toEqual([{ section: 'manor', states: 406, findings: [] }]);
+});
+
+test('search: a ch1 save in the desk view re-proves after a version change and resumes there', () => {
+  // The resume's search-backed admit inside a merged view, on real content: a save written against an older world
+  // version goes through reconcile (unproved), then the section admit, which searches for its place key.
+  const v2 = runtimeWorld(ch1Source(), V2);
+  const admit = (w: WorldPublic, s: WorldState): { state: WorldState; effects: ExploreEffect[] } => {
+    const r = reconcile(w, s, MANOR_KNOTS, V1);
+    expect(r.state.unproved).toEqual(['manor']);
+    return admitSection(w, frozen(r.state), MANOR);
+  };
+  // A save the world produces: the sun medal taken in the study, then the zoom into the desk.
+  const inDesk = run(v2, EMPTY_WORLD_STATE, enterAction('manor'), tap('hall.to_study'), tap('study.medal'), tap('study.to_desk')).state;
+  expect([inDesk.room, inDesk.held]).toEqual(['desk_view', ['medal_sun']]);
+  const kept = admit(v2, inDesk);
+  expect(kernelEffects(kept.effects)[0]).toEqual({ kind: 'room', room: 'desk_view', sfx: null, from: 'desk_view', via: null, how: 'resume' });
+  expect(kept.effects.filter((e) => e.kind === 'reset')).toEqual([]);
+  expect([kept.state.room, kept.state.held, kept.state.unproved]).toEqual(['desk_view', ['medal_sun'], []]);
+  // A save it cannot produce: the moon medal held, the drawer that gives it never opened. The section restarts.
+  const forged = admit(v2, { ...inDesk, held: [...inDesk.held, it('medal_moon')] });
+  expect(kernelEffects(forged.effects)[0]).toEqual({ kind: 'reset', section: 'manor' });
+  expect(forged.state).toEqual(sectionEntry(v2, EMPTY_WORLD_STATE, MANOR));
+  // A later version gives the desk an onEnter knot. Every arrival in the desk then fires it, so (b) keeps the desk a
+  // place of its own, and the same save, standing in the desk without having heard the knot, is no state that version
+  // produces: the section restarts. Merged into the study's place, it would key as a study state that version reaches.
+  const v3 = runtimeWorld(
+    ch1Source((raw) => {
+      const desk = (raw['sections'] as Record<string, { rooms: Record<string, Json> }>)['manor']?.rooms['desk_view']; // the source format's nesting
+      if (desk === undefined) {
+        throw new Error('invariant: ch1 has the desk view');
+      }
+      desk['onEnter'] = [{ story: 'manor_desk_voice' }];
+    }),
+    '3333333333333333',
+  );
+  const unheard = admit(v3, inDesk);
+  expect(kernelEffects(unheard.effects)[0]).toEqual({ kind: 'reset', section: 'manor' });
+  expect(sectionPlaces(v3, MANOR)).toEqual({});
 });
 
 test("search: a module's read of every kernel fact kind enters the derived key", () => {
