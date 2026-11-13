@@ -2890,6 +2890,7 @@ test('session: a reach puzzle posts once per solve and none per stroke', async (
   const r = rig({ world: reachWorld(), puzzleTypes: REACH_TYPES, attempts: [RIGHT], attemptGate: answer.promise });
   await r.yields.onYield({ kind: 'puzzle', puzzle: TRACE_PZ, then: AFTER });
   expect(r.puzzle.frame?.type).toBe('trace');
+  expect(r.puzzle.frame?.awaiting, 'a reach frame opens with nothing reached: Try off').toBe(false);
   r.yields.host.onchange([1, 0, 0]);
   r.yields.host.onchange([1, 2, 0]);
   r.yields.host.onchange([...DRAWN]);
@@ -2905,9 +2906,76 @@ test('session: a reach puzzle posts once per solve and none per stroke', async (
   // A commit frame ignores a report: nothing posts and the frame does not wait.
   await r.yields.onYield({ kind: 'puzzle', puzzle: GATE, then: AFTER });
   expect(r.puzzle.frame?.type).toBe('code');
+  expect(r.puzzle.frame?.awaiting, 'a commit frame keeps Try as built').toBeNull();
   r.yields.host.onreach?.([1, 1, 1, 1]);
   await settle();
   expect([r.posted, r.puzzle.frame?.busy]).toEqual([[CANONICAL], false]);
+  r.yields.dispose();
+});
+
+/** A reach rig whose frame is open, drawn to its reaching answer and reported: its post is the one in flight. */
+async function reachedAndPosted(attempts: Array<Result<AttemptResponse, ApiError>>): Promise<Rig> {
+  const r = rig({ world: reachWorld(), puzzleTypes: REACH_TYPES, attempts });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: TRACE_PZ, then: AFTER });
+  r.yields.host.onchange([...DRAWN]);
+  r.yields.host.onreach?.(CANONICAL);
+  return r;
+}
+
+test('yields: a reached answer answered offline posts again on Try', async () => {
+  // `network` leaves the reached answer awaiting (engine plan §7.5): the frame's Try re-posts it.
+  const r = await reachedAndPosted([NETWORK, NETWORK]);
+  await settle();
+  const f = r.puzzle.frame;
+  expect([f?.line, f?.awaiting, f?.busy, f?.retryAfter]).toEqual(['offline', true, false, null]);
+  r.yields.host.ontry();
+  await settle();
+  expect(r.posted).toEqual([CANONICAL, CANONICAL]);
+  r.yields.dispose();
+});
+
+test('yields: a rate-limited reach post posts again when the countdown ends', async () => {
+  const r = await reachedAndPosted([httpError(429, 2), NETWORK]);
+  await settle();
+  expect([r.puzzle.frame?.line, r.puzzle.frame?.retryAfter]).toEqual(['rate-limited', 2]);
+  r.clock.advance(1000);
+  expect(r.posted).toEqual([CANONICAL]);
+  // The zero posts the reached answer once more.
+  r.clock.advance(1000);
+  expect([r.posted, r.puzzle.frame?.line]).toEqual([[CANONICAL, CANONICAL], 'checking']);
+  r.yields.dispose();
+});
+
+test("yields: a countdown's end emits puzzle checking when it re-posts and puzzle ready when it does not", async () => {
+  // Exactly one cue at each zero (engine plan §7.5 round 6), read synchronously after the tick, before any reply.
+  const r = await reachedAndPosted([httpError(429, 1), httpError(429, 1)]);
+  await settle();
+  let mark = r.cues.length;
+  r.clock.advance(1000);
+  expect(frameKeys(r, mark), 'the reached answer awaits: the zero re-posts it').toEqual(['puzzle:checking']);
+  expect(r.posted).toEqual([CANONICAL, CANONICAL]);
+  await settle(); // the re-post is answered 429 again
+  r.yields.host.onchange([1, 2, 0]); // a move away during the wait
+  mark = r.cues.length;
+  r.clock.advance(1000);
+  expect(frameKeys(r, mark), 'nothing awaits: the zero posts nothing').toEqual(['puzzle:ready']);
+  expect(r.posted).toEqual([CANONICAL, CANONICAL]);
+  r.yields.dispose();
+});
+
+test('yields: a move away from a reached answer cancels its pending post', async () => {
+  const r = await reachedAndPosted([NETWORK]);
+  await settle();
+  expect(r.puzzle.frame?.line).toBe('offline');
+  const mark = r.cues.length;
+  r.yields.host.onchange([1, 2, 0]);
+  // Diffed against the drawn answer the frame shows, not the canonical one the session posted (Q6).
+  expect(frameKeys(r, mark)).toEqual(['puzzle:input@2']);
+  expect(r.puzzle.frame?.awaiting).toBe(false);
+  // Try posts nothing until the answer is reached again.
+  r.yields.host.ontry();
+  await settle();
+  expect(r.posted).toEqual([CANONICAL]);
   r.yields.dispose();
 });
 
@@ -3263,7 +3331,7 @@ test("yields: App's host-chunk Retry emits its control cue", async () => {
 
 /** The keys that settle a wait: the only ones that cover `busy` turning false or `attemptsLeft` moving (round 8). */
 const SETTLE_KEYS = ['puzzle:wrong', 'puzzle:failed', 'puzzle:solved', 'puzzle:offline', 'puzzle:rate-limited', 'puzzle:ready', 'puzzle:renewed', 'puzzle:reset'];
-/** A field's covering keys, from its new value (`VIEW_FIELD_CUES`), or why it never moves in a frame (`SILENT_VIEW_FIELDS`). */
+/** A field's covering keys, from its new value, or why it never moves in a frame (`FRAME_FIELD_CUES`, `LADDER_FIELD_CUES`). */
 type Covering = { readonly keys: (now: unknown) => readonly string[] } | { readonly silent: string };
 const FIXED: Covering = { silent: 'fixed for the frame: its session opened it with this value' };
 const CHUNK_KEYS: Covering = { keys: () => ['puzzle:opened', 'puzzle:load-failed'] };
@@ -3282,6 +3350,8 @@ const FRAME_FIELD_CUES: { readonly [K in keyof PuzzleFrameView]-?: Covering } = 
   line: { keys: (v) => (v === 'checking' ? ['puzzle:checking'] : v === 'idle' ? ['puzzle:ready', 'puzzle:renewed'] : [`puzzle:${String(v)}`]) },
   attemptsLeft: { keys: () => SETTLE_KEYS },
   retryAfter: { keys: () => ['puzzle:rate-limited', 'puzzle:ready', 'puzzle:checking'] },
+  // GM7r: a reach report sets it; only a move away (its input) and a mismatch (its reset) clear it.
+  awaiting: { keys: (v) => (v === true ? ['puzzle:reached'] : ['puzzle:input', 'puzzle:reset']) },
   giveUp: FIXED,
   hintTiers: FIXED,
   ui: CHUNK_KEYS,
@@ -3646,6 +3716,30 @@ test('yields: every visible change of the puzzle view plays a cue', async () => 
     r.yields.dispose();
   }
 
+  // GM7r: a reach frame (the fixture reach type through `h.puzzleTypes`): strokes, the report and its post, an offline
+  // reply and Try's re-post, a 429 whose zero re-posts, a 429 whose wait a move away empties, then a report again.
+  {
+    const r = rig({ world: reachWorld(), puzzleTypes: REACH_TYPES });
+    const q = heldRequests(r);
+    r.puzzle.host = HOST;
+    await gate(r, log, [
+      ['a reach frame, its chunks in', linear(r, TRACE_PZ)],
+      ['a stroke', () => r.yields.host.onchange([1, 2, 0])],
+      ['the stroke that reaches', () => r.yields.host.onchange([...DRAWN])],
+      ['onreach posts its canonical answer', () => r.yields.host.onreach?.(CANONICAL)],
+      ['answered network', () => q.attempt(NETWORK)],
+      ['Try re-posts the reached answer', () => r.yields.host.ontry()],
+      ['answered rate-limited', () => q.attempt(httpError(429, 1))],
+      ['the countdown ends with a re-post', () => r.clock.advance(1000)],
+      ['answered rate-limited again', () => q.attempt(httpError(429, 1))],
+      ['a move away during the countdown', () => r.yields.host.onchange([1, 2, 0])],
+      ['the countdown ends with nothing to post', () => r.clock.advance(1000)],
+      ['the stroke that reaches again', () => r.yields.host.onchange([...DRAWN])],
+      ['onreach posts again', () => r.yields.host.onreach?.(CANONICAL)],
+    ]);
+    r.yields.dispose();
+  }
+
   expect(log.problems).toEqual([]);
   // Non-vacuous: the views the gate met hold exactly the tables' fields, and every field with covering keys moved.
   const frameFields = Object.keys(FRAME_FIELD_CUES) as (keyof PuzzleFrameView)[];
@@ -3657,7 +3751,7 @@ test('yields: every visible change of the puzzle view plays a cue', async () => 
     ...ladderFields.filter((f) => 'keys' in LADDER_FIELD_CUES[f]).map((f) => `ladder.${f}`),
   ].sort();
   expect([...log.moved].sort()).toEqual(covered);
-  expect(log.steps).toBe(93);
+  expect(log.steps).toBe(106);
 });
 
 test('yields: a screens change closes a panel before it opens the next', async () => {

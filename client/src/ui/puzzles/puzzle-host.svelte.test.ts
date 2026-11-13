@@ -81,6 +81,7 @@ function frameOf(over: Partial<PuzzleFrameView> = {}): PuzzleFrameView {
     line: 'idle',
     attemptsLeft: null,
     retryAfter: null,
+    awaiting: null,
     giveUp: true,
     hintTiers: 3,
     ui: CodeLock,
@@ -231,6 +232,26 @@ test('puzzle host: status line, attempts and try', async () => {
   // No hint tiers, no Hint button.
   await rerender({ frame: frameOf({ hintTiers: 0 }) });
   expect(names(container.querySelectorAll('button'))).not.toContain(t('en', 'puzzle.hint'));
+});
+
+test('puzzle-host: a reach frame enables Try only while its answer awaits', async () => {
+  // Engine plan §7.5: a reach frame's Try re-posts its reached answer, so Try is off while nothing is reached
+  // (`awaiting` false), on while a reached answer awaits a decisive reply, off while that reply is in flight; a commit
+  // frame (`awaiting` null) keeps Try as built. CodeLock stands in for the type UI: `canTry` reads frame fields only.
+  const { getByRole, rerender } = render(PuzzleHost, hostProps());
+  const tryButton = (): HTMLButtonElement => getByRole('button', { name: t('en', 'puzzle.try') }) as HTMLButtonElement;
+  const cases: ReadonlyArray<readonly [Partial<PuzzleFrameView>, boolean]> = [
+    [{ awaiting: false }, true],
+    [{ awaiting: true }, false],
+    [{ awaiting: true, busy: true }, true],
+    [{ awaiting: null }, false],
+  ];
+  const disabled: boolean[] = [];
+  for (const [over] of cases) {
+    await rerender({ frame: frameOf(over) });
+    disabled.push(tryButton().disabled);
+  }
+  expect(disabled).toEqual(cases.map(([, off]) => off));
 });
 
 test('puzzle-host: the status line is a cue target', () => {

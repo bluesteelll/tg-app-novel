@@ -1122,6 +1122,7 @@ export function createYields(h: YieldsHost): Yields {
       line: 'idle',
       attemptsLeft: p.maxAttempts === null ? null : p.maxAttempts - run.attempts,
       retryAfter: null,
+      awaiting: o.session.check === 'reach' ? false : null,
       giveUp: p.giveUp,
       hintTiers: p.hintTiers,
       ui: null,
@@ -1138,13 +1139,25 @@ export function createYields(h: YieldsHost): Yields {
     await loadPuzzleUis(o, p.type);
   };
 
-  /** A 429's countdown (GameSession owns it): one cue per second, its index the seconds left; Try opens again at zero. */
+  /**
+   * The countdown's zero hook (engine plan §7.5 round 6): posts what is ready to post and says whether it posted - a
+   * reach frame's reached answer (`postReach`); a `commit: 'control'` frame posts nothing (Try opens as built).
+   */
+  const ready = (o: Open): boolean => postReach(o);
+
+  /**
+   * A 429's countdown (GameSession owns it): one cue per second, its index the seconds left. At zero exactly one cue:
+   * `puzzle:checking` from `post(o)` when `ready(o)` posts, else `puzzle:ready` as the frame takes input again.
+   */
   const countdown = (o: Open, secs: number): void => {
     clearRetry();
     setFrame(o, { line: 'rate-limited', retryAfter: secs, busy: false });
     if (secs <= 0) {
-      setFrame(o, { line: 'idle', retryAfter: null });
-      puzzleCue(o, 'ready', puzzle.frame?.attemptsLeft ?? null); // nothing to post: the frame takes input again
+      setFrame(o, { retryAfter: null }); // first: `post(o)` refuses while a countdown runs
+      if (!ready(o)) {
+        setFrame(o, { line: 'idle' });
+        puzzleCue(o, 'ready', puzzle.frame?.attemptsLeft ?? null); // nothing posted: the frame takes input again
+      }
       return;
     }
     puzzleCue(o, 'rate-limited', secs);
@@ -1222,7 +1235,7 @@ export function createYields(h: YieldsHost): Yields {
    * A reach frame's post (engine plan §7.5 "Posting per reply kind"): the reached canonical answer becomes the session's
    * answer and goes through `post(o)`, so it refuses as `post` does (busy, a countdown, a frame not shown); false while
    * nothing is reached. The answer is set even when `post` refuses: a reach frame posts only through here, which sets it
-   * again.
+   * again, and `onchange` diffs against the frame's answer, not the session's.
    */
   const postReach = (o: Open): boolean => {
     if (o.reach === null) {
@@ -1241,22 +1254,36 @@ export function createYields(h: YieldsHost): Yields {
     onchange: (a) => {
       const o = open;
       if (o !== null) {
-        const was = o.session.answer();
+        // The frame's answer is the drawn one; after a reach post the session holds the canonical form (Q6).
+        const was = frameOf()?.answer ?? o.session.answer();
         o.session.setAnswer(a);
         const now = o.session.answer();
-        setFrame(o, { answer: now });
-        // One cue per changed part, in index order.
+        const changed: number[] = [];
         for (let i = 0; i < Math.max(was.length, now.length); i += 1) {
           if (was[i] !== now[i]) {
-            puzzleCue(o, 'input', i);
+            changed.push(i);
           }
+        }
+        // A move away from a reached answer: its pending post is cancelled and Try is off until it is reached again.
+        const away = o.reach !== null && changed.length > 0;
+        if (away) {
+          o.reach = null;
+        }
+        setFrame(o, away ? { answer: now, awaiting: false } : { answer: now });
+        // One cue per changed part, in index order.
+        for (const i of changed) {
+          puzzleCue(o, 'input', i);
         }
       }
     },
     ontry: () => {
       const o = open;
       if (o !== null) {
-        post(o);
+        if (o.session.check === 'reach') {
+          postReach(o); // nothing reached, nothing posts
+        } else {
+          post(o);
+        }
       }
     },
     ongiveup: () => {
@@ -1347,6 +1374,10 @@ export function createYields(h: YieldsHost): Yields {
       const o = open;
       if (o === null || o.session.check !== 'reach') {
         return; // a commit frame posts from Try only
+      }
+      if (o.reach === null) {
+        setFrame(o, { awaiting: true });
+        puzzleCue(o, 'reached');
       }
       o.reach = c;
       postReach(o);

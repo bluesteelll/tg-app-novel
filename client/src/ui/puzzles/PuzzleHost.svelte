@@ -37,7 +37,8 @@
 
   const ended = $derived(frame !== null && (frame.line === 'solved' || frame.line === 'failed'));
   const waiting = $derived(frame !== null && frame.retryAfter !== null && frame.retryAfter > 0);
-  const canTry = $derived(frame !== null && frame.ui !== null && !frame.busy && !ended && !waiting);
+  // A reach frame's Try re-posts its reached answer, so it is off while nothing awaits (`awaiting` false).
+  const canTry = $derived(frame !== null && frame.ui !== null && !frame.busy && !ended && !waiting && frame.awaiting !== false);
   const canGiveUp = $derived(frame !== null && frame.mode === 'linear' && frame.giveUp && !ended);
   const asking = $derived(frame !== null && askingFor === frame.id);
 
