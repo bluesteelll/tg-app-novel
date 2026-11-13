@@ -71,6 +71,7 @@ export const MECHANIC_TEXTS: { readonly [M in (typeof MECHANIC_DATA)[number] as 
   view: null,
   combine: COMBINE_TEXTS,
   flags: null,
+  devices: null,
 };
 
 /** One list of effects a module's data fires in a section, with its room: the story knots it enters, in fire order. */
@@ -91,6 +92,7 @@ export const MECHANIC_STORIES: { readonly [M in (typeof MECHANIC_DATA)[number] a
   view: null,
   combine: null,
   flags: null,
+  devices: null,
 };
 
 type CodesOf<L> = L extends { readonly codes: infer C } ? keyof C & string : never;

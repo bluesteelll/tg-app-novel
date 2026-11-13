@@ -14,6 +14,8 @@ import type { MechanicData, OwnedRaw } from '../contract.ts';
 import { decodeCombine, encodeCombine, normalizeCombine } from './combine.ts';
 import type { CombineData } from './combine.ts';
 import { core } from './core.ts';
+import { decodeDevices, encodeDevices, normalizeDevices } from './devices.ts';
+import type { DevicesData } from './devices.ts';
 import { decodeFlagAtom, decodeFlags, encodeFlags, normalizeFlags } from './flags.ts';
 import type { FlagsData } from './flags.ts';
 import { decodeUse, encodeUse, normalizeUse } from './use.ts';
@@ -73,7 +75,16 @@ const flags = {
   atoms: { flag: { decode: decodeFlagAtom, gating: true } },
 } satisfies MechanicData<'flags', FlagsData>;
 
-export const MECHANIC_DATA = [core, use, visual, view, combine, flags] as const;
+const devices = {
+  id: 'devices',
+  rules: 'chunk',
+  owns: { room: ['device'], facts: [] },
+  decode: decodeDevices,
+  encode: encodeDevices as (d: unknown) => OwnedRaw,
+  normalize: normalizeDevices,
+} satisfies MechanicData<'devices', DevicesData>;
+
+export const MECHANIC_DATA = [core, use, visual, view, combine, flags, devices] as const;
 
 /** A data registry as a decode takes it: `MECHANIC_DATA`, or a test's fixture modules beside it. */
 export type DataRegistry = readonly MechanicData<string, unknown, unknown>[];

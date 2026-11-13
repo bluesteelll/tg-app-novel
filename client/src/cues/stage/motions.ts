@@ -224,6 +224,10 @@ export const CUE_MOTIONS: { readonly [K in Exclude<CueKey, ControlKey>]: MotionS
   // it, the tapped item's companion cue none.
   'module:combine:refused': row('shake', 360, 'ribbon', { haptic: 'error' }),
   'module:combine:refused-with': row('shake', 360, 'ribbon'),
+  // `devices`' arrival cues (08b): a solved device glints at its box; a failed one jams there with the error haptic, the
+  // `fact:failed:added` form.
+  'module:devices:done': row('glint', 420, 'box'),
+  'module:devices:jammed': row('jam', 480, 'box', { haptic: 'error' }),
 };
 
 /** Control keys: a default per trigger kind and overrides for the core controls; a type or module control takes its

@@ -328,7 +328,7 @@ test('lint: world/schema red on fixture', () => {
   const found = of(lint(w), 'world/schema');
   // Every issue, never the first only.
   expect(found.map((f) => f.message).sort()).toEqual([
-    'sections.manor.rooms.hall.onenter: unknown key (expected bg, title, onEnter, hotspots, refuse, decor, view)',
+    'sections.manor.rooms.hall.onenter: unknown key (expected bg, title, onEnter, hotspots, refuse, decor, view, device)',
     'sections.manor.rooms.study.title: missing',
   ]);
   expect(found.every((f) => f.severity === 'E' && f.file === FILE && f.line > 0)).toBe(true);
