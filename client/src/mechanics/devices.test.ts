@@ -1,8 +1,9 @@
 // Module `devices` (engine plan §7.5): a view room's `device` hotspot carries a zero-slot lock with the room's device
 // puzzle, and its session opens on arrival (the `arrived` hook core runs at its three `room` pushes, never while a knot
 // is pending), with the same `puzzle` effect the device's own tap reaches, so the proof's states are unchanged; an
-// ended device plays its outcome's cue instead. A part's picture is a decor state chosen by the visual atom `part` over
-// the device's saved work. Fixture worlds are written in the source format and decoded with the
+// ended device plays its outcome's cue instead. A part move (`device-moved`) writes the device's run's `work` through
+// the writer, a `work` fact per moved part, and a part's picture is a decor state chosen by the visual atom `part` over
+// that saved work. Fixture worlds are written in the source format and decoded with the
 // real registries; a proof world carries the decoded `mods`, as the explore controller's and the story gate's do.
 import { expect, test } from 'vitest';
 
@@ -10,13 +11,16 @@ import { RESUME_STATE_CAP } from '../explore/reduce.ts';
 import type { ExploreAction, ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { PuzzleRun, WorldState } from '../explore/state.ts';
+import { PUZZLE_TYPES } from '../puzzles/rules/index.ts';
+import type { PuzzleTypeData, PuzzleTypes } from '../puzzles/rules/index.ts';
 import type { KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, RoomId } from '../world/types.ts';
-import type { DecodeCtx, FlagId, KernelWorld, OwnedAt, RulesRegistry } from './contract.ts';
+import type { DecodeCtx, FlagId, KernelWorld, OwnedAt, RulesRegistry, SectionAction } from './contract.ts';
 import { decodeCond } from './data/conditions.ts';
 import { decodeDevices, encodeDevices } from './data/devices.ts';
 import { reduce } from './rules/core.ts';
+import { partHolds } from './rules/devices.ts';
 import { MECHANIC_RULES } from './rules/index.ts';
 import { RESUME_WORK_PER_STATE, searchSection, sectionEntry, sectionPlaces, successors } from './rules/search.ts';
 import type { SearchStats } from './rules/search.ts';
@@ -68,9 +72,9 @@ function source(rooms: Readonly<Record<string, Json>>, o: { puzzles?: Json; flag
   };
 }
 
-/** The proof world of a source: the public body with the decoded `mods`. */
-function kernel(raw: Json): KernelWorld {
-  const r = decodeWorldSource(raw);
+/** The proof world of a source decoded with `types`: the public body with the decoded `mods`. */
+function kernel(raw: Json, types: PuzzleTypes = PUZZLE_TYPES): KernelWorld {
+  const r = decodeWorldSource(raw, { types });
   if (!r.ok) {
     throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
   }
@@ -122,6 +126,31 @@ const kernelEffects = (effects: readonly ExploreEffect[]): ExploreEffect[] => ef
 const moduleCues = (effects: readonly ExploreEffect[]): string[] =>
   effects.flatMap((e) => (e.kind === 'cue' && e.cue.kind === 'module' ? [`${e.cue.module}:${e.cue.name}@${String(e.cue.at)}`] : []));
 const opens = (effects: readonly ExploreEffect[]): ExploreEffect[] => effects.filter((e) => e.kind === 'puzzle' || e.kind === 'lock');
+/** The fact cues of a list, as `<kind> <change> <id>`. */
+const facts = (effects: readonly ExploreEffect[]): string[] =>
+  effects.flatMap((e) => (e.kind === 'cue' && e.cue.kind === 'fact' ? [`${e.cue.fact.kind} ${e.cue.change} ${e.cue.fact.id}`] : []));
+const move = (work: readonly number[], puzzle = 'dial'): SectionAction => ({ kind: 'device-moved', puzzle: pz(puzzle), work });
+
+/** A fixture view type the default registry lacks (GM8a registers the first real one): `parts` levers at 0..2, each
+ *  starting at 2; a saved work fits while it has one value per lever. */
+const LEVERS: PuzzleTypeData<string, unknown> = Object.freeze({
+  type: 'levers',
+  check: 'reach',
+  goal: 'shown',
+  presentation: 'view',
+  wrong: 'none',
+  commit: 'control',
+  decodeParams: (raw: unknown) => ({ ok: true, value: raw }) as const,
+  answerShape: (p: unknown) => ({ len: partsOf(p), max: 2 }),
+  initial: (p: unknown) => new Array<number>(partsOf(p)).fill(2),
+  startShown: () => null,
+  workFits: (p: unknown, work: readonly number[]) => work.length === partsOf(p),
+});
+function partsOf(p: unknown): number {
+  return (p as { readonly parts: number }).parts; // the fixture's params, decoded as written
+}
+const TYPES: PuzzleTypes = [...PUZZLE_TYPES, LEVERS];
+const levers = (parts: number): Json => ({ ...code(2), type: 'levers', params: { parts }, solution: new Array<number>(parts).fill(1) });
 
 // ---------------------------------------------------------------------------------------------------------------
 // The data half
@@ -191,6 +220,87 @@ test('visual: four placements of one lever image keep four anchors', () => {
     ['panel~lever2', 'default'],
     ['panel~lever3', 'default'],
   ]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The work
+
+test('device: a part move writes run.work and its picture follows', () => {
+  const w = panel({ levers: true });
+  const down = ['default', 'default', 'default', 'default'];
+  const states = (s: WorldState): string[] => visualsOf(w, s, rm('panel')).map((v) => v.state);
+  // X14 (a): with no saved work the parts read the type's `initial` (a code puzzle's zeros).
+  const s = at('panel');
+  expect(states(s)).toEqual(down);
+  // The first write (no `work` before) records every part's position (RULINGS 353 Q6), at the device, verb 'device'.
+  const first = reduce(w, s, move([1, 0, 0, 0]));
+  expect(first.state.puzzles[DIAL]).toEqual({ outcome: null, attempts: 0, hintsOpened: 0, work: [1, 0, 0, 0] });
+  expect(facts(first.effects)).toEqual(['work added dial.0=1', 'work added dial.1=0', 'work added dial.2=0', 'work added dial.3=0']);
+  const cue = first.effects.find((e) => e.kind === 'cue');
+  expect(cue?.kind === 'cue' && cue.cue.kind === 'fact' ? cue.cue.cause : null).toEqual({ verb: 'device', at: 'panel.dial', item: null, via: null });
+  expect(first.effects.at(-1)).toEqual({ kind: 'dirty' });
+  expect(states(first.state)).toEqual(['up', 'default', 'default', 'default']);
+  // A later move records each moved part: its old position removed, then its new one added.
+  const second = reduce(w, first.state, move([1, 1, 0, 0]));
+  expect(facts(second.effects)).toEqual(['work removed dial.1=0', 'work added dial.1=1']);
+  expect(states(second.state)).toEqual(['up', 'up', 'default', 'default']);
+  // X14 (b): a move back to `initial` stores the array (the one write form), its facts recorded; the picture is down.
+  const reset = reduce(w, second.state, move([0, 0, 0, 0]));
+  expect(reset.state.puzzles[DIAL]?.work).toEqual([0, 0, 0, 0]);
+  expect(facts(reset.effects)).toEqual(['work removed dial.0=1', 'work removed dial.1=1', 'work added dial.0=0', 'work added dial.1=0']);
+  expect(states(reset.state)).toEqual(down);
+  // The same move again changes nothing: no fact, no dirty, the same state.
+  const again = reduce(w, reset.state, move([0, 0, 0, 0]));
+  expect([again.state, again.effects]).toEqual([reset.state, []]);
+  expect(again.state).toBe(reset.state);
+  // X14 (a) for a type the default registry lacks: the fixture type's `initial` through `types`, and none without it.
+  const v = kernel(source({ hall: room([exit('out', { story: 'end' })]) }, { puzzles: { gauge: levers(3) } }), TYPES);
+  const gauge = (index: number, is: number) => ({ puzzle: pz('gauge'), index, is });
+  expect([partHolds(v, at('hall'), gauge(1, 2), TYPES), partHolds(v, at('hall'), gauge(1, 0), TYPES)]).toEqual([true, false]);
+  expect([0, 1, 2].map((is) => partHolds(v, at('hall'), gauge(1, is)))).toEqual([false, false, false]);
+  const saved = at('hall', { puzzles: { [pz('gauge')]: { outcome: null, attempts: 0, hintsOpened: 0, work: [0, 1, 0] } } });
+  expect([partHolds(v, saved, gauge(1, 1)), partHolds(v, saved, gauge(1, 1), TYPES)]).toEqual([true, true]);
+});
+
+test('device: a stale part move writes nothing', () => {
+  const w = panel();
+  const writes = (s: WorldState, a: SectionAction = move([1, 0, 0, 0])): boolean => {
+    const r = reduce(w, s, a);
+    return r.state !== s || r.effects.length > 0;
+  };
+  // The control: a live device run in its room takes the move.
+  expect(writes(at('panel'))).toBe(true);
+  // G1: no section's room.
+  expect(writes({ ...at('panel'), section: null })).toBe(false);
+  expect(writes({ ...at('panel'), room: null })).toBe(false);
+  // G2: a puzzle that is not the current room's device (the room's device is `dial`; the hall has none).
+  expect(writes(at('panel'), move([1, 0], 'other'))).toBe(false);
+  expect(writes(at('hall'))).toBe(false);
+  // G3: a knot pending.
+  expect(writes(at('panel', { pendingStory: [kn('voice')] }))).toBe(false);
+  // G4: the run has ended.
+  expect(writes(at('panel', { puzzles: run({ outcome: 'failed', attempts: 2 }) }))).toBe(false);
+  expect(writes(at('panel', { open: [DEVICE], puzzles: run({ outcome: 'solved' }) }))).toBe(false);
+  // A value the save cannot keep (RULINGS 353 O3): never written, so one bad dispatch never refuses the whole save.
+  for (const bad of [-1, 1.5, Number.NaN, 2 ** 53]) {
+    expect(writes(at('panel'), move([0, bad, 0, 0])), String(bad)).toBe(false);
+  }
+});
+
+test("writer: a kernel run write keeps a device's work and records no work fact", () => {
+  // Every kernel run write spreads the old run, so a device's saved work survives a failed attempt, a hint and the
+  // puzzle's end, and the writer's work comparison sees no change.
+  const w = panel({ capped: 3 });
+  const s = at('panel', { puzzles: run({ work: [1, 0, 1, 0] }) });
+  const failed = reduce(w, s, { kind: 'attempt-failed', puzzle: DIAL });
+  expect(failed.state.puzzles[DIAL]).toEqual({ outcome: null, attempts: 1, hintsOpened: 0, work: [1, 0, 1, 0] });
+  expect(facts(failed.effects)).toEqual(['attempt added dial']);
+  const hinted = reduce(w, failed.state, { kind: 'hint-opened', puzzle: DIAL, tier: 1 });
+  expect(facts(hinted.effects)).toEqual(['hint added dial']);
+  const solved = reduce(w, hinted.state, { kind: 'puzzle-ended', puzzle: DIAL, outcome: 'solved' });
+  expect(solved.state.puzzles[DIAL]).toEqual({ outcome: 'solved', attempts: 1, hintsOpened: 1, work: [1, 0, 1, 0] });
+  expect(facts(solved.effects).filter((f) => f.startsWith('work'))).toEqual([]);
+  expect(facts(solved.effects)[0]).toBe('solved added dial');
 });
 
 // ---------------------------------------------------------------------------------------------------------------
