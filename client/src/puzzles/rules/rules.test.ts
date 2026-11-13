@@ -8,9 +8,12 @@ import type { ChapterId, LineId, PuzzleLocalId } from '../../story/staging.ts';
 import { decodeWorldPublic, decodeWorldSource, toServer } from '../../world/decode.ts';
 import type { ItemId, SourcePuzzle } from '../../world/types.ts';
 import { CODE_PLAY } from '../play/code.ts';
+import { GRID_PLAY, place } from '../play/grid.ts';
 import { ORDER_PLAY } from '../play/order.ts';
 import { PATH_PLAY, advance, cellAt, cellsAlong, touch } from '../play/path.ts';
 import { PUZZLE_UI } from '../registry.ts';
+import { GRID_RULES } from './grid.ts';
+import type { GridParams } from './grid.ts';
 import { PUZZLE_RULES, PUZZLE_TYPES } from './index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from './index.ts';
 import { PATH_RULES } from './path.ts';
@@ -257,6 +260,153 @@ test('puzzles: path declares its cell and its stroke', () => {
   expect(uiMotion('path-stroke')).toEqual(UI_MOTIONS.gesture);
   expect(uiMotion('path-cell')).toEqual(UI_MOTIONS.control);
   expect(UI_MOTIONS.gesture).not.toEqual(UI_MOTIONS.control);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The `grid` type (engine plan §7.2; GM7g D1-D3): its data half and its play half's rule and placement, read directly.
+
+/** 2 x 2 over 2 symbols, cell 0 given 1: its one fill is 1 2 / 2 1. */
+const G22: GridParams = { rows: 2, cols: 2, symbols: 2, given: [1, 0, 0, 0] };
+const G22_FILL = [1, 2, 2, 1];
+/** 2 rows x 3 columns over 3 symbols, given 1 2 _ / _ _ 1: its one fill is 1 2 3 / 2 3 1. */
+const G23: GridParams = { rows: 2, cols: 3, symbols: 3, given: [1, 2, 0, 0, 0, 1] };
+const G23_FILL = [1, 2, 3, 2, 3, 1];
+/** 3 x 3 over 3 symbols, given 1 2 _ / _ _ 1 / _ 1 _: its one fill is 1 2 3 / 2 3 1 / 3 1 2. */
+const G33: GridParams = { rows: 3, cols: 3, symbols: 3, given: [1, 2, 0, 0, 0, 1, 0, 1, 0] };
+const G33_FILL = [1, 2, 3, 2, 3, 1, 3, 1, 2];
+
+test('rules: grid params decode strictly', () => {
+  const ok = (raw: unknown): GridParams => {
+    const r = GRID_RULES.decodeParams(raw);
+    if (!r.ok) {
+      throw new Error(`expected ${JSON.stringify(raw)} to decode: ${r.error}`);
+    }
+    return r.value;
+  };
+  expect(ok(G23)).toEqual(G23);
+  // Decode returns its own array: the instance never shares the source's.
+  expect(ok(G23).given).not.toBe(G23.given);
+  const empty66 = { rows: 6, cols: 6, symbols: 6, given: Array.from({ length: 36 }, () => 0) };
+  expect(ok(empty66)).toEqual(empty66);
+  // A fully given grid decodes: the build refuses it (world/solution-initial and the start clause), not the decoder.
+  expect(ok({ rows: 2, cols: 2, symbols: 2, given: [1, 2, 2, 1] })).toEqual({ rows: 2, cols: 2, symbols: 2, given: [1, 2, 2, 1] });
+  // More symbols than a line holds: each line uses some of them.
+  expect(ok({ rows: 2, cols: 2, symbols: 4, given: [0, 0, 0, 0] })).toEqual({ rows: 2, cols: 2, symbols: 4, given: [0, 0, 0, 0] });
+  const refused: ReadonlyArray<readonly [unknown, string]> = [
+    [{ rows: 1, cols: 2, symbols: 2, given: [0, 0] }, 'rows must be an integer in 2..6'],
+    [{ rows: 7, cols: 2, symbols: 6, given: [] }, 'rows must be an integer in 2..6'],
+    [{ rows: 2, cols: 2.5, symbols: 3, given: [] }, 'cols must be an integer in 2..6'],
+    [{ rows: 2, cols: '3', symbols: 3, given: [] }, 'cols must be an integer in 2..6'],
+    // A line of n cells holds n distinct symbols: fewer symbols than the longer side can fill no grid.
+    [{ rows: 2, cols: 3, symbols: 2, given: [0, 0, 0, 0, 0, 0] }, 'symbols must be an integer in 3..6'],
+    [{ rows: 2, cols: 2, symbols: 7, given: [0, 0, 0, 0] }, 'symbols must be an integer in 2..6'],
+    [{ rows: 2, cols: 3, symbols: 3.5, given: [0, 0, 0, 0, 0, 0] }, 'symbols must be an integer in 3..6'],
+    [{ rows: 2, cols: 3, symbols: 3, given: [0, 0, 0, 0, 0] }, 'given must be an array of 6 cells'],
+    [{ rows: 2, cols: 3, symbols: 3, given: 3 }, 'given must be an array of 6 cells'],
+    [{ rows: 2, cols: 3, symbols: 3, given: [4, 0, 0, 0, 0, 0] }, 'given: 4 at cell 0 is not 0 (empty) or a symbol in 1..3'],
+    [{ rows: 2, cols: 3, symbols: 3, given: [0, -1, 0, 0, 0, 0] }, 'given: -1 at cell 1 is not 0 (empty) or a symbol in 1..3'],
+    [{ rows: 2, cols: 3, symbols: 3, given: [0, 0, 1.5, 0, 0, 0] }, 'given: 1.5 at cell 2 is not 0 (empty) or a symbol in 1..3'],
+    [{ rows: 2, cols: 3, symbols: 3, given: [0, 0, 0, '1', 0, 0] }, 'given: "1" at cell 3 is not 0 (empty) or a symbol in 1..3'],
+    [{ rows: 2, cols: 2, symbols: 2 }, 'missing key given'],
+    [{ rows: 2, cols: 2, symbols: 2, given: [0, 0, 0, 0], blanks: 1 }, "unknown key blanks (a grid puzzle has 'rows', 'cols', 'symbols', 'given')"],
+    [null, 'params is not an object'],
+    [[2, 2], 'params is not an object'],
+    ['2x2', 'params is not an object'],
+  ];
+  for (const [raw, error] of refused) {
+    expect(GRID_RULES.decodeParams(raw), JSON.stringify(raw)).toEqual({ ok: false, error });
+  }
+});
+
+test('rules: grid answer is a full fill that keeps its givens, no symbol twice in a line', () => {
+  // One entry per cell, cell-major (`row * cols + col`), each 0 (empty) or a symbol: the shape is a function of params.
+  expect(GRID_RULES.answerShape(G23)).toEqual({ len: 6, max: 3 });
+  // The start is the givens, a copy: a session never writes into the decoded params.
+  const start = GRID_RULES.initial(G23);
+  expect(start).toEqual(G23.given);
+  expect(start).not.toBe(G23.given);
+  const { reached } = GRID_PLAY;
+  expect(reached(G23, G23_FILL)).toBe(true);
+  expect(reached(G22, G22_FILL)).toBe(true);
+  // Each case breaks one rule only: the others hold for it.
+  expect(reached(G23, [1, 2, 0, 2, 3, 1]), 'a blank').toBe(false);
+  expect(reached(G23, [1, 2, 4, 2, 3, 1]), 'a symbol above symbols').toBe(false);
+  expect(reached(G23, [1, 2, 2, 2, 3, 1]), 'a row repeat, every column distinct').toBe(false);
+  expect(reached(G22, [1, 2, 1, 2]), 'a column repeat, every row distinct').toBe(false);
+  expect(reached(G22, [2, 1, 1, 2]), 'a changed given on a Latin fill').toBe(false);
+  expect(reached(G23, [1, 2, 3, 2, 3]), 'length 5').toBe(false);
+  // A reached answer is the only one the grid posts.
+  expect(GRID_PLAY.validAnswer).toBe(reached);
+});
+
+test('grid: reached on the unique fill', () => {
+  // H1 (3): every answer `place` can make from the start (every free cell, every value 0..symbols) is walked; exactly
+  // one reaches, the fill, and no place from it reaches again, so a reached -> reached onchange cannot happen.
+  const cases: ReadonlyArray<readonly [GridParams, readonly number[], number]> = [
+    [G22, G22_FILL, 27],
+    [G23, G23_FILL, 64],
+    [G33, G33_FILL, 1024],
+  ];
+  for (const [p, fill, answers] of cases) {
+    const label = JSON.stringify(p);
+    const start = GRID_RULES.initial(p);
+    const seen = new Set<string>([JSON.stringify(start)]);
+    const queue: (readonly number[])[] = [start];
+    const reachedSeen: (readonly number[])[] = [];
+    for (let a = queue.shift(); a !== undefined; a = queue.shift()) {
+      if (GRID_PLAY.reached(p, a)) {
+        reachedSeen.push(a);
+      }
+      for (let cell = 0; cell < p.rows * p.cols; cell++) {
+        for (let v = 0; v <= p.symbols; v++) {
+          const next = place(p, a, cell, v);
+          if (next !== null && !seen.has(JSON.stringify(next))) {
+            seen.add(JSON.stringify(next));
+            queue.push(next);
+          }
+        }
+      }
+    }
+    // (symbols + 1) ^ free cells: the walk was the whole space.
+    expect(seen.size, label).toBe(answers);
+    expect(reachedSeen, label).toEqual([fill]);
+    expect(GRID_PLAY.canonical(p, fill), label).toEqual(fill);
+    let moves = 0;
+    for (let cell = 0; cell < p.rows * p.cols; cell++) {
+      for (let v = 0; v <= p.symbols; v++) {
+        const next = place(p, fill, cell, v);
+        if (next !== null) {
+          moves++;
+          expect(GRID_PLAY.reached(p, next), `${label} @${cell}=${v}`).toBe(false);
+        }
+      }
+    }
+    expect(moves, label).toBeGreaterThan(0);
+  }
+});
+
+test('rules: grid places a symbol only on a free cell, and only as a change', () => {
+  const a = Object.freeze([1, 0, 0, 0]);
+  // A free cell takes a symbol into a fresh array; the input is not touched.
+  const next = place(G22, a, 1, 2);
+  expect(next).toEqual([1, 2, 0, 0]);
+  expect(next).not.toBe(a);
+  expect(a).toEqual([1, 0, 0, 0]);
+  // A filled cell is cleared with 0, or takes another symbol.
+  expect(place(G22, [1, 2, 0, 0], 1, 0)).toEqual([1, 0, 0, 0]);
+  expect(place(G22, [1, 2, 0, 0], 1, 1)).toEqual([1, 1, 0, 0]);
+  // Nothing changes: a given cell, the held value (V2), clearing an empty cell (V2), a value or a cell out of range,
+  // and an answer of another length.
+  expect(place(G22, a, 0, 2), 'a given cell').toBeNull();
+  expect(place(G22, [1, 2, 0, 0], 1, 2), 'the held value').toBeNull();
+  expect(place(G22, a, 1, 0), 'clearing an empty cell').toBeNull();
+  for (const v of [3, -1, 1.5]) {
+    expect(place(G22, a, 1, v), `value ${v}`).toBeNull();
+  }
+  for (const cell of [-1, 4, 1.5]) {
+    expect(place(G22, a, cell, 1), `cell ${cell}`).toBeNull();
+  }
+  expect(place(G22, [1, 0, 0], 1, 2), 'a length mismatch').toBeNull();
 });
 
 // ---------------------------------------------------------------------------------------------------------------
