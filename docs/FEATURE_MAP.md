@@ -228,6 +228,11 @@ RULINGS 314) are under [Built features](#built-features) (the new "Step window",
 "World tooling", "Demo stories", "App shell", "GameSession", "Scene", "Texture memory", "Exploration UI", "Mechanics
 engine" and "Cue motions" rows; and the build and e2e gate rows).
 
+Open at `f6487fc` (RULINGS 347): the client lane GM7p `gm7p-mech-path` (lane A, RULINGS 342, 344, 345) and this docs
+lane `docs-errata-19` (lane C). GM5q mech-place-quotient (merged `5142d5d`, RULINGS 326), GM5f mech-flags (merged
+`402d4d8`, RULINGS 334), GM7r mech-reach-runtime (merged `9516951`, RULINGS 341) and SH5b shot-entry (merged `f6487fc`,
+RULINGS 346) are under [Built features](#built-features).
+
 - **The adopted plans' features** (the mechanics engine, per-player values and labels, drawn-shot staging): the
   planned lanes GM1a-GM9r, GM6a-GM6d2 and SH1-SH12b of [docs/plans/README.md](plans/README.md) (planned, not built),
   in the one order of [engine §12](plans/engine/12f-order-and-conflicts.md#order-and-conflicts); GM1a and GM6k were
@@ -254,7 +259,12 @@ engine" and "Cue motions" rows; and the build and e2e gate rows).
   314): GM4, GM4u, GM5 and SH5a; P2-b put real views and recipes at the 5,000 cap, so GM5q (the place quotient) runs in
   lane A on the critical path (RULINGS 309, 313); next GM5f `mech-flags` after GM5q in lane A, and SH5b `shot-entry` in
   lane C after this docs lane; two lanes at most (RULINGS 255, 276); R is 2.603 and the trigger does not hold (Ledger 4
-  219.811 / 230.0, Ledger 2 39.163 / 40.0, Ledger 1 258.974 / 270.0; RULINGS 314).
+  219.811 / 230.0, Ledger 2 39.163 / 40.0, Ledger 1 258.974 / 270.0; RULINGS 314). Built since `48489b7` (RULINGS 326,
+  334, 341, 346): GM5q, GM5f, GM7r and SH5b; GM7p `mech-path` (lane A) runs on the critical path (RULINGS 342, 344,
+  345); next GM7g `mech-grid` after GM7p in lane A; in lane C, after this docs lane, no lane of the plans may start
+  beside GM7p (SH6, GM8i and per-player GM6c1a, by their rows; RULINGS 342), so lane C's next plan lane follows GM7p's
+  merge (GM8i may run beside GM7g); two lanes at most (RULINGS 255, 276, 338); R is 2.551 and the trigger does not hold
+  (with GM7p's running term: Ledger 4 222.272 / 230.0, Ledger 2 39.172 / 40.0, Ledger 1 261.444 / 270.0; RULINGS 346).
 - **Erasure on request**: a later lane before production; until then the manual procedure of
   [privacy-ops.md](runbooks/privacy-ops.md#answer-a-deletion-request-manual-erasure). Built since GM6k: the order it
   will run, as data (`ERASURE_ORDER`, the "Database and migrations" row); no command or route runs it yet.
