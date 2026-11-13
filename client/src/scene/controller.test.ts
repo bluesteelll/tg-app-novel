@@ -5,7 +5,7 @@
 import { expect, test } from 'vitest';
 
 import type { HalfFile, ImageEntry, Result } from '../story/catalog.ts';
-import type { AssetId, BgId } from '../story/staging.ts';
+import type { AssetId, BgId, CgId, CharId, ExprId, PropId } from '../story/staging.ts';
 import { applyStep, restoreStep } from './controller.ts';
 import { createExecutor } from './executor.ts';
 import type { Executor, GroupRef, SceneSnapshot, StageAdapter, VisualCommand } from './executor.ts';
@@ -35,6 +35,28 @@ const X: ImageEntry = {
   half: HALF,
 };
 const BG_X = 'bg/x' as AssetId; // test fixture id: the brand is earned by the manifest decoder
+/**
+ * cg/x's half and file, at URLs of their own and smaller than bg/x's, so that cg/x and the three records the fixture
+ * holds stay under the steady cap and no eviction enters a cell.
+ */
+const CG_HALF: HalfFile = {
+  w: 270,
+  h: 512,
+  decodedBytes: 270 * 512 * 4,
+  avif: { url: '/assets/cg-x-half.avif', bytes: 20 },
+  webp: { url: '/assets/cg-x-half.webp', bytes: 24 },
+};
+const CG_X: ImageEntry = {
+  kind: 'image',
+  w: 540,
+  h: 1024,
+  decodedBytes: 540 * 1024 * 4,
+  avif: { url: '/assets/cg-x.avif', bytes: 50 },
+  webp: { url: '/assets/cg-x.webp', bytes: 60 },
+  half: CG_HALF,
+};
+/** A test fixture id a restore shows and the fixture never ensures. */
+const CG = 'cg/x' as AssetId;
 /** A test fixture id a step ensures but does not show. */
 const BG_Y = 'bg/y' as AssetId;
 /** A test fixture id the step's window holds and its ensure does not. */
@@ -52,16 +74,22 @@ const held = (r: Pick<AssetRegistry<Tex>, 'state'>): RecordState[] => [BG_X, BG_
 /**
  * The mounted parts over a fake load that records each URL and decodes at once at that file's own stored px (the
  * registry refuses any other size); the executor's swap reports land in `windows`, and the states of bg/x, bg/y and
- * bg/z at each swap point (what the mounted scheduler's want / kick reads in that same turn) in `atSwap`.
+ * bg/z at each swap point (what the mounted scheduler's want / kick reads in that same turn) in `atSwap`. cg/x's files
+ * load only once `open()` is called, so a restore that shows cg/x is still pending until then.
  */
 function parts() {
   const urls: string[] = [];
   const windows: StageWindow[] = [];
   const atSwap: RecordState[][] = [];
   const skipped: AssetError[] = [];
+  let open: () => void = () => {};
+  const gate = new Promise<void>((r) => {
+    open = r;
+  });
   const load: LoadImage<Tex> = (ref) => {
     urls.push(ref.url);
-    const file = ref.url === HALF.avif.url ? HALF : X;
+    const cg = ref.url === CG_X.avif.url ? CG_X : ref.url === CG_HALF.avif.url ? CG_HALF : null;
+    const file = cg ?? (ref.url === HALF.avif.url ? HALF : X);
     const d: Decoded<Tex> = {
       texture: { url: ref.url },
       w: file.w,
@@ -72,7 +100,8 @@ function parts() {
       revive: () => Promise.resolve({ ok: true, value: undefined }),
       release: () => {},
     };
-    return Promise.resolve({ ok: true, value: d });
+    const loaded = { ok: true as const, value: d };
+    return cg === null ? Promise.resolve(loaded) : gate.then(() => loaded);
   };
   const registry = createAssetRegistry<Tex>({ load, variant: 'avif', tier: 'full' });
   let n = 0;
@@ -94,7 +123,8 @@ function parts() {
     set: () => {},
     fx: () => {},
   };
-  const resolve = (id: AssetId): Result<ImageEntry, AssetError> => (id === BG_X ? { ok: true, value: X } : { ok: false, error: { kind: 'missing-id', id } });
+  const resolve = (id: AssetId): Result<ImageEntry, AssetError> =>
+    id === BG_X ? { ok: true, value: X } : id === CG ? { ok: true, value: CG_X } : { ok: false, error: { kind: 'missing-id', id } };
   const executor = createExecutor<Tex>({
     adapter,
     registry,
@@ -107,7 +137,7 @@ function parts() {
       atSwap.push(held(registry));
     },
   });
-  return { registry, executor, urls, windows, atSwap, skipped };
+  return { registry, executor, urls, windows, atSwap, skipped, open };
 }
 
 test("controller: an entry's first apply takes its new slots from their halves and flags its window", async () => {
@@ -147,15 +177,16 @@ test("controller: an entry's restore takes its slots from their halves", async (
 // then held by nothing and dropped (principle 4: textures released after a scene), a shown one stays live under its
 // slot, and a release before the takes would fetch the shown id again. A windowed step has let go by its swap point,
 // where the scheduler plans the window against the caps (and an entry's swap kicks the upgrades); an animated step
-// lets go the same way, or a chapter played outside skip mode would pile up every id it ensured.
+// lets go the same way, or a chapter played outside skip mode would pile up every id it ensured. A resume restores a
+// saved stage whole, and under a CG it waits for that CG to show: the game awaits the step before the first line.
 
 type Pv = true | false | 'absent';
 type Cell =
   | { readonly op: 'apply'; readonly batch: 'cut' | 'cut+wait' | 'empty'; readonly preview: Pv; readonly window: 'W' | 'Wf' | 'KEEP' | 'none'; readonly instant: boolean }
-  | { readonly op: 'restore'; readonly snapshot: 'S' | 'E'; readonly preview: Pv };
+  | { readonly op: 'restore'; readonly snapshot: 'S' | 'E' | 'C'; readonly preview: Pv };
 /** What the executor reads of a call: an apply's `instant` and `window` (executor.ts apply), a restore's snapshot. */
 type Handed = { instant: boolean; window: StageWindow | null } | SceneSnapshot;
-/** One cell's observations: t0 is synchronously after the step returns, t2 after `complete()` and its settle. */
+/** One cell's observations: t0 is synchronously after the step returns, t2 after `complete()`, `open()` and the settle. */
 type Row = {
   /** The fixture: bg/x and bg/y ensured, bg/z held by the window, all three live before the step. */
   ensured: boolean[];
@@ -173,7 +204,7 @@ type Row = {
   at2: RecordState[];
   /** The URLs the step itself fetched. */
   stepFetches: number;
-  /** `done` fulfilled within MICROTASKS turns, and within MICROTASKS turns after `complete()`. */
+  /** `done` fulfilled within MICROTASKS turns, and within MICROTASKS turns after `complete()` and the gate's `open()`. */
   settled: boolean;
   settledAfterComplete: boolean;
 };
@@ -186,13 +217,24 @@ const CELLS: readonly Cell[] = [
       (['W', 'Wf', 'KEEP', 'none'] as const).flatMap((window) => [true, false].map((instant): Cell => ({ op: 'apply', batch, preview, window, instant }))),
     ),
   ),
-  ...(['S', 'E'] as const).flatMap((snapshot) => PREVIEWS.map((preview): Cell => ({ op: 'restore', snapshot, preview }))),
+  ...(['S', 'E', 'C'] as const).flatMap((snapshot) => PREVIEWS.map((preview): Cell => ({ op: 'restore', snapshot, preview }))),
 ];
 const label = (c: Cell): string =>
   c.op === 'apply' ? `apply ${c.batch} preview=${c.preview} window=${c.window} instant=${c.instant}` : `restore ${c.snapshot} preview=${c.preview}`;
 
-/** A restore's snapshot, a fresh literal per call: S shows bg/x, E is the empty stage. */
-const snapshotOf = (s: 'S' | 'E'): SceneSnapshot => ({ bg: s === 'S' ? ('x' as BgId) : null, cg: null, chars: [], props: [] });
+/**
+ * A restore's snapshot, a fresh literal per call: S shows bg/x, E is the empty stage, and C is a saved stage under a CG
+ * (cg/x over bg/x, with a character and a prop whose ids resolve to nothing, so they are skipped visuals and load nothing).
+ */
+const snapshotOf = (s: 'S' | 'E' | 'C'): SceneSnapshot =>
+  s === 'C'
+    ? {
+        bg: 'x' as BgId,
+        cg: 'x' as CgId,
+        chars: [{ char: 'ally' as CharId, expr: 'neutral' as ExprId, at: 'left' }],
+        props: [{ prop: 'lamp' as PropId, rect: [0, 0, 100, 100] }],
+      }
+    : { bg: s === 'S' ? ('x' as BgId) : null, cg: null, chars: [], props: [] };
 
 /**
  * The model: what a step must do, written from D7 and the hand-off rules (the lane's cut, fix3 MC0-MC5), never from a
@@ -200,11 +242,14 @@ const snapshotOf = (s: 'S' | 'E'): SceneSnapshot => ({ bg: s === 'S' ? ('x' as B
  * the step is handed, so a step that writes into its caller's window (KEEP_WINDOW included) is seen.
  */
 function expected(c: Cell): Row {
-  const shows = c.op === 'apply' ? c.batch !== 'empty' : c.snapshot === 'S';
+  const shows = c.op === 'apply' ? c.batch !== 'empty' : c.snapshot !== 'E';
   const scope = c.preview === true;
   const waits = c.op === 'apply' && c.batch === 'cut+wait' && !c.instant;
-  // MC3: the ensure holder goes after the takes, so the shown id stays live under its slot and is not fetched again,
-  // the ensured id the step does not show is dropped, and the window's holder stays.
+  // The cell shows cg/x, which the fixture does not ensure and whose load waits for the gate.
+  const cg = c.op === 'restore' && c.snapshot === 'C';
+  // MC3: the ensure holder goes after the takes (the slots a CG covers are taken now too, executor.ts enqueue), so the
+  // shown id stays live under its slot and is not fetched again, the ensured id the step does not show is dropped, and
+  // the window's holder stays.
   const after: RecordState[] = [shows ? 'live' : 'none', 'none', 'live'];
   // MC2, MC3: one executor call, inside the preview scope iff the step is a preview (false and absent are not), then
   // one release of the ensure holder, before the step returns.
@@ -222,9 +267,11 @@ function expected(c: Cell): Row {
     // MC4: one swap report per apply with a window, with the release in by then
     atSwap: c.op === 'apply' && c.window !== 'none' ? [after] : [],
     at2: after,
-    stepFetches: 0,
-    // MC5: only an animated batch with a wait outlives the microtasks, and complete() ends it
-    settled: !waits,
+    // MC3: the step fetches each shown id that was not ensured, and that is C's CG file alone
+    stepFetches: cg ? 1 : 0,
+    // MC5: an animated batch with a wait outlives the microtasks, and complete() ends it; a restore with a CG resolves
+    // once the CG shows (executor.ts restore), so it waits for the CG's load, and the gate's open() ends that
+    settled: !waits && !cg,
     settledAfterComplete: true,
   };
 }
@@ -255,7 +302,10 @@ const windowArg = (w: 'W' | 'Wf' | 'KEEP' | 'none'): StageWindow | undefined =>
         ? KEEP_WINDOW
         : undefined;
 
-/** Turns a step that does not wait has to settle in: at least twice the slowest such cell's measured count. */
+/**
+ * Turns a step has to settle in once nothing holds it back (no wait before `complete()`, no gated load after `open()`):
+ * at least twice the slowest such cell's measured count.
+ */
 const MICROTASKS = 50;
 
 /** Whether `p` fulfils within `n` microtask turns; a pending or rejected one reads false. */
@@ -345,6 +395,8 @@ async function observe(c: Cell): Promise<Row> {
   const at0 = held(p.registry);
   const settled = await settledWithin(done, MICROTASKS);
   p.executor.complete();
+  // cg/x's load ends here (no cell but C started it), so a restore with a CG can settle by the last read.
+  p.open();
   const settledAfterComplete = await settledWithin(done, MICROTASKS);
   return {
     ensured: ensured.map((r) => r.ok),
@@ -363,9 +415,9 @@ async function observe(c: Cell): Promise<Row> {
 }
 
 test("controller: a step's options matrix (D7): the executor's options and scope, the holders at return, swap point and settle, and when the step settles", async () => {
-  // apply: 3 batches x 3 previews x 4 windows x 2 instants = 72; restore: 2 snapshots x 3 previews = 6.
-  expect(CELLS).toHaveLength(78);
-  expect(new Set(CELLS.map(label)).size).toBe(78);
+  // apply: 3 batches x 3 previews x 4 windows x 2 instants = 72; restore: 3 snapshots x 3 previews = 9.
+  expect(CELLS).toHaveLength(81);
+  expect(new Set(CELLS.map(label)).size).toBe(81);
   for (const cell of CELLS) {
     expect.soft(await observe(cell), label(cell)).toEqual(expected(cell));
   }
