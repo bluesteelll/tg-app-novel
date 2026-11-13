@@ -13,12 +13,22 @@ export interface PuzzleTypeLint<P> {
   validateSolution?(p: P, s: readonly number[]): string | null;
   /** Reach types: the posted canonical answer, or null when `p` has none. */
   solve?(p: P): readonly number[] | null;
+  /**
+   * Reach types: the play half's own `reached` (the UI's rule), so the reach pass checks `solve` against what the
+   * player's device posts on (engine plan §7.4).
+   */
+  reached?(p: P, a: readonly number[]): boolean;
+  /** Reach types: the play half's own `canonical`, what a reaching answer posts. */
+  canonical?(p: P, a: readonly number[]): readonly number[];
   /** Reach types whose goal is drawn: the hidden method, the shortest move list from `initial`. */
   witness?(p: P): readonly number[] | null;
   /** Server hint texts after build-time rendering; identity when absent. */
   renderHints?(p: P, hints: readonly { ru: string; en: string }[]): readonly { ru: string; en: string }[];
-  /** The canonical answers that reach the goal, counted up to `cap`. */
-  countSolutions(p: P, cap: 2): 0 | 1 | 2;
+  /**
+   * The canonical answers that reach the goal, counted up to `cap`; null when a bounded search stopped before it could
+   * answer (a finding, never a hang: `world/unique-solution`).
+   */
+  countSolutions(p: P, cap: 2): 0 | 1 | 2 | null;
 }
 
 type PuzzleLints = {
