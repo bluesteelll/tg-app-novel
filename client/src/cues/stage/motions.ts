@@ -140,13 +140,14 @@ export const CUE_MOTIONS: { readonly [K in Exclude<CueKey, ControlKey>]: MotionS
   'fact:taken:removed': row('glint', 420, 'box'),
   'fact:examined:added': row('tick', 360, 'box'),
   'fact:examined:removed': row('tick-back', 360, 'box'),
-  // An `onEnter` unlock (a section entry, a walk) opens a lock with no hotspot of its cause: it sweeps the stage, as the
-  // trigger's `fired` does, with no haptic.
+  // An `onEnter` unlock at a section entry (the `enter` cause; a walk carries the tap's cause and plays the default row)
+  // opens a lock with no hotspot of its cause: it sweeps the stage, as the trigger's `fired` does, with no haptic.
   'fact:open:added': row('burst', 480, 'box', { haptic: 'success', byCause: { enter: row('sweep', 600, 'stage') } }),
   'fact:open:removed': row('iris-back', 360, 'box'),
   'fact:slot:added': row('drop', 420, 'ribbon', { resolveAt: 'emit', haptic: 'light' }),
   'fact:slot:removed': row('fly', 480, 'ribbon', { with: [SLOT_PULSE] }),
-  // A room's `onEnter` (a section entry, a walk) fires with no hotspot: its trigger sweeps the stage (08b).
+  // A room's `onEnter` at a section entry (the `enter` cause) fires with no hotspot: its trigger sweeps the stage (08b). A
+  // walk's carries the tap's cause and plays the default row.
   'fact:fired:added': row('pulse', 420, 'box', { byCause: { enter: row('sweep', 600, 'stage') } }),
   'fact:fired:removed': row('pulse-back', 420, 'box'),
   'fact:visited:added': row('vignette', 600, 'stage', {

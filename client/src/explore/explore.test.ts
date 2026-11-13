@@ -1265,7 +1265,9 @@ test('reconcile: a saved work goes only with a puzzle the world lost', () => {
 });
 
 test('search: work and flags stay outside the section key', () => {
-  // Engine plan §5.2: a device's working configuration and the flags are no part of the proof key.
+  // Engine plan §5.2: a device's working configuration is no part of the proof key, nor is a flag no gating rule reads
+  // (`fl_a`: the manor declares no flag); `flags: a flag a hotspot when reads is part of the section key` pins the keyed
+  // case.
   const w = manor();
   const s = at('study', { puzzles: { [pz('drawer')]: { outcome: null, attempts: 1, hintsOpened: 0 } } });
   const key = sectionKey(w, s, MANOR);

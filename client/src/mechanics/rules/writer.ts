@@ -90,6 +90,7 @@ export function openKey(out: KernelWriter, key: HotspotKey, cause: Cause): void 
   if (lock === null || d.s.open.includes(key)) {
     return;
   }
+  // Reconcile's re-arm (GM5f D6') reads `open` as proof that `open:<key>` ran: write it only beside that fire.
   out.set('open', [...d.s.open, key], cause);
   fire(out, `open:${key}`, lock.onOpen, key, cause);
 }

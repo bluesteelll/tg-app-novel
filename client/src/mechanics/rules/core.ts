@@ -80,6 +80,7 @@ export function arrive(out: KernelWriter, room: RoomId, move: Move, cause: Cause
   if (own(d.s.lastRoom, section) !== room) {
     set(d, 'lastRoom', { ...d.s.lastRoom, [section]: room });
   }
+  // Reconcile's re-arm (GM5f D6') reads `visited` as proof that `enter:<room>` ran: write it only beside that fire.
   out.set('visited', added(d.s.visited, room), cause);
   d.effects.push({ kind: 'room', room, ...move });
   fire(out, `enter:${room}`, entry.room.onEnter, null, cause);
@@ -161,6 +162,7 @@ function tap(out: CoreWriter, key: HotspotKey, cause: Cause): void {
     case 'look':
       d.effects.push({ kind: 'look', text: h.look, at: key });
       out.cue('core', 'look', key, null);
+      // Reconcile's re-arm (GM5f D6') reads `examined` as proof that this `then` ran: write it only beside that fire.
       out.set('examined', added(d.s.examined, key), cause);
       fire(out, `then:${key}`, h.then, key, cause);
       return;
@@ -177,6 +179,7 @@ function tap(out: CoreWriter, key: HotspotKey, cause: Cause): void {
       } else {
         out.set('docs', added(d.s.docs, g.doc), cause);
       }
+      // Reconcile's re-arm (GM5f D6') reads `taken` as proof that this `then` ran: write it only beside that fire.
       out.set('taken', [...d.s.taken, key], cause);
       d.effects.push({ kind: 'got', gift: g, at: key });
       fire(out, `then:${key}`, h.then, key, cause);
@@ -298,6 +301,7 @@ function puzzleEnded(out: CoreWriter, p: PuzzleLocalId, outcome: PuzzleOutcome, 
   if (run.outcome !== null || outcome === 'abandoned') {
     return;
   }
+  // Reconcile's re-arm (GM5f D6') reads a lock puzzle's `failed` as proof that `fail:<key>` ran: write it only here.
   out.run(p, { ...run, outcome }, cause);
   const entry = d.ix.hotspots.get(key);
   const lock = entry === undefined ? null : lockOf(entry.hotspot);
@@ -399,7 +403,9 @@ function hasKernelEffect(ix: WorldIndex, fired: string): boolean {
  * GM5f D7: a trigger whose effects are all a module's has no `fired` key fact. No condition atom reads `fired`, such a
  * trigger writes only its module's facts, and flags' one effect, an idempotent `set`, is keyed by flags' own `reads`
  * wherever a gating rule reads its flag; so two states that differ only in its `fired` key (and an unread flag) have the
- * same gating successors. The test is by key (`isKernelEffect`): the proof form keeps a raw `{ set }` in its list, the
+ * same gating successors, provided every set-only trigger that has run has set its flags (the invariant): `fire` runs
+ * the set in the same reduce on every played state, and reconcile's re-arm (data/flags.ts, GM5f D6', D6'') keeps it on
+ * every reconciled one. The test is by key (`isKernelEffect`): the proof form keeps a raw `{ set }` in its list, the
  * runtime form does not, and both key alike (X9: one key, one cap). In a world without module effects such a trigger
  * never fires, so every key is as before.
  */
