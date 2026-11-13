@@ -2218,6 +2218,17 @@ test('story: a finding after a module effect names its source line', () => {
   expect(of(found, 'world/cross-section-effect').map((f) => f.message)).toEqual(['yard.sign then (section t) unlocks hall.chest of section s (X15: a trigger writes only its own section)']);
 });
 
+test('story: a gift after a module effect names its source line', () => {
+  // R2's gift site: s's mark gives t's key after its set, so the give sits at a compacted index of its kernel list; the
+  // cross-section finding names the give's source index, and so its line, not the set's.
+  const w = flagWorld();
+  list(spot(w, 'hall', 'mark', 's')['then']).push({ give: 'key' });
+  const found = of(lint(w, { knots: null }), 'world/cross-section-effect');
+  expect(found.map((f) => f.line)).toEqual([jsonLine(w, '"give": "key"')]);
+  // Non-vacuous: the set's line is another line.
+  expect(jsonLine(w, '"set": "fs"')).not.toBe(jsonLine(w, '"give": "key"'));
+});
+
 test('story: a lone flag clue is seen once its setter fires', () => {
   // A7's pin: the gate's clue is a flag the hall's inscription sets, and no gating rule reads it, so under D7 the flag
   // is in no key part and the set's successor keys as its parent; the clue is seen at the edge that sets it, as a look's
