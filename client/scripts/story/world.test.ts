@@ -633,6 +633,17 @@ test('lint: world/var-type red on fixture', () => {
   expect(found.map((f) => f.message).sort()).toEqual(['VAR it_medal_sun is declared int: the projection writes a bool (X2)', 'VAR pz_drawer is declared bool: the projection writes an int (X2)']);
 });
 
+test('story: fl_<flag> is a bool projection', () => {
+  // Module `flags` (engine plan §6.5): `fl_<f>` is written as a bool, so a VAR declared int is refused at the flag's
+  // declaration; an undeclared flag's VAR is no projection.
+  const w = base();
+  w['flags'] = { f: { section: 'manor' } };
+  const found = of(lint(w, { declared: { fl_f: 'int', fl_g: 'int' } }), 'world/var-type');
+  expect(found.map((f) => [f.line, f.message])).toEqual([[jsonLine(w, '"f": {'), 'VAR fl_f is declared int: the projection writes a bool (X2)']]);
+  // The positive control: declared bool, no finding.
+  expect(of(lint(w, { declared: { fl_f: 'bool' } }), 'world/var-type')).toEqual([]);
+});
+
 /** A lock whose third medallion sits behind that same lock; the hall's hatch, which takes the moon, is the other way out. */
 function softlockWorld(section = 's'): Json {
   return mini({
@@ -993,6 +1004,8 @@ test('story: module and type lint codes are unique and none is a DSL code', () =
     'world/view-exits E',
     'world/recipe-unknown-ref E',
     'world/recipe-scope E',
+    'world/flag-unknown-ref E',
+    'world/flag-scope E',
   ]);
   // The registry restates world.ts's VarLiteral (its types stay out of the app program): one type (tsc).
   type InputVar = WorldLintInput['declared'] extends ReadonlyMap<VarName, infer V> ? V : never;
@@ -1035,7 +1048,8 @@ test('story: a rename to a missing target / of a live source / in a cycle is ref
     { code: 'world/renamed-cycle', severity: 'E', file: FILE, line: jsonLine(cycle, '"old_a"'), message: ends('old_a') },
     { code: 'world/renamed-cycle', severity: 'E', file: FILE, line: jsonLine(cycle, '"old_b"'), message: ends('old_b') },
   ]);
-  // No world declares a flag before module `flags` (GM5f): every flag target is missing.
+  // `fl_b` is declared nowhere here (module `flags`, GM5f): the flag target is missing. A declared target passes
+  // (`story: a declared flag is a valid rename target`).
   const flag = renamedBase({ flags: { fl_a: 'fl_b' } });
   expect(renamedOf(lint(flag)).map((f) => `${f.code} ${f.line}`)).toEqual([`world/renamed-target ${jsonLine(flag, '"fl_a"')}`]);
   // The clean control: a chain to a live doc, a room, a section and a hotspot renamed onto live ones raise nothing.
@@ -2075,5 +2089,191 @@ test("conditions: a module's scope hook widens the gating scope", () => {
   expect(condFindings(input, [site], MECHANIC_DATA, [...MECHANIC_RULES, relic])).toEqual([]);
   expect(condFindings(input, [site]).map((f) => `${f.code} ${f.severity} ${f.message}`)).toEqual([
     `world/cross-section-cond E ${where}: {"held":"relic"} names no item of section manor: a gating condition reads only its own section (§4)`,
+  ]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM5f: module `flags` (engine plan §6.5): its lint, the rename target, an onFail that sets a flag
+
+/** The 1-based line of the first line starting with `start` after the first one starting with `anchor`. */
+function lineAfter(w: Json, anchor: string, start: string): number {
+  const lines = `${JSON.stringify(w, null, 2)}\n`.split('\n');
+  const from = lines.findIndex((l) => l.trimStart().startsWith(anchor));
+  const i = from < 0 ? -1 : lines.findIndex((l, j) => j > from && l.trimStart().startsWith(start));
+  if (i < 0) {
+    throw new Error(`invariant: the fixture text has a line starting with ${start} after ${anchor}`);
+  }
+  return i + 1;
+}
+
+/**
+ * Two sections: s declares `fs` and its mark sets it; t declares `ft` and its sign sets it. s gives the coin and the
+ * medal, which a recipe combines into the amulet; s's gate and chest are bare (hotspots 3 and 4 of the hall).
+ */
+function flagWorld(): Json {
+  const w = mini({
+    items: ['coin', 'medal', 'amulet', 'key'],
+    sections: {
+      s: { start: 'hall', rooms: { hall: [object('mark', null, [{ set: 'fs' }]), take('coin', { item: 'coin' }), take('medal', { item: 'medal' }), object('gate', null), object('chest', lockOf(['coin'])), leave('out')] } },
+      t: { start: 'yard', rooms: { yard: [object('sign', null, [{ set: 'ft' }]), take('key', { item: 'key' }), leave('out')] } },
+    },
+  });
+  w['flags'] = { fs: { section: 's' }, ft: { section: 't' } };
+  w['recipes'] = [{ a: 'coin', b: 'medal', gives: 'amulet', keep: [], say: null }];
+  return w;
+}
+
+const HALL = 'sections.s.rooms.hall.hotspots';
+
+test('story: a flag set outside its section is refused', () => {
+  const w = flagWorld();
+  // The set form: t's sign sets s's `fs` too (a trigger's section is its key's room's); its own `ft` beside it passes.
+  list(spot(w, 'yard', 'sign', 't')['then']).push({ set: 'fs' });
+  // The atom form, one site of each gating kind, each in s naming t's `ft`: the gate's `when` (by its hotspot's room),
+  // the chest's `uses.when` (by its target's room) and the recipe's `when` (by `recipeSections`: s gives both inputs).
+  spot(w, 'hall', 'gate', 's')['when'] = { flag: 'ft' };
+  spot(w, 'hall', 'chest', 's')['uses'] = [{ item: 'coin', when: { flag: 'ft' } }];
+  obj(list(w['recipes'])[0])['when'] = { flag: 'ft' };
+  // A visual site reads any flag of the chapter: the mark's picture follows t's `ft`, and is not refused.
+  const mark = spot(w, 'hall', 'mark', 's');
+  mark['states'] = { lit: { prop: null } };
+  mark['is'] = [{ when: { flag: 'ft' }, state: 'lit' }];
+  const found = lint(w).filter((f) => f.code.startsWith('world/flag-'));
+  const scope = (f: string, s: string, t: string): string => `flag '${f}' is declared in section ${s}: a gating condition of section ${t} reads only its own section's flags (§4)`;
+  // One finding per form and site kind, each at its line, in the file's order (the runner sorts by line).
+  expect(found.map((f) => [f.code, f.line, f.message])).toEqual([
+    ['world/flag-scope', lineAfter(w, '"id": "gate"', '"when": {'), `${HALL}.3.when: ${scope('ft', 't', 's')}`],
+    ['world/flag-scope', lineAfter(w, '"id": "chest"', '"when": {'), `${HALL}.4.uses.0.when: ${scope('ft', 't', 's')}`],
+    ['world/flag-scope', lineAfter(w, '"id": "sign"', '"set": "fs"'), "sections.t.rooms.yard.hotspots.0.then.1.set: flag 'fs' is declared in section s and set in section t: a flag is set only by its own section's effects (X15)"],
+    ['world/flag-scope', lineAfter(w, '"recipes": [', '"when": {'), `recipes.0.when: ${scope('ft', 't', 's')}`],
+  ]);
+});
+
+test('story: a flag reference names a declared flag', () => {
+  const w = flagWorld();
+  // A declaration in a section the world lacks, a set of an undeclared flag, and an undeclared flag at each site.
+  w['flags'] = { fs: { section: 's' }, ft: { section: 't' }, fx: { section: 'nowhere' } };
+  list(spot(w, 'hall', 'mark', 's')['then']).push({ set: 'ghost' });
+  spot(w, 'hall', 'gate', 's')['when'] = { flag: 'ghost' };
+  spot(w, 'hall', 'chest', 's')['uses'] = [{ item: 'coin', when: { flag: 'ghost' } }];
+  obj(list(w['recipes'])[0])['when'] = { flag: 'ghost' };
+  const mark = spot(w, 'hall', 'mark', 's');
+  mark['states'] = { lit: { prop: null } };
+  mark['is'] = [{ when: { flag: 'ghost' }, state: 'lit' }];
+  w['puzzles'] = { dial: { ...codePuzzle(), clues: [{ flag: 'ghost' }] } };
+  const found = lint(w).filter((f) => f.code.startsWith('world/flag-'));
+  const ghost = "flag 'ghost' is not declared";
+  // Each at its line, in the file's order (the runner sorts by line).
+  expect(found.map((f) => [f.code, f.line, f.message])).toEqual([
+    ['world/flag-unknown-ref', lineAfter(w, '"clues": [', '{'), `puzzles.dial.clues.0: ${ghost}`],
+    ['world/flag-unknown-ref', jsonLine(w, '"set": "ghost"'), `${HALL}.0.then.1.set: ${ghost}`],
+    ['world/flag-unknown-ref', lineAfter(w, '"is": [', '"when": {'), `${HALL}.0.is.0.when: ${ghost}`],
+    ['world/flag-unknown-ref', lineAfter(w, '"id": "gate"', '"when": {'), `${HALL}.3.when: ${ghost}`],
+    ['world/flag-unknown-ref', lineAfter(w, '"id": "chest"', '"when": {'), `${HALL}.4.uses.0.when: ${ghost}`],
+    ['world/flag-unknown-ref', jsonLine(w, '"section": "nowhere"'), "flags.fx.section: section 'nowhere' of flag 'fx' is not defined"],
+    ['world/flag-unknown-ref', lineAfter(w, '"recipes": [', '"when": {'), `recipes.0.when: ${ghost}`],
+  ]);
+});
+
+test('story: a flag set outside its section is refused at an onEnter and at a lock trigger', () => {
+  // The set form at the other kernel triggers: t's yard sets s's `fs` on entry; s's chest (a coin lock) sets t's `ft`
+  // in its onOpen and its onFail. An `enter` trigger's section is its room's, a lock trigger's its hotspot's.
+  const w = flagWorld();
+  at(w, 'sections.t.rooms.yard')['onEnter'] = [{ set: 'fs' }];
+  const lock = obj(spot(w, 'hall', 'chest', 's')['lock']);
+  lock['onOpen'] = [{ set: 'ft' }];
+  lock['onFail'] = [{ set: 'ft' }];
+  const found = lint(w).filter((f) => f.code === 'world/flag-scope');
+  const scope = (f: string, s: string, t: string): string => `flag '${f}' is declared in section ${s} and set in section ${t}: a flag is set only by its own section's effects (X15)`;
+  // Each at its line, in the file's order (the runner sorts by line).
+  expect(found.map((f) => [f.code, f.line, f.message])).toEqual([
+    ['world/flag-scope', lineAfter(w, '"onOpen": [', '"set": "ft"'), `${HALL}.4.lock.onOpen.0.set: ${scope('ft', 't', 's')}`],
+    ['world/flag-scope', lineAfter(w, '"onFail": [', '"set": "ft"'), `${HALL}.4.lock.onFail.0.set: ${scope('ft', 't', 's')}`],
+    ['world/flag-scope', lineAfter(w, '"yard": {', '"set": "fs"'), `sections.t.rooms.yard.onEnter.0.set: ${scope('fs', 's', 't')}`],
+  ]);
+});
+
+test('story: an undeclared flag in a decor picture is refused', () => {
+  // The visual site of a room's decor: the hall's rug follows the undeclared `ghost`.
+  const w = flagWorld();
+  at(w, 'sections.s.rooms.hall')['decor'] = [
+    { id: 'rug', prop: 'rug', rect: [0, 0, 100, 100], z: 1, states: { worn: { prop: null } }, is: [{ when: { flag: 'ghost' }, state: 'worn' }] },
+  ];
+  const found = lint(w).filter((f) => f.code.startsWith('world/flag-'));
+  expect(found.map((f) => [f.code, f.line, f.message])).toEqual([
+    ['world/flag-unknown-ref', lineAfter(w, '"decor": [', '"when": {'), "sections.s.rooms.hall.decor.0.is.0.when: flag 'ghost' is not declared"],
+  ]);
+});
+
+test('story: a declared flag is a valid rename target', () => {
+  // GM2b Q1: a rename's target must be live; a declared flag is (`liveIds`), so the chain to it raises nothing.
+  const w = renamedBase({ flags: { fl_a: 'fl_b' } });
+  w['flags'] = { fl_b: { section: 'manor' } };
+  expect(run(w, { declared: MANOR_VARS }).findings).toEqual([]);
+});
+
+test('story: an onFail that sets a flag is an effect', () => {
+  // D9: a lock whose fail only sets a flag (one that reveals a way on, say) has an onFail effect; the proof judges it.
+  const w = base();
+  w['flags'] = { f: { section: 'manor' } };
+  obj(spot(w, 'hall', 'gate')['lock'])['onFail'] = [{ set: 'f' }];
+  expect(of(lint(w), 'world/fail-without-effect')).toEqual([]);
+  // The control: with no effect at all the lock is refused.
+  obj(spot(w, 'hall', 'gate')['lock'])['onFail'] = [];
+  expect(of(lint(w), 'world/fail-without-effect').map((f) => f.line)).toEqual([lineAfter(w, '"id": "gate"', '"onFail": [')]);
+});
+
+test("story: a hotspot when naming another section's fact is refused", () => {
+  // W1: s's gate shows only while t's key is not held, a kernel fact of t. A player who walks in holding it sees no
+  // gate, and neither s's proof (from its entry, where the key is never held) nor s's reset can see it (X15, §4).
+  const w = flagWorld();
+  spot(w, 'hall', 'gate', 's')['when'] = { not: { held: 'key' } };
+  expect(of(lint(w), 'world/cross-section-cond').map((f) => [f.line, f.message])).toEqual([
+    [lineAfter(w, '"id": "gate"', '"when": {'), `${HALL}.3.when: {"held":"key"} names no item of section s: a gating condition reads only its own section (§4)`],
+  ]);
+  // The same-section control: s's own coin raises nothing.
+  spot(w, 'hall', 'gate', 's')['when'] = { not: { held: 'coin' } };
+  expect(of(lint(w), 'world/cross-section-cond')).toEqual([]);
+});
+
+test('story: a finding after a module effect names its source line', () => {
+  // GM3c O2: the decoder routes a `set` out of its kernel list, so a kernel effect after it sits at a compacted index;
+  // a finding names the effect's source index, and so the author's line, not the set's.
+  const w = flagWorld();
+  list(spot(w, 'hall', 'mark', 's')['then']).push({ give: 'nope' });
+  list(spot(w, 'yard', 'sign', 't')['then']).push({ unlock: 'hall.chest' });
+  const found = lint(w, { knots: null });
+  const lines = (code: Finding['code']): number[] => of(found, code).map((f) => f.line);
+  expect([lines('world/unknown-ref'), lines('world/cross-section-effect')]).toEqual([[jsonLine(w, '"give": "nope"')], [jsonLine(w, '"unlock": "hall.chest"')]]);
+  expect(of(found, 'world/cross-section-effect').map((f) => f.message)).toEqual(['yard.sign then (section t) unlocks hall.chest of section s (X15: a trigger writes only its own section)']);
+});
+
+test('story: a gift after a module effect names its source line', () => {
+  // R2's gift site: s's mark gives t's key after its set, so the give sits at a compacted index of its kernel list; the
+  // cross-section finding names the give's source index, and so its line, not the set's.
+  const w = flagWorld();
+  list(spot(w, 'hall', 'mark', 's')['then']).push({ give: 'key' });
+  const found = of(lint(w, { knots: null }), 'world/cross-section-effect');
+  expect(found.map((f) => f.line)).toEqual([jsonLine(w, '"give": "key"')]);
+  // Non-vacuous: the set's line is another line.
+  expect(jsonLine(w, '"set": "fs"')).not.toBe(jsonLine(w, '"give": "key"'));
+});
+
+test('story: a lone flag clue is seen once its setter fires', () => {
+  // A7's pin: the gate's clue is a flag the hall's inscription sets, and no gating rule reads it, so under D7 the flag
+  // is in no key part and the set's successor keys as its parent; the clue is seen at the edge that sets it, as a look's
+  // `examined` is (`unseenClues` observes every reported successor, known ones included).
+  const lone = (set: boolean): Json => {
+    const w = base();
+    w['flags'] = { f: { section: 'manor' } };
+    spot(w, 'hall', 'inscription')['then'] = set ? [{ set: 'f' }] : [];
+    at(w, 'puzzles.gate')['clues'] = [{ flag: 'f' }];
+    return w;
+  };
+  expect(of(lint(lone(true)), 'world/clue-reachable')).toEqual([]);
+  // The negative control (non-vacuity): without the set no state holds `f`, and the clue is refused at its line.
+  const unset = lone(false);
+  expect(of(lint(unset), 'world/clue-reachable').map((f) => [f.line, f.message])).toEqual([
+    [clueLine(unset, 'gate', 0), `puzzle 'gate': clue {"flag":"f"} holds in no state of section manor reached before 'gate' is solved or failed (§7.3)`],
   ]);
 });

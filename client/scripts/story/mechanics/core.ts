@@ -36,8 +36,8 @@ function liveIds(w: WorldSource): Readonly<Record<Kind, ReadonlySet<string>>> {
     rooms,
     sections: new Set(Object.keys(w.sections)),
     hotspots,
-    // No world declares a flag before module `flags` (GM5f): every flag target is refused until then (cut D6).
-    flags: new Set(),
+    // Module `flags`' declarations (engine plan §6.5): a declared flag is a live rename target.
+    flags: new Set(Object.keys(w.mods.flags.flags)),
     puzzles: new Set(Object.keys(w.puzzles)),
   };
 }

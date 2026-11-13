@@ -12,6 +12,7 @@ import { condReads } from '../data/conditions.ts';
 import type { UseData, UseRule } from '../data/use.ts';
 import { holds } from './conditions.ts';
 import { insertItem } from './core.ts';
+import { present } from './flags.ts';
 import { added } from './writer.ts';
 import type { KernelWriter } from './writer.ts';
 
@@ -30,7 +31,10 @@ function firstRule(w: KernelWorld, s: WorldState, rules: readonly UseRule[], ite
   return rules.findIndex((r) => r.item === item && (r.when === null || holds(w, s, r.when)));
 }
 
-/** A hotspot the player sees in the current room of a current section with no event knot pending (a taken take is gone). */
+/**
+ * A hotspot the player sees in the current room of a current section with no event knot pending (a taken take is gone,
+ * and a hidden one is absent: its `when`, module `flags`).
+ */
 function visible(w: KernelWorld, s: WorldState, target: HotspotKey): boolean {
   const entry = worldIndex(w).hotspots.get(target);
   return (
@@ -38,7 +42,8 @@ function visible(w: KernelWorld, s: WorldState, target: HotspotKey): boolean {
     s.pendingStory.length === 0 &&
     entry !== undefined &&
     entry.room === s.room &&
-    !(entry.hotspot.kind === 'take' && s.taken.includes(target))
+    !(entry.hotspot.kind === 'take' && s.taken.includes(target)) &&
+    present(w, s, target)
   );
 }
 

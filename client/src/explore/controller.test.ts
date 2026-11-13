@@ -94,6 +94,8 @@ type WorldSpec = {
   docs?: string[];
   puzzles?: Record<string, Json>;
   sections: Record<string, { start: string; rooms: Record<string, Json> }>;
+  /** Module `flags`' declarations: flag -> its section. */
+  flags?: Record<string, string>;
 };
 
 const V1 = '1111111111111111';
@@ -106,6 +108,7 @@ function world(spec: WorldSpec, version = V1): WorldPublic {
     docs: Object.fromEntries((spec.docs ?? []).map((id) => [id, { title: txt(`title ${id}`), body: [txt(`p1 ${id}`), txt(`p2 ${id}`)] }])),
     puzzles: spec.puzzles ?? {},
     sections: Object.fromEntries(Object.entries(spec.sections).map(([id, s]) => [id, { start: s.start, bgm: null, rooms: s.rooms }])),
+    ...(spec.flags === undefined ? {} : { flags: Object.fromEntries(Object.entries(spec.flags).map(([f, section]) => [f, { section }])) }),
   };
   const r = decodeWorldSource(raw);
   if (!r.ok) {
@@ -1417,3 +1420,106 @@ test('controller: inventory and lock views follow the state', () => {
   expect(h.view.lock).toBeNull();
 });
 
+// ---------------------------------------------------------------------------------------------------------------
+// GM5f: presence (module `flags`, engine plan §6.5): a hotspot's `when` decides whether it is shown and reachable
+
+/** `h` with a presence `when`. */
+const when = (h: Json, cond: unknown): Json => ({ ...h, when: cond });
+
+test('controller: a gated hotspot shows once its flag is set', () => {
+  // a -> b; b's way back to a and its box show only once b's look `mark` has set `f`.
+  const h = harness(
+    world({
+      flags: { f: 'gate' },
+      sections: {
+        gate: {
+          start: 'a',
+          rooms: {
+            a: room('a', [exit('to_b', 'b')]),
+            b: room('b', [{ ...look('mark'), then: [{ set: 'f' }] }, when(exit('to_a', 'a'), { flag: 'f' }), when(object('box', null), { flag: 'f' })]),
+          },
+        },
+      },
+    }),
+  );
+  h.c.enter(sec('gate'), EMPTY_WORLD_STATE);
+  h.c.dispatch(tap('a.to_b'));
+  expect(h.view.hotspots.map((v) => v.key)).toEqual(['b.mark']);
+  // The way back is hidden, so Back routes nowhere and dispatches nothing.
+  const before = h.effects.length;
+  expect(h.c.back()).toBe(false);
+  expect(h.effects.length).toBe(before);
+  h.c.dispatch(tap('b.mark'));
+  expect(h.c.state().flags).toEqual(['f']);
+  expect(h.view.hotspots.map((v) => v.key)).toEqual(['b.mark', 'b.to_a', 'b.box']);
+});
+
+/** One room: a take each for the gear and the cog, and a two-slot lock for them that `cond` (when given) gates. */
+function gearRoom(cond?: unknown): WorldPublic {
+  const lk = object('lk', lock(['gear', 'cog']));
+  return world({
+    items: { gear: 'gear', cog: 'coin' },
+    sections: {
+      s: { start: 'r', rooms: { r: room('r', [take('gear', { item: 'gear' }), take('cog', { item: 'cog' }), cond === undefined ? lk : when(lk, cond), exit('out', { story: 'end' })]) } },
+    },
+  });
+}
+
+test('controller: the lock panel closes when its lock goes absent', () => {
+  // The lock shows only while the gear is held: inserting the gear hides it, and its panel closes with it.
+  const h = harness(gearRoom({ held: 'gear' }));
+  h.c.enter(sec('s'), EMPTY_WORLD_STATE);
+  h.c.dispatch(tap('r.gear'));
+  h.c.dispatch(tap('r.lk'));
+  expect(h.view.lock?.key).toBe('r.lk');
+  h.c.dispatch({ kind: 'insert', hotspot: k('r.lk'), item: 'gear' as ItemId });
+  expect(h.c.state().slots).toEqual({ 'r.lk': ['gear', null] });
+  expect(h.view.hotspots.map((v) => v.key)).toEqual(['r.cog', 'r.out']);
+  expect(h.view.lock).toBeNull();
+  // The positive control: the same lock without a `when` keeps its panel open, one slot still empty.
+  const plain = harness(gearRoom());
+  plain.c.enter(sec('s'), EMPTY_WORLD_STATE);
+  plain.c.dispatch(tap('r.gear'));
+  plain.c.dispatch(tap('r.lk'));
+  plain.c.dispatch({ kind: 'insert', hotspot: k('r.lk'), item: 'gear' as ItemId });
+  expect([plain.view.lock?.key, plain.view.lock?.slots.map((x) => x?.id ?? null)]).toEqual(['r.lk', ['gear', null]]);
+});
+
+test('controller: Back disarms when the way back goes absent', () => {
+  // p -> r; r's way back shows only while `f` is unset, and r's look `mark` sets it.
+  const two = (): WorldPublic =>
+    world({
+      flags: { f: 'w' },
+      sections: {
+        w: {
+          start: 'p',
+          rooms: {
+            p: room('p', [exit('to_r', 'r')]),
+            r: room('r', [{ ...look('mark'), then: [{ set: 'f' }] }, look('plain'), when(exit('to_p', 'p'), { not: { flag: 'f' } })]),
+          },
+        },
+      },
+    });
+  const h = harness(two());
+  h.c.enter(sec('w'), EMPTY_WORLD_STATE);
+  const calls: boolean[] = [];
+  h.c.onPath((walkable) => calls.push(walkable));
+  h.c.dispatch(tap('p.to_r'));
+  expect(calls).toEqual([false, true]);
+  // The way back goes absent: Back disarms, and does nothing (as at a locked reverse exit).
+  h.c.dispatch(tap('r.mark'));
+  expect(calls).toEqual([false, true, false]);
+  const before = h.effects.length;
+  expect(h.c.back()).toBe(false);
+  expect(h.effects.length).toBe(before);
+  // The positive control: a look that sets nothing keeps Back armed, and Back walks to p.
+  const plain = harness(two());
+  plain.c.enter(sec('w'), EMPTY_WORLD_STATE);
+  const armed: boolean[] = [];
+  plain.c.onPath((walkable) => armed.push(walkable));
+  plain.c.dispatch(tap('p.to_r'));
+  plain.c.dispatch(tap('r.plain'));
+  expect(armed).toEqual([false, true]);
+  expect(plain.c.back()).toBe(true);
+  expect(plain.c.state().room).toBe('p');
+});

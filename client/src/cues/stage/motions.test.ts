@@ -10,10 +10,10 @@ import { MECHANIC_DATA } from '../../mechanics/data/index.ts';
 import { MECHANIC_RULES } from '../../mechanics/rules/index.ts';
 import type { PuzzleTypeData } from '../../puzzles/rules/index.ts';
 import { CORE_CONTROLS, FRAME_OPEN_MS, MIN_VISIBLE_MS, MOVE_HOWS, PUZZLE_CUES, UI_STATE_CUES } from '../types.ts';
-import type { ControlCue, CueKey } from '../types.ts';
+import type { ControlCue, Cue, CueKey } from '../types.ts';
 import { keyframesVisible, LAYER_MOTIONS } from '../visible.ts';
 import type { LayerMotion } from '../visible.ts';
-import { CUE_MOTIONS, declaredControls, UI_MOTIONS, uiMotion } from './motions.ts';
+import { CUE_MOTIONS, declaredControls, motionOf, UI_MOTIONS, uiMotion } from './motions.ts';
 import type { MotionSpec, WithMotion } from './motions.ts';
 import { PRESET_SITE, PRESETS } from './presets.ts';
 
@@ -184,7 +184,7 @@ const FIELD_FACTS = {
   pendingStory: ['story'],
   puzzles: ['solved', 'failed', 'abandoned', 'attempt', 'hint'],
   unproved: [],
-  flags: [],
+  flags: ['flag'],
 } as const satisfies Record<keyof WorldState, readonly FactKind[]>;
 
 test('cues: every world field is a fact kind or silent', () => {
@@ -271,5 +271,16 @@ test('motions: a refused combine shakes both ribbon items with ONE error haptic'
   expect(specs.map((s) => [s?.with, s?.byCause])).toEqual([
     [undefined, undefined],
     [undefined, undefined],
+  ]);
+});
+
+test('motions: a flag cue sweeps the stage', () => {
+  // 08b: a flag names no hotspot, so its set sweeps the stage; its removal (a section reset) sweeps back.
+  const rows: Readonly<Record<string, MotionSpec>> = CUE_MOTIONS;
+  expect(Object.keys(rows).filter((key) => key.startsWith('fact:flag:'))).toEqual(['fact:flag:added', 'fact:flag:removed']);
+  const cue = (change: 'added' | 'removed'): Cue => ({ kind: 'fact', fact: { kind: 'flag', id: 'f' }, change, cause: { verb: 'tap', at: null, item: null, via: null } });
+  expect([motionOf(cue('added')), motionOf(cue('removed'))].map((m) => [m.preset, m.target])).toEqual([
+    ['sweep', 'stage'],
+    ['sweep-back', 'stage'],
   ]);
 });

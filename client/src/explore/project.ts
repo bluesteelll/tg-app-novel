@@ -1,8 +1,8 @@
 // The outcome channel (docs/PUZZLES-PLAN.md X2): ink values derived from the world state, written by
 // StoryRunner.enter() only for the variables the chapter declares. Pure (X4).
+import type { KernelWorld } from '../mechanics/contract.ts';
 import type { InkScalar } from '../story/catalog.ts';
 import type { PuzzleLocalId, VarName } from '../story/staging.ts';
-import type { WorldPublicBody } from '../world/types.ts';
 import type { PuzzleOutcome, WorldState } from './state.ts';
 
 /** `pz_<puzzle>`: 0 none, 1 solved, 2 failed, 3 abandoned. */
@@ -10,9 +10,10 @@ const OUTCOME_CODE: Readonly<Record<PuzzleOutcome, number>> = { solved: 1, faile
 
 /**
  * `pz_<puzzle>` (int), `pz_<puzzle>_hints` (int, tiers opened), `it_<item>` (bool, ever obtained: held or used),
- * `dc_<doc>` (bool, found), each only when `declared` holds its name.
+ * `dc_<doc>` (bool, found), `fl_<flag>` (bool, set: module `flags`, engine plan §6.5), each only when `declared` holds
+ * its name. The flags are read through `w.mods?.flags`: the soft-lock proof's mods-less body declares none.
  */
-export function project(w: WorldPublicBody, s: WorldState, declared: ReadonlySet<VarName>): Record<VarName, InkScalar> {
+export function project(w: KernelWorld, s: WorldState, declared: ReadonlySet<VarName>): Record<VarName, InkScalar> {
   const out: Record<VarName, InkScalar> = {};
   const write = (name: string, value: InkScalar): void => {
     const v = name as VarName; // a projection name is an ink identifier by construction (X2)
@@ -34,6 +35,10 @@ export function project(w: WorldPublicBody, s: WorldState, declared: ReadonlySet
   const found = new Set<string>(s.docs);
   for (const d of Object.keys(w.docs)) {
     write(`dc_${d}`, found.has(d));
+  }
+  const set = new Set<string>(s.flags);
+  for (const f of Object.keys(w.mods?.flags?.flags ?? {})) {
+    write(`fl_${f}`, set.has(f));
   }
   return out;
 }
