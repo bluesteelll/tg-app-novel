@@ -15,6 +15,7 @@ import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
 import { ROOM_SOURCE, cover, toStage } from '../geom/cover.ts';
+import { mechT } from '../i18n/mechanics.ts';
 import type { ChunkError, PuzzleUiProps } from '../puzzles/registry.ts';
 import { PUZZLE_TYPES } from '../puzzles/rules/index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from '../puzzles/rules/index.ts';
@@ -2979,6 +2980,51 @@ test('yields: a move away from a reached answer cancels its pending post', async
   r.yields.dispose();
 });
 
+test('yields: a mismatch resets the device and shows the update toast', async () => {
+  // A wrong reply to a reach post (engine plan §7.4): the device returns to its start answer with its one cue,
+  // `puzzle:reset`, which ends the answer hold; the sticky update toast and a console line follow. Nothing was counted:
+  // no attempt in the world, no autosave, no report, and a Try afterwards posts nothing.
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const answer = deferred<void>();
+    const r = rig({ world: reachWorld(2), puzzleTypes: REACH_TYPES, attempts: [WRONG], attemptGate: answer.promise });
+    await r.yields.onYield({ kind: 'puzzle', puzzle: TRACE_PZ, then: AFTER });
+    const saves = (): number => r.log.filter((l) => l === 'autosave').length;
+    const before = { saves: saves(), events: r.events.length };
+    let mark = r.cues.length;
+    await script('a mismatch', r, [
+      ['the stroke that reaches', () => r.yields.host.onchange([...DRAWN]), []],
+      ['onreach posts', () => r.yields.host.onreach?.(CANONICAL), ['+answer']],
+      [
+        'the reply',
+        () => {
+          mark = r.cues.length;
+          answer.resolve();
+        },
+        ['-answer'],
+      ],
+    ]);
+    expect(frameKeys(r, mark)).toEqual(['puzzle:reset']);
+    const f = r.puzzle.frame;
+    expect(f === null ? null : { answer: f.answer, awaiting: f.awaiting, busy: f.busy, line: f.line, attemptsLeft: f.attemptsLeft }).toEqual({
+      answer: [0, 0, 0],
+      awaiting: false,
+      busy: false,
+      line: 'idle',
+      attemptsLeft: 2,
+    });
+    expect(r.vm.toasts).toEqual([{ kind: 'note', key: 'mech.content_updated', message: mechT('ru', 'mech.content_updated'), sticky: true }]);
+    expect(errors.mock.calls).toEqual([['yields: reach-mismatch', 'trace']]);
+    expect([saves(), r.events.length, r.yields.world().puzzles[TRACE_PZ]?.attempts ?? 0]).toEqual([before.saves, before.events, 0]);
+    r.yields.host.ontry();
+    await settle();
+    expect(r.posted).toEqual([CANONICAL]);
+    r.yields.dispose();
+  } finally {
+    errors.mockRestore();
+  }
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // GM3p: the hint ladder has one writer, and every answer plays its cue (engine plan §8.1 "The hint ladder")
 
@@ -3347,7 +3393,8 @@ const FRAME_FIELD_CUES: { readonly [K in keyof PuzzleFrameView]-?: Covering } = 
   params: FIXED,
   answer: { keys: () => ['puzzle:input', 'puzzle:reset', 'puzzle:demo'] },
   busy: { keys: (v) => (v === true ? ['puzzle:checking'] : SETTLE_KEYS) },
-  line: { keys: (v) => (v === 'checking' ? ['puzzle:checking'] : v === 'idle' ? ['puzzle:ready', 'puzzle:renewed'] : [`puzzle:${String(v)}`]) },
+  // GM7r: a mismatch returns the frame to input through its reset (one cue per return to input).
+  line: { keys: (v) => (v === 'checking' ? ['puzzle:checking'] : v === 'idle' ? ['puzzle:ready', 'puzzle:renewed', 'puzzle:reset'] : [`puzzle:${String(v)}`]) },
   attemptsLeft: { keys: () => SETTLE_KEYS },
   retryAfter: { keys: () => ['puzzle:rate-limited', 'puzzle:ready', 'puzzle:checking'] },
   // GM7r: a reach report sets it; only a move away (its input) and a mismatch (its reset) clear it.
@@ -3717,27 +3764,37 @@ test('yields: every visible change of the puzzle view plays a cue', async () => 
   }
 
   // GM7r: a reach frame (the fixture reach type through `h.puzzleTypes`): strokes, the report and its post, an offline
-  // reply and Try's re-post, a 429 whose zero re-posts, a 429 whose wait a move away empties, then a report again.
+  // reply and Try's re-post, a 429 whose zero re-posts, a 429 whose wait a move away empties, a report answered with a
+  // mismatch (its reset), then a report answered correct.
   {
-    const r = rig({ world: reachWorld(), puzzleTypes: REACH_TYPES });
-    const q = heldRequests(r);
-    r.puzzle.host = HOST;
-    await gate(r, log, [
-      ['a reach frame, its chunks in', linear(r, TRACE_PZ)],
-      ['a stroke', () => r.yields.host.onchange([1, 2, 0])],
-      ['the stroke that reaches', () => r.yields.host.onchange([...DRAWN])],
-      ['onreach posts its canonical answer', () => r.yields.host.onreach?.(CANONICAL)],
-      ['answered network', () => q.attempt(NETWORK)],
-      ['Try re-posts the reached answer', () => r.yields.host.ontry()],
-      ['answered rate-limited', () => q.attempt(httpError(429, 1))],
-      ['the countdown ends with a re-post', () => r.clock.advance(1000)],
-      ['answered rate-limited again', () => q.attempt(httpError(429, 1))],
-      ['a move away during the countdown', () => r.yields.host.onchange([1, 2, 0])],
-      ['the countdown ends with nothing to post', () => r.clock.advance(1000)],
-      ['the stroke that reaches again', () => r.yields.host.onchange([...DRAWN])],
-      ['onreach posts again', () => r.yields.host.onreach?.(CANONICAL)],
-    ]);
-    r.yields.dispose();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {}); // the mismatch's console line
+    try {
+      const r = rig({ world: reachWorld(), puzzleTypes: REACH_TYPES });
+      const q = heldRequests(r);
+      r.puzzle.host = HOST;
+      await gate(r, log, [
+        ['a reach frame, its chunks in', linear(r, TRACE_PZ)],
+        ['a stroke', () => r.yields.host.onchange([1, 2, 0])],
+        ['the stroke that reaches', () => r.yields.host.onchange([...DRAWN])],
+        ['onreach posts its canonical answer', () => r.yields.host.onreach?.(CANONICAL)],
+        ['answered network', () => q.attempt(NETWORK)],
+        ['Try re-posts the reached answer', () => r.yields.host.ontry()],
+        ['answered rate-limited', () => q.attempt(httpError(429, 1))],
+        ['the countdown ends with a re-post', () => r.clock.advance(1000)],
+        ['answered rate-limited again', () => q.attempt(httpError(429, 1))],
+        ['a move away during the countdown', () => r.yields.host.onchange([1, 2, 0])],
+        ['the countdown ends with nothing to post', () => r.clock.advance(1000)],
+        ['the stroke that reaches again', () => r.yields.host.onchange([...DRAWN])],
+        ['onreach posts again', () => r.yields.host.onreach?.(CANONICAL)],
+        ['answered wrong: a mismatch', () => q.attempt(WRONG)],
+        ['the stroke that reaches once more', () => r.yields.host.onchange([...DRAWN])],
+        ['onreach posts once more', () => r.yields.host.onreach?.(CANONICAL)],
+        ['answered correct', () => q.attempt(RIGHT)],
+      ]);
+      r.yields.dispose();
+    } finally {
+      errors.mockRestore();
+    }
   }
 
   expect(log.problems).toEqual([]);
@@ -3751,7 +3808,7 @@ test('yields: every visible change of the puzzle view plays a cue', async () => 
     ...ladderFields.filter((f) => 'keys' in LADDER_FIELD_CUES[f]).map((f) => `ladder.${f}`),
   ].sort();
   expect([...log.moved].sort()).toEqual(covered);
-  expect(log.steps).toBe(106);
+  expect(log.steps).toBe(110);
 });
 
 test('yields: a screens change closes a panel before it opens the next', async () => {

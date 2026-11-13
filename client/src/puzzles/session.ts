@@ -3,7 +3,8 @@
 // unlocked tiers of `getPuzzle`, or the hint port's answer - and lives in this session's memory only: it is never
 // written to any storage, and no tier is unlocked from client state (principles 0, 1). The session never prices a
 // hint and never starts a purchase (M27). It dispatches `attempt-failed` and `hint-opened`; `puzzle-ended` is
-// GameSession's, from `onEnd` (PZ F6 step 6), because an explore close ends the session with no outcome.
+// GameSession's, from `onEnd` (PZ F6 step 6), because an explore close ends the session with no outcome. A wrong reply
+// to a reach type's post is a `mismatch` (engine plan §7.4): the answer resets, and nothing is counted or dispatched.
 import { puzzleId } from '../api/endpoints.ts';
 import type { Endpoints, PuzzleId } from '../api/endpoints.ts';
 import type { PuzzleStatus } from '../api/generated/api.ts';
@@ -20,8 +21,15 @@ import type { PuzzleInstance, PuzzleTypes } from './rules/index.ts';
 
 /** An exploration puzzle is an overlay that closes; a linear puzzle is a mode with no BackButton (X8). */
 export type PuzzleMode = 'linear' | 'explore';
-/** What one Try answered; `attemptsLeft` is null without an attempt limit. */
-export type AttemptResult = { kind: 'correct' } | { kind: 'wrong'; attemptsLeft: number | null } | { kind: 'failed' };
+/**
+ * What one Try answered; `attemptsLeft` is null without an attempt limit. `mismatch`: a reach type's posted answer was
+ * wrong, so the content changed under this client (a reach type has no posted wrong); it counts no attempt.
+ */
+export type AttemptResult =
+  | { kind: 'correct' }
+  | { kind: 'wrong'; attemptsLeft: number | null }
+  | { kind: 'failed' }
+  | { kind: 'mismatch' };
 /**
  * Why a call has no answer. `network` counts nothing; `invalid`: the shape pre-check refused the answer and nothing
  * was sent; `closed`: the session ended or was disposed, and a late answer was dropped.
@@ -73,7 +81,10 @@ export interface PuzzleSession {
   readonly check: 'commit' | 'reach';
   answer(): readonly number[];
   setAnswer(a: readonly number[]): void;
-  /** Single-flight; a wrong answer dispatches `attempt-failed`, and the attempt limit ends the session `failed`. */
+  /**
+   * Single-flight; a wrong answer dispatches `attempt-failed`, and the attempt limit ends the session `failed`. A wrong
+   * reply to a reach type's post is a `mismatch`: the answer resets to the start answer, with no attempt and no dispatch.
+   */
   attempt(): Promise<Result<AttemptResult, PuzzleError>>;
   /** `GET /api/puzzles/{id}`, single-flight; the texts stay in this session's memory. */
   hints(): Promise<Result<HintLadder, PuzzleError>>;
@@ -225,6 +236,12 @@ class Session implements PuzzleSession {
       this.#solved = true;
       this.#end('solved');
       return ok({ kind: 'correct' });
+    }
+    if (this.#instance.check === 'reach') {
+      // `solved` above stays the server's truth (the ladder's locked tiers read unavailable); `correct: false` here is
+      // never the player's wrong: the device starts over, and nothing is counted or dispatched.
+      this.#answer = this.#instance.initial();
+      return ok({ kind: 'mismatch' });
     }
     this.#attempts += 1;
     this.#deps.dispatch({ kind: 'attempt-failed', puzzle: this.local });

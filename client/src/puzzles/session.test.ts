@@ -471,6 +471,47 @@ test('session: a fixture type passed as types opens a session', async () => {
   expect(r).toEqual({ ok: false, error: { kind: 'unknown-puzzle', puzzle: 'gate' } });
 });
 
+/** A fixture reach type outside PUZZLE_TYPES (engine plan §7.4): three cells of 0..3, all 0 at the start. */
+const TRACE: PuzzleTypeData<'trace', { readonly cells: number }> = {
+  type: 'trace',
+  check: 'reach',
+  goal: 'shown',
+  presentation: 'overlay',
+  wrong: 'none',
+  commit: 'control',
+  decodeParams: () => ({ ok: true, value: { cells: 3 } }),
+  answerShape: () => ({ len: 3, max: 3 }),
+  initial: () => [0, 0, 0],
+  startShown: () => null,
+};
+
+test('session: a wrong reply to a reach post is a mismatch and counts no attempt', async () => {
+  // A reach type has no posted wrong (engine plan §7.4): a server `correct: false` on its post means the content changed
+  // under a stale client, `{ correct: false, solved: true }` included (N3). The answer resets to the start answer, no
+  // attempt is counted and nothing is dispatched, so even a limit of one never ends the session `failed`. The cast: a
+  // fixture's type lies outside PuzzleType, and only a test builds such a world (the TUMBLER re-type above).
+  const base = worldWith({ maxAttempts: 1 });
+  const world = { ...base, puzzles: { gate: { ...base.puzzles[pz('gate')], type: 'trace', params: { cells: 3 } } } } as unknown as WorldPublic;
+  const { s, api, dispatch, ends } = rig({ world, types: [...PUZZLE_TYPES, TRACE] });
+  expect(s.check).toBe('reach');
+  s.setAnswer([3, 2, 1]);
+  expect(await s.attempt()).toEqual(ok({ kind: 'mismatch' }));
+  expect(s.answer()).toEqual([0, 0, 0]);
+  s.setAnswer([3, 2, 1]);
+  api.postAttempt.mockResolvedValueOnce(ok({ correct: false, solved: true, attemptsLeft: null, spent: false }));
+  expect(await s.attempt()).toEqual(ok({ kind: 'mismatch' }));
+  expect(s.answer()).toEqual([0, 0, 0]);
+  expect(dispatch).not.toHaveBeenCalled();
+  expect(ends).toEqual([]);
+  expect(api.postAttempt.mock.calls.map(([, answer]) => answer)).toEqual([
+    [3, 2, 1],
+    [3, 2, 1],
+  ]);
+  // The server holds it solved: after a status, the ladder's tiers that are not unlocked read unavailable.
+  await s.hints();
+  expect(s.ladder().tiers.map((t) => t.state)).toEqual(['unavailable', 'unavailable', 'unavailable']);
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // Hints
 

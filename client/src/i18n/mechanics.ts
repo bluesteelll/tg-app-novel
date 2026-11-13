@@ -1,14 +1,16 @@
-// The mechanics' UI strings (engine plan §6.1 UI, 12c GM3u): the item ribbon's label and the text a refused use shows
-// when neither its item nor its room says why. Their own table, imported only by app/yields.ts (the engine) and the
-// explore UI (the ribbon), so these texts ship with the engine and never in the entry (`arch: the mechanics string
-// table loads with the engine, never with the entry`). Russian first (its keys are the contract), English second; both
-// are drafts for the owner's copy pass (OPEN-QUESTIONS Q61, RULINGS 226 Q6).
+// The mechanics' UI strings (engine plan §6.1 UI, 12c GM3u; §7.4 GM7r): the item ribbon's label, the text a refused use
+// shows when neither its item nor its room says why, and the update toast of a reach mismatch. Their own table,
+// imported only by app/yields.ts (the engine) and the explore UI (the ribbon), so these texts ship with the engine and
+// never in the entry (`arch: the mechanics string table loads with the engine, never with the entry`). Russian first
+// (its keys are the contract), English second; the first two are drafts for the owner's copy pass (OPEN-QUESTIONS Q61,
+// RULINGS 226 Q6); `mech.content_updated` is the owner's adopted copy (Q15e, RULINGS 154).
 import type { Lang } from './index.ts';
 
 /** Every mechanics string, in Russian. */
 export const mechanicsRu = {
   'mech.ribbon': 'Предметы',
   'mech.use_refused': 'Ничего не происходит.',
+  'mech.content_updated': 'Игра обновилась. Закройте её и откройте снова.',
 } as const;
 
 /** A key of the mechanics table; mechanicsRu defines the set. */
@@ -18,6 +20,7 @@ export type MechanicsKey = keyof typeof mechanicsRu;
 export const mechanicsEn: Readonly<Record<MechanicsKey, string>> = {
   'mech.ribbon': 'Items',
   'mech.use_refused': 'Nothing happens.',
+  'mech.content_updated': 'The game was updated. Close it and open it again.',
 };
 
 const TABLES: Readonly<Record<Lang, Readonly<Record<MechanicsKey, string>>>> = { ru: mechanicsRu, en: mechanicsEn };

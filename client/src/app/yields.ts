@@ -1186,6 +1186,16 @@ export function createYields(h: YieldsHost): Yields {
           puzzleCue(o, 'wrong');
           h.autosave(); // F9: the attempts count survives a reload
           return;
+        case 'mismatch':
+          // A reach post answered wrong: the content changed under this client (engine plan §7.4). The device returns
+          // to its start answer through its one reset cue; nothing was counted, so nothing is saved; the sticky toast
+          // asks for a restart, and the console keeps the trace (no report).
+          o.reach = null;
+          setFrame(o, { busy: false, line: 'idle', answer: o.session.answer(), awaiting: false });
+          puzzleCue(o, 'reset');
+          console.error('yields: reach-mismatch', o.local);
+          vm.showToast({ kind: 'note', key: 'mech.content_updated', message: mechT(vm.lang, 'mech.content_updated'), sticky: true });
+          return;
         default: {
           const _never: never = r.value;
           return _never;
