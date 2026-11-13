@@ -269,6 +269,37 @@ const report = (e: AssetError): void => {
   console.warn('scene: asset skipped', e);
 };
 
+/** The mounted parts a step runs over: what `apply` and `restore` touch (a test builds them without a renderer). */
+type StageParts<T> = {
+  readonly registry: Pick<AssetRegistry<T>, 'previewing' | 'releaseHolder'>;
+  readonly executor: Pick<Executor<T>, 'apply' | 'restore'>;
+};
+
+/** `SceneController.apply` over the mounted parts. */
+export function applyStep<T>(
+  c: StageParts<T>,
+  batch: readonly VisualCommand[],
+  o: { instant: boolean; window?: StageWindow; preview?: boolean },
+): Promise<void> {
+  const { executor } = c;
+  // Shots §5.8 step 1: the executor takes every changed slot synchronously inside apply, so the scope marks them.
+  const done =
+    o.preview === true
+      ? c.registry.previewing(() => executor.apply(batch, o.window === undefined ? { instant: o.instant } : { instant: o.instant, window: { ...o.window, preview: true } }))
+      : executor.apply(batch, o);
+  // D7: the slot holders are taken by now, so the batch's ensure holder can go.
+  c.registry.releaseHolder(ENSURE_HOLDER);
+  return done;
+}
+
+/** `SceneController.restore` over the mounted parts. */
+export function restoreStep<T>(c: StageParts<T>, s: SceneSnapshot, o?: { preview?: boolean }): Promise<void> {
+  const { executor } = c;
+  const done = o?.preview === true ? c.registry.previewing(() => executor.restore(s)) : executor.restore(s);
+  c.registry.releaseHolder(ENSURE_HOLDER);
+  return done;
+}
+
 export function createSceneController(): SceneController {
   let state: 'idle' | 'mounting' | 'mounted' | 'destroyed' = 'idle';
   let core: Mounted | null = null;
@@ -539,30 +570,13 @@ export function createSceneController(): SceneController {
       }
     },
     apply(batch, o) {
-      if (core === null) {
-        return Promise.resolve();
-      }
-      const { executor } = core;
-      // Shots §5.8 step 1: the executor takes every changed slot synchronously inside apply, so the scope marks them.
-      const done =
-        o.preview === true
-          ? core.registry.previewing(() => executor.apply(batch, o.window === undefined ? { instant: o.instant } : { instant: o.instant, window: { ...o.window, preview: true } }))
-          : executor.apply(batch, o);
-      // D7: the slot holders are taken by now, so the batch's ensure holder can go.
-      core.registry.releaseHolder(ENSURE_HOLDER);
-      return done;
+      return core === null ? Promise.resolve() : applyStep(core, batch, o);
     },
     complete() {
       core?.executor.complete();
     },
     restore(s, o) {
-      if (core === null) {
-        return Promise.resolve();
-      }
-      const { executor } = core;
-      const done = o?.preview === true ? core.registry.previewing(() => executor.restore(s)) : executor.restore(s);
-      core.registry.releaseHolder(ENSURE_HOLDER);
-      return done;
+      return core === null ? Promise.resolve() : restoreStep(core, s, o);
     },
     snapshot() {
       return core === null ? { ...EMPTY, chars: [], props: [] } : core.executor.snapshot();
