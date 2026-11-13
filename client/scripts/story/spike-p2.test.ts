@@ -190,13 +190,16 @@ function generated(seed: number, config: Config): Json {
 /** One search: its result, its time and the edges it met per step kind (every successor, deduped or not). */
 type Measured = SearchResult & { readonly ms: number; readonly edges: Readonly<Record<string, number>> };
 
-/** Decodes a source world (a world the decoder refuses fails the test) and searches every section from its entry. */
-function measure(raw: unknown): Measured[] {
-  return measured(raw).results;
+/**
+ * Decodes a source world (a world the decoder refuses fails the test) and searches every section from its entry;
+ * `places` false: without the place quotient (GM5q), each room its own place.
+ */
+function measure(raw: unknown, places = true): Measured[] {
+  return measured(raw, places).results;
 }
 
 /** `measure`, with the decoded world's module data (P2-b's non-vacuity checks read it). */
-function measured(raw: unknown): { readonly results: Measured[]; readonly mods: KernelWorld['mods'] } {
+function measured(raw: unknown, places = true): { readonly results: Measured[]; readonly mods: KernelWorld['mods'] } {
   const r = decodeWorldSource(raw);
   if (!r.ok) {
     throw new Error(`the generated world does not decode: ${JSON.stringify(r.error)}`);
@@ -206,6 +209,7 @@ function measured(raw: unknown): { readonly results: Measured[]; readonly mods: 
     const edges: Record<string, number> = {};
     const t0 = performance.now();
     const found = searchSection(w, sectionEntry(w, EMPTY_WORLD_STATE, section), section, CAP, {
+      places,
       onEdge: (_from, succ) => {
         edges[succ.step.kind] = (edges[succ.step.kind] ?? 0) + 1;
       },
@@ -261,10 +265,11 @@ test('spike p2: the emulated mix is measured', () => {
 }, 60_000);
 
 test('spike p2: real views at 2 per room fit the cap at ch1 density', () => {
+  // P2-b's claim, measured without the place quotient (GM5q), which merges every real view into its room.
   for (const seed of SEEDS) {
-    const base = only(measure(generated(seed, 'base')));
-    const views = only(measure(generated(seed, 'views')));
-    const real = measured(generated(seed, 'views-real'));
+    const base = only(measure(generated(seed, 'base'), false));
+    const views = only(measure(generated(seed, 'views'), false));
+    const real = measured(generated(seed, 'views-real'), false);
     const m = only(real.results);
     report('views-real', seed, m);
     // Non-vacuity: two real views of each of the three rooms, and the search leaves them by `leave-view`.

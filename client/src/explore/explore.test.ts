@@ -5,7 +5,7 @@ import { SILENT_FIELDS } from '../mechanics/contract.ts';
 import type { FactAtom, FactKind, FlagId, KernelWorld, MechanicRules, SectionAction } from '../mechanics/contract.ts';
 import { actions, reduce } from '../mechanics/rules/core.ts';
 import { MECHANIC_RULES } from '../mechanics/rules/index.ts';
-import { admitSection, inSectionReach, searchSection, sectionEntry, sectionKey, successors } from '../mechanics/rules/search.ts';
+import { admitSection, inSectionReach, searchSection, sectionEntry, sectionKey, sectionPlaces, successors } from '../mechanics/rules/search.ts';
 import type { KnotName, PuzzleLocalId, SectionId, VarName } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, RoomId, WorldPublic, WorldPublicBody } from '../world/types.ts';
@@ -1493,15 +1493,26 @@ test('search: derived sectionKey equals the hand key on ch1 and ch2', () => {
     return [path.replace('../../../', ''), { ...toPublic(r.value), mods: r.value.mods }];
   });
   expect(chapters.map(([path]) => path)).toEqual(expect.arrayContaining(['story/ch1/world.json', 'story/ch2/world.json']));
+  // A free view with a take (GM5q's place quotient): a discovered state stands in the view, so the derived key names
+  // its place, the hall. Its place map is written by hand; the chapters' and the golden's are the search's own.
+  const MERGED_VIEW = 'a merged view with a take';
+  const handPlaces: Readonly<Record<string, Readonly<Record<string, string>>>> = { [MERGED_VIEW]: { desk: 'hall' } };
+  const merged = world({
+    items: ['pen'],
+    sections: { s: { start: 'hall', rooms: { hall: room([exit('to_desk', 'desk'), exit('out', { story: 'end' })]), desk: { ...room([take('pen', { item: 'pen' })]), view: { of: 'hall' } } } } },
+  });
   // Every state each section's search discovers, in every chapter and in the golden fixture. No count of story content
   // is pinned here (the story gate prints those): the two keys must split the states alike, and some must be seen.
   let searched = 0;
-  for (const [path, w] of [...chapters, ['the golden manor fixture', manor({ golden: true })] as const]) {
+  for (const [path, w] of [...chapters, ['the golden manor fixture', manor({ golden: true })] as const, [MERGED_VIEW, merged] as const]) {
     const sections = Object.keys(w.sections) as SectionId[];
     if (sections.length === 0) {
       console.log(`sectionKey pin: ${path} has no section`);
     }
     for (const S of sections) {
+      const places = handPlaces[path] ?? sectionPlaces(w, S);
+      // The hand key names the room; the derived key names its place.
+      const placed = (s: WorldState): WorldState => (s.room === null ? s : { ...s, room: rm(own(places, s.room) ?? s.room) });
       const start = sectionEntry(w, EMPTY_WORLD_STATE, S);
       const reached: WorldState[] = [start];
       const r = searchSection(w, start, S, RESUME_STATE_CAP, {
@@ -1511,9 +1522,9 @@ test('search: derived sectionKey equals the hand key on ch1 and ch2', () => {
           }
         },
       });
-      const off = reached.filter((s) => sectionKey(w, s, S) !== handKey(w, s, S));
-      expect(off.slice(0, 2).map((s) => `${sectionKey(w, s, S)} / ${handKey(w, s, S)}`), `${path} ${S}`).toEqual([]);
-      expect(new Set(reached.map((s) => handKey(w, s, S))).size, `${path} ${S}`).toBe(r.states);
+      const off = reached.filter((s) => sectionKey(w, s, S) !== handKey(w, placed(s), S));
+      expect(off.slice(0, 2).map((s) => `${sectionKey(w, s, S)} / ${handKey(w, placed(s), S)}`), `${path} ${S}`).toEqual([]);
+      expect(new Set(reached.map((s) => handKey(w, placed(s), S))).size, `${path} ${S}`).toBe(r.states);
       searched += r.states;
     }
   }

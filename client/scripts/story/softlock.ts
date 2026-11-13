@@ -9,7 +9,7 @@ import type { WorldState } from '../../src/explore/state.ts';
 import type { KernelWorld } from '../../src/mechanics/contract.ts';
 import { actions, reduce } from '../../src/mechanics/rules/core.ts';
 import { RESUME_WORK_PER_STATE, searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
-import type { SearchStats } from '../../src/mechanics/rules/search.ts';
+import type { SearchStats, Walk } from '../../src/mechanics/rules/search.ts';
 import type { PuzzleLocalId, SectionId } from '../../src/story/staging.ts';
 import { LINT_CODES } from './lint.ts';
 import type { Finding, LintCode } from './lint.ts';
@@ -61,25 +61,26 @@ function describe(w: KernelWorld, from: WorldState, step: Step): string {
 /**
  * Proves section S of the proof world: the public body and its decoded `mods` (the build has no `version`; LW3 stamps
  * it on emit). `file` is the finding's file (`story/<ch>/world.json`). The `world/softlock` message carries the
- * shortest action path from the entry to the first stuck state in BFS order.
+ * shortest action path from the entry to the first stuck state in BFS order: per hop, the free moves that reach the
+ * member of the place it was taken in (the search's walk), then its step, each described from the state before it.
  */
 export function checkSection(w: KernelWorld, section: SectionId, file: string): SectionCheck {
   const start = sectionEntry(w, EMPTY_WORLD_STATE, section);
   const states: WorldState[] = [start];
-  const parent: Array<{ from: number; step: Step } | undefined> = [undefined];
+  const parent: Array<{ from: number; step: Step; walk: Walk } | undefined> = [undefined];
   const into: number[][] = [[]];
   const leaving = new Set<number>();
   // An object, not a `let`: TS narrows a `let` to its initializer, and the callback's write is invisible to it.
   const spent: { bound: SearchStats['bound'] } = { bound: null };
   const r = searchSection(w, start, section, RESUME_STATE_CAP, {
-    onEdge: (from, succ, to, isNew) => {
+    onEdge: (from, succ, to, isNew, walk) => {
       if (to === null) {
         leaving.add(from);
         return;
       }
       if (isNew) {
         states[to] = succ.state;
-        parent[to] = { from, step: succ.step };
+        parent[to] = { from, step: succ.step, walk };
         into[to] = [];
       }
       into[to]?.push(from);
@@ -114,10 +115,18 @@ export function checkSection(w: KernelWorld, section: SectionId, file: string): 
   if (stuck === -1) {
     return { section, states: r.states, findings: [] };
   }
+  const said = (before: WorldState | undefined, step: Step): string => (before === undefined ? JSON.stringify(step) : describe(w, before, step));
   const steps: string[] = [];
   for (let at = parent[stuck]; at !== undefined; at = parent[at.from]) {
-    const from = states[at.from];
-    steps.push(from === undefined ? JSON.stringify(at.step) : describe(w, from, at.step));
+    // The hop's texts in path order, pushed reversed: the whole list is reversed once at the end.
+    const hop: string[] = [];
+    let before = states[at.from];
+    for (const move of at.walk) {
+      hop.push(said(before, move.step));
+      before = move.state;
+    }
+    hop.push(said(before, at.step));
+    steps.push(...hop.reverse());
   }
   const path = steps.length === 0 ? '(the section entry itself)' : steps.reverse().join(' → ');
   const room = states[stuck]?.room ?? 'no room';
