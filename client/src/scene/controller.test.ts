@@ -124,7 +124,8 @@ test("controller: an entry's restore takes its slots from their halves", async (
 test("controller: a step lets go of the batch's ensure holder once its slots are taken (D7)", async () => {
   // The game's stage ensures every id of a step under ENSURE_HOLDER, then applies (or restores) it. Once the slots are
   // taken, an ensured id the step does not show is held by nothing and is dropped (principle 4: textures released
-  // after a scene); the shown one stays live under its slot.
+  // after a scene); the shown one stays live under its slot. Two fetches, one per ensured id: the slot takes the
+  // ensured record, so the holder goes only after the slots are taken (a release before them re-fetches bg/x).
   const rows: unknown[] = [];
   for (const step of ['apply', 'restore'] as const) {
     const p = parts();
@@ -136,11 +137,11 @@ test("controller: a step lets go of the batch's ensure holder once its slots are
     } else {
       await restoreStep(p, { bg: 'x' as BgId, cg: null, chars: [], props: [] });
     }
-    rows.push([step, ensured.map((r) => r.ok), before, p.registry.state(BG_X), p.registry.state(y)]);
+    rows.push([step, ensured.map((r) => r.ok), before, p.registry.state(BG_X), p.registry.state(y), p.urls.length]);
   }
   expect(rows).toEqual([
-    ['apply', [true, true], ['live', 'live'], 'live', 'none'],
-    ['restore', [true, true], ['live', 'live'], 'live', 'none'],
+    ['apply', [true, true], ['live', 'live'], 'live', 'none', 2],
+    ['restore', [true, true], ['live', 'live'], 'live', 'none', 2],
   ]);
 });
 
