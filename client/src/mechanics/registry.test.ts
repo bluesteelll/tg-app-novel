@@ -297,6 +297,7 @@ test('mechanics: the rules registry loads from either module first', async () =>
         reads: devices.devicesReads,
         cues: ['done', 'jammed'],
         arrived: devices.arriveDevice,
+        holds: devices.holdsPart,
       },
     ]);
     expect(core.reduce(w, at('hall'), tap('hall.statue')).effects.map((e) => e.kind)).toEqual(['look', 'cue', 'cue', 'dirty']);
@@ -410,10 +411,11 @@ test('mechanics: the data registry loads from any module first', async () => {
       {
         id: 'devices',
         rules: 'chunk',
-        owns: { room: ['device'], facts: ['work'] },
+        owns: { room: ['device'], atoms: ['part'], facts: ['work'] },
         decode: devices.decodeDevices,
         encode: devices.encodeDevices,
         normalize: devices.normalizeDevices,
+        atoms: { part: { decode: devices.decodePartAtom, gating: false } },
       },
     ]);
   };
@@ -549,6 +551,7 @@ test('mechanics: every action kind has one handler', () => {
     use: true,
     'leave-view': true,
     combine: true,
+    'device-moved': true,
   } satisfies Record<SectionAction['kind'], true>;
   expect(Object.keys(APPLY).sort()).toEqual(Object.keys(kinds).sort());
   expect(Object.values(APPLY).every((handler) => typeof handler === 'function')).toBe(true);

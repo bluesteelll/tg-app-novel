@@ -49,6 +49,7 @@ function describe(w: KernelWorld, from: WorldState, step: Step): string {
     case 'enter-section':
     case 'attempt-failed':
     case 'hint-opened':
+    case 'device-moved':
       // Not steps of the successor relation; printed as data should a future relation add them.
       return JSON.stringify(step);
     default: {

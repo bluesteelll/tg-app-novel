@@ -14,8 +14,8 @@ import { applyCombine, combineActions, combineReads, combineScope } from './comb
 import type { CombineAction, CombineCue } from './combine.ts';
 import { actions, applyCore, reads } from './core.ts';
 import type { CoreCue } from './core.ts';
-import { applyDevices, arriveDevice, devicesActions, devicesReads } from './devices.ts';
-import type { DevicesAction, DevicesCue } from './devices.ts';
+import { applyDevices, arriveDevice, devicesActions, devicesReads, holdsPart } from './devices.ts';
+import type { DeviceMoved, DevicesCue } from './devices.ts';
 import { applyFlags, flagEffects, flagReads, flagScope, flagsActions, holdsFlag } from './flags.ts';
 import type { FlagsAction } from './flags.ts';
 import { applyUse, useActions, useReads, useScope } from './use.ts';
@@ -87,7 +87,8 @@ const devices = {
   reads: devicesReads,
   cues: ['done', 'jammed'] as const,
   arrived: arriveDevice,
-} satisfies MechanicRules<'devices', DevicesAction, DevicesCue>;
+  holds: holdsPart,
+} satisfies MechanicRules<'devices', DeviceMoved, DevicesCue>;
 
 export const MECHANIC_RULES = [core, use, visual, view, combine, flags, devices] as const;
 
@@ -107,4 +108,5 @@ export const APPLY: { readonly [K in SectionAction['kind']]: (w: KernelWorld, a:
   use: applyUse,
   'leave-view': applyView,
   combine: applyCombine,
+  'device-moved': applyDevices,
 };

@@ -1,15 +1,17 @@
 // Module `devices`' data half (engine plan §7.5): a view room's `device: <hotspot>` names the hotspot whose zero-slot
 // lock holds the room's device puzzle. The device is drawn by the device, never as a hotspot button, and its session
 // opens on arrival (the rules half). Its fact kind `work` (a part's position, `<puzzle>.<index>=<v>`) records the
-// changes of a run's `work`, a device's working configuration, which stays outside the section key. Engine half:
-// decoded at chapter load into `world.mods.devices`, written back by `encode` for emission and the version hash.
-// Function declarations and types only: mechanics/data/index.ts builds the entry from them. Its data is plain JSON.
-// Whether the hotspot exists, carries the right lock and sits in a view is the story gate's
-// (client/scripts/story/mechanics/devices.ts). Pure.
+// changes of a run's `work`, a device's working configuration, which stays outside the section key; its visual atom
+// `{ part: { puzzle, index, is } }` holds while part `index` of the device's work is at `is` (a decor state's picture,
+// never a gating read). Engine half: decoded at chapter load into `world.mods.devices`, written back by `encode` for
+// emission and the version hash. Function declarations and types only: mechanics/data/index.ts builds the entry from
+// them. Its data is plain JSON. Whether the hotspot exists, carries the right lock and sits in a view is the story
+// gate's (client/scripts/story/mechanics/devices.ts). Pure.
 import type { WorldState } from '../../explore/state.ts';
 import type { Result } from '../../story/catalog.ts';
+import type { PuzzleLocalId } from '../../story/staging.ts';
 import type { HotspotId, RoomId } from '../../world/types.ts';
-import type { Issue, KernelWorld, OwnedAt, OwnedRaw } from '../contract.ts';
+import type { Issue, IssueReport, KernelWorld, OwnedAt, OwnedRaw } from '../contract.ts';
 
 export type DevicesData = {
   /** Each device room's device hotspot (its id within the room), in source order; a room with no device is absent. */
@@ -18,7 +20,11 @@ export type DevicesData = {
   readonly paths: Readonly<Record<RoomId, string>>;
 };
 
+/** The `part` atom's value: part `index` of puzzle `puzzle`'s working configuration is at `is`. */
+export type PartAtom = { readonly puzzle: PuzzleLocalId; readonly index: number; readonly is: number };
+
 const ID_RE = /^[a-z][a-z0-9_]*$/;
+const PART_KEYS = ['puzzle', 'index', 'is'];
 
 /** Strict: `device` is a hotspot id, one spelling (no null: a room with no device has no key); every issue is reported at
  *  `<room path>.device`. */
@@ -46,6 +52,37 @@ export function decodeDevices(raw: OwnedRaw): Result<DevicesData, Issue[]> {
 /** The inverse of `decodeDevices`: a world with no device encodes [], so its body and version are unchanged. */
 export function encodeDevices(d: DevicesData): OwnedRaw {
   return Object.entries(d.device).map(([id, device]): OwnedAt => ({ place: 'room', id, path: d.paths[id as RoomId] ?? '', raw: { device } }));
+}
+
+/**
+ * The `part` atom's value (`atoms.part`, visual only): exactly `{ puzzle, index, is }`, a puzzle id and two integers
+ * >= 0, every issue reported. Whether `puzzle` is its room's device and the integers are in its type's range is the
+ * story gate's (`world/device-part`, with the types).
+ */
+export function decodePartAtom(v: unknown, path: string, report: IssueReport): PartAtom | undefined {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    report(path, 'shape', `${JSON.stringify(v) ?? 'undefined'} is not a { puzzle, index, is } object`);
+    return undefined;
+  }
+  const o = v as Readonly<Record<string, unknown>>; // an object, checked above
+  let ok = true;
+  for (const key of Object.keys(o).filter((x) => !PART_KEYS.includes(x))) {
+    report(`${path}.${key}`, 'shape', `unknown key (a part has ${PART_KEYS.join(', ')})`);
+    ok = false;
+  }
+  const { puzzle, index, is } = o;
+  if (typeof puzzle !== 'string' || !ID_RE.test(puzzle)) {
+    report(`${path}.puzzle`, 'id', `${JSON.stringify(puzzle) ?? 'undefined'} is not a puzzle id ${ID_RE.source}`);
+    ok = false;
+  }
+  for (const [key, n] of [['index', index], ['is', is]] as const) {
+    if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 0) {
+      report(`${path}.${key}`, 'shape', `${JSON.stringify(n) ?? 'undefined'} is not an integer >= 0`);
+      ok = false;
+    }
+  }
+  // Each field checked above: a puzzle id and two integers.
+  return ok ? { puzzle: puzzle as PuzzleLocalId, index: index as number, is: is as number } : undefined;
 }
 
 /** Nothing to drop yet: a device's working state lives in its run. */

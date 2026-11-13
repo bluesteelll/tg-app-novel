@@ -1,7 +1,8 @@
 // Module `devices` (engine plan §7.5): a view room's `device` hotspot carries a zero-slot lock with the room's device
 // puzzle, and its session opens on arrival (the `arrived` hook core runs at its three `room` pushes, never while a knot
 // is pending), with the same `puzzle` effect the device's own tap reaches, so the proof's states are unchanged; an
-// ended device plays its outcome's cue instead. Fixture worlds are written in the source format and decoded with the
+// ended device plays its outcome's cue instead. A part's picture is a decor state chosen by the visual atom `part` over
+// the device's saved work. Fixture worlds are written in the source format and decoded with the
 // real registries; a proof world carries the decoded `mods`, as the explore controller's and the story gate's do.
 import { expect, test } from 'vitest';
 
@@ -12,12 +13,14 @@ import type { PuzzleRun, WorldState } from '../explore/state.ts';
 import type { KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, RoomId } from '../world/types.ts';
-import type { FlagId, KernelWorld, OwnedAt, RulesRegistry } from './contract.ts';
+import type { DecodeCtx, FlagId, KernelWorld, OwnedAt, RulesRegistry } from './contract.ts';
+import { decodeCond } from './data/conditions.ts';
 import { decodeDevices, encodeDevices } from './data/devices.ts';
 import { reduce } from './rules/core.ts';
 import { MECHANIC_RULES } from './rules/index.ts';
 import { RESUME_WORK_PER_STATE, searchSection, sectionEntry, sectionPlaces, successors } from './rules/search.ts';
 import type { SearchStats } from './rules/search.ts';
+import { visualsOf } from './rules/visual.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fixture worlds, in the source format
@@ -32,6 +35,15 @@ const exit = (id: string, to: string | { story: string }): Json => ({ id, kind: 
 /** A lock whose slots accept `accepts` (none: a zero-slot lock), with `puzzle`. */
 const lock = (puzzle: string | null, accepts: readonly string[] = []): Json => ({ slots: accepts.map((a) => ({ accepts: a })), puzzle, locked: txt(), onOpen: [], onFail: [] });
 const room = (hotspots: readonly Json[], extra: Json = {}): Json => ({ bg: 'room', title: txt(), onEnter: [], hotspots, ...extra });
+/** A decor lever at `x` showing `up` while part `index` of the dial's work is 1. */
+const lever = (index: number, x: number): Json => ({
+  id: `lever${index}`,
+  prop: 'lever',
+  rect: [x, 900, 160, 320],
+  z: 1,
+  states: { up: { prop: 'lever_up' } },
+  is: [{ when: { part: { puzzle: 'dial', index, is: 1 } }, state: 'up' }],
+});
 const code = (dials: number, maxAttempts: number | null = null): Json => ({
   type: 'code',
   title: txt(),
@@ -66,15 +78,21 @@ function kernel(raw: Json): KernelWorld {
 }
 
 /**
- * The hall and its device view `panel`: the device hotspot `dial` carries a zero-slot lock with the code puzzle `dial`.
- * `o.enter`: the panel's onEnter; `o.capped`: the puzzle's maxAttempts.
+ * The hall and its device view `panel`: the device hotspot `dial` carries a zero-slot lock with the code puzzle `dial`
+ * (four dials). `o.enter`: the panel's onEnter; `o.capped`: the puzzle's maxAttempts; `o.levers`: one decor lever per
+ * dial, its picture chosen by its part.
  */
-function panel(o: { enter?: readonly Json[]; capped?: number } = {}): KernelWorld {
+function panel(o: { enter?: readonly Json[]; capped?: number; levers?: boolean } = {}): KernelWorld {
   return kernel(
     source(
       {
         hall: room([exit('to_panel', 'panel'), exit('out', { story: 'end' })]),
-        panel: room([object('dial', lock('dial'))], { view: { of: 'hall' }, device: 'dial', onEnter: o.enter ?? [] }),
+        panel: room([object('dial', lock('dial'))], {
+          view: { of: 'hall' },
+          device: 'dial',
+          onEnter: o.enter ?? [],
+          ...(o.levers === true ? { decor: [lever(0, 100), lever(1, 320), lever(2, 540), lever(3, 760)] } : {}),
+        }),
       },
       { puzzles: { dial: code(4, o.capped ?? null) } },
     ),
@@ -127,6 +145,52 @@ test('device: the device key and the part atom decode strictly and round-trip', 
   });
   // Through the composed decoder: the room's `device` reaches `mods.devices`.
   expect(panel().mods.devices.device).toEqual({ panel: 'dial' });
+  // The visual atom `part`: exactly `{ puzzle, index, is }`, a puzzle id and two integers >= 0, every issue reported.
+  const CTX: DecodeCtx = {
+    text: () => {
+      throw new Error('invariant: no condition decodes a text');
+    },
+  };
+  const part = (v: unknown) => decodeCond({ part: v }, CTX, 'c');
+  expect(part({ puzzle: 'dial', index: 2, is: 1 })).toEqual({ ok: true, value: { part: { puzzle: 'dial', index: 2, is: 1 } } });
+  expect(part({ puzzle: 'dial', index: 0, is: 1, at: 'x' })).toEqual({ ok: false, error: [{ path: 'c.part.at', reason: 'shape', detail: 'unknown key (a part has puzzle, index, is)' }] });
+  expect(part({ puzzle: 'Dial', index: -1, is: 1.5 })).toEqual({
+    ok: false,
+    error: [
+      { path: 'c.part.puzzle', reason: 'id', detail: '"Dial" is not a puzzle id ^[a-z][a-z0-9_]*$' },
+      { path: 'c.part.index', reason: 'shape', detail: '-1 is not an integer >= 0' },
+      { path: 'c.part.is', reason: 'shape', detail: '1.5 is not an integer >= 0' },
+    ],
+  });
+  expect(part({ puzzle: 'dial', index: 0 })).toEqual({ ok: false, error: [{ path: 'c.part.is', reason: 'shape', detail: 'undefined is not an integer >= 0' }] });
+  expect(part([0, 1])).toEqual({ ok: false, error: [{ path: 'c.part', reason: 'shape', detail: '[0,1] is not a { puzzle, index, is } object' }] });
+  // A decor state's `part` through the composed decoder, and its decoded value decodes to itself.
+  const when = panel({ levers: true }).mods.visual.decor[rm('panel')]?.[2]?.is[0]?.when;
+  expect(when).toEqual({ part: { puzzle: 'dial', index: 2, is: 1 } });
+  expect(decodeCond(when, CTX, 'c')).toEqual({ ok: true, value: when });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The picture
+
+test('visual: four placements of one lever image keep four anchors', () => {
+  // Decor anchors are `<room>~<decor>`, never the image: four levers drawing one prop are four anchors, each with its
+  // own state, chosen by its part of the device's saved work.
+  const w = panel({ levers: true });
+  const views = (s: WorldState) => visualsOf(w, s, rm('panel')).map((v) => [v.at, v.prop, v.state]);
+  expect(views(at('panel', { puzzles: run({ work: [1, 0, 1, 0] }) }))).toEqual([
+    ['panel~lever0', 'lever_up', 'up'],
+    ['panel~lever1', 'lever', 'default'],
+    ['panel~lever2', 'lever_up', 'up'],
+    ['panel~lever3', 'lever', 'default'],
+  ]);
+  // No saved work yet: the parts read the type's `initial` (a code puzzle's zeros), so every lever is down.
+  expect(views(at('panel')).map(([anchor, , state]) => [anchor, state])).toEqual([
+    ['panel~lever0', 'default'],
+    ['panel~lever1', 'default'],
+    ['panel~lever2', 'default'],
+    ['panel~lever3', 'default'],
+  ]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------

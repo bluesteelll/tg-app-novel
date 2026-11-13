@@ -14,7 +14,7 @@ import type { MechanicData, OwnedRaw } from '../contract.ts';
 import { decodeCombine, encodeCombine, normalizeCombine } from './combine.ts';
 import type { CombineData } from './combine.ts';
 import { core } from './core.ts';
-import { decodeDevices, encodeDevices, normalizeDevices } from './devices.ts';
+import { decodeDevices, decodePartAtom, encodeDevices, normalizeDevices } from './devices.ts';
 import type { DevicesData } from './devices.ts';
 import { decodeFlagAtom, decodeFlags, encodeFlags, normalizeFlags } from './flags.ts';
 import type { FlagsData } from './flags.ts';
@@ -80,10 +80,12 @@ const devices = {
   rules: 'chunk',
   // The `work` fact kind is the module's: a device part's position (`<puzzle>.<index>=<v>`), kept in its run's `work`
   // and never in the section key (§7.5).
-  owns: { room: ['device'], facts: ['work'] as const },
+  owns: { room: ['device'], atoms: ['part'], facts: ['work'] as const },
   decode: decodeDevices,
   encode: encodeDevices as (d: unknown) => OwnedRaw,
   normalize: normalizeDevices,
+  // A part's picture is a visual state: never a gating read (`world/visual-only-atom`).
+  atoms: { part: { decode: decodePartAtom, gating: false } },
 } satisfies MechanicData<'devices', DevicesData>;
 
 export const MECHANIC_DATA = [core, use, visual, view, combine, flags, devices] as const;
