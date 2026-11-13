@@ -27,7 +27,7 @@ import type { StatEvent } from '../stats/reporter.ts';
 import type { PuzzleUiProps } from '../puzzles/registry.ts';
 import { PAID_WINDOW_MS, PENDING_WINDOW_MS, chapterDelivered, createPurchaseFlow, packDelivered } from '../purchase/flow.ts';
 import type { PurchaseState } from '../purchase/flow.ts';
-import type { ChapterLoader } from '../story/chapters.ts';
+import type { ChapterLoader, ChapterLoadError } from '../story/chapters.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
 import type { AssetEntry, AssetManifest, ChapterCatalog, LoadedChapter, Result, StoryId } from '../story/catalog.ts';
 import { liveRunners } from '../story/runner.ts';
@@ -5768,6 +5768,40 @@ test('game: a save inside a paid chapter refunded since opens its paywall, and a
   await settle();
   expect([h.vm.paywall, lineOf(h.vm)]).toEqual([null, 'ch2.study.l002']);
   h.game.dispose();
+});
+
+test('game: a save inside an owned chapter whose load fails other than 403 shows its error notice, not the paywall', async () => {
+  // A ch2 owner's manual save at ch2's second line.
+  const first = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'] });
+  await playManorCh1(first);
+  await first.game.advance(); // END: the change, then ch2's first line
+  await first.game.advance(); // l002
+  await first.game.save('s1');
+  const saved = first.save().slots.get('s1');
+  first.game.dispose();
+  // The fixture's shape: a body inside ch2 with its ink, so its resume loads ch2 and reaches D11's guard.
+  const body = saved === undefined ? null : decodeSave(saved.body);
+  expect(body?.ok === true ? [body.value.chapterId, body.value.ink !== null] : body).toEqual([CH2, true]);
+  if (saved === undefined) {
+    return;
+  }
+  // ch2 still owned, its load failing other than the server's 403: the paywall shows only on a 403 (cut D-r6-4,
+  // principle 1), so a transient failure gets chapterFailed's notice and its Retry, never a paywall over a bought chapter.
+  const failures: readonly ChapterLoadError[] = [{ kind: 'network', detail: 'offline' }, { kind: 'not-found' }, { kind: 'session-expired' }];
+  const rows: unknown[] = [];
+  for (const failure of failures) {
+    const h = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'], slots: new Map([['s1', saved]]) });
+    const load = h.loader.load;
+    h.loader.load = async (ch, o) => (ch.id === CH2 ? { ok: false, error: failure } : load(ch, o));
+    const started = await h.game.start({ kind: 'slot', story: MANOR, slot: 's1' });
+    rows.push([failure.kind, started.ok, overlayKinds(h), h.vm.notice?.kind ?? null, h.vm.stageTap]);
+    h.game.dispose();
+  }
+  expect(rows).toEqual([
+    ['network', false, [], 'error', false],
+    ['not-found', false, [], 'error', false],
+    ['session-expired', false, [], 'reopen', false],
+  ]);
 });
 
 test("game: a resume of another save or an exit to the stories withdraws the stage's tap", async () => {
