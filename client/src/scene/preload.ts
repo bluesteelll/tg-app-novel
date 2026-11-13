@@ -3,8 +3,10 @@
 // manifest), background preloads under a tag (`preload:<knot>`, `next:<chapterId>`, `room:<roomId>`, `state:<roomId>`),
 // the step's window (`want`: need, warm, hope and the event's room) over one ordered queue with two fetches in flight
 // (an item whose record is live or in flight to be decoded joins it at once, outside the slots: QO19, S36 step 1b), the
-// eviction order of a refused need, and the blocking `ensure` of a batch's assets under the holder `ensure`. Pure over
-// the registry: no Pixi, no fetch.
+// eviction order of a refused need, and the blocking `ensure` of a batch's assets under the holder `ensure`; a chapter
+// entry at the half tier (shots §5.8 "Entry at the half tier"): its previews' upgrades, one at a time outside the slots
+// (each swap tells the stage, `sharpened`, which draws on demand), and the entry gate that holds every later rank until
+// the visible upgrades and the need previews are done. Pure over the registry: no Pixi, no fetch.
 import type { AssetManifest, ImageEntry, Result } from '../story/catalog.ts';
 import type { ShotWindow } from '../story/shots.ts';
 import type { AssetId } from '../story/staging.ts';
@@ -18,10 +20,19 @@ export const PRELOAD_IN_FLIGHT = 2;
  */
 export const ENSURE_HOLDER = 'ensure';
 
-/** A step's window as the scene admits it (shots §5.8): SH3a's `ShotWindow` and the event's room, its own class. */
-export type StageWindow = ShotWindow & { readonly eventRoom: readonly AssetId[] };
+/**
+ * A step's window as the scene admits it (shots §5.8): SH3a's `ShotWindow` and the event's room, its own class.
+ * `preview`: a chapter entry's first window (§5.8 step 4): its need items start from their halves, and on a full-tier
+ * registry only NEED items are admitted until the visible upgrades and the need previews are done. `keep`: KEEP_WINDOW.
+ */
+export type StageWindow = ShotWindow & { readonly eventRoom: readonly AssetId[]; readonly preview?: boolean; readonly keep?: true };
 /** The window of a step with none of its own (no decoding `look`): it still ends the entry tag. */
 export const EMPTY_WINDOW: StageWindow = { need: [], warm: [], near: 0, hope: [], eventRoom: [] };
+/**
+ * A windowless stage's swap report at a chapter entry (shots §5.8 step 3): the window stays (D13), and the swap counts
+ * as a release.
+ */
+export const KEEP_WINDOW: StageWindow = { need: [], warm: [], near: 0, hope: [], eventRoom: [], keep: true };
 /**
  * `window.pending`: the window's need items not live; `window.ids`: the window's ids it holds or asks for; `rooms`: the
  * `room:` tags that hold or load a record.
@@ -32,7 +43,7 @@ export interface AssetScheduler {
   /**
    * Swaps the manifest; releases every `preload:*` (the window's holders included), every `next:*` except
    * `next:<m.chapterId>`, and `ensure`. The kept tag is the entry tag: the first `want` after this releases it once its
-   * files were joined (shots §5.8 step 1c).
+   * files were joined (shots §5.8 step 1c). Its previews' upgrades wait for the chapter's first swap point (step 3).
    */
   setChapter(m: AssetManifest): void;
   resolve(id: AssetId, from?: AssetManifest): Result<ImageEntry, AssetError>;
@@ -45,9 +56,16 @@ export interface AssetScheduler {
   preload(tag: string, ids: readonly AssetId[], from?: AssetManifest): void;
   /** Drops queued, joining and in-flight preloads of the tag and releases its holder; a trailing `:` names a family. */
   releasePreload(tag: string): void;
-  /** Loads a batch's assets at visible priority; resolves once every one is live or failed. */
-  ensure(ids: readonly AssetId[], signal: AbortSignal): Promise<Result<void, SceneError>>;
-  /** The step's window at its swap point (shots §5.8 steps 1-7): the window's holders follow `w`. */
+  /**
+   * Loads a batch's assets at visible priority; resolves once every one is live or failed. `preview` (shots §5.8 step
+   * 1): a chapter entry's first step, whose new records start from their halves on a full-tier registry.
+   */
+  ensure(ids: readonly AssetId[], signal: AbortSignal, o?: { preview?: boolean }): Promise<Result<void, SceneError>>;
+  /**
+   * The step's window at its swap point (shots §5.8 steps 1-7): the window's holders follow `w`. Every swap point lets
+   * the previews be tried again (step 5) and kicks their upgrades; the first swap point after `setChapter` starts the
+   * chain (step 3). A keep window (KEEP_WINDOW) plans nothing, keeps the window and the entry tag, and is a `retry`.
+   */
   want(w: StageWindow): void;
   /** Step 7 after a holder was released: the deferred need and warm items again, then the held warm files' decodes. */
   retry(): void;
@@ -63,7 +81,8 @@ export function windowDeps(s: Pick<AssetScheduler, 'want' | 'retry'>): WindowSea
   return { swapped: (w) => s.want(w), released: () => s.retry() };
 }
 
-type Item = { readonly tag: string; readonly id: AssetId; readonly entry: ImageEntry; readonly rank: number };
+/** `preview`: a need item of an entry's window (shots §5.8 step 4), asked from its half; never a warm or hope item. */
+type Item = { readonly tag: string; readonly id: AssetId; readonly entry: ImageEntry; readonly rank: number; readonly preview?: boolean };
 type Flight = Item & { readonly controller: AbortController };
 
 /** A window holder: a need, hope or event-room item, or a warm file's decode (`preload:` family, so setChapter ends it). */
@@ -81,12 +100,27 @@ const EVENT = 6;
 const NEXT = 7;
 /** EN's tags: a room's bg and its pictures (GM3b). */
 const EN_TAG = /^(?:room|state):/;
+/** Shots §5.8 step 3: the upgrades go top image first; any other kind after these, in the order it started. */
+const UPGRADE_ORDER = ['cg/', 'bg/', 'sheet/', 'face/', 'talk/', 'char/', 'prop/'];
+const upgradeRank = (id: AssetId): number => {
+  const i = UPGRADE_ORDER.findIndex((p) => id.startsWith(p));
+  return i < 0 ? UPGRADE_ORDER.length : i;
+};
 
 /** The registry's holder rule: a trailing `:` is a family, any other name is exact. */
 const matches = (tag: string, pattern: string): boolean => (pattern.endsWith(':') ? tag.startsWith(pattern) : tag === pattern);
 const isWindow = (tag: string): boolean => tag.startsWith(WIN) || tag.startsWith(WARM);
 
-export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onError(e: AssetError): void }): AssetScheduler {
+export function createAssetScheduler<T>(deps: {
+  registry: AssetRegistry<T>;
+  onError(e: AssetError): void;
+  /**
+   * Shots §5.8 step 3: an upgrade swapped `id`'s full file into its texture (the registry answered `true`), so the
+   * picture changed outside any timeline. Called once per swapped record. A refused, failed or aborted upgrade calls
+   * nothing, nor does an answer that `setChapter` or `destroy` forgot. Optional: a scheduler with no stage needs no frame.
+   */
+  sharpened?(id: AssetId): void;
+}): AssetScheduler {
   const { registry } = deps;
   let manifest: AssetManifest | null = null;
   let queue: Item[] = [];
@@ -106,6 +140,17 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
   /** The tag setChapter kept, ended by the next want() (step 1c). */
   let entry: string | null = null;
   let dead = false;
+  /** Shots §5.8 step 4: closed by an entry's window on a full-tier registry; while closed only NEED items are pumped. */
+  let gated = false;
+  /** The previews tried since the last swap point (a want, a keep window's included) or setChapter (step 5). */
+  const tried = new Set<AssetId>();
+  /**
+   * Shots §5.8 step 3: a swap point (a `want`, a keep window's included) has passed since `setChapter`; until then no
+   * upgrade starts, whatever settles.
+   */
+  let swapSeen = false;
+  /** The one upgrade in flight (step 3), outside the two slots. */
+  let upgrading: { readonly id: AssetId; readonly controller: AbortController } | null = null;
 
   const resolve = (id: AssetId, from?: AssetManifest): Result<ImageEntry, AssetError> => {
     const m = from ?? manifest;
@@ -168,7 +213,7 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
   const ask = (x: Flight): Promise<Result<unknown, AssetError>> =>
     x.tag.startsWith(WARM)
       ? registry.acquire(x.id, x.tag, { entry: x.entry, priority: 'warm', signal: x.controller.signal })
-      : registry.acquire(x.id, x.tag, { entry: x.entry, priority: 'preload', signal: x.controller.signal });
+      : registry.acquire(x.id, x.tag, { entry: x.entry, priority: 'preload', signal: x.controller.signal, preview: x.preview === true });
 
   /** Drops the tag's queued, deferred, joining and in-flight items and releases its holder; never pumps. */
   const drop = (pattern: string): void => {
@@ -310,6 +355,7 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
       // Released while in flight: its slot was freed then.
       report(r);
       pump();
+      kick();
       return;
     }
     const w = win;
@@ -318,14 +364,16 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
       if (c === 'need' || c === 'warm') {
         if (evictFor(f, w)) {
           pump();
+          kick();
           return;
         }
-        deferred.push({ tag: f.tag, id: f.id, entry: f.entry, rank: f.rank });
+        deferred.push({ tag: f.tag, id: f.id, entry: f.entry, rank: f.rank, ...(f.preview === true ? { preview: true } : {}) });
       } else if (c === 'decode') {
         // A warm decode is best effort (step 3): one that does not fit stops the decodes and evicts nothing.
         queue = queue.filter((i) => !(i.rank === DECODE && i.tag.startsWith(WIN)));
       } else if (c === null && EN_TAG.test(f.tag) && shedFor(f, w)) {
         pump();
+        kick();
         return;
       }
     }
@@ -338,10 +386,15 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
       decodeWarm();
     }
     pump();
+    kick();
   };
 
   const pump = (): void => {
     while (!dead && busy() < PRELOAD_IN_FLIGHT) {
+      // Shots §5.8 step 4: while the entry's gate is closed only NEED items go; the queue is ranked, so they lead it.
+      if (gated && queue[0]?.rank !== NEED) {
+        return;
+      }
       const item = queue.shift();
       if (item === undefined) {
         return;
@@ -375,8 +428,59 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
       }
       report(r);
       pump();
+      kick();
     });
   }
+
+  /** Shots §5.8 step 3: one preview's upgrade, outside the slots; when it ends, whichever way, the chain goes on. */
+  const upgrade = (id: AssetId): void => {
+    tried.add(id);
+    const mine = { id, controller: new AbortController() };
+    upgrading = mine;
+    // Not awaited: its end kicks the next one in the same turn. One that setChapter or destroy aborted is forgotten.
+    void registry.upgrade(id, mine.controller.signal).then((r) => {
+      if (upgrading !== mine) {
+        return;
+      }
+      upgrading = null;
+      report(r);
+      if (r.ok && r.value) {
+        deps.sharpened?.(id);
+      }
+      kick();
+    });
+  };
+
+  /**
+   * Shots §5.8 steps 3-5. A swap point starts the chain: want's pump, and a keep window's `want` through `retry`. Every
+   * settle and join settle, `retry` after a release and an upgrade's end only carry it: before the first swap point
+   * since `setChapter` they start nothing. Once one has passed, unless an upgrade is in flight, the next preview not
+   * tried since the last swap point is upgraded, visible records first, then the others, each by UPGRADE_ORDER, then in
+   * the order they started. Then the entry gate opens, and pumps in this turn, once no visible preview is left untried or
+   * upgrading and no NEED item is queued, in flight or joining.
+   */
+  const kick = (): void => {
+    if (dead) {
+      return;
+    }
+    if (upgrading === null && swapSeen) {
+      // A stable sort over `previews()`, which lists the records in the order they started.
+      const due = registry.previews().filter((p) => !tried.has(p.id));
+      const next = [...due].sort((a, b) => Number(b.visible) - Number(a.visible) || upgradeRank(a.id) - upgradeRank(b.id))[0];
+      if (next !== undefined) {
+        upgrade(next.id);
+      }
+    }
+    if (gated) {
+      const current = upgrading?.id;
+      const visibleLeft = registry.previews().some((p) => p.visible && (!tried.has(p.id) || p.id === current));
+      const needLeft = [...queue, ...inFlight, ...joins].some((x) => x.rank === NEED);
+      if (!visibleLeft && !needLeft) {
+        gated = false;
+        pump();
+      }
+    }
+  };
 
   /**
    * Step 1b: a warm file joins its record in any state; any other item a live record, or one in flight to be decoded.
@@ -400,11 +504,32 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
     pump();
   };
 
+  /** Step 7 after a holder was released, and a keep window's swap: the deferred items again, then the chain's kick. */
+  const retry = (): void => {
+    if (dead) {
+      return;
+    }
+    const items = deferred;
+    deferred = [];
+    for (const i of items) {
+      take(i);
+    }
+    decodeWarm();
+    pump();
+    kick();
+  };
+
   return {
     setChapter(m) {
       if (dead) {
         return;
       }
+      // A new chapter: its own entry decides the gate; an upgrade of the last one's previews ends with them.
+      upgrading?.controller.abort();
+      upgrading = null;
+      tried.clear();
+      swapSeen = false;
+      gated = false;
       manifest = m;
       const kept = `next:${m.chapterId}`;
       for (const t of [...tags]) {
@@ -440,7 +565,8 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
       pump();
     },
     releasePreload,
-    async ensure(ids, signal) {
+    async ensure(ids, signal, o) {
+      const preview = o?.preview === true;
       const outcomes = ids.map(async (id): Promise<AssetError | null> => {
         if (dead) {
           return { kind: 'aborted', id };
@@ -449,7 +575,7 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
         if (!r.ok) {
           return r.error;
         }
-        const got = await registry.acquire(id, ENSURE_HOLDER, { entry: r.value, priority: 'visible', signal });
+        const got = await registry.acquire(id, ENSURE_HOLDER, { entry: r.value, priority: 'visible', signal, preview });
         return got.ok ? null : got.error;
       });
       const errors = (await Promise.all(outcomes)).filter((e): e is AssetError => e !== null);
@@ -459,8 +585,20 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
       if (dead) {
         return;
       }
+      // A swap point, a keep window's included: from now on the chain may start (step 3), and every preview may be
+      // tried again (step 5).
+      swapSeen = true;
+      tried.clear();
+      if (w.keep === true) {
+        // A windowless entry stage: no plan, the window (D13) and the entry tag (S36) stay; the swap is a release.
+        retry();
+        return;
+      }
       win = w;
       deferred = [];
+      // Step 4: an entry's window admits only its need until the visible upgrades and the need previews are done; the
+      // tier is read now, so a half-tier session (no previews) is never gated and a demoted one is.
+      gated = w.preview === true && registry.tier() === 'full';
       // 1. The window's holders outside need ∪ warm ∪ hope ∪ eventRoom go, their loads aborted; its queued items are
       // planned again below by their new class.
       const all = new Set<string>([...w.need, ...w.warm, ...w.hope, ...w.eventRoom]);
@@ -472,40 +610,41 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
       }
       queue = queue.filter((i) => !isWindow(i.tag));
       // 1b, 2-5: what exists is joined at once, the rest queued by class.
-      const plan = (ids: readonly AssetId[], prefix: string, rank: (i: number) => number): void => {
+      const plan = (ids: readonly AssetId[], prefix: string, rank: (i: number) => number, preview = false): void => {
         ids.forEach((id, i) => {
           const r = resolve(id);
           if (r.ok) {
-            take({ tag: prefix + id, id, entry: r.value, rank: rank(i) });
+            take({ tag: prefix + id, id, entry: r.value, rank: rank(i), ...(preview ? { preview } : {}) });
           } else {
             deps.onError(r.error);
           }
         });
       };
-      plan(w.need, WIN, () => NEED);
+      plan(w.need, WIN, () => NEED, w.preview === true);
       plan(w.warm, WARM, (i) => (i < w.near ? NEAR : FAR));
       plan(w.hope, WIN, () => HOPE);
       plan(w.eventRoom, WIN, () => EVENT);
       // 1c. The entry tag ends once its records were joined.
       if (entry !== null) {
+        // RULINGS 302 Q8: a warm file the entry tag decoded keeps that decode under its window holder, so the release
+        // never sheds it to its file only for step 3 to decode it again. Only the tag's own records, only here.
+        const tagged = holding.get(entry);
+        for (const id of w.warm) {
+          const tag = WIN + id;
+          const r = resolve(id);
+          const known = resident(tag) || [...queue, ...inFlight, ...joins].some((x) => x.tag === tag);
+          if (r.ok && tagged?.has(id) === true && !known && registry.state(id) === 'live') {
+            join({ tag, id, entry: r.value, rank: DECODE });
+          }
+        }
         drop(entry);
         entry = null;
       }
       decodeWarm();
       pump();
+      kick();
     },
-    retry() {
-      if (dead) {
-        return;
-      }
-      const items = deferred;
-      deferred = [];
-      for (const i of items) {
-        take(i);
-      }
-      decodeWarm();
-      pump();
-    },
+    retry,
     stats() {
       const w = win;
       const asked = (t: string): boolean => resident(t) || [...queue, ...deferred].some((i) => i.tag === t);
@@ -523,6 +662,9 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
       queue = [];
       deferred = [];
       win = null;
+      upgrading?.controller.abort();
+      upgrading = null;
+      gated = false;
       for (const f of [...inFlight, ...joins]) {
         f.controller.abort();
       }

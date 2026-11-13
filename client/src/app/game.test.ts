@@ -27,7 +27,7 @@ import type { StatEvent } from '../stats/reporter.ts';
 import type { PuzzleUiProps } from '../puzzles/registry.ts';
 import { PAID_WINDOW_MS, PENDING_WINDOW_MS, chapterDelivered, createPurchaseFlow, packDelivered } from '../purchase/flow.ts';
 import type { PurchaseState } from '../purchase/flow.ts';
-import type { ChapterLoader } from '../story/chapters.ts';
+import type { ChapterLoader, ChapterLoadError } from '../story/chapters.ts';
 import { decodeChapterMeta } from '../story/catalog.ts';
 import type { AssetEntry, AssetManifest, ChapterCatalog, LoadedChapter, Result, StoryId } from '../story/catalog.ts';
 import { liveRunners } from '../story/runner.ts';
@@ -294,12 +294,18 @@ type FakeScene = SceneController & {
   readonly calls: string[];
   /** Each apply that carried a window (shots §5.8), with its batch's command kinds. */
   readonly windows: Array<{ batch: string; window: StageWindow }>;
+  /**
+   * Each ensure, apply and restore with its `preview` (shots §5.8 "Entry at the half tier", lane SH5b); `keep`: the
+   * apply's window is the keep window.
+   */
+  readonly previews: Array<{ op: 'ensure' | 'apply' | 'restore'; preview: boolean; keep: boolean }>;
 };
 
 function fakeScene(): FakeScene {
   const holders = new Map<string, Set<string>>();
   const calls: string[] = [];
   const windows: Array<{ batch: string; window: StageWindow }> = [];
+  const previews: FakeScene['previews'] = [];
   let stage = EMPTY_STAGE;
   /** The tag setChapter kept, which the first window ends (the scheduler's step 1c). */
   let entry: string | null = null;
@@ -322,6 +328,7 @@ function fakeScene(): FakeScene {
     holders,
     calls,
     windows,
+    previews,
     mount: async () => {
       calls.push('mount');
       return { ok: true, value: undefined };
@@ -336,7 +343,9 @@ function fakeScene(): FakeScene {
     apply: async (batch, o) => {
       const kinds = batch.map((c) => c.kind).join(',');
       calls.push(`apply:${kinds}`);
-      if (o.window !== undefined) {
+      previews.push({ op: 'apply', preview: o.preview === true, keep: o.window?.keep === true });
+      // A keep window plans nothing and keeps the entry tag (the scheduler's want of KEEP_WINDOW is a retry).
+      if (o.window !== undefined && o.window.keep !== true) {
         // The scheduler's steps 1 and 1c, as holders: the window's holders follow it, and the entry tag ends.
         windows.push({ batch: kinds, window: o.window });
         release('preload:win:');
@@ -358,8 +367,9 @@ function fakeScene(): FakeScene {
     complete() {
       calls.push('complete');
     },
-    restore: async (s) => {
+    restore: async (s, o) => {
       calls.push(`restore:${s.bg ?? '-'}`);
+      previews.push({ op: 'restore', preview: o?.preview === true, keep: false });
       restage({ bg: s.bg, cg: s.cg, chars: [...s.chars], props: [...s.props] });
     },
     snapshot: () => ({ ...stage, chars: [...stage.chars], props: [...stage.props] }),
@@ -371,7 +381,10 @@ function fakeScene(): FakeScene {
       calls.push(`release:${tag}`);
       release(tag);
     },
-    ensure: async () => ({ ok: true, value: undefined }),
+    ensure: async (_ids, _signal, o) => {
+      previews.push({ op: 'ensure', preview: o?.preview === true, keep: false });
+      return { ok: true, value: undefined };
+    },
     onActivated: async () => {
       calls.push('onActivated');
     },
@@ -5729,6 +5742,163 @@ test("game: a pending start refunded before its chapter loads offers the stage's
   h.game.dispose();
 });
 
+test('game: a save inside a paid chapter refunded since opens its paywall, and a purchase resumes it', async () => {
+  // A ch2 owner's manual save at ch2's second line.
+  const first = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'] });
+  await playManorCh1(first);
+  await first.game.advance(); // END: the change, then ch2's first line
+  await first.game.advance(); // l002
+  await first.game.save('s1');
+  const saved = first.save().slots.get('s1');
+  first.game.dispose();
+  // The fixture's shape: a body inside ch2 with its ink, at a line other than the chapter's first.
+  const body = saved === undefined ? null : decodeSave(saved.body);
+  expect(body?.ok === true ? [body.value.chapterId, body.value.ink !== null, body.value.at.lineId] : body).toEqual([CH2, true, 'ch2.study.l002']);
+  if (saved === undefined) {
+    return;
+  }
+  // Refunded since: a new session on that slot, ch2 not owned. The server answers 403, so D11's paywall, not an error.
+  const h = harness({ chapters: [manorCh1(), manorCh2()], slots: new Map([['s1', saved]]), invoice: ['paid'] });
+  const started = await h.game.start({ kind: 'slot', story: MANOR, slot: 's1' });
+  expect([overlayKinds(h), lineOf(h.vm), h.vm.stageTap]).toEqual([['paywall'], null, true]);
+  expect([started.ok, h.vm.notice, h.assetUrls], 'no error notice, no build probe').toEqual([true, null, []]);
+  // A purchase resumes the save as saved, not the chapter's start.
+  h.game.buy();
+  await settle();
+  await settle();
+  expect([h.vm.paywall, lineOf(h.vm)]).toEqual([null, 'ch2.study.l002']);
+  h.game.dispose();
+});
+
+test('game: a save inside an owned chapter whose load fails other than 403 shows its error notice, not the paywall', async () => {
+  // A ch2 owner's manual save at ch2's second line.
+  const first = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'] });
+  await playManorCh1(first);
+  await first.game.advance(); // END: the change, then ch2's first line
+  await first.game.advance(); // l002
+  await first.game.save('s1');
+  const saved = first.save().slots.get('s1');
+  first.game.dispose();
+  // The fixture's shape: a body inside ch2 with its ink, so its resume loads ch2 and reaches D11's guard.
+  const body = saved === undefined ? null : decodeSave(saved.body);
+  expect(body?.ok === true ? [body.value.chapterId, body.value.ink !== null] : body).toEqual([CH2, true]);
+  if (saved === undefined) {
+    return;
+  }
+  // ch2 still owned, its load failing other than the server's 403: the paywall shows only on a 403 (cut D-r6-4,
+  // principle 1), so a transient failure gets chapterFailed's notice and its Retry, never a paywall over a bought chapter.
+  const failures: readonly ChapterLoadError[] = [{ kind: 'network', detail: 'offline' }, { kind: 'not-found' }, { kind: 'session-expired' }, { kind: 'http', status: 500 }];
+  const rows: unknown[] = [];
+  for (const failure of failures) {
+    const h = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'], slots: new Map([['s1', saved]]) });
+    const load = h.loader.load;
+    h.loader.load = async (ch, o) => (ch.id === CH2 ? { ok: false, error: failure } : load(ch, o));
+    const started = await h.game.start({ kind: 'slot', story: MANOR, slot: 's1' });
+    rows.push([failure.kind, started.ok, overlayKinds(h), h.vm.notice?.kind ?? null, h.vm.stageTap]);
+    h.game.dispose();
+  }
+  expect(rows).toEqual([
+    ['network', false, [], 'error', false],
+    ['not-found', false, [], 'error', false],
+    ['session-expired', false, [], 'reopen', false],
+    ['http', false, [], 'error', false],
+  ]);
+});
+
+/** A ch2 owner's manual save `s1` at ch2's second line: a body inside ch2 with its ink, at a line other than the first. */
+async function savedInsideCh2(): Promise<SaveFull> {
+  const first = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'] });
+  await playManorCh1(first);
+  await first.game.advance(); // END: the change, then ch2's first line
+  await first.game.advance(); // l002
+  await first.game.save('s1');
+  const saved = first.save().slots.get('s1');
+  first.game.dispose();
+  if (saved === undefined) {
+    throw new Error('invariant: the owner session saved s1');
+  }
+  const body = decodeSave(saved.body);
+  expect(body.ok ? [body.value.chapterId, body.value.ink !== null, body.value.at.lineId] : body).toEqual([CH2, true, 'ch2.study.l002']);
+  return saved;
+}
+
+test('game: a save inside a paid chapter refunded again between its purchase and its resume opens the paywall again, and a later purchase resumes it', async () => {
+  const saved = await savedInsideCh2();
+  const h = harness({ chapters: [manorCh1(), manorCh2()], slots: new Map([['s1', saved]]), invoice: ['paid', 'paid'] });
+  expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 's1' })).ok).toBe(true);
+  expect([overlayKinds(h), h.vm.stageTap], 'refunded since: the paywall').toEqual([['paywall'], true]);
+  const go = holdLoad(h, 'ch2'); // startPending's resume of the saved body
+  h.game.buy();
+  await settle();
+  await settle();
+  expect([h.vm.paywall, h.vm.stageTap], 'paid: the resume loads').toEqual([null, false]);
+  h.owned.delete('ch2'); // refunded in between: the server answers the held load with 403 (the server wins, P9)
+  go();
+  await settle();
+  await settle();
+  expect([overlayKinds(h), lineOf(h.vm), h.vm.stageTap, h.vm.notice?.kind ?? null], 'the paywall again, no error notice').toEqual([['paywall'], null, true, null]);
+  h.game.buy();
+  await settle();
+  await settle();
+  expect([h.vm.paywall, lineOf(h.vm)], 'bought again: the save resumes as saved').toEqual([null, 'ch2.study.l002']);
+  h.game.dispose();
+});
+
+test("game: a saved body's resume follows the server's answer for its chapter, whatever the client's list says", async () => {
+  const saved = await savedInsideCh2();
+  type Server = 'delivered' | 'not-entitled' | 'network';
+  const servers: readonly Server[] = ['delivered', 'not-entitled', 'network'];
+  const answer = (server: Server): Result<LoadedChapter, ChapterLoadError> => {
+    switch (server) {
+      case 'delivered':
+        return { ok: true, value: manorCh2() };
+      case 'not-entitled':
+        return { ok: false, error: { kind: 'not-entitled' } };
+      case 'network':
+        return { ok: false, error: { kind: 'network', detail: 'offline' } };
+      default: {
+        const never: never = server;
+        return never;
+      }
+    }
+  };
+  // [started.ok, overlays, line, notice, stage tap]. The model has no list term on purpose: the server is the source
+  // of truth for entitlements (principle 1, cut D-r6-4), and the client's list is a cache that may disagree either way.
+  // The body resumes as saved when the chapter is delivered, the paywall opens on the server's 403 only, and any other
+  // failure gets chapterFailed's notice.
+  const model = (server: Server): unknown[] => {
+    switch (server) {
+      case 'delivered':
+        return [true, [], 'ch2.study.l002', null, false];
+      case 'not-entitled':
+        return [true, ['paywall'], null, null, true];
+      case 'network':
+        return [false, [], null, 'error', false];
+      default: {
+        const never: never = server;
+        return never;
+      }
+    }
+  };
+  const lists: readonly (readonly [string, readonly string[]])[] = [
+    ['owned', ['ch2']],
+    ['not owned', []],
+  ];
+  const rows: unknown[] = [];
+  for (const [list, owned] of lists) {
+    for (const server of servers) {
+      const h = harness({ chapters: [manorCh1(), manorCh2()], owned, slots: new Map([['s1', saved]]) });
+      const load = h.loader.load;
+      h.loader.load = async (ch, o) => (ch.id === CH2 ? answer(server) : load(ch, o));
+      const started = await h.game.start({ kind: 'slot', story: MANOR, slot: 's1' });
+      rows.push([list, server, started.ok, overlayKinds(h), lineOf(h.vm), h.vm.notice?.kind ?? null, h.vm.stageTap]);
+      h.game.dispose();
+    }
+  }
+  expect(rows).toHaveLength(6);
+  expect(rows).toEqual(lists.flatMap(([list]) => servers.map((server) => [list, server, ...model(server)])));
+});
+
 test("game: a resume of another save or an exit to the stories withdraws the stage's tap", async () => {
   const h = harness({ chapters: [manorCh1(), manorCh2()] });
   await startManor(h); // l001: the start knot's entry autosave
@@ -6040,5 +6210,172 @@ test('game: a yield step hands no window and the previous window stays', async (
   expect(h.scene.calls.filter((c) => c.startsWith('apply:')).length).toBeGreaterThan(applies);
   // The yield's batch carries no window: the line's stays, with its warm close-up.
   expect(h.scene.windows.map((x) => x.window)).toEqual([winOf(spec, 'ch1.start.l001'), winOf(spec, 'ch1.cabinet.l002')]);
+  h.game.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// A chapter entry at the half tier (shots §5.8 "Entry at the half tier", lane SH5b): the first step after every
+// enterChapter, and its restore, load previews; the flag ends at the first windowed stage, at the next step, or at a
+// resume inside the chapter. An entry's windowless stage hands the keep window, whose swap upgrades its previews.
+
+/** The first record of `op` the fake scene saw. */
+const firstOf = (h: Harness, op: 'ensure' | 'apply' | 'restore') => h.scene.previews.find((p) => p.op === op);
+
+/**
+ * A session resumed from Home (no chapter loaded yet: an entry) at the autosave a first session wrote once `reach`
+ * returned; the first session is disposed.
+ */
+async function resumedFromHome(o: HarnessOptions, reach: (h: Harness) => Promise<void>): Promise<Harness> {
+  const first = harness(o);
+  await reach(first);
+  const auto = first.save().slots.get('auto');
+  first.game.dispose();
+  if (auto === undefined) {
+    throw new Error('invariant: the first session autosaved');
+  }
+  const h = harness({ ...o, slots: new Map([['auto', auto]]) });
+  expect((await h.game.start({ kind: 'slot', story: MANOR, slot: 'auto' })).ok).toBe(true);
+  await settle();
+  return h;
+}
+
+/** worldCh1('puzzle') played to its puzzle yield, where present autosaves. */
+async function toThePuzzle(h: Harness): Promise<void> {
+  await startManor(h);
+  await h.game.advance(); // l002, the cabinet
+  await h.game.advance(); // the puzzle yield
+  await settle();
+}
+
+test('game: the first step after entering a chapter loads previews', async () => {
+  // A fresh start from Home.
+  const fresh = harness();
+  await startManor(fresh);
+  expect(firstOf(fresh, 'ensure')?.preview).toBe(true);
+  expect(firstOf(fresh, 'apply')).toEqual({ op: 'apply', preview: true, keep: false });
+  fresh.game.dispose();
+  // A resume into another chapter: its restore, then its first step.
+  const resumed = await resumedFromHome({}, startManor);
+  expect(resumed.scene.previews.filter((p) => p.op === 'restore')).toEqual([{ op: 'restore', preview: true, keep: false }]);
+  expect(firstOf(resumed, 'apply')).toEqual({ op: 'apply', preview: true, keep: false });
+  resumed.game.dispose();
+  // A handover: the new chapter's first step.
+  const h = harness({ chapters: [manorCh1(), lookedCh2()], owned: ['ch2'] });
+  await playManorCh1(h);
+  await h.game.advance(); // END: the change, then ch2's first line
+  expect(lineOf(h.vm)).toBe('ch2.study.l001');
+  expect(h.scene.previews.slice(-2)).toEqual([
+    { op: 'ensure', preview: true, keep: false },
+    { op: 'apply', preview: true, keep: false },
+  ]);
+  h.game.dispose();
+});
+
+test('game: a later step loads the full tier', async () => {
+  const h = harness({ chapters: [lookedCh1()] });
+  await startManor(h);
+  expect(firstOf(h, 'apply')).toEqual({ op: 'apply', preview: true, keep: false });
+  const before = h.scene.previews.length;
+  await h.game.advance(); // l002
+  await h.game.advance(); // the choice set
+  await h.game.choose(0); // l003
+  await h.game.advance(); // the garden: its plate
+  expect(lineOf(h.vm)).toBe('ch1.garden.l005');
+  const later = h.scene.previews.slice(before);
+  expect(later.some((p) => p.op === 'ensure')).toBe(true);
+  expect(later.every((p) => !p.preview && !p.keep)).toBe(true);
+  h.game.dispose();
+});
+
+test('game: a yield first step keeps the entry for its room batch', async () => {
+  stubObserver();
+  const w = worldChunks();
+  const h = await resumedFromHome({ chapters: [roomsCh1()], chunks: w.chunks }, async (first) => {
+    await startManor(first);
+    await first.game.advance(); // the explore yield: the hall
+    await settle();
+  });
+  const [restore, own, ...rest] = h.scene.previews;
+  // The restore, then the yield's own (empty) batch with the keep window: both inside the entry.
+  expect(restore).toEqual({ op: 'restore', preview: true, keep: false });
+  expect(own).toEqual({ op: 'apply', preview: true, keep: true });
+  // The first room batch (the hall) is the entry's window: it previews and ends the flag.
+  expect(rest).toEqual([
+    { op: 'ensure', preview: true, keep: false },
+    { op: 'apply', preview: true, keep: false },
+  ]);
+  expect(h.scene.windows.map((x) => x.window)).toEqual([winOf(ROOMS_LOOK, 'r:hall')]);
+  // A take in the hall hands the room's window again, at the full tier.
+  h.game.exploreActions.ontap(hk('hall.medal'));
+  await settle();
+  expect(h.scene.previews.length).toBeGreaterThan(4);
+  expect(h.scene.previews.slice(4).filter((p) => p.op === 'apply')).toEqual([{ op: 'apply', preview: false, keep: false }]);
+  h.game.dispose();
+  vi.unstubAllGlobals();
+});
+
+test('game: a resume inside the same chapter loads the full tier', async () => {
+  // Arm 1: a resume into another chapter previews; a load inside it does not.
+  const h = await resumedFromHome({}, startManor);
+  expect(firstOf(h, 'restore')).toEqual({ op: 'restore', preview: true, keep: false });
+  await h.game.advance(); // l002
+  const before = h.scene.previews.length;
+  await h.game.load('auto');
+  await settle();
+  expect(lineOf(h.vm)).toBe('ch1.arrival.l001');
+  expect(h.scene.previews.slice(before).map((p) => p.preview)).toEqual(h.scene.previews.slice(before).map(() => false));
+  expect(h.scene.previews.slice(before)[0]).toEqual({ op: 'restore', preview: false, keep: false });
+  h.game.dispose();
+  // Arm 2: inside an entry's first step (a resumed puzzle), a load of the same chapter is no entry.
+  const w = worldChunks();
+  const p = await resumedFromHome({ chapters: [worldCh1('puzzle')], chunks: w.chunks }, toThePuzzle);
+  expect(p.puzzle.frame?.mode).toBe('linear');
+  const mark = p.scene.previews.length;
+  await p.game.load('auto');
+  await settle();
+  expect(p.puzzle.frame?.mode).toBe('linear');
+  const again = p.scene.previews.slice(mark);
+  // Its restore, then its yield's (empty) batch, which hands no keep window.
+  expect(again.find((x) => x.op === 'restore')).toEqual({ op: 'restore', preview: false, keep: false });
+  expect(again.slice(again.findIndex((x) => x.op === 'restore') + 1)[0]).toEqual({ op: 'apply', preview: false, keep: false });
+  expect(again.every((x) => !x.preview && !x.keep)).toBe(true);
+  p.game.dispose();
+});
+
+test('game: a resumed puzzle yield stages its close-up as a preview and hands the keep window at each windowless swap', async () => {
+  const w = worldChunks();
+  const h = await resumedFromHome({ chapters: [worldCh1('puzzle')], chunks: w.chunks }, toThePuzzle);
+  expect(h.puzzle.frame?.mode).toBe('linear');
+  expect(h.scene.previews.slice(0, 4)).toEqual([
+    { op: 'restore', preview: true, keep: false },
+    { op: 'apply', preview: true, keep: true },
+    { op: 'ensure', preview: true, keep: false },
+    { op: 'apply', preview: true, keep: true },
+  ]);
+  expect(h.scene.calls.filter((c) => c.startsWith('apply:'))).toEqual(['apply:', 'apply:cg']);
+  // No window was wanted through the puzzle, and the fake's entry tag was never ended by one.
+  expect(h.scene.windows).toEqual([]);
+  expect(h.scene.calls.filter((c) => c.startsWith('entry:'))).toEqual([]);
+  h.game.dispose();
+});
+
+test("game: the first windowed step after an entry's puzzle loads the full tier", async () => {
+  const held = heldAttempt();
+  const w = worldChunks();
+  const h = await resumedFromHome({ chapters: [worldCh1('puzzle')], chunks: w.chunks, attempt: held.attempt }, toThePuzzle);
+  const closeUp = h.scene.previews.findIndex((p) => p.op === 'ensure');
+  expect(h.scene.previews[closeUp + 1]).toEqual({ op: 'apply', preview: true, keep: true });
+  // Solved: the exit batch (no image) is still the first step; the line after the puzzle is the next one.
+  h.game.puzzleActions.ontry();
+  held.answer({ ok: true, value: { correct: true, solved: true, attemptsLeft: null, spent: false } });
+  await settle();
+  await settle();
+  expect(lineOf(h.vm)).toBe('ch1.after.l003');
+  const after = h.scene.previews.slice(closeUp + 2);
+  expect(after).toEqual([
+    { op: 'apply', preview: true, keep: true },
+    { op: 'apply', preview: false, keep: false },
+  ]);
+  expect(h.scene.windows.at(-1)?.window).toEqual(NO_WINDOW);
   h.game.dispose();
 });

@@ -568,7 +568,16 @@ test.describe(() => {
     expect(halfFits(stageBound({ w: 360, h: 800 }, stage), renderResolution(1, 'AVERAGE')), `the half tier fits ${stage.w}x${stage.h}`).toBe(true);
     const fetched = paths(images.urls);
     expect(fetched, `${ALLY} loads its full file`).toContain(ally.avif.url);
-    expect(fetched.filter((p) => p.includes('-half-')), 'no half file').toEqual([]);
+    expect(ally.half, `${ALLY} in ch1.assets.json carries a half`).toBeDefined();
+    expect(fetched, `the entry starts ${ALLY} from its half file`).toContain(ally.half?.avif.url);
+    const ch1 = decodeAssetManifest(JSON.parse(readFileSync(path.join(CLIENT_DIR, 'src', 'story-gen', 'free', 'ch1.assets.json'), 'utf8')));
+    const fullOf = new Map(
+      (ch1.ok ? Object.values(ch1.value.assets) : []).flatMap((e): Array<[string, string]> =>
+        e.kind === 'image' && e.half !== undefined ? [[e.half.avif.url, e.avif.url], [e.half.webp.url, e.webp.url]] : [],
+      ),
+    );
+    expect(fetched.filter((p) => (p.includes('-half-') || fullOf.has(p)) && !fetched.includes(fullOf.get(p) ?? '')), 'every half fetched sharpened to its full file').toEqual([]);
+    expect(await sceneStats(page), 'no preview at rest: the session tier is full').toMatchObject({ previews: 0 });
   });
 });
 
@@ -589,7 +598,16 @@ test.describe(() => {
     expect(tierFor('LOW', stageBound({ w: 800, h: 1280 }, stage), renderResolution(2, 'LOW')), `the tier on ${stage.w}x${stage.h}`).toBe('full');
     const fetched = paths(images.urls);
     expect(fetched, `${ALLY} loads its full file`).toContain(ally.avif.url);
-    expect(fetched.filter((p) => p.includes('-half-')), 'no half file').toEqual([]);
+    expect(ally.half, `${ALLY} in ch1.assets.json carries a half`).toBeDefined();
+    expect(fetched, `the entry starts ${ALLY} from its half file`).toContain(ally.half?.avif.url);
+    const ch1 = decodeAssetManifest(JSON.parse(readFileSync(path.join(CLIENT_DIR, 'src', 'story-gen', 'free', 'ch1.assets.json'), 'utf8')));
+    const fullOf = new Map(
+      (ch1.ok ? Object.values(ch1.value.assets) : []).flatMap((e): Array<[string, string]> =>
+        e.kind === 'image' && e.half !== undefined ? [[e.half.avif.url, e.avif.url], [e.half.webp.url, e.webp.url]] : [],
+      ),
+    );
+    expect(fetched.filter((p) => (p.includes('-half-') || fullOf.has(p)) && !fetched.includes(fullOf.get(p) ?? '')), 'every half fetched sharpened to its full file').toEqual([]);
+    expect(await sceneStats(page), 'no preview at rest: the session tier is full').toMatchObject({ previews: 0 });
   });
 });
 

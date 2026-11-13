@@ -3,9 +3,10 @@ import { expect, test, vi } from 'vitest';
 import type { HalfFile, ImageEntry, Result, SizeTier, Trim } from '../story/catalog.ts';
 import type { Box } from '../story/shots.ts';
 import type { AssetId } from '../story/staging.ts';
+import { textureGeometry } from './layout.ts';
 import type { TextureGeometry } from './layout.ts';
 import { createImageLoader } from './loader.ts';
-import { createAssetRegistry, pixiFrames } from './registry.ts';
+import { HARD_CAP_BYTES, STEADY_CAP_BYTES, createAssetRegistry, pixiFrames } from './registry.ts';
 import type { Decoded, FrameCut, HeldFile, HoldImage, LoadError, LoadImage } from './registry.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -24,6 +25,8 @@ type Call = {
   done: boolean;
 };
 type Revive = { url: string; gen: number; signal: AbortSignal; settle(r: Result<void, LoadError>): void; done: boolean };
+/** An in-place upgrade (lane SH5b): the full file's URL and the geometry's resolution, settled on demand. */
+type Upgrade = { url: string; resolution: number; signal: AbortSignal; settle(r: Result<void, LoadError>): void; done: boolean };
 
 const BG = 8_847_360; // 1080 × 2048 × 4
 const PROP = 1_048_576; // 512 × 512 × 4
@@ -46,6 +49,7 @@ const prop = (name: string): ImageEntry => image(name, 512, 512);
 function harness(variant: 'avif' | 'webp' = 'avif', tier: SizeTier = 'full') {
   const calls: Call[] = [];
   const revives: Revive[] = [];
+  const upgrades: Upgrade[] = [];
   const released = new Map<string, number>();
   /** The generation a load that settles now was uploaded under (the controller's, MEMORY-PLAN 4.A). */
   let gen = 1;
@@ -88,6 +92,35 @@ function harness(variant: 'avif' | 'webp' = 'avif', tier: SizeTier = 'full') {
             r.settle({ ok: true, value: undefined });
           }
         }),
+      // As the loader's swap: on success the texture keeps its identity and takes the full file's size and bytes; one
+      // aborted first swaps nothing.
+      upgrade: (ref, geometry, signal) =>
+        new Promise((resolve) => {
+          const u: Upgrade = {
+            url: ref.url,
+            resolution: geometry.resolution,
+            signal,
+            done: false,
+            settle(result) {
+              if (u.done) {
+                return;
+              }
+              u.done = true;
+              if (signal.aborted) {
+                resolve({ ok: false, error: { kind: 'aborted' } });
+                return;
+              }
+              const size = sizes.get(ref.url);
+              if (result.ok && size !== undefined) {
+                d.w = size.w;
+                d.h = size.h;
+                d.keptBytes = ref.bytes;
+              }
+              resolve(result);
+            },
+          };
+          upgrades.push(u);
+        }),
       release: () => released.set(url, (released.get(url) ?? 0) + 1),
     };
     return d;
@@ -106,14 +139,22 @@ function harness(variant: 'avif' | 'webp' = 'avif', tier: SizeTier = 'full') {
       succeed(call);
     }
   };
-  /** Acquires `name` (its entry, and its half's, registered for the fake's decode size) and returns the pending result. */
-  const acquire = (name: string, entry: ImageEntry, holder: string, priority: 'visible' | 'preload', signal?: AbortSignal) => {
+  /** Registers the entry's files (and its half's) for the fake's decode size. */
+  const note = (entry: ImageEntry): ImageEntry => {
     for (const f of entry.half === undefined ? [entry] : [entry, entry.half]) {
       sizes.set(f.avif.url, { w: f.w, h: f.h });
       sizes.set(f.webp.url, { w: f.w, h: f.h });
     }
+    return entry;
+  };
+  /** Acquires `name` (its entry, and its half's, registered for the fake's decode size) and returns the pending result. */
+  const acquire = (name: string, entry: ImageEntry, holder: string, priority: 'visible' | 'preload', signal?: AbortSignal) => {
+    note(entry);
     return registry.acquire(asId(name), holder, signal === undefined ? { entry, priority } : { entry, priority, signal });
   };
+  /** The same with `preview` (lane SH5b): a new record starts from the entry's half on a full-tier registry. */
+  const preview = (name: string, entry: ImageEntry, holder: string, priority: 'visible' | 'preload' = 'visible') =>
+    registry.acquire(asId(name), holder, { entry: note(entry), priority, preview: true });
   /** Settles every held revive so far with `r`; returns how many. */
   const settleRevives = (r: Result<void, LoadError> = { ok: true, value: undefined }): number => {
     const open = revives.filter((x) => !x.done);
@@ -126,11 +167,13 @@ function harness(variant: 'avif' | 'webp' = 'avif', tier: SizeTier = 'full') {
     registry,
     calls,
     revives,
+    upgrades,
     released,
     callsOf,
     succeed,
     succeedAll,
     acquire,
+    preview,
     decoded,
     settleRevives,
     setGen: (g: number): void => {
@@ -891,6 +934,354 @@ test('registry: demote applies to records started later', async () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
+// Preview records and the in-place upgrade (shots §5.8 "Entry at the half tier", lane SH5b): a chapter entry's
+// visible files start from their half on a full-tier registry and are upgraded to the full file in the same texture.
+
+/** A bg's half: 540 × 1024 × 4, and its file (halved's 40 B). */
+const HALF_BG = 540 * 1024 * 4;
+const HF = 40;
+const ok = <V>(r: Result<V, unknown>): V => {
+  if (!r.ok) {
+    throw new Error(`invariant: ok, got ${JSON.stringify(r.error)}`);
+  }
+  return r.value;
+};
+
+test("registry: a preview record starts from the entry's half file", async () => {
+  const h = harness();
+  const p = h.preview('bg/a', halved('a', bg('a')), 'scene:bg');
+  expect(h.calls.map((c) => c.url)).toEqual(['/assets/a-half.avif']);
+  expect(h.calls[0]?.geometry.resolution).toBe(0.5);
+  h.succeedAll();
+  const handle = ok(await p);
+  // Laid out on the full canvas (I4); it counts the half, and it is listed as a preview.
+  expect({ w: handle.w, h: handle.h }).toEqual({ w: 1080, h: 2048 });
+  expect(h.registry.stats()).toMatchObject({ live: 1, bytes: HALF_BG + HF, keptBytes: HF });
+  expect(h.registry.previews()).toEqual([{ id: asId('bg/a'), visible: true }]);
+});
+
+test('registry: a preview joins a live or in-flight full record as it is', async () => {
+  const h = harness();
+  // A live full record (a handover's landed `next:` preload) stays full: no fetch.
+  const a = halved('a', bg('a'));
+  const full = h.acquire('bg/a', a, 'next:ch2', 'preload');
+  h.succeedAll();
+  const first = ok(await full);
+  const joined = h.preview('bg/a', a, 'scene:bg');
+  expect(ok(await joined)).toBe(first);
+  expect(h.registry.previews()).toEqual([]);
+  // An in-flight full record lands full, with its one fetch.
+  const b = halved('b', bg('b'));
+  const flying = h.acquire('bg/b', b, 'scene:b', 'visible');
+  const late = h.preview('bg/b', b, 'scene:cg');
+  h.succeedAll();
+  expect(ok(await late)).toBe(ok(await flying));
+  // A preview joined by a full acquire stays a preview.
+  const c = halved('c', bg('c'));
+  const half = h.preview('bg/c', c, 'scene:c');
+  h.succeedAll();
+  await half;
+  const other = h.acquire('bg/c', c, 'preload:win:bg/c', 'preload');
+  await other;
+  expect(h.calls.map((x) => x.url)).toEqual(['/assets/a.avif', '/assets/b.avif', '/assets/c-half.avif']);
+  expect(h.registry.previews()).toEqual([{ id: asId('bg/c'), visible: true }]);
+});
+
+test('registry: an upgrade keeps the texture handle and counts the full file', async () => {
+  const h = harness();
+  const handle = ok(await (async () => {
+    const p = h.preview('bg/a', halved('a', bg('a')), 'scene:bg');
+    h.succeedAll();
+    return p;
+  })());
+  const up = h.registry.upgrade(asId('bg/a'));
+  expect(h.upgrades.map((u) => [u.url, u.resolution])).toEqual([['/assets/a.avif', 1]]);
+  h.upgrades[0]?.settle({ ok: true, value: undefined });
+  expect(await up).toEqual({ ok: true, value: true });
+  // The same handle and texture: nothing re-points a sprite.
+  expect(h.registry.current(asId('bg/a'))).toBe(handle);
+  expect(h.registry.current(asId('bg/a'))?.texture).toBe(handle.texture);
+  // The full file's decoded bytes and its file are counted; the record is no preview any more.
+  expect(h.registry.stats()).toMatchObject({ live: 1, bytes: BG + F, keptBytes: F, pending: 0 });
+  expect(h.registry.previews()).toEqual([]);
+  // A second upgrade of a full record does nothing.
+  expect(await h.registry.upgrade(asId('bg/a'))).toEqual({ ok: true, value: false });
+  expect(h.upgrades).toHaveLength(1);
+});
+
+test('registry: an upgrade over HARD is refused and the half stays live', async () => {
+  const h = harness();
+  // Two preload holders (admitted under 32 MiB first) an eviction would free: an upgrade evicts nothing.
+  for (const n of ['e', 'g']) {
+    void h.acquire(`bg/${n}`, bg(n), `preload:k:${n}`, 'preload');
+  }
+  for (const n of ['b', 'c', 'd']) {
+    void h.acquire(`bg/${n}`, bg(n), `scene:${n}`, 'visible');
+  }
+  const p = h.preview('bg/a', halved('a', bg('a')), 'scene:bg');
+  h.succeedAll();
+  const handle = ok(await p);
+  const before = 5 * (BG + F) + HALF_BG + HF;
+  expect(h.registry.stats().bytes).toBe(before);
+  // The full file (8,847,360 + 100) on top of 46,449,180 B passes 48 MiB: refused, no try made.
+  const up = h.registry.upgrade(asId('bg/a'));
+  expect([h.registry.state(asId('bg/e')), h.registry.state(asId('bg/g'))]).toEqual(['live', 'live']);
+  expect(h.upgrades).toEqual([]);
+  expect(await up).toEqual({
+    ok: false,
+    error: { kind: 'over-cap', id: asId('bg/a'), needBytes: BG + F, liveBytes: before, capBytes: HARD_CAP_BYTES },
+  });
+  expect(h.registry.current(asId('bg/a'))).toBe(handle);
+  expect(h.registry.previews()).toEqual([{ id: asId('bg/a'), visible: true }]);
+  expect([h.registry.state(asId('bg/e')), h.registry.state(asId('bg/g'))]).toEqual(['live', 'live']);
+  // "Visible loads refused" counts no upgrade.
+  expect(h.registry.stats()).toMatchObject({ bytes: before, overCap: 0, live: 6 });
+});
+
+test('registry: a session on the half tier ignores preview', async () => {
+  const h = harness('avif', 'half');
+  const p = h.preview('bg/a', halved('a', bg('a')), 'scene:bg');
+  h.succeedAll();
+  await p;
+  // The half tier already loads the half; the record is no preview, so nothing upgrades it.
+  expect(h.calls.map((c) => c.url)).toEqual(['/assets/a-half.avif']);
+  expect(h.registry.previews()).toEqual([]);
+  expect(await h.registry.upgrade(asId('bg/a'))).toEqual({ ok: true, value: false });
+  expect(h.upgrades).toEqual([]);
+  // An entry with no half loads its full file as before.
+  const plain = h.preview('bg/b', bg('b'), 'scene:b');
+  h.succeedAll();
+  await plain;
+  expect(h.calls.map((c) => c.url)).toEqual(['/assets/a-half.avif', '/assets/b.avif']);
+  expect(h.registry.previews()).toEqual([]);
+});
+
+test('registry: an upgrade evicts nothing, and a preview with no visible holder must fit the steady cap', async () => {
+  const h = harness();
+  for (const n of ['b', 'c', 'd']) {
+    void h.acquire(`bg/${n}`, bg(n), `preload:k:${n}`, 'preload');
+  }
+  const p = h.preview('bg/a', halved('a', bg('a')), 'preload:win:bg/a', 'preload');
+  h.succeedAll();
+  await p;
+  const before = 3 * (BG + F) + HALF_BG + HF;
+  expect(h.registry.previews()).toEqual([{ id: asId('bg/a'), visible: false }]);
+  // No visible holder: the full file must fit 32 MiB (28,754,260 + 8,847,460 does not); nothing is evicted for it.
+  const refused = h.registry.upgrade(asId('bg/a'));
+  expect(['bg/b', 'bg/c', 'bg/d'].map((id) => h.registry.state(asId(id)))).toEqual(['live', 'live', 'live']);
+  expect(h.upgrades).toEqual([]);
+  expect(await refused).toMatchObject({ ok: false, error: { kind: 'over-cap', capBytes: STEADY_CAP_BYTES } });
+  // With a visible holder it is admitted under 48 MiB, and still evicts no preload holder.
+  await h.acquire('bg/a', halved('a', bg('a')), 'scene:bg', 'visible');
+  const up = h.registry.upgrade(asId('bg/a'));
+  expect(h.upgrades).toHaveLength(1);
+  expect(['bg/b', 'bg/c', 'bg/d'].map((id) => h.registry.state(asId(id)))).toEqual(['live', 'live', 'live']);
+  expect(h.registry.stats().bytes).toBe(before + BG + F);
+  h.upgrades[0]?.settle({ ok: true, value: undefined });
+  expect(await up).toEqual({ ok: true, value: true });
+  expect(h.registry.stats().bytes).toBe(4 * (BG + F));
+});
+
+test('registry: an upgrade in flight counts the half and the full file, is pending, and an end returns both', async () => {
+  const h = harness();
+  const p = h.preview('bg/a', halved('a', bg('a')), 'scene:bg');
+  h.succeedAll();
+  await p;
+  expect(h.registry.stats()).toMatchObject({ bytes: HALF_BG + HF, pending: 0 });
+  const up = h.registry.upgrade(asId('bg/a'));
+  // The half stays counted beside the full file's reservation; the upgrade is a pending load, outside `loading`.
+  expect(h.registry.stats()).toMatchObject({ live: 1, bytes: HALF_BG + HF + BG + F, pending: 1 });
+  expect(h.registry.loading(asId('bg/a'))).toBe(false);
+  // A second call joins the one in flight.
+  const again = h.registry.upgrade(asId('bg/a'));
+  expect(h.upgrades).toHaveLength(1);
+  // The record ends with its last holder: the upgrade is aborted and both reservations return.
+  h.registry.release(asId('bg/a'), 'scene:bg');
+  expect(h.upgrades[0]?.signal.aborted).toBe(true);
+  expect(h.registry.stats()).toEqual(ZERO);
+  h.upgrades[0]?.settle({ ok: true, value: undefined });
+  expect(await up).toMatchObject({ ok: false, error: { kind: 'aborted' } });
+  expect(await again).toMatchObject({ ok: false, error: { kind: 'aborted' } });
+  expect(h.registry.stats()).toEqual(ZERO);
+});
+
+test('registry: a failed upgrade leaves the half live, and three failures end the tries', async () => {
+  const h = harness();
+  const p = h.preview('bg/a', halved('a', bg('a')), 'scene:bg');
+  h.succeedAll();
+  const handle = ok(await p);
+  const fails: Result<void, LoadError>[] = [FAILED, { ok: false, error: { kind: 'fetch', error: { kind: 'http', status: 500 } } }, FAILED];
+  for (const [i, f] of fails.entries()) {
+    const up = h.registry.upgrade(asId('bg/a'));
+    expect(h.upgrades).toHaveLength(i + 1);
+    h.upgrades[i]?.settle(f);
+    expect((await up).ok).toBe(false);
+    // The half stays live and listed; the reservation returns.
+    expect(h.registry.current(asId('bg/a'))).toBe(handle);
+    expect(h.registry.previews()).toEqual([{ id: asId('bg/a'), visible: true }]);
+    expect(h.registry.stats()).toMatchObject({ bytes: HALF_BG + HF, pending: 0 });
+  }
+  // Three failures: no fourth try.
+  const fourth = h.registry.upgrade(asId('bg/a'));
+  expect(h.upgrades).toHaveLength(3);
+  expect(await fourth).toEqual({ ok: true, value: false });
+});
+
+test('registry: an upgrade not answered within 20 s ends as a failed try and leaves the half live', async () => {
+  vi.useFakeTimers();
+  try {
+    const timeout = { ok: false, error: { kind: 'fetch', id: asId('bg/a'), error: { kind: 'network', detail: 'timeout' } } };
+    // Arm 1: the deadline aborts the upgrade and returns its reservation at once; its answer is a failed try. Literal
+    // advances pin UPGRADE_DEADLINE_MS at 20,000; a move of the value is a declared pin move here.
+    const h = harness();
+    const p = h.preview('bg/a', halved('a', bg('a')), 'scene:bg');
+    h.succeedAll();
+    const handle = ok(await p);
+    const up = h.registry.upgrade(asId('bg/a'));
+    expect(h.registry.stats().pending).toBe(1);
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(h.upgrades[0]?.signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.upgrades[0]?.signal.aborted).toBe(true);
+    expect(h.registry.stats().pending).toBe(0);
+    // The loader answers the abort (the fake: `aborted`, its signal being aborted).
+    h.upgrades[0]?.settle({ ok: true, value: undefined });
+    expect(await up).toEqual(timeout);
+    expect(h.registry.previews()).toEqual([{ id: asId('bg/a'), visible: true }]);
+    expect(h.registry.current(asId('bg/a'))).toBe(handle);
+    // Arm 2: two more, each past its own deadline, spend the tries: no fourth loader call.
+    for (const i of [1, 2]) {
+      const again = h.registry.upgrade(asId('bg/a'));
+      expect(h.upgrades).toHaveLength(i + 1);
+      await vi.advanceTimersByTimeAsync(20_000);
+      h.upgrades[i]?.settle({ ok: true, value: undefined });
+      expect(await again).toEqual(timeout);
+    }
+    expect(await h.registry.upgrade(asId('bg/a'))).toEqual({ ok: true, value: false });
+    expect(h.upgrades).toHaveLength(3);
+    // Arm 3: an answer inside the deadline wins, and its timer is cleared.
+    const s = harness();
+    const q = s.preview('bg/a', halved('a', bg('a')), 'scene:bg');
+    s.succeedAll();
+    await q;
+    const fine = s.registry.upgrade(asId('bg/a'));
+    await vi.advanceTimersByTimeAsync(19_999);
+    s.upgrades[0]?.settle({ ok: true, value: undefined });
+    expect(await fine).toEqual({ ok: true, value: true });
+    expect(vi.getTimerCount(), 'an answered upgrade must not leave its 20 s deadline timer pending').toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(s.registry.stats()).toMatchObject({ live: 1, pending: 0 });
+    expect(s.registry.previews()).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('registry: an upgraded record shed to its file decodes again from the full file at the full geometry', async () => {
+  // Cut §1.3's stored-box invariant across a shed: the upgrade re-points the record's file, its geometry and (on a
+  // load-only registry) its held file, so a later decode is the full file at resolution 1, never the half's.
+  const h = harness();
+  const a = halved('a', bg('a'));
+  const p = h.preview('bg/a', a, 'scene:bg');
+  h.succeedAll();
+  ok(await p);
+  // A warm holder (a step window's warm item) joins the live preview.
+  expect((await h.registry.acquire(asId('bg/a'), 'preload:win:bg/a', { entry: a, priority: 'warm' })).ok).toBe(true);
+  const up = h.registry.upgrade(asId('bg/a'));
+  h.upgrades[0]?.settle({ ok: true, value: undefined });
+  expect(await up).toEqual({ ok: true, value: true });
+  // The visible holder leaves: the upgraded record is no preview, so it sheds to its (full) file.
+  h.registry.release(asId('bg/a'), 'scene:bg');
+  expect(h.registry.state(asId('bg/a'))).toBe('held');
+  // The image comes back: decoded again from the held full file, at the full geometry.
+  const again = h.acquire('bg/a', a, 'scene:bg2', 'visible');
+  const last = h.calls[h.calls.length - 1];
+  expect([last?.url, last?.geometry.resolution]).toEqual(['/assets/a.avif', 1]);
+  h.succeedAll();
+  ok(await again);
+});
+
+test('registry: a preview not yet revived is not upgraded', async () => {
+  const h = harness();
+  const p = h.preview('bg/a', halved('a', bg('a')), 'scene:bg');
+  h.succeedAll();
+  ok(await p);
+  // A revive to generation 2 that is aborted before it brought the record there: the record stays stale, no revive runs.
+  h.setReviveMode('hold');
+  const ac = new AbortController();
+  h.registry.revive(2, ac.signal);
+  ac.abort();
+  expect(h.registry.stats().stale).toBe(1);
+  const up = h.registry.upgrade(asId('bg/a'));
+  expect(h.upgrades).toHaveLength(0);
+  expect(await up).toEqual({ ok: true, value: false });
+  // Once a revive brings it to the generation, it is upgraded.
+  h.setReviveMode('auto');
+  expect(await h.registry.revive(2, noAbort()).all).toBe('done');
+  void h.registry.upgrade(asId('bg/a'));
+  expect(h.upgrades).toHaveLength(1);
+});
+
+test('registry: a revive aborts an upgrade in flight and the half stays live', async () => {
+  const h = harness();
+  const p = h.preview('bg/a', halved('a', bg('a')), 'scene:bg');
+  h.succeedAll();
+  const handle = ok(await p);
+  const up = h.registry.upgrade(asId('bg/a'));
+  h.setReviveMode('hold');
+  const run = h.registry.revive(2, noAbort());
+  expect(h.upgrades[0]?.signal.aborted).toBe(true);
+  // While the revive runs, no upgrade starts.
+  expect(await h.registry.upgrade(asId('bg/a'))).toEqual({ ok: true, value: false });
+  h.upgrades[0]?.settle({ ok: true, value: undefined });
+  expect(await up).toMatchObject({ ok: false, error: { kind: 'aborted' } });
+  h.settleRevives();
+  expect(await run.all).toBe('done');
+  expect(h.registry.current(asId('bg/a'))).toBe(handle);
+  expect(h.registry.previews()).toEqual([{ id: asId('bg/a'), visible: true }]);
+  expect(h.registry.stats()).toMatchObject({ live: 1, bytes: HALF_BG + HF, pending: 0 });
+  // After it, the upgrade runs again.
+  void h.registry.upgrade(asId('bg/a'));
+  expect(h.upgrades).toHaveLength(2);
+});
+
+test('registry: a preview record whose last decoding holder leaves ends, so a warm holder never decodes its half', async () => {
+  const h = harness();
+  const a = halved('a', bg('a'));
+  const p = h.preview('bg/a', a, 'scene:bg');
+  h.succeedAll();
+  await p;
+  expect(await h.registry.acquire(asId('bg/a'), 'preload:warm:bg/a', { entry: a, priority: 'warm' })).toEqual({ ok: true, value: null });
+  h.registry.release(asId('bg/a'), 'scene:bg');
+  // No shed to the half file: the record ends, and the next ask loads the full file.
+  expect(h.registry.state(asId('bg/a'))).toBe('none');
+  expect(h.registry.stats()).toEqual(ZERO);
+  const next = h.acquire('bg/a', a, 'scene:bg', 'visible');
+  h.succeedAll();
+  await next;
+  expect(h.calls.map((c) => c.url)).toEqual(['/assets/a-half.avif', '/assets/a.avif']);
+});
+
+test('registry: previewing makes the acquires inside it previews, and only those', async () => {
+  const h = harness();
+  const inside = h.registry.previewing(() => h.acquire('bg/a', halved('a', bg('a')), 'scene:bg', 'visible'));
+  const after = h.acquire('bg/b', halved('b', bg('b')), 'scene:b', 'visible');
+  // The scope marks the stage's takes (visible acquires); a background acquire inside it is no preview.
+  const preload = h.registry.previewing(() => h.acquire('bg/c', halved('c', bg('c')), 'preload:k', 'preload'));
+  // A run that throws still ends the scope.
+  expect(() =>
+    h.registry.previewing(() => {
+      throw new Error('a bug inside the scope');
+    }),
+  ).toThrow('a bug inside the scope');
+  const last = h.acquire('bg/d', halved('d', bg('d')), 'scene:d', 'visible');
+  h.succeedAll();
+  await Promise.all([inside, after, preload, last]);
+  expect(h.calls.map((c) => c.url)).toEqual(['/assets/a-half.avif', '/assets/b.avif', '/assets/c.avif', '/assets/d.avif']);
+  expect(h.registry.previews()).toEqual([{ id: asId('bg/a'), visible: true }]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
 // Frames (docs/plans/shots §5.1 "Ownership", lane SH4): sub-textures cut from a record's texture, owned by the record.
 // A stand-in texture mimics Pixi's (Texture.mjs:145-157): `destroy(s)` destroys its source only when `s` is true.
 
@@ -1542,6 +1933,26 @@ test('registry: an undecodable half file leaves the full file free after demote'
   expect(h.registry.state(asId('prop/a'))).toBe('pending');
 });
 
+test('registry: a warm join of a live record is never refused, on a load-only registry too', async () => {
+  // Review M2 (lane SH5b rider R2): the join path comes before the warm refusal of a registry with no `hold`.
+  const h = harness();
+  const x = h.acquire('prop/x', prop('x'), 'preload:k', 'preload');
+  h.succeedAll();
+  expect((await x).ok).toBe(true);
+  const joined = await h.registry.acquire(asId('prop/x'), 'preload:warm:prop/x', { entry: prop('x'), priority: 'warm' });
+  expect(joined).toEqual({ ok: true, value: null });
+  expect(h.registry.state(asId('prop/x'))).toBe('live');
+  // Both holders stay: the warm one keeps the record (shed to its file) once the decoding one leaves.
+  h.registry.release(asId('prop/x'), 'preload:k');
+  expect(h.registry.state(asId('prop/x'))).toBe('held');
+  h.registry.release(asId('prop/x'), 'preload:warm:prop/x');
+  expect(h.registry.state(asId('prop/x'))).toBe('none');
+  // A new warm record is refused at once: a load-only registry has no file to hold.
+  const fresh = await h.registry.acquire(asId('prop/y'), 'preload:warm:prop/y', { entry: prop('y'), priority: 'warm' });
+  expect(fresh).toMatchObject({ ok: false, error: { kind: 'decode' } });
+  expect(h.calls.map((c) => c.url)).toEqual(['/assets/x.avif']);
+});
+
 test('registry: the real loader holds a file at its fetched size', async () => {
   // loader.ts's hold form over a fake FetchAsset: no bitmap is made until a decode, so it runs here as in the WebView.
   const hold = createImageLoader({ fetchAsset: async () => ({ ok: true, value: new Blob([new Uint8Array(1234)]) }), upload: () => null });
@@ -1561,4 +1972,97 @@ test('registry: the real loader holds a file at its fetched size', async () => {
   await flush();
   expect(warm.value).toEqual({ ok: true, value: null });
   expect(registry.warmStats()).toEqual({ warm: 1, warmBytes: 1234 });
+});
+
+test("registry: the real loader's upgrade swaps the full file into the same texture at its stored box, and refuses a file of another size", async () => {
+  // Pixi's own ImageSource and Texture over createImageBitmap stand-ins, sized by the Blob's length (lane SH5b, §1.3).
+  type Bitmap = { width: number; height: number; closed: boolean; close(): void };
+  const sized = new Map<number, { w: number; h: number }>();
+  const bitmaps: Bitmap[] = [];
+  vi.stubGlobal('createImageBitmap', (b: Blob): Promise<Bitmap> => {
+    const s = sized.get(b.size);
+    if (s === undefined) {
+      return Promise.reject(new Error(`no bitmap for a ${b.size} B file`));
+    }
+    const bm: Bitmap = {
+      width: s.w,
+      height: s.h,
+      closed: false,
+      close() {
+        bm.closed = true;
+      },
+    };
+    bitmaps.push(bm);
+    return Promise.resolve(bm);
+  });
+  try {
+    const arms = [
+      { label: 'untrimmed', entry: halved('u', image('u', 512, 512)) },
+      // The ally's shape: a stored box (256 × 512) on a larger canvas (768 × 1536).
+      { label: 'trimmed', entry: halved('t', image('t', 256, 512, { canvasW: 768, canvasH: 1536, x: 256, y: 1024 })) },
+    ];
+    let size = 10;
+    const blob = (w: number, h: number): Blob => {
+      size += 1;
+      sized.set(size, { w, h });
+      return new Blob([new Uint8Array(size)]);
+    };
+    for (const { label, entry } of arms) {
+      const half = entry.half;
+      if (half === undefined) {
+        throw new Error('invariant: the fixture has a half');
+      }
+      const files = new Map([
+        [half.avif.url, blob(half.w, half.h)],
+        [entry.avif.url, blob(entry.w, entry.h)],
+        ['/assets/wrong.avif', blob(entry.w + 2, entry.h)],
+      ]);
+      const hold = createImageLoader({
+        fetchAsset: (url) => {
+          const b = files.get(url);
+          return Promise.resolve(b === undefined ? { ok: false, error: { kind: 'http', status: 404 } } : { ok: true, value: b });
+        },
+        upload: () => 1,
+      });
+      const held = ok(await hold(half.avif, noAbort()));
+      const d = ok(await held.decode(noAbort(), textureGeometry(entry, 'half')));
+      expect(typeof d.upgrade, `${label}: the real loader's decoded texture upgrades`).toBe('function');
+      if (d.upgrade === undefined) {
+        return;
+      }
+      const upgrade = d.upgrade.bind(d);
+      const texture = d.texture;
+      const source = texture.source;
+      const shape = () => ({
+        size: [source.width, source.height],
+        frame: [texture.frame.x, texture.frame.y, texture.frame.width, texture.frame.height],
+        orig: [texture.orig.x, texture.orig.y, texture.orig.width, texture.orig.height],
+        trim: texture.trim === undefined ? null : [texture.trim.x, texture.trim.y, texture.trim.width, texture.trim.height],
+      });
+      const before = shape();
+      const halfBitmap = source.resource as unknown as Bitmap;
+      expect([source.pixelWidth, source.pixelHeight]).toEqual([half.w, half.h]);
+      const full = textureGeometry(entry, 'full');
+      // A file of another size than the stored box: refused, nothing swapped, its bitmap closed.
+      expect(await upgrade({ url: '/assets/wrong.avif', bytes: 1 }, full, noAbort())).toMatchObject({ ok: false, error: { kind: 'decode' } });
+      expect(source.resource as unknown as Bitmap).toBe(halfBitmap);
+      expect(bitmaps.at(-1)?.closed).toBe(true);
+      // The full file: the same texture and source, resized in place to the stored box at resolution 1.
+      expect(await upgrade(entry.avif, full, noAbort())).toEqual({ ok: true, value: undefined });
+      const fullBitmap = bitmaps.at(-1);
+      expect(d.texture).toBe(texture);
+      expect(texture.source).toBe(source);
+      expect(source.resource as unknown as Bitmap).toBe(fullBitmap);
+      expect(shape(), `${label}: the source keeps its stored box, the texture its frame, orig and trim`).toEqual(before);
+      expect([source.pixelWidth, source.pixelHeight]).toEqual([entry.w, entry.h]);
+      expect(source.pixelWidth * source.pixelHeight * 4, `${label}: the GPU allocation is the counted full decode`).toBe(entry.decodedBytes);
+      expect(source.resolution).toBe(1);
+      expect([halfBitmap.closed, fullBitmap?.closed]).toEqual([true, true]);
+      const fullSize = files.get(entry.avif.url)?.size;
+      expect([held.bytes, d.keptBytes, d.w, d.h]).toEqual([fullSize, fullSize, entry.w, entry.h]);
+    }
+    expect(arms[1]?.entry.decodedBytes).toBe(524_288);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
