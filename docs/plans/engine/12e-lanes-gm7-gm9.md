@@ -15,7 +15,7 @@
   plays a cue`, GM3p) gains the reach steps (`onreach`, a `mismatch`, a move away, the zero's re-post) on the fixture
   reach type. **Round 8 (per-player R-E28):** `postReach` and `ready(o)` post through GM3p's `post(o)` (no direct
   `session.attempt()`; `yields: every attempt starts through post` stays green by name), and `ready(o)` returns
-  `post(o)`'s boolean; the `frame.awaiting` row joins `VIEW_FIELD_CUES` (true: `puzzle:reached`; false: `puzzle:input`
+  `post(o)`'s boolean; the `frame.awaiting` row joins `VIEW_FIELD_CUES` (as merged: `FRAME_FIELD_CUES`, `client/src/app/yields.test.ts:3416` (as of `f6487fc`; docs lane `docs-errata-19`, group A)) (true: `puzzle:reached`; false: `puzzle:input`
   for a move away, or a settling key).
 - **After:** **GM5** (`yields.ts`, `yields.test.ts`: the holder chain ends `... GM4u -> GM5 -> GM7r`; round 3 m1), GM3p
   (`puzzle-view.svelte.ts`, `PuzzleHost.svelte`, `puzzle-host.svelte.test.ts`), GM1c (`session.ts`, `registry.ts`);
@@ -28,6 +28,15 @@
   `client/src/ui/puzzles/puzzle-host.svelte.test.ts`; round 5 (W3, 9 -> 11): new `client/src/puzzles/play/reach.ts`,
   new `client/src/puzzles/play/reach.test.ts` (`puzzles/play/**` is already under `rules-lazy` from GM1c, and only
   type UIs import it).
+- **Ruled since: RULINGS 335, 337, 339, 341** — as merged (`9516951`): **lock 12**, the 11 above plus
+  `client/src/ui/explore/explore.svelte.test.ts`'s key-set line, test-only (RULINGS 335, pre-ruled); **E_engine 0.31**,
+  the whole §3.5 GM7r / GM7p / GM7g row (RULINGS 337 Q1; GM7p and GM7g restate their data halves at their cuts), engine
+  STOP +1,307 B at R 2.603; 5 commits (`4ed20a4`..`2420557`) and a test-only fix round (r1 RED on two unpinned rules:
+  the move away's reach-only scope and `onreach`'s first-report guard; GREEN and APPROVED at `789bf1e`, RULINGS 339);
+  vitest 1986 by name (+13); engine +431 B (sample 1.390), puzzle-host 2,652 B; the pre-merge lenses found no product
+  defect (RULINGS 341). Round 7's GM6c2 branch: GM6c2 was not merged, so GM6c2's cut routes the zero's non-posting
+  branch (`yields.ts:1157-1160`) through `settle` ([per-player §5](../per-player/05-client-half.md)). Carries:
+  `carry.md` "GM7r carries" (V3, a Retry-After of 0, must close in GM8h).
 - **Commits:** (1) `session: a reach puzzle posts once per solve and none per stroke` (red: TS2339 `onreach`);
   round 5: `reach: the edge reports a reached start once and each later turn to reached once` (red: TS2307 `reach.ts`;
   then **M-R5a**, the edge starting at `true`); (2) `session: a wrong reply to a reach post is a mismatch and counts no
@@ -51,7 +60,10 @@
   capture and `pointercancel` (m13).
 - **After:** GM1d (`clues.ts`, `shape.ts`'s lint), GM7r (`registry.ts`), GM4g (`budget.ts`), GM3u (`arch.test.ts`),
   GM3p (`puzzle-types.svelte.test.ts`); **per-player GM6k** (the server's opaque `type`; today's closed `PuzzleKind`
-  refuses a new type, `server/src/content.rs:394-412`; per-player R-E12). **Beside:** GM8i.
+  refuses a new type, `server/src/content.rs:394-412`; per-player R-E12). **Beside:** GM8i. Changed by RULINGS 342,
+  344 (as of `f6487fc`; docs lane `docs-errata-19`, group A): GM6k is merged and made the type an opaque label (`server/src/content.rs:445-449`; no
+  `PuzzleKind` remains), so the server already takes `path`; **GM8i is not beside GM7p** (both hold
+  `client/scripts/story/world.test.ts`, CQ-a), and SH6 is never beside it (`arch.test.ts`).
 - **Lock (14; round 4 m5 +1):** `client/src/puzzles/rules/{index,path}.ts`, new `client/src/puzzles/play/path.ts`, new
   `client/src/puzzles/ui/PathPuzzle.svelte`, `client/src/puzzles/registry.ts`, new `client/scripts/story/puzzles/path.ts`
   (its `codes`: `world/unique-solution`, `world/reach-solution`, `world/attempts-without-wrong`),
@@ -61,6 +73,12 @@
   (registry pin and `LAZY_COMPONENTS`), `client/src/puzzles/rules/rules.test.ts`,
   `client/src/puzzles/ui/puzzle-types.svelte.test.ts`. Round 3: `client/src/cues/stage/motions.ts` leaves the lock
   (`puzzle:blocked` is GM3m's; the path controls' motions come from their `ControlDecl`s, §8.5).
+- **Ruled since: RULINGS 342, 344, 345** — **lock 19** (RULINGS 342: 18 = these 14 + `client/src/ui/puzzles/
+  puzzle-host.svelte.test.ts`, `client/src/puzzles/session.test.ts`, `client/scripts/story/world.test.ts` (test-only,
+  stated scopes) + `client/src/i18n/mechanics.ts` (the cells' accessible names); RULINGS 344 Q1: +
+  `client/src/ui/explore/explore.svelte.test.ts`'s key-set line `:1308`, test-only); **E_engine 0.45** (engine STOP +1,805 B at R 2.90) and **E_type 1.8 KB**
+  (the new root's chunk STOP 4,149 B at R 2.027) (RULINGS 345). GM7p's lock is a ruling; its docs, the design defaults RULINGS 342 pre-ruled among them, come with its
+  merge.
 - **Commits:** (1) rules + canonical (`path: a reversed path posts its canonical form`); the path UI reports through
   GM7r's `reachEdge` (round 5, W3: `path: a stroke that reaches the end reports once`); (2) lints (two-solution and
   mismatch seeds red), `story: a path whose solution visits 17 cells is refused` (the W3 pin through a real type; a
@@ -256,8 +274,9 @@
   `setting` (commit; per-player capable through `domainFits`, R-E2; floor `positions^parts - 1`, m4).
 - **After:** GM8h (`registry.ts`, round 5: `rules/index.ts`), GM7g (`arch.test.ts`, `rules.test.ts`,
   `puzzle-types.svelte.test.ts`, `scripts/story/puzzles/index.ts`), GM4g (`build.test.ts`); **per-player GM6k** (round 3
-  m1: the server's closed `PuzzleKind` refuses `levers` / `setting` at content load, `server/src/content.rs:394-412`).
-  **Beside:** GM9p.
+  m1: the server's closed `PuzzleKind` refuses `levers` / `setting` at content load, `server/src/content.rs:394-412`;
+  Changed by RULINGS 342 (as of `f6487fc`; docs lane `docs-errata-19`, group A): stale, GM6k made the type an opaque label, `server/src/content.rs:445-449`, so no
+  server edit is needed). **Beside:** GM9p.
 - **Lock (15; round 4: the e2e spec leaves for GM8d, the lint registry joins):**
   `client/src/puzzles/rules/{index,levers,setting}.ts`, `client/src/puzzles/play/{levers,setting}.ts`, new
   `client/src/puzzles/ui/LeverDevice.svelte` (shared by both types through `PUZZLE_UI`), `client/src/puzzles/registry.ts`,

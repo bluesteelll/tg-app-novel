@@ -198,9 +198,11 @@ export interface PuzzleTypeLint<P> {
   attempt as `{ kind: 'mismatch' }` (a new `AttemptResult` kind, GM7r; round 5: it dispatches no `attempt-failed`, so
   no reach post ever counts toward `maxAttempts`), yields resets the device, logs `reach-mismatch`
   to the console only (no stats event: `StatKind` is a closed union generated from the server,
-  `client/src/api/generated/api.ts:345`, backed by a DB constraint, and this track makes no server change; m12) and
+  `client/src/api/generated/api.ts:345`, :409 (as of `f6487fc`; docs lane `docs-errata-19`, group A), backed by a DB constraint, and this track makes no server change; m12) and
   shows a sticky toast `mech.content_updated` (round 4: in `i18n/mechanics.ts`, not the entry's tables; "The game was updated: close it and open it
-  again", owner wording Q15e). A lock puzzle cannot be abandoned (`reduce.ts:483-486`), so that device **stays shut in
+  again", owner wording Q15e). Changed by RULINGS 154, 341 (as of `f6487fc`; docs lane `docs-errata-19`, group A): the copy is the owner-adopted Q15e text
+  (RULINGS 154), as merged in GM7r `9516951`: en "The game was updated. Close it and open it again."
+  (`i18n/mechanics.ts:23`), ru :13; the mismatch branch is `yields.ts:1189-1197` (console `yields: reach-mismatch`). A lock puzzle cannot be abandoned (`reduce.ts:483-486`), so that device **stays shut in
   this tab**; reopening loads the new bundle, whose `reached` agrees. The statement "never a stuck lock" is withdrawn.
 - `levers` (m8): `solve` runs a BFS over configurations from `initial`, one edge per throw (the part and its couples
   advance by one, mod `positions`); <= 4^8 = 65,536 states (ARITHMETIC on the decode limits). An unreachable target
@@ -209,7 +211,12 @@ export interface PuzzleTypeLint<P> {
   (`server/src/puzzles/mod.rs:21`, `:64-67`); the session maps the 400 to `network` (`puzzles/session.ts:114-131`) and
   the frame shows "offline" (`yields.ts:658-661`) on every retry, so an over-long answer is a soft-lock. Content load
   checks only `solution.len() == answer_len` (`server/src/content.rs:803`), and no client code bounds the length. The
-  build therefore enforces it:
+  build therefore enforces it. Changed by RULINGS 335, 341 (as of `f6487fc`; docs lane `docs-errata-19`, group A): the server's `MAX_ANSWER_LEN` is 64 since
+  per-player GM6s1 (`server/src/puzzles/mod.rs:34`) and the length check is `fits_shape` (:76-81); the build's bound
+  stays 16 (`client/scripts/story/puzzles/shape.ts:20`) until GM7g; `puzzleError` maps a 403 to `not-entitled` and
+  every other HTTP failure but a 429 to `network` (`puzzles/session.ts:130-146`, :136); the frame's "offline" line is
+  `yields.ts:1211-1212`; content load checks the solution's length at `server/src/content.rs:504` and refuses an
+  `answerLen` above the constant at :1041:
   - `client/scripts/story/puzzles/shape.ts` (build-only, new in GM1d):
     ```ts
     /** The longest answer the build emits; never above the server's MAX_ANSWER_LEN (server/src/puzzles/mod.rs:21). */
@@ -437,10 +444,10 @@ export interface PuzzleTypeLint<P> {
   zoom-out and a reload`.
 - **Full commit (round 4, m8; `ritual`).** After `onwork`, when `commit === 'full'` and `session.answer().length ===
   shape.len`, yields posts through `post(o)` (round 8: GM3p's one attempt starter, out of `ontry`'s body,
-  `yields.ts:687-695`: `busy`, `checking`, `puzzle:checking`, `attempt()`; per-player R-E28). While `busy`
+  `yields.ts:687-695`; :1233-1242 (as of `f6487fc`; docs lane `docs-errata-19`, group A): `busy`, `checking`, `puzzle:checking`, `attempt()`; per-player R-E28). While `busy`
   or `retryAfter !== null` it does not post and the type UI ignores presses (its `busy` prop; a press on a full-length
   sequence is refused by the play half with `puzzle:blocked`, motion `shake`); **when the 429 countdown reaches zero**
-  (`countdown`, `yields.ts:619-630`) yields posts the still-full answer once. One rule covers the rest: **a
+  (`countdown`, `yields.ts:619-630`; :1152-1167 (as of `f6487fc`; docs lane `docs-errata-19`, group A)) yields posts the still-full answer once. One rule covers the rest: **a
   full-length unposted answer posts when the session can post** (after the last press and at the countdown's end; a
   full-length `work` seeded at open, which only a reload during a POST or a countdown leaves in a save, restarts
   through `restartWork` instead of posting, because the save cannot tell whether that POST reached the server and a
@@ -480,10 +487,16 @@ export interface PuzzleTypeLint<P> {
   posted (round 8: `post(o)`'s own boolean); a post emits `puzzle:checking` (the frame turns `checking`), no post emits **`puzzle:ready`** as the frame
   returns to `idle` and Try lights, so the end of every wait has exactly one cue (`commit: 'control'` always; a reach
   frame whose `o.reach` a move away cleared during the countdown; never two cues at one zero). PuzzleHost's `canTry` for a reach frame adds `frame.awaiting === true`
-  (an unreached path never posts from Try), and `ontry` on a reach frame calls `postReach`. **Why a re-post is safe
+  (an unreached path never posts from Try), and `ontry` on a reach frame calls `postReach`. Changed by RULINGS 335,
+  337, 339, 341 (as of `f6487fc`; docs lane `docs-errata-19`, group A), as merged (GM7r `9516951`): `postReach` (`yields.ts:1250-1256`) sets the session answer
+  to `o.reach` whenever `o.reach !== null`, also when `post(o)` then refuses (busy, a countdown, a frame not shown):
+  a reach frame posts only through `postReach`, which sets it again, and `onchange` diffs against the frame's answer,
+  not the session's (O3); `ready(o)` is `postReach(o)` (:1146; the full answer of `commit: 'full'` is GM8h's);
+  `canTry` is `frame.awaiting !== false` (`ui/puzzles/PuzzleHost.svelte:43`), equivalent: `awaiting` is `null` on a
+  commit frame and a boolean on a reach frame (`false` at open, :1125). **Why a re-post is safe
   here and not for `ritual`:** reach types have no posted wrong (`wrong: 'none' | 'local'`; a server wrong is
   `mismatch`, which counts no attempt, §7.4), so posting one reached answer twice can never spend an attempt; each POST
-  takes one slot of the server's window (20 per 600 s, `server/src/puzzles/mod.rs:13-17`), and every re-post here is
+  takes one slot of the server's window (20 per 600 s, `server/src/puzzles/mod.rs:13-17`; :24 and :28 (as of `f6487fc`; docs lane `docs-errata-19`, group A)), and every re-post here is
   one per open or one per player tap. **Rejected:** restarting a seeded reached device through `restartWork` (it throws
   away a solve the server may already hold, and a reached `levers` costs the player the whole pattern again for a lost
   reply); a hidden automatic retry loop on `network` (it spends window slots while the player is offline, and the
@@ -603,3 +616,34 @@ export interface PuzzleTypeLint<P> {
   core loop. GM5q's STOP: `views+recipes-real` still at the cap on any seed with the quotient, back to the orchestrator
   for (3). Response (3)'s per-section budget is in AUTHORING from P2-b's factors, provisional until GM5q's measurement
   ([AUTHORING](../../AUTHORING.md#world-lint-codes-and-soft-lock-counterexamples), "A per-section budget").
+- **Changed by RULINGS 316, 317, 318, 322, 323, 326 (as of `f6487fc`; docs lane `docs-errata-19`, group A): response
+  (1) built, P2 with the quotient MEASURED** (GM5q `5142d5d`, its C2 `ee72f65`; `client/scripts/story/spike-p2.test.ts`;
+  `gm5q-mech-place-quotient/p2q.md`; ms not measured, the work count decides). A free view now folds into its parent's
+  **place** ([§6.3](06-mechanics-as-modules.md#63-view-full-screen-zoom-views-gm4-o5), "Ruled since: RULINGS 316, 317,
+  318, 322, 323, 326"), and the cap has **two bounds**: places <= `RESUME_STATE_CAP` (5,000) and work (successor
+  evaluations, walk moves included) <= 8 x the cap = 40,000 (`client/src/mechanics/rules/search.ts:535`; PUZZLES-PLAN
+  "The cost"). Places / work per seed with the quotient (the `off` arm, `places: false`, equals `p2b.md` row by row):
+
+  | Configuration | Places with the quotient | Work with the quotient | Without the quotient |
+  |---|---|---|---|
+  | base and P2-a's other emulated configurations (no `view` key) | as without | as without | base 406-528, work 1,321-1,741; the rest as `p2b.md` |
+  | `views-real` (asserted: equals base) | 406-528 | 3,625-4,525 | 1,174-1,456 states, work 2,857-3,597 |
+  | `recipes-real` | 1,868-2,300 | 7,012-8,428 | the same (no view) |
+  | `views+recipes-real` (asserted: equals `recipes-real`) | 1,868-2,300, exhausted | 18,580-21,868 (at most 55 % of W) | cap (by places) |
+  | `full-mix-real` (reported) | cap, by places | 25,137-27,092 at the stop | cap (by places) |
+  | the real ch1 | 406 | 1,741 | 540, work 1,607 |
+
+  Every real view of the generator merges on every seed (6 of 6), so GM5q's STOP (RULINGS 309) did not fire. The
+  quotient cuts places by the view factor (`views-real` 2.76-2.89) and work by nothing: the members' successors are the
+  same evaluations, plus one walk move per member (work with / without 1.25-1.27 on `views-real`, 1.08 on ch1). A place
+  costs about 8.6-9.0 evaluations at 2 real views per room, 9.5-10 with one recipe, 4.3 on the real ch1 (one view),
+  against 2.4-4.1 per state where no view merges. So at 2 views per room W, not the place cap, is the bound a dense
+  section meets first, near 4,000-4,200 places (ARITHMETIC; no measured row stopped by work). `full-mix-real` stops by
+  places: the cap counts discovered places, the work counts expanded ones. Two variants of the place rule are
+  equivalent on linted content, stated and not pinned (RULINGS 323): the zoom walk taking the last lockless parent exit
+  instead of the first (`G1-ZOOMLAST`), and `placesOf` scanning every room of the world instead of the section's
+  (`G11-ALLROOMS`; `world/view-section` keeps a view in its parent's section). **The cost:** the measured
+  3.9-4.5 µs per evaluation is about twice the plan's 2 µs, so a section at W could take about 150-180 ms unthrottled
+  against 75 ms (RULINGS 318, OPEN-QUESTIONS Q70; response (4)'s timing recalibrates both bounds). Response (3)'s
+  per-section budget, now in both units:
+  [AUTHORING](../../AUTHORING.md#world-lint-codes-and-soft-lock-counterexamples), "A per-section budget".

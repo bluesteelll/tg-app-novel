@@ -933,14 +933,14 @@ check (the second table below).
 | `world/hint-count` | E | more than 3 hint tiers; a hint without an `id` |
 | `world/title-long` | E | a puzzle title over 18 graphemes (the invoice title `Подсказка 3: <title>` must fit 32 chars) |
 | `world/giveup-in-section`, `world/linear-requires`, `world/cross-section-item` | E | `giveUp` on a puzzle attached to a lock (Give up is for linear puzzles only); a linear puzzle with `requires`; an item obtained in one section and required (by a slot or a puzzle) in another |
-| `world/cross-section-effect` | E | an `{ unlock: key }` in a room's `onEnter` or a hotspot's `then` / `onOpen` / `onFail` whose key is a hotspot of another section; an item or doc given (`gives`, `{ give }`) in more than one section |
+| `world/cross-section-effect` | E | an `{ unlock: key }` in a room's `onEnter` or a hotspot's `then` / `onOpen` / `onFail` whose key is a hotspot of another section; an item or doc given (`gives`, `{ give }`) in more than one section (Changed by RULINGS 328 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1): a `{ set }` of another section's flag is `world/flag-scope`, a module code, not this one) |
 | `world/puzzle-multi-lock` | E | a puzzle named by the `puzzle` field of more than one lock, in one section or in several; prints every lock that names it |
 | `world/cross-section-exit` | E | a room→room exit whose `to.room` is a defined room of another section than the exit's own; prints every such exit, so a crossing pair is two findings. A room that is not defined stays `world/unknown-ref` |
-| `world/fail-without-effect` | E | a lock puzzle with `maxAttempts` and an empty `onFail` |
-| `world/var-type` | E | a declared projection VAR with the wrong type (`pz_*` int, `it_*` / `dc_*` bool) |
+| `world/fail-without-effect` | E | a lock puzzle with `maxAttempts` and an empty `onFail` (Changed by RULINGS 327-334 (as of `f6487fc`; docs lane `docs-errata-19`, group A): a module effect counts, so an `onFail` that only sets a flag passes; GM5f D9) |
+| `world/var-type` | E | a declared projection VAR with the wrong type (`pz_*` int, `it_*` / `dc_*` bool; Changed by RULINGS 327-334 (as of `f6487fc`; docs lane `docs-errata-19`, group A): `fl_*` bool, GM5f) |
 | `world/softlock` | E | the model checker found a reachable state (over `successors`, closed puzzles included) with no path to a `leave` effect; prints the action path |
-| `world/unreachable` | W | an item, doc, room or puzzle no reachable state touches |
-| `world/state-cap` | E | the checker exceeded `RESUME_STATE_CAP` (5,000) states: the section is too large to prove at resume (PUZZLES-PLAN X9); split it |
+| `world/unreachable` | W | an item, doc, room or puzzle no reachable state touches (Changed by RULINGS 328 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1): not a hotspot, so a hotspot whose `when` never holds is not reported) |
+| `world/state-cap` | E | the checker exceeded `RESUME_STATE_CAP` (5,000) states: the section is too large to prove at resume (PUZZLES-PLAN X9); split it. Changed by RULINGS 317, 326 (as of `f6487fc`; docs lane `docs-errata-19`, group A): or it passed 40,000 successor evaluations (8 per state of the cap; GM5q); the message names the bound, and a free zoom view counts with its parent ([AUTHORING](AUTHORING.md#world-lint-codes-and-soft-lock-counterexamples)) |
 | `play/event-no-return` | E | a seeded run entered an event knot and stopped without its explore yield |
 
 From LW3, world texts follow §4: `id/*` and `loc/*` apply to them, and IDs are unique across ink and world.

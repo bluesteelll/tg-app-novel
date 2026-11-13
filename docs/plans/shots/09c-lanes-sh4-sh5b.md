@@ -426,7 +426,10 @@ upgrade, its `need` files as half-tier previews, each sharpened after the visibl
      previews, ~3.19 MiB, below `lamp_wide`'s plate alone (8,847,360 - 2,211,840 = 6,635,520 B), so the bound still
      fails there. Round 3's "the stage pixel at the face box changes to the full file's value" could not pass on
      placeholder content, whose face states are flat rectangles in one hue (§4.2 step 8), equal at both tiers; the
-     resume is at ch4's a001, SH4's restage);
+     resume is at ch4's a001, SH4's restage. Changed by RULINGS 321 (as of `f6487fc`; docs lane `docs-errata-19`, group
+     A, fix round 1): as built, F5 asserts the at-rest bound instead (Q2): with `previews === 0`, `liveBytes` at rest
+     is at least the plate's and the sheet's full decodes (`client/e2e/shots.spec.ts:631-632`); the rise is only logged
+     (`:627-629`), [§5.8 "Ruled since"](05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry));
    - (rev. 4, W1) `shots: after an entry the first cut's half files are requested beside the upgrade` (rev. 6, ledger
      F6: the resume at ch4's a001, whose window's `need` holds `lamp_keeper_cu`'s files, SH4's restage; the test first
      reads that window in Node and fails "fixture shape absent" otherwise)
@@ -449,3 +452,32 @@ upgrade, its `need` files as half-tier previews, each sharpened after the visibl
 - `game.ts`: after SH5a, before SH7.
 - STOP items at the cut: Pixi 8.22's `TextureSource.resize(w, h, resolution)` after a `resource` swap keeps
   `source.width` in canvas units (read `node_modules/pixi.js` at the cut); else the fallback of §5.8 step 3.
+
+**Ruled since: RULINGS 320-325, 330, 332, 336, 340, 343, 346** — as merged (SH5b `f6487fc`; as of `f6487fc`; docs lane
+`docs-errata-19`, group A). The design as built is [§5.8 "Ruled since"](05b-preload-memory-download.md#58-preload-policy-for-cuts-sh5a-windows-sh5b-entry);
+this records the lane:
+- **Lock 14** (RULINGS 321, 325, 330, 332): the 9 above plus `client/e2e/memory.spec.ts` (test-only, two tests,
+  RULINGS 321), `client/src/requests.test.ts` (one row, RULINGS 325), `client/e2e/perf.spec.ts` (G2, RULINGS 330),
+  `client/src/app/window.test.ts` and `client/src/scene/controller.test.ts` (the step options matrix); the upgrades and
+  the entry gate run in `preload.ts`'s scheduler, the controller forwards the swap point and asks a frame per upgrade.
+- **25 commits** (`f166f21` .. `e3232ef`, three trunk syncs): the registry's preview records and the loader's in-place
+  upgrade (`a276a89`); the entry window, the chain and the gate (`357b810`); the game's entry flag (`2cdb591`); e2e F5 /
+  F6 (`acdbc4a`); r5's swap-point fix (`1f1ba7e`, RULINGS 330: upgrades start at the swap point; settles only carry
+  the chain), the abort pin (`686bfd0`), G2's batch rule with its ordering guard (`84164de`); fix2 (RULINGS 332): the
+  frame request (`2fe177e`, P1: an upgrade drew no frame), the 20 s deadline and the stats docs (`4d70593`, F1, M1), the
+  refund rider (`b67790c`, `27ccf98`: only the server's 403 opens the paywall); fix2's rounds 2-6 found one surviving
+  step-option mutation each, so fix3 (RULINGS 336, 340) pinned `applyStep` / `restoreStep` with one model-based matrix
+  of 81 cells (`32fb601`, `9be40c1`); fix4 (RULINGS 343) test-only, the per-record frame rule (`61e5a07`) and the
+  refund pins (`e3232ef`).
+- **The cut:** r1 BLOCKED on Q1 (RULINGS 321: memory.spec test-only); r2 READY, critique C1 the stored box, W1 F6's
+  waits, W2 the entry flag's bound and the upgrade trigger (RULINGS 322); r3 APPROVED (RULINGS 324); implement STOPPED
+  at `requests.test.ts` (RULINGS 325) and at perf.spec G2 (RULINGS 330, the swap-point fix); r6-r8 the fix amends.
+- **Tests:** vitest 2038 by name (+52, 0 missing); e2e 111 / 111 on both projects (+2: `shots: a resume shows the half
+  tier first and sharpens`, `shots: after an entry the first cut's half files are requested beside the upgrade`); the
+  matrix `controller: a step's options matrix (D7): ...` (`client/src/scene/controller.test.ts:417`).
+- **Rows, MEASURED:** engine 205,560 -> 206,708 B (+1,148 against an E of 0.45 and a STOP of +1,671; R sample 2.551),
+  entry +20 B (hash text), every other lazy row equal by module identity; first line 245,880, all JS 282,846, first
+  load ch1 298,732 / ch3 278,092; budget 111 PASS, 0 FAIL, 1 PENDING.
+- **Principle 0:** the full file only through the entitled asset route; no paid byte after a refund (the refund lens,
+  RULINGS 343). Story log, story-gen and server content identical to main's.
+- **Carried:** `carry.md` "SH5b carries" (P3, FYI-6, both FYI-9s; §5.8 "Ruled since" names the owners).

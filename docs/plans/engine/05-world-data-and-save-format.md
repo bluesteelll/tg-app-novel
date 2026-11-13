@@ -78,6 +78,12 @@ export type CamState =
   `save-codec.ts` is in the engine closure, its one value importer `game.ts:33`). Without it SH1 keeps `cam` out of the
   snapshot (its STOP item) and a resumed push opens at rest framing. Later lanes need no codec edit and no second
   stale-tab window. A future slice is format 3 (§3.6).
+  Changed by RULINGS 328, 329, 334 (as of `f6487fc`; docs lane `docs-errata-19`, group A): the one bump is GM2a's
+  (`9b4fd25`): format 2 already carries `flags` (`client/src/story/save-codec.ts:136`), so GM5f (`402d4d8`) made no
+  format bump. It made no `RULES_VERSION` bump either (`client/src/explore/reduce.ts:35` stays 1): by RULINGS 317 O1's
+  rule a bump is owed when the concrete relation or a reachable save's answer can change, and GM5f's one changed
+  resume answer (RULINGS 328 A6) is computed live in an `unproved` section, so a bump would change no answer
+  ([§6.5](06-mechanics-as-modules.md#65-flags-gm5f), "Ruled since: RULINGS 327, …, 334").
 - **Upgrader 1 -> 2** (pure): `world.format = 2`, `flags = []`, `chapterStart.items = []`; runs and props unchanged
   (`work` is optional; the format-2 codec decodes it when present and refuses a malformed one).
 - **A well-formed `work` that no longer fits** (critic r2 open question): GM2a's `normalize` drops `work` with its run
@@ -133,6 +139,10 @@ export type CamState =
     held, but an item a kept cell still holds stays used.
   - `renamed.flags` decodes and maps, but `world/renamed-target` refuses every flags entry until module `flags`
     declares flags (GM5f; cut Q1).
+    Changed by RULINGS 327, 334 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix rounds 1 and 3): GM5f
+    (`402d4d8`) declares flags, so a `flags` entry whose target is a declared flag passes `world/renamed-target`
+    (`client/scripts/story/mechanics/core.ts:39-40`, `liveIds`) and the load maps it (`flags: ids(r.flags, s.flags)`,
+    `client/src/explore/reconcile.ts:196`).
 
 ### 5.4 World JSON bytes (R6)
 

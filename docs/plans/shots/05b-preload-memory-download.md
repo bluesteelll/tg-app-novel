@@ -376,6 +376,68 @@ Addendum (RULINGS 302)). Where this section and the points below differ, the poi
   - with them: a warm decode may refill the room step 6 (a) freed for a deferred need (memory lens F2), and ch2's
     opening bg is not resident at the ch1 -> ch2 handover (V5, as on main), both to the preload-priority lane and SH5b.
 
+**Ruled since: RULINGS 320-325, 330, 332, 336, 340, 343, 346** — the half-tier entry as built (SH5b `f6487fc`, lock 14;
+cut r1-r8, `sh5b-shot-entry/cut.md`; as of `f6487fc`; docs lane `docs-errata-19`, group A). Where it differs from
+"Entry at the half tier" above, this text wins:
+- **Which steps preview.** `Session.entry` (`client/src/app/game.ts:375`): `'entered'` by `enterChapter` (:953), `'first'`
+  at the next `present` (:782), `'none'` after it; a resume inside the current chapter is no entry (:1051, the full
+  tier). So a fresh start, a resume, a handover and an in-session chapter load stage their first step, and the
+  `restore` before it, from the half files (`ensure` / `apply` / `restore` with `preview`, the registry's
+  `previewing`, `scene/registry.ts:174`, :814; `AcquireOptions.preview` :103). A step's preview arm, the executor's
+  options and the holders at return are `applyStep` / `restoreStep` (`scene/controller.ts:279`, :296).
+  Changed by RULINGS 324 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1): the entry has three ends, whichever comes first
+  (fork r3-1, `Session.entry`'s doc `game.ts:370-374`): its first windowed stage (`stage`, :729-731; a windowless
+  entry stage hands `KEEP_WINDOW` and keeps the entry), the next `present` (:782), or a resume inside the current
+  chapter (:1051).
+- **Step 3 as built: the chain runs in the scheduler, not the controller, and starts at the swap point** (RULINGS 330).
+  `scene/preload.ts`'s `kick` (:462) upgrades one preview at a time, outside the scheduler's two slots (`upgrade`
+  :435-451): visible records first, then the others, each by `UPGRADE_ORDER` (:104: cg, bg, sheet, face, talk, char,
+  prop), then in start order. The first upgrade of an entry starts at its first swap point (`swapSeen`, :151, set in
+  `want` :590, cleared by `setChapter` :531); a settle, a join settle, a release `retry` or a knot hold before it only
+  carries the chain ("upgrades start at the swap point; settles only carry the chain"). On a fresh ch1 start the first
+  full file moves from just after the line to the `scene:` dip's black, about 400 ms after `apply`; at a handover or an
+  in-session load no full file starts while the first step's halves are awaited.
+- **R1, a warm decode kept across step 1c** (Changed by RULINGS 321, 322, 324 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1); RULINGS 302 Q8,
+  RULINGS 322 O3, 324 r3-4; commit `f166f21`). When `want` ends the entry tag (`scene/preload.ts:627-641`, only while
+  `entry !== null`), each warm file of the window that the entry tag holds and that is still `live` joins its window
+  holder at decode rank, so the release never sheds it to its file for step 3 to decode again. Only the entry tag's
+  own records, and only at that release.
+- **Step 3's swap.** `registry.upgrade(id, signal)` (`scene/registry.ts:185`) through the loader's in-place
+  `upgrade` (`scene/loader.ts:138-166`): the same texture, its `resize` at the full canvas, and the stored box checked
+  against the decoded size (a mismatch is a `decode` failure and the half stays). Upgrade admission evicts nothing: it
+  is admitted under HARD while a visible holder holds the record, else under STEADY.
+- **Step 4's gate.** `want` closes the entry gate only when the window is an entry's and the session tier is `full`
+  (`gated`, `preload.ts:601`): a half-tier session (LOW, or one demoted) is never gated. The gate opens once no visible
+  preview is untried or upgrading and no NEED item is queued, in flight or joining. A windowless entry stage hands
+  `KEEP_WINDOW` (:35), whose `want` is a `retry` and whose swap counts as a release.
+- **Step 5 as built.** `UPGRADE_TRIES` 3 per record (`registry.ts:31`, the refusal :652), not per chapter; an upgrade
+  not answered within `UPGRADE_DEADLINE_MS` 20 s (:39, :670-677) is aborted and counts a failed try, the half stays
+  (C-r6-1: a full file that needs longer on a slow link is retried and the half kept). Every successful upgrade asks
+  the on-demand render loop for one frame (`sharpened`, `preload.ts:122`, :448; `controller.ts:530`, D-r6-1); a
+  failure, an abort, a chapter change, a revive or a call after destroy asks none.
+- **The refund rider.** A resume into a paid chapter refunded since its save: the server's 403 (`not-entitled`)
+  opens D11's paywall over an empty stage with the save body kept whole (`game.ts:1023`, `pendingPaid` :1367); a
+  purchase resumes it as saved (`startPending` :1302); every other failure shows the chapter error notice
+  (`chapterFailed`). No paid byte is fetched after a refund (Principle 0).
+- **Memory (review M1, memory F2; F5's label).** `RegistryStats.bytes` counts the full file and decode an upgrade in
+  flight reserves, so `liveBytes` (`bytes - keptBytes`) includes upgrade reservations (`registry.ts:104-109`); e2e
+  F5 logs `shots F5: entry reservation peak liveBytes ...` (`client/e2e/shots.spec.ts:619`). Changed by RULINGS 321 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1):
+  F5 asserts the at-rest bound (RULINGS 321 Q2): once `previews === 0` (`shots.spec.ts:600-612`), `liveBytes` at rest
+  is at least the full decodes of the wide shot's plate and sheet (`:631-632`); the rise from the line to rest is only
+  logged (`:627-629`), not asserted. MEASURED at ch4's a001:
+  the reservation peak 23,497,523 B (22.41 MiB), the GPU textures 22,637,784 B (21.59 MiB), above this section's
+  19.08 MiB model and the ≈ 20.6 MiB model row (the step-window row plus the one half); the runtime a001 bound is
+  F5's measured peak, beside SH5a's memory F1 (the step model does not see the entry's one-half transient; carried to
+  the next `client/scripts/budget.ts` holder and SH11).
+- **e2e.** perf.spec G2's batch rule: the stage awaits the halves, the full files are the upgrades, with an ordering
+  guard (the first full file starts at or after the halves' end); memory.spec's two tests amended (RULINGS 321).
+  FYI-7: the TTFL model does not see a handover's halves.
+- **Open, carried with owners (`carry.md` "SH5b carries"):** P3, a failed full-tier window need asked again at every
+  step, and FYI-9, the stale `window.pending` under the paywall (`preload.ts:653`), to the preload-priority lane;
+  FYI-6, G2's guard on a cut-opened ch1, to the next `perf.spec.ts` holder; FYI-9 (refund lens), a refunded chapter's
+  read-line text in its save, to the next `save-codec.ts` holder or the security pass. SH5a's V1, V2 and V5 above stay
+  with the preload-priority lane.
+
 ### 5.9 Memory ledger and arithmetic (gate counts = decoded + the larger kept file, `budget.ts:806-808`)
 
 **Inputs** (E unless noted; rev. 2 re-computes the sheets for the per-expression model of S3, the full small-face set
