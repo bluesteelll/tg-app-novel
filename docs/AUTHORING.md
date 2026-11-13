@@ -709,10 +709,15 @@ and gate a hotspot on it with `when` ([data/flags.ts:18-30](../client/src/mechan
   still judges whether the flag opens a way on.
 
 **Changing flags in a shipped world** (old saves meet the new world at load):
-- **Adding a `set`.** On a take's `then`, a look's `then`, a room's `onEnter`, a lock's `onOpen` or a lock puzzle's
-  `onFail`, a save that already passed that event gets the flag at load. On an object's `then` it gets it at its next
-  tap of the object (an `unlock` can open an object without its `then`, so there is no event to read); where old saves
-  that cannot return must have the flag, put the `set` on a trigger with an event. A `set` beside a `give`, `unlock`
+- **Adding a `set`.** A trigger that had an effect in the old version left a record when it ran, so a save that ran
+  it gets the flag at load, on an object's `then` too
+  ([writer.ts:56-60](../client/src/mechanics/rules/writer.ts#L56), [reconcile.ts:59-60](../client/src/explore/reconcile.ts#L59);
+  a trigger the load re-arms to give back a lost gift sets the flag when it runs again). A trigger that was empty in
+  the old version left no record. On a take's `then`, a look's `then`, a room's `onEnter`, a lock's `onOpen` or a lock
+  puzzle's `onFail`, a save that already passed that event still gets the flag at load. On an object's `then` it gets
+  it at its next tap of the object (an `unlock` can open an object without its `then`, so there is no event to read);
+  where old saves that cannot return must have the flag, put the `set` on a trigger with an event. Changed by RULINGS
+  331 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 2). A `set` beside a `give`, `unlock`
   or `story` on a trigger the save passed while it was empty follows that trigger: it runs again at its next event, or
   the section restarts.
 - **Moving or removing a setter** clears the flag where no current setter has run, and a save that already used what
@@ -1119,11 +1124,15 @@ E story/locales/en/story.json:0 catalog/stories chapters.ch2: paid chapter ch2's
   hotspot the room keeps. No lint can see a forgotten entry; a save then loses that hotspot's progress. The four
   `world/renamed-*` codes are in [Module and type lint codes](#module-and-type-lint-codes); `flags` and `puzzles`
   entries are refused for now. Changed by RULINGS 328 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix
-  round 1); as merged, GM5f `402d4d8`: a `flags` entry is accepted when its target is a declared flag
+  rounds 1 and 2); as merged, GM5f `402d4d8`: a `flags` entry is accepted when its target is a declared flag
   ([core.ts:39-40](../client/scripts/story/mechanics/core.ts#L39)), and the load maps a saved flag through it
-  ([reconcile.ts:196](../client/src/explore/reconcile.ts#L196)). **Rename a shipped flag only with its `renamed.flags`
-  entry:** without it an old save drops the old flag as undeclared, and a flag set by an object's `then` comes back
-  only when the player taps the object again. `puzzles` entries stay refused (`world/renamed-puzzles`, R-E4).
+  ([reconcile.ts:196](../client/src/explore/reconcile.ts#L196)). **A flag rename changes no flag an old save
+  ends with**, with or without the entry: the load sets each declared flag exactly when one of its setters has run,
+  whatever the save's flag list says ([flags.ts:161-173](../client/src/mechanics/data/flags.ts#L161),
+  `normalizeFlags`). Without the entry the old id is only listed in the load's dropped report
+  as `flags:<old>`, which the player never sees ([resume.ts:77](../client/src/story/resume.ts#L77)). List a renamed
+  flag in `renamed.flags` anyway: the entry keeps the flag's place in the saved flag list and keeps that report clean.
+  `puzzles` entries stay refused (`world/renamed-puzzles`, R-E4).
 - **Never remove a shipped recipe or change its `gives`** (Changed by RULINGS 310 (as of `48489b7`; docs lane
   `docs-errata-18`, group A)). An old save past the recipe restarts that section when the player next resumes or
   enters it (the area-reset toast), and the old product stays in hand as an orphan nothing uses. To rename a product,
