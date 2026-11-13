@@ -64,14 +64,13 @@ export const SILENT_FIELDS = {
   room: 'every change is a move cue',
   lastRoom: 'bookkeeping of the move',
   unproved: 'bookkeeping of reconcile',
-  flags: 'no rule sets a flag until module `flags` (GM5f) owns the `flag` fact kind, which then carries its changes',
 } as const;
 
 /** 'carry': an item the chapter start gave (§6.6). */
 export type CauseVerb = 'tap' | 'insert' | 'use' | 'combine' | 'enter' | 'return' | 'trigger' | 'solve' | 'fail' | 'device' | 'leave-view' | 'carry';
 export type Cause = { readonly verb: CauseVerb; readonly at: HotspotKey | null; readonly item: ItemId | null; readonly via: TriggerKey | null };
-/** The list fields of WorldState a rule writes (`unproved` is reconcile's). */
-export type ListField = 'visited' | 'held' | 'used' | 'docs' | 'taken' | 'examined' | 'open' | 'fired' | 'pendingStory';
+/** The list fields of WorldState a rule writes (`unproved` is reconcile's; `flags` module `flags`' effects'). */
+export type ListField = 'visited' | 'held' | 'used' | 'docs' | 'taken' | 'examined' | 'open' | 'fired' | 'pendingStory' | 'flags';
 
 /**
  * The one write path of every rule. Each list-field change appends one fact change per added / removed member. `Id`
@@ -174,10 +173,21 @@ export interface MechanicRules<Id extends string, A extends { readonly kind: str
   visuals?(w: KernelWorld, s: WorldState, room: RoomId): readonly PropView[];
   /** Evaluates an atom kind its data half declared. */
   holds?(w: KernelWorld, s: WorldState, atom: { readonly kind: string; readonly value: unknown }): boolean;
+  /**
+   * The effects this module's data adds to the trigger `trigger` (an effect key it owns, decoded as
+   * `<trigger>#<source index>`), each at its source index, in index order: the kernel's runner (`fire`, rules/writer.ts)
+   * runs them among the trigger's kernel effects in source order, and fires a trigger whose only effects are a module's.
+   */
+  effects?(w: KernelWorld, trigger: TriggerKey): readonly ModuleEffect[];
 }
 
-/** A module's share of S's own facts (`MechanicRules.scope`): items S's module data gives, `fired` keys it writes. */
-export type ModuleScope = { readonly items: readonly ItemId[]; readonly fired: readonly TriggerKey[] };
+/** One module effect of a trigger: `index` is its source index in the trigger's list; `run` writes it with the
+ *  trigger's cause (`via`: the trigger). */
+export type ModuleEffect = { readonly index: number; run(out: KernelWriter, via: Cause): void };
+
+/** A module's share of S's own facts (`MechanicRules.scope`): items S's module data gives, `fired` keys it writes, and
+ *  the flags S declares (module `flags`), which only S's reset clears. */
+export type ModuleScope = { readonly items: readonly ItemId[]; readonly fired: readonly TriggerKey[]; readonly flags?: readonly FlagId[] };
 
 /** What an arrival may do: open a puzzle (the same states a hotspot's own tap reaches) and play a module cue. */
 export type ArrivalOut<Id extends string = string, C extends string = string> = {

@@ -9,25 +9,66 @@ import type { Cue } from '../../cues/types.ts';
 import type { PuzzleRun, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId } from '../../story/staging.ts';
 import type { Effect, HotspotKey, ItemId } from '../../world/types.ts';
-import type { ArrivalOut, Cause, FactKind, KernelFactKind, KernelWorld, ListField, MechanicId, RulesRegistry, TriggerKey, Writer } from '../contract.ts';
+import type { ArrivalOut, Cause, FactKind, KernelWorld, ListField, MechanicId, ModuleEffect, RulesRegistry, TriggerKey, Writer } from '../contract.ts';
 
 export function added<T>(list: readonly T[], v: T): readonly T[] {
   return list.includes(v) ? list : [...list, v];
 }
 
 /**
- * Every trigger fires at most once; an empty one is never recorded, so it adds no state. `at`: the hotspot the trigger
- * belongs to (null: a room's `onEnter`), which its gifts name. Its `fired` entry and every write of its effects carry
- * the action's `cause` with `via` = this trigger (a fact's `via` is the trigger running when it was written).
+ * A kernel effect: an entry with a `give`, `unlock` or `story` key. The one definition the runner, core's `reads` and
+ * the place quotient read a trigger's list by: the proof world (`{ ...toPublic(src), mods }`) keeps a module's owned
+ * effect in the kernel list at its source index, and that entry is the module's, never the kernel's.
+ */
+export function isKernelEffect(e: Effect): boolean {
+  return 'give' in e || 'unlock' in e || 'story' in e;
+}
+
+const NO_EFFECTS: readonly ModuleEffect[] = Object.freeze([]);
+
+/** Every module effect of `trigger` (each rules module's `effects` hook), in source index order. */
+export function moduleEffects(rules: RulesRegistry, w: KernelWorld, trigger: TriggerKey): readonly ModuleEffect[] {
+  let out = NO_EFFECTS;
+  for (const m of rules) {
+    const own = m.effects?.(w, trigger) ?? NO_EFFECTS;
+    if (own.length > 0) {
+      out = out.length === 0 ? own : [...out, ...own].sort((a, b) => a.index - b.index);
+    }
+  }
+  return out;
+}
+
+/**
+ * Every trigger fires at most once; a trigger with no kernel and no module effect is never recorded, so it adds no
+ * state. `at`: the hotspot the trigger belongs to (null: a room's `onEnter`), which its gifts name. Its `fired` entry
+ * and every write of its effects carry the action's `cause` with `via` = this trigger (a fact's `via` is the trigger
+ * running when it was written). The effects run in source order: a module effect at its source index, every other
+ * position the next kernel effect (the composed decoder's split, read backwards), so both world forms run one sequence.
  */
 export function fire(out: KernelWriter, firedKey: string, effects: readonly Effect[], at: HotspotKey | null, cause: Cause): void {
   const d = out.draft;
-  if (effects.length === 0 || d.s.fired.includes(firedKey)) {
+  if (d.s.fired.includes(firedKey)) {
     return;
   }
-  const via: Cause = { ...cause, via: firedKey as TriggerKey }; // every fired key is a trigger key
+  const trigger = firedKey as TriggerKey; // every fired key is a trigger key
+  const kernel = effects.every(isKernelEffect) ? effects : effects.filter(isKernelEffect);
+  const mods = moduleEffects(out.rules, out.world, trigger);
+  if (kernel.length === 0 && mods.length === 0) {
+    return;
+  }
+  const via: Cause = { ...cause, via: trigger };
   out.set('fired', [...d.s.fired, firedKey], via);
-  for (const e of effects) {
+  let k = 0;
+  let m = 0;
+  for (let i = 0; k < kernel.length || m < mods.length; i++) {
+    const own = mods[m];
+    const e = kernel[k];
+    if (e === undefined || (own !== undefined && own.index <= i)) {
+      own?.run(out, via); // with no kernel effect left, a module effect is (the loop's condition)
+      m += 1;
+      continue;
+    }
+    k += 1;
     if ('give' in e) {
       if (d.ix.items.has(e.give)) {
         out.set('held', added(d.s.held, e.give), via);
@@ -78,8 +119,8 @@ export type KernelWriter<Id extends string = string, C extends string = string> 
   slots(key: HotspotKey, cells: ReadonlyArray<ItemId | null>, cause: Cause): void;
 };
 
-/** The fact kind of each list field's members. */
-const FACT_OF: { readonly [F in ListField]: KernelFactKind } = {
+/** The fact kind of each list field's members (`flags`: module `flags`' own kind). */
+const FACT_OF: { readonly [F in ListField]: FactKind } = {
   visited: 'visited',
   held: 'held',
   used: 'used',
@@ -89,6 +130,7 @@ const FACT_OF: { readonly [F in ListField]: KernelFactKind } = {
   open: 'open',
   fired: 'fired',
   pendingStory: 'story',
+  flags: 'flag',
 };
 
 const NONE: readonly never[] = Object.freeze([]);

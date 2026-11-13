@@ -163,6 +163,9 @@ export const CUE_MOTIONS: { readonly [K in Exclude<CueKey, ControlKey>]: MotionS
   'fact:hint:removed': row('pulse', 420, 'box'),
   'fact:story:added': row('dim', 600, 'stage'),
   'fact:story:removed': row('vignette', 600, 'stage'),
+  // Module `flags`' fact (08b): a flag names no hotspot, so its set sweeps the stage; only a section reset removes one.
+  'fact:flag:added': row('sweep', 600, 'stage'),
+  'fact:flag:removed': row('sweep-back', 600, 'stage'),
   'move:walk': row('sweep', 600, 'stage'),
   'move:zoom-in': row('iris', 360, 'box'),
   'move:zoom-out': row('iris-back', 360, 'box'),

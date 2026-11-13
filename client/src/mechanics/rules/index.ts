@@ -14,6 +14,8 @@ import { applyCombine, combineActions, combineReads, combineScope } from './comb
 import type { CombineAction, CombineCue } from './combine.ts';
 import { actions, applyCore, reads } from './core.ts';
 import type { CoreCue } from './core.ts';
+import { applyFlags, flagEffects, flagReads, flagScope, flagsActions, holdsFlag } from './flags.ts';
+import type { FlagsAction } from './flags.ts';
 import { applyUse, useActions, useReads, useScope } from './use.ts';
 import type { UseAction, UseCue } from './use.ts';
 import { applyVisual, visualActions, visualReads, visuals } from './visual.ts';
@@ -65,7 +67,18 @@ const combine = {
   cues: ['refused', 'refused-with'] as const,
 } satisfies MechanicRules<'combine', CombineAction, CombineCue>;
 
-export const MECHANIC_RULES = [core, use, visual, view, combine] as const;
+const flags = {
+  id: 'flags',
+  actions: flagsActions,
+  apply: applyFlags,
+  reads: flagReads,
+  scope: flagScope,
+  cues: [] as const,
+  effects: flagEffects,
+  holds: holdsFlag,
+} satisfies MechanicRules<'flags', FlagsAction, never>;
+
+export const MECHANIC_RULES = [core, use, visual, view, combine, flags] as const;
 
 /**
  * The dispatch (engine plan §3.2 "Exhaustiveness: dispatch is a typed map over the tuple"): one handler per action kind

@@ -268,7 +268,7 @@ test("world: a source puzzle's clues decode", () => {
   // Every issue in one pass: not a list, two keys, an unknown kind, an id out of grammar, a key without its room.
   const bad = manorSource();
   node(bad, 'puzzles.drawer')['clues'] = {};
-  node(bad, 'puzzles.gate')['clues'] = [{ doc: 'diary', has: 'x' }, { flag: 'f' }, { doc: 'Diary' }, { open: 'drawer' }];
+  node(bad, 'puzzles.gate')['clues'] = [{ doc: 'diary', has: 'x' }, { bogus: 'f' }, { doc: 'Diary' }, { open: 'drawer' }];
   expect(issues(decodeWorldSource(bad))).toEqual(
     ['puzzles.drawer.clues shape', 'puzzles.gate.clues.0 shape', 'puzzles.gate.clues.1 shape', 'puzzles.gate.clues.2.doc id', 'puzzles.gate.clues.3.open id'].sort(),
   );
@@ -598,7 +598,7 @@ test('world: a clue is a condition', () => {
   expect(decoded(raw).puzzles[pid('drawer')]?.clues).toEqual([clue, { examined: 'hall.inscription' }]);
   // A combinator's fault is reported at its own path, every one in one pass.
   const bad = manorSource();
-  node(bad, 'puzzles.drawer')['clues'] = [{ all: [] }, { not: { doc: 'Diary' } }, { any: [{ open: 'drawer' }, { flag: 'f' }] }];
+  node(bad, 'puzzles.drawer')['clues'] = [{ all: [] }, { not: { doc: 'Diary' } }, { any: [{ open: 'drawer' }, { bogus: 'f' }] }];
   expect(issues(decodeWorldSource(bad))).toEqual(
     ['puzzles.drawer.clues.0.all shape', 'puzzles.drawer.clues.1.not.doc id', 'puzzles.drawer.clues.2.any.0.open id', 'puzzles.drawer.clues.2.any.1 shape'].sort(),
   );

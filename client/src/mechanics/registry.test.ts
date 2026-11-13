@@ -8,7 +8,8 @@ import type { KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, RoomId } from '../world/types.ts';
 import { KERNEL_FACT_KINDS } from './contract.ts';
-import type { Cause, KernelWorld, MechanicData, MechanicId, MechanicRules, RulesRegistry, SectionAction, Writer } from './contract.ts';
+import type { Cause, DecodeCtx, KernelWorld, MechanicData, MechanicId, MechanicRules, RulesRegistry, SectionAction, Writer } from './contract.ts';
+import { decodeCond } from './data/conditions.ts';
 import { MECHANIC_DATA } from './data/index.ts';
 import { reduce } from './rules/core.ts';
 import { APPLY, MECHANIC_RULES } from './rules/index.ts';
@@ -88,7 +89,27 @@ type RulesEntry = { readonly id: string; readonly cues: readonly string[] };
 const KERNEL_TRIGGER_PREFIXES = ['enter', 'then', 'open', 'fail'] as const;
 const PLACES = ['world', 'item', 'room', 'hotspot', 'slot', 'effect'] as const;
 
-/** Every key owned twice: per place, trigger prefixes (a kernel prefix included), atom kinds, fact kinds, cue names. */
+/** A context no condition reads (`decodeCond` takes the composed decoder's). */
+const CTX: DecodeCtx = {
+  text: () => {
+    throw new Error('invariant: no condition decodes a text');
+  },
+};
+
+/**
+ * Whether the condition grammar itself names `kind` (a kernel atom or a combinator): with no module in its registry,
+ * `decodeCond` reports an unknown kind at the condition's own path, and a kernel kind's fault only below it.
+ */
+function kernelName(kind: string): boolean {
+  const r = decodeCond({ [kind]: null }, CTX, 'c', []);
+  return r.ok || !r.error.some((i) => i.path === 'c');
+}
+
+/**
+ * Every key owned twice: per place, trigger prefixes (a kernel prefix included), atom kinds, fact kinds, cue names;
+ * and every module atom named like a kernel atom or a combinator (GM3c review M2: it would decode through the module
+ * but evaluate and scope as the kernel's).
+ */
 function ownershipProblems(data: readonly DataEntry[], rules: readonly RulesEntry[]): string[] {
   const problems: string[] = [];
   const once = (what: string, entries: ReadonlyArray<readonly [owner: string, key: string]>): void => {
@@ -110,6 +131,11 @@ function ownershipProblems(data: readonly DataEntry[], rules: readonly RulesEntr
     ...data.flatMap((m) => (m.owns.trigger === undefined ? [] : [[m.id, m.owns.trigger] as const])),
   ]);
   once('atom kind', data.flatMap((m) => (m.owns.atoms ?? []).map((key) => [m.id, key] as const)));
+  for (const m of data) {
+    for (const kind of (m.owns.atoms ?? []).filter(kernelName)) {
+      problems.push(`atom kind '${kind}' of ${m.id} is a kernel atom or combinator`);
+    }
+  }
   once('fact kind', data.flatMap((m) => (m.owns.facts ?? []).map((key) => [m.id, key] as const)));
   for (const r of rules) {
     once(`cue name of ${r.id}`, r.cues.map((c) => [r.id, c] as const));
@@ -161,6 +187,16 @@ test('mechanics: every key has one owner', () => {
   // @ts-expect-error -- core and the fixture both emit the action kind 'insert'
   const sharedKindCaught: Unique<readonly [(typeof MECHANIC_RULES)[0], Twin]> = true;
   expect([realKindsUnique, sharedKindCaught]).toEqual([true, true]);
+});
+
+test('mechanics: a module atom named like a kernel atom or a combinator is refused', () => {
+  // The probe is non-vacuous: it finds the kernel's names, and a module's (the real `flag`, a fixture `part`) is none.
+  expect(['held', 'taken', 'all', 'not', 'flag', 'part'].filter(kernelName)).toEqual(['held', 'taken', 'all', 'not']);
+  for (const name of ['held', 'taken', 'all']) {
+    expect(ownershipProblems([...MECHANIC_DATA, data('clash', { atoms: [name] })], []), name).toEqual([`atom kind '${name}' of clash is a kernel atom or combinator`]);
+  }
+  // The real registry declares none.
+  expect(ownershipProblems(MECHANIC_DATA, MECHANIC_RULES)).toEqual([]);
 });
 
 test('mechanics: data and rules registries align', () => {
@@ -235,6 +271,7 @@ test('mechanics: the rules registry loads from either module first', async () =>
     visual: typeof import('./rules/visual.ts'),
     view: typeof import('./rules/view.ts'),
     combine: typeof import('./rules/combine.ts'),
+    flags: typeof import('./rules/flags.ts'),
   ): void => {
     expect(index.MECHANIC_RULES).toStrictEqual([
       { id: 'core', actions: core.actions, apply: core.applyCore, reads: core.reads, cues: ['look', 'locked', 'refused', 'reset'] },
@@ -242,11 +279,22 @@ test('mechanics: the rules registry loads from either module first', async () =>
       { id: 'visual', actions: visual.visualActions, apply: visual.applyVisual, reads: visual.visualReads, cues: [], visuals: visual.visuals },
       { id: 'view', actions: view.viewActions, apply: view.applyView, reads: view.viewReads, cues: [] },
       { id: 'combine', actions: combine.combineActions, apply: combine.applyCombine, reads: combine.combineReads, scope: combine.combineScope, cues: ['refused', 'refused-with'] },
+      {
+        id: 'flags',
+        actions: flags.flagsActions,
+        apply: flags.applyFlags,
+        reads: flags.flagReads,
+        scope: flags.flagScope,
+        cues: [],
+        effects: flags.flagEffects,
+        holds: flags.holdsFlag,
+      },
     ]);
     expect(core.reduce(w, at('hall'), tap('hall.statue')).effects.map((e) => e.kind)).toEqual(['look', 'cue', 'cue', 'dirty']);
   };
-  // rules/use.ts, rules/visual.ts, rules/conditions.ts, rules/view.ts and rules/combine.ts sit on the cycle too (use.ts
-  // <-> core.ts, visual.ts -> conditions.ts -> index.ts, view.ts <-> core.ts, combine.ts -> conditions.ts and use.ts).
+  // rules/use.ts, rules/visual.ts, rules/conditions.ts, rules/view.ts, rules/combine.ts and rules/flags.ts sit on the
+  // cycle too (use.ts <-> core.ts, visual.ts -> conditions.ts -> index.ts, view.ts <-> core.ts, combine.ts ->
+  // conditions.ts and use.ts, flags.ts -> writer.ts -> index.ts).
   const firsts = [
     () => import('./rules/core.ts'),
     () => import('./rules/index.ts'),
@@ -255,6 +303,7 @@ test('mechanics: the rules registry loads from either module first', async () =>
     () => import('./rules/visual.ts'),
     () => import('./rules/view.ts'),
     () => import('./rules/combine.ts'),
+    () => import('./rules/flags.ts'),
   ];
   for (const first of firsts) {
     vi.resetModules();
@@ -266,6 +315,7 @@ test('mechanics: the rules registry loads from either module first', async () =>
       await import('./rules/visual.ts'),
       await import('./rules/view.ts'),
       await import('./rules/combine.ts'),
+      await import('./rules/flags.ts'),
     );
   }
 });
@@ -299,6 +349,7 @@ test('mechanics: the data registry loads from any module first', async () => {
     visual: typeof import('./data/visual.ts'),
     view: typeof import('./data/view.ts'),
     combine: typeof import('./data/combine.ts'),
+    flags: typeof import('./data/flags.ts'),
   ): void => {
     expect(index.MECHANIC_DATA).toStrictEqual([
       core.core,
@@ -334,6 +385,15 @@ test('mechanics: the data registry loads from any module first', async () => {
         encode: combine.encodeCombine,
         normalize: combine.normalizeCombine,
       },
+      {
+        id: 'flags',
+        rules: 'chunk',
+        owns: { world: ['flags'], effect: ['set'], atoms: ['flag'], facts: ['flag'] },
+        decode: flags.decodeFlags,
+        encode: flags.encodeFlags,
+        normalize: flags.normalizeFlags,
+        atoms: { flag: { decode: flags.decodeFlagAtom, gating: true } },
+      },
     ]);
   };
   const firsts = [
@@ -344,6 +404,7 @@ test('mechanics: the data registry loads from any module first', async () => {
     () => import('./data/visual.ts'),
     () => import('./data/view.ts'),
     () => import('./data/combine.ts'),
+    () => import('./data/flags.ts'),
   ];
   for (const first of firsts) {
     vi.resetModules();
@@ -355,6 +416,7 @@ test('mechanics: the data registry loads from any module first', async () => {
       await import('./data/visual.ts'),
       await import('./data/view.ts'),
       await import('./data/combine.ts'),
+      await import('./data/flags.ts'),
     );
     const decoded = (await import('../world/decode.ts')).decodeWorldSource(useSource());
     expect(decoded.ok ? decoded.value.mods.use.uses[k('hall.box')]?.[0]?.when : decoded.error).toEqual({ all: [{ held: 'lens' }, { not: { open: 'hall.box' } }] });

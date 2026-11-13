@@ -20,19 +20,19 @@ const CTX: DecodeCtx = {
   },
 };
 
-/** A fixture module declaring atom `part` (visual only, any string id) and `flag` (gating, `fl_` ids). */
+/** A fixture module declaring atom `part` (visual only, any string id) and `mark` (gating, `mk_` ids). */
 const PROBE_DATA: MechanicData<'probe', null> = {
   id: 'probe',
   rules: 'chunk',
-  owns: { atoms: ['part', 'flag'] },
+  owns: { atoms: ['part', 'mark'] },
   atoms: {
     part: { decode: (v) => v, gating: false },
-    flag: {
+    mark: {
       decode: (v, path, report) => {
-        if (typeof v === 'string' && v.startsWith('fl_')) {
+        if (typeof v === 'string' && v.startsWith('mk_')) {
           return v;
         }
-        report(path, 'id', `${JSON.stringify(v)} is not a flag`);
+        report(path, 'id', `${JSON.stringify(v)} is not a mark`);
         return undefined;
       },
       gating: true,
@@ -43,14 +43,14 @@ const PROBE_DATA: MechanicData<'probe', null> = {
   normalize: (_w, s) => s,
 };
 const DATA: DataRegistry = [...MECHANIC_DATA, PROBE_DATA];
-/** Its rules half: `flag` holds for `fl_on` only, `part` for any value. */
+/** Its rules half: `mark` holds for `mk_on` only, `part` for any value. */
 const PROBE_RULES: MechanicRules<'probe', { readonly kind: 'probe' }, never> = {
   id: 'probe',
   actions: () => [],
   apply: () => undefined,
   reads: () => [],
   cues: [],
-  holds: (_w, _s, atom) => atom.kind === 'part' || atom.value === 'fl_on',
+  holds: (_w, _s, atom) => atom.kind === 'part' || atom.value === 'mk_on',
 };
 const RULES: RulesRegistry = [...MECHANIC_RULES, PROBE_RULES];
 
@@ -85,13 +85,13 @@ test('conditions: every atom and combinator decodes with strict keys', () => {
   for (const atom of KERNEL_ATOMS) {
     expect(ok(atom), JSON.stringify(atom)).toEqual(atom);
   }
-  const nested = { all: [{ any: KERNEL_ATOMS }, { not: { not: { has: 'match' } } }, { flag: 'fl_on' }] };
+  const nested = { all: [{ any: KERNEL_ATOMS }, { not: { not: { has: 'match' } } }, { mark: 'mk_on' }] };
   expect(ok(nested, DATA)).toEqual(nested);
   expect(ok({ part: { at: 'hall.door' } }, DATA)).toEqual({ part: { at: 'hall.door' } });
   // One issue per fault, every fault in one pass, in the kernel's reasons and paths.
   expect(refused({ held: 'match', used: 'match' })).toEqual(['when shape']);
-  expect(refused({ flag: 'fl_on' })).toEqual(['when shape']);
-  expect(refused({ flag: 'on' }, DATA)).toEqual(['when.flag id']);
+  expect(refused({ mark: 'mk_on' })).toEqual(['when shape']);
+  expect(refused({ mark: 'on' }, DATA)).toEqual(['when.mark id']);
   expect(refused({ all: [] })).toEqual(['when.all shape']);
   expect(refused({ any: [] })).toEqual(['when.any shape']);
   expect(refused({ all: {} })).toEqual(['when.all shape']);
@@ -112,7 +112,7 @@ test('conditions: every atom and combinator decodes with strict keys', () => {
 });
 
 test('conditions: reads lists every atom', () => {
-  const c = ok({ all: [{ any: KERNEL_ATOMS.slice(0, 5) }, { not: { all: KERNEL_ATOMS.slice(5) } }, { flag: 'fl_on' }] }, DATA);
+  const c = ok({ all: [{ any: KERNEL_ATOMS.slice(0, 5) }, { not: { all: KERNEL_ATOMS.slice(5) } }, { mark: 'mk_on' }] }, DATA);
   expect(condReads(c)).toEqual([
     { kind: 'held', id: 'match' },
     { kind: 'used', id: 'match' },
@@ -125,7 +125,7 @@ test('conditions: reads lists every atom', () => {
     { kind: 'visited', id: 'cellar' },
     { kind: 'solved', id: 'gate' },
     { kind: 'failed', id: 'gate' },
-    { kind: 'flag', id: 'fl_on' },
+    { kind: 'mark', id: 'mk_on' },
   ]);
   // A module atom whose value is no string names it as JSON.
   expect(condReads(ok({ part: { at: 'hall.door' } }, DATA))).toEqual([{ kind: 'part', id: '{"at":"hall.door"}' }]);
@@ -183,9 +183,9 @@ test('conditions: holds evaluates every atom and combinator', () => {
   expect(at(s, { not: { used: 'match' } })).toBe(true);
   expect(at(s, { not: { held: 'match' } })).toBe(false);
   // A module's atom through its rules half's holds.
-  expect(at(empty, { flag: 'fl_on' })).toBe(true);
-  expect(at(empty, { flag: 'fl_off' })).toBe(false);
-  expect(at(empty, { not: { flag: 'fl_off' } })).toBe(true);
+  expect(at(empty, { mark: 'mk_on' })).toBe(true);
+  expect(at(empty, { mark: 'mk_off' })).toBe(false);
+  expect(at(empty, { not: { mark: 'mk_off' } })).toBe(true);
   // An atom no data half declares never reaches the evaluator from the decoder: holding one is a bug.
-  expect(() => holds(WORLD, s, { flag: 'fl_on' })).toThrow('invariant: a decoded condition holds only declared atoms');
+  expect(() => holds(WORLD, s, { mark: 'mk_on' })).toThrow('invariant: a decoded condition holds only declared atoms');
 });

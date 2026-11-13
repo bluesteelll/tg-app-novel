@@ -12,10 +12,11 @@ import type { ExploreAction, ExploreEffect, SectionScope, Step, Successor } from
 import type { PuzzleOutcome, PuzzleRun, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId, SectionId } from '../../story/staging.ts';
 import type { HotspotKey, ItemId, Lock, RoomId } from '../../world/types.ts';
-import type { KernelWorld, RulesRegistry, SectionAction } from '../contract.ts';
+import type { KernelWorld, RulesRegistry, SectionAction, TriggerKey } from '../contract.ts';
 import { reduce } from './core.ts';
 import { MECHANIC_RULES } from './index.ts';
 import { viewActions, viewParent } from './view.ts';
+import { isKernelEffect, moduleEffects } from './writer.ts';
 
 /** A record's own entries keyed by its id brand (a save's keys are checked against the world before any use). */
 function entriesOf<K extends string, V>(r: Readonly<Record<K, V>>): Array<[K, V]> {
@@ -70,8 +71,9 @@ function setPart(list: readonly string[], keep: ReadonlySet<string>): string {
 }
 
 /**
- * Every fact the registry's gating rules read in one section, grouped by kernel kind: what `sectionKey` encodes. The
- * groups of the four kinds no core rule reads are null until a module reads them, so core's key keeps its bytes.
+ * Every fact the registry's gating rules read in one section, grouped by fact kind: what `sectionKey` encodes. The
+ * groups of the four kernel kinds no core rule reads, and module `flags`' `flag`, are null until a module reads them,
+ * so core's key keeps its bytes.
  */
 type KeyPlan = {
   readonly taken: ReadonlySet<string>;
@@ -88,6 +90,8 @@ type KeyPlan = {
   readonly visited: ReadonlySet<string> | null;
   readonly attempts: readonly PuzzleLocalId[] | null;
   readonly hints: readonly PuzzleLocalId[] | null;
+  /** The flags read by `flag` (module `flags`' fact kind, kept in `WorldState.flags`). */
+  readonly flags: ReadonlySet<string> | null;
   /** Each merged view's place root (`placesOf`); a room absent here is a place of its own. */
   readonly root: ReadonlyMap<RoomId, RoomId>;
   /** The free moves inside the places: per merged view, the zoom tap into it and its `leave-view`. */
@@ -103,7 +107,9 @@ type PlaceMove = { readonly from: RoomId; readonly step: SectionAction; readonly
  *   locked exit opens on state; a view no exit enters is reached by no move), so (a1) P is a room of S; (a3) no module
  *   of the registry has a `tap` hook (core hands every tap to the hooks first, and one may take the entering tap on
  *   data this rule cannot read);
- * - (b) V has no `onEnter` (every arrival fires `enter:V`, and a non-empty trigger writes `fired` and its effects);
+ * - (b) V's arrival writes nothing: `enter:V` has no kernel effect (by key, `isKernelEffect`: the proof world keeps a
+ *   module's owned effect in the list) and no module effect (every arrival fires `enter:V`, and a trigger with an effect
+ *   writes `fired` and its effects);
  * - (c) its only way out is `leave-view`: (c1) every exit of V leads into a view of V (a child view, entered only from
  *   V), and (c2) the registry offers `leave-view` (`reduce` dispatches it whatever the registry: the walk up would apply
  *   a move a registry without the view module never offers);
@@ -152,7 +158,7 @@ function placesOf(w: KernelWorld, section: SectionId, rules: RulesRegistry, visi
       rules.some((m) => m.actions === viewActions) && // (c2)
       zoom.has(v) && // (a2)'s "at least one", and so (a1)
       !unfree.has(v) && // (a2), (c1)
-      ix.rooms.get(v)?.room.onEnter.length === 0 && // (b)
+      quiet(w, v, rules) && // (b)
       !visitedReads?.has(v) // (d)
     ) {
       candidates.set(v, of);
@@ -171,6 +177,12 @@ function placesOf(w: KernelWorld, section: SectionId, rules: RulesRegistry, visi
     }
   }
   return { root, moves };
+}
+
+/** (b): an arrival in room `v` writes nothing, since `enter:v` has neither a kernel nor a module effect. */
+function quiet(w: KernelWorld, v: RoomId, rules: RulesRegistry): boolean {
+  const onEnter = worldIndex(w).rooms.get(v)?.room.onEnter;
+  return onEnter !== undefined && !onEnter.some(isKernelEffect) && moduleEffects(rules, w, `enter:${v}` as TriggerKey).length === 0; // a room's trigger key
 }
 
 // Built once per (registry, world, section): the searches call `sectionKey` once per successor.
@@ -206,6 +218,7 @@ function keyPlan(w: KernelWorld, section: SectionId, rules: RulesRegistry): KeyP
   let visited: Set<string> | null = null;
   let attempts: Set<PuzzleLocalId> | null = null;
   let hints: Set<PuzzleLocalId> | null = null;
+  let flags: Set<string> | null = null;
   for (const m of rules) {
     for (const atom of m.reads(w, section)) {
       const id = atom.id;
@@ -250,8 +263,12 @@ function keyPlan(w: KernelWorld, section: SectionId, rules: RulesRegistry): KeyP
           break;
         case 'story':
           break; // the queue is always in the key, whole
+        case 'flag':
+          (flags ??= new Set()).add(id);
+          break;
         default: {
-          // A module fact kind has no WorldState storage before its module declares a save slice.
+          // A module fact kind has no WorldState storage before its module declares a save slice (`flag` is kept in
+          // `WorldState.flags`).
           const kind: never = atom.kind;
           throw new Error(`invariant: ${m.id} reads a '${String(kind)}' fact, which the section key cannot encode`);
         }
@@ -279,6 +296,7 @@ function keyPlan(w: KernelWorld, section: SectionId, rules: RulesRegistry): KeyP
     visited,
     attempts: attempts === null ? null : sortedIds(attempts),
     hints: hints === null ? null : sortedIds(hints),
+    flags,
     ...placesOf(w, section, rules, visited),
   };
   perWorld.set(section, plan);
@@ -294,7 +312,7 @@ export function sectionPlaces(w: KernelWorld, section: SectionId, rules: RulesRe
  * The canonical key of `s` restricted to section S, the one dedup key of both searches, derived from the facts every
  * module of `rules` reads in S (engine plan §3.2): room, pendingStory (an ordered queue), then the read facts in
  * taken / open / slots / fired, the outcomes of the read puzzles, held / used / docs, and examined / visited /
- * attempts / hints only when some module reads them. Core reads S's keys of the first eight, so its key abstracts
+ * attempts / hints / flags only when some module reads them. Core reads S's keys of the first eight, so its key abstracts
  * examined, visited, attempts and hints opened and ignores section, lastRoom, unproved and everything outside S
  * (X15). The set-valued fields are sorted, so the order play added them in never splits one state into two. Ids
  * never hold `|`, `;`, `=` or `,`, so the joins are unambiguous. The room part names the room's place: a merged
@@ -337,6 +355,9 @@ function planKey(plan: KeyPlan, s: WorldState): string {
   if (plan.hints !== null) {
     parts.push(plan.hints.map((p) => runOf(s, p).hintsOpened).join(','));
   }
+  if (plan.flags !== null) {
+    parts.push(setPart(s.flags, plan.flags));
+  }
   return parts.join('|');
 }
 
@@ -372,7 +393,8 @@ export function ownScope(w: KernelWorld, section: SectionId, rules: RulesRegistr
 
 /**
  * Restarts section S: every key of S's rooms and hotspots leaves taken / examined / open / slots / fired / visited,
- * the runs of S's lock puzzles and the items and docs S gives are removed, `section` and `room` become null,
+ * the runs of S's lock puzzles, the items and docs S gives and the flags S declares (each module's `scope` hook's
+ * `flags`: a flag is cleared only by its section's reset) are removed, `section` and `room` become null,
  * `lastRoom[S]` and `pendingStory` are cleared, and S leaves `unproved`. "S gives" and S's `fired` keys are S's own
  * facts (`ownScope`): a module rule's gift and key go too, so a restart reaches the state the build started from (X9).
  * Callers pass a state whose section is S or null, so the cleared `section` / `room` / `pendingStory` are never
@@ -380,6 +402,7 @@ export function ownScope(w: KernelWorld, section: SectionId, rules: RulesRegistr
  */
 export function resetSection(w: KernelWorld, s: WorldState, section: SectionId, rules: RulesRegistry = MECHANIC_RULES): WorldState {
   const scope = ownScope(w, section, rules);
+  const flags = new Set(rules.flatMap((m) => m.scope?.(w, section).flags ?? []));
   const slots: Record<HotspotKey, ReadonlyArray<ItemId | null>> = {};
   for (const [key, cells] of entriesOf(s.slots)) {
     if (!scope.hotspots.has(key)) {
@@ -416,6 +439,7 @@ export function resetSection(w: KernelWorld, s: WorldState, section: SectionId, 
     pendingStory: [],
     puzzles,
     unproved: s.unproved.filter((x) => x !== section),
+    flags: outside(s.flags, flags),
   };
 }
 
