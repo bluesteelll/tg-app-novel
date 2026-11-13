@@ -615,7 +615,8 @@ export function createSceneController(): SceneController {
       const r = core.registry.stats();
       return {
         liveTextures: r.live,
-        // Live texture bytes: the caps also count the kept files (MEMORY-PLAN M2), which hold no texture.
+        // What the caps count minus the kept files (MEMORY-PLAN M2): texture bytes plus the loads and the upgrade in
+        // flight (a reservation, not GPU bytes, while anything loads).
         liveBytes: r.bytes - r.keptBytes,
         pendingLoads: r.pending,
         activeTimelines: core.executor.stats().activeTimelines,

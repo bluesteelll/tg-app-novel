@@ -1127,6 +1127,56 @@ test('registry: a failed upgrade leaves the half live, and three failures end th
   expect(await fourth).toEqual({ ok: true, value: false });
 });
 
+test('registry: an upgrade not answered within 20 s ends as a failed try and leaves the half live', async () => {
+  vi.useFakeTimers();
+  try {
+    const timeout = { ok: false, error: { kind: 'fetch', id: asId('bg/a'), error: { kind: 'network', detail: 'timeout' } } };
+    // Arm 1: the deadline aborts the upgrade and returns its reservation at once; its answer is a failed try. Literal
+    // advances pin UPGRADE_DEADLINE_MS at 20,000; a move of the value is a declared pin move here.
+    const h = harness();
+    const p = h.preview('bg/a', halved('a', bg('a')), 'scene:bg');
+    h.succeedAll();
+    const handle = ok(await p);
+    const up = h.registry.upgrade(asId('bg/a'));
+    expect(h.registry.stats().pending).toBe(1);
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(h.upgrades[0]?.signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.upgrades[0]?.signal.aborted).toBe(true);
+    expect(h.registry.stats().pending).toBe(0);
+    // The loader answers the abort (the fake: `aborted`, its signal being aborted).
+    h.upgrades[0]?.settle({ ok: true, value: undefined });
+    expect(await up).toEqual(timeout);
+    expect(h.registry.previews()).toEqual([{ id: asId('bg/a'), visible: true }]);
+    expect(h.registry.current(asId('bg/a'))).toBe(handle);
+    // Arm 2: two more, each past its own deadline, spend the tries: no fourth loader call.
+    for (const i of [1, 2]) {
+      const again = h.registry.upgrade(asId('bg/a'));
+      expect(h.upgrades).toHaveLength(i + 1);
+      await vi.advanceTimersByTimeAsync(20_000);
+      h.upgrades[i]?.settle({ ok: true, value: undefined });
+      expect(await again).toEqual(timeout);
+    }
+    expect(await h.registry.upgrade(asId('bg/a'))).toEqual({ ok: true, value: false });
+    expect(h.upgrades).toHaveLength(3);
+    // Arm 3: an answer inside the deadline wins, and its timer is cleared.
+    const s = harness();
+    const q = s.preview('bg/a', halved('a', bg('a')), 'scene:bg');
+    s.succeedAll();
+    await q;
+    const fine = s.registry.upgrade(asId('bg/a'));
+    await vi.advanceTimersByTimeAsync(19_999);
+    s.upgrades[0]?.settle({ ok: true, value: undefined });
+    expect(await fine).toEqual({ ok: true, value: true });
+    expect(vi.getTimerCount(), 'an answered upgrade must not leave its 20 s deadline timer pending').toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(s.registry.stats()).toMatchObject({ live: 1, pending: 0 });
+    expect(s.registry.previews()).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test('registry: a revive aborts an upgrade in flight and the half stays live', async () => {
   const h = harness();
   const p = h.preview('bg/a', halved('a', bg('a')), 'scene:bg');

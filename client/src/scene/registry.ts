@@ -27,8 +27,16 @@ export const MAX_TEXTURE_PX = 2048;
 export const REVIVE_DEADLINE_MS = 3000;
 /** How a revive pass settles: every record handled, or the revive aborted first. */
 export type ReviveEnd = 'done' | 'aborted';
-/** Shots §5.8 step 5: a preview record's upgrade is tried at most this many times (fetch or decode failures). */
+/** Shots §5.8 step 5: a preview record's upgrade is tried at most this many times (fetch, decode or deadline failures). */
 export const UPGRADE_TRIES = 3;
+/**
+ * Shots §5.8 step 3: an upgrade not answered this long after it started (its fetch and decode) is aborted, its
+ * reservation returned at once, and it is a failed try (`fetch`, `network` `timeout`). No asset fetch has a timeout of
+ * its own, and a stalled one would otherwise keep the half, the reservation and the entry gate for the record's whole
+ * life. The app's budget for an API answer (REQUEST_TIMEOUT_MS), here over the body too: the largest planned full file
+ * (0.477 MiB) finishes in it at about 25 KB/s alone on the link, about 75 KB/s beside the two preload slots.
+ */
+export const UPGRADE_DEADLINE_MS = 20_000;
 
 export type AssetError =
   | { kind: 'missing-id'; id: AssetId }
@@ -95,9 +103,10 @@ export type Priority = 'visible' | 'preload' | 'warm';
 export type AcquireOptions = { entry: ImageEntry; priority: Priority; signal?: AbortSignal; preview?: boolean };
 /**
  * `bytes` = what the caps count: every record's file (the manifest's bytes while it is fetched, its real size once
- * held) plus the decoded bytes of each record with a non-warm holder, decoded or in flight. `keptBytes`: the files of
- * live records and of records with warm holders only (inside `bytes`), so `bytes - keptBytes` is texture bytes plus
- * the decodes in flight. `pending`: records with a fetch or a decode in flight, warm ones included.
+ * held) plus the decoded bytes of each record with a non-warm holder, decoded or in flight, plus the full file and
+ * decode an upgrade in flight reserves. `keptBytes`: the files of live records and of records with warm holders only
+ * (inside `bytes`), so `bytes - keptBytes` is texture bytes plus the decodes, fetches and upgrades in flight.
+ * `pending`: records with a fetch, a decode or an upgrade in flight, warm ones included.
  * `keptMismatch` (cumulative, like `overCap`): entries that went live keeping another size than the manifest's file.
  * `openBitmaps`: live entries whose decoded bitmap is open. `stale`: live entries not yet brought to the generation of
  * the latest `revive` (0 before the first). `reviveFailed` (cumulative): entries ended by a failed or late revive.
@@ -170,7 +179,8 @@ export interface AssetRegistry<T> {
    * one. Admission evicts nothing: the full file and its decoded bytes must fit HARD with a visible holder, else
    * STEADY, or the answer is `over-cap` (no try used, `overCap` not counted). In flight it is counted (the half stays
    * counted too) and pending; the record's end, its texture's loss and a revive abort it; a fetch or decode failure
-   * leaves the half live.
+   * leaves the half live. One not answered within UPGRADE_DEADLINE_MS is aborted and is a failed try (`fetch`,
+   * `network` `timeout`).
    */
   upgrade(id: AssetId, signal?: AbortSignal): Promise<Result<boolean, AssetError>>;
   /** The live preview records, in the order they started, and whether each has a visible holder. */
@@ -190,7 +200,10 @@ export interface AssetRegistry<T> {
    * pending entry joins it: no bytes, never refused. A pure read: it adds no holder and moves no byte.
    */
   state(id: AssetId): RecordState;
-  /** The id's record has a fetch or a decode in flight (what `stats().pending` sums). */
+  /**
+   * The id's record has a fetch or a decode in flight: what the scheduler's slots count. `stats().pending` also counts
+   * an upgrade in flight, which `loading` does not (it runs outside the slots).
+   */
   loading(id: AssetId): boolean;
   /**
    * Brings every live entry not at `gen` to it, one at a time: entries with a visible holder first (`visible` settles
@@ -234,7 +247,7 @@ type Rec<T> = {
   preview: boolean;
   /** The upgrade in flight: its controller, the bytes it reserves (the full file and its decode), its answer. */
   upgrading: { readonly controller: AbortController; readonly bytes: number; readonly done: Promise<Result<boolean, AssetError>> } | null;
-  /** Failed upgrades (fetch or decode; an abort is none). */
+  /** Failed upgrades (fetch, decode or UPGRADE_DEADLINE_MS; any other abort is none). */
   failures: number;
   readonly holders: Map<string, Priority>;
   /** The fetch stage's: aborted only when the record ends, so a shed never refetches. */
@@ -654,6 +667,14 @@ export function createAssetRegistry<T>(
       }
     };
     signal?.addEventListener('abort', stop, { once: true });
+    // UPGRADE_DEADLINE_MS: a stalled upgrade is stopped as any abort is, and its answer counts the try.
+    let late = false;
+    const timer = setTimeout(() => {
+      if (rec.upgrading?.controller === controller) {
+        late = true;
+        stopUpgrade(rec);
+      }
+    }, UPGRADE_DEADLINE_MS);
     const geometry = textureGeometry(rec.entry, 'full');
     let attempt: Promise<Result<void, LoadError>>;
     try {
@@ -664,6 +685,7 @@ export function createAssetRegistry<T>(
     const answer = attempt
       .catch((e: unknown) => fail({ kind: 'decode' as const, detail: String(e) }))
       .then((r): Result<boolean, AssetError> => {
+        clearTimeout(timer);
         signal?.removeEventListener('abort', stop);
         if (rec.upgrading?.controller === controller) {
           rec.upgrading = null;
@@ -683,6 +705,11 @@ export function createAssetRegistry<T>(
             rec.held = { bytes: ref.bytes, decode: (s, g) => load(ref, s, g), drop: () => {} };
           }
           return { ok: true, value: true };
+        }
+        if (late) {
+          // The deadline's abort: a try spent, reported as the transport reports a timeout.
+          rec.failures += 1;
+          return fail({ kind: 'fetch', id, error: { kind: 'network', detail: 'timeout' } });
         }
         if (r.error.kind !== 'aborted') {
           rec.failures += 1;
