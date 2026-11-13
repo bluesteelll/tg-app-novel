@@ -2,10 +2,11 @@
 // load (steps 0-3, every section unproved). Engine code: the section search and the guarded section entries that
 // prove a section at its first entry are the rules half (mechanics/rules/search.ts, engine plan §3.4). Never throws
 // on save data. Pure (X4).
+import type { TriggerRan } from '../mechanics/contract.ts';
 import { MECHANIC_DATA } from '../mechanics/data/index.ts';
 import type { KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
 import type { Effect, HotspotKey, ItemId, RoomId, WorldPublic, WorldPublicBody } from '../world/types.ts';
-import { lockOf, worldIndex } from './reduce.ts';
+import { lockOf, runOf, worldIndex } from './reduce.ts';
 import type { WorldIndex } from './reduce.ts';
 import type { PuzzleRun, WorldState } from './state.ts';
 
@@ -33,6 +34,52 @@ function triggerOf(ix: WorldIndex, fired: string): readonly Effect[] | undefined
     default:
       return undefined;
   }
+}
+
+/** A kernel effect, by key. The definition is the runner's `isKernelEffect` (mechanics/rules/writer.ts), which the
+ *  engine half cannot import (the rules-lazy arch rule). */
+const isKernelEffect = (e: Effect): boolean => 'give' in e || 'unlock' in e || 'story' in e;
+
+/**
+ * Whether trigger T has run in `s`, the post-step-3 state (GM5f D6'): its `fired` key is in `s`, or T has no kernel
+ * effect in the current world (by key: the proof form keeps a module's raw entry in the kernel list) and the fact its
+ * own event writes holds. Each such fact has one writer, which fires T in the same dispatch (mechanics/rules/core.ts,
+ * writer.ts `openKey`), so it proves the run: `visited` for `enter:<room>`, `examined` for a look's `then`, `taken` for
+ * a take's (a take step 3 re-armed is no longer taken), `open` for `open:<key>`, its puzzle's failed outcome for
+ * `fail:<key>`. An object's `then` has no such fact: an `unlock` opens an object without it. A trigger with a kernel
+ * effect follows its record alone: step 3 un-fires one to re-give its gift while its event fact stays.
+ */
+function triggerRan(ix: WorldIndex, s: WorldState): TriggerRan {
+  return (trigger) => {
+    if (s.fired.includes(trigger)) {
+      return true;
+    }
+    const effects = triggerOf(ix, trigger);
+    if (effects === undefined || effects.some(isKernelEffect)) {
+      return false;
+    }
+    const colon = trigger.indexOf(':');
+    const target = trigger.slice(colon + 1);
+    // Lookup keys only: a room id misses the hotspots, and every fact list holds ids of its own kind.
+    const h = ix.hotspots.get(target as HotspotKey)?.hotspot;
+    switch (trigger.slice(0, colon)) {
+      case 'enter':
+        return s.visited.includes(target as RoomId);
+      case 'then':
+        if (h?.kind === 'look') {
+          return s.examined.includes(target as HotspotKey);
+        }
+        return h?.kind === 'take' && s.taken.includes(target as HotspotKey);
+      case 'open':
+        return s.open.includes(target as HotspotKey);
+      case 'fail': {
+        const p = h === undefined ? null : (lockOf(h)?.puzzle ?? null);
+        return p !== null && ix.puzzleLock.get(p) === target && runOf(s, p).outcome === 'failed';
+      }
+      default:
+        return false;
+    }
+  };
 }
 
 /** `id` through one rename map: its own entry (a map is a plain object and `constructor` is an id), else `id`. */
@@ -254,8 +301,8 @@ function normalize(w: WorldPublicBody, s: WorldState, knots: ReadonlySet<KnotNam
 /**
  * The load-time reconcile of X9. The same world version → the state unchanged (the same object). Otherwise step 0
  * (`renameIds`), steps 1-3 (`normalize`), then each data module's `normalize` in `MECHANIC_DATA` order (GM5f D5: a
- * module's own facts, read against the kernel's result; flags' keeps the declared flags and re-arms one whose setter
- * fired), and step 5: every section joins `unproved`, the current one included.
+ * module's own facts, read against the kernel's result and `triggerRan` over it; flags' keeps the declared flags and
+ * re-arms one a setter of which has run), and step 5: every section joins `unproved`, the current one included.
  * Step 4 runs at each section's first entry instead (engine plan §3.4), through `admitSection`, or `admitEvent` when
  * an event knot is pending, so the load searches nothing and `reset` is always null. `dropped` lists every
  * `<field>:<id>` the world no longer has, every key a rename merged away and every held id a rename merged onto an
@@ -273,9 +320,11 @@ export function reconcile(
   }
   const dropped: string[] = [];
   let state = normalize(w, renameIds(w, s, dropped), knots, dropped);
+  const ix = worldIndex(w);
+  const ran = triggerRan(ix, state);
   for (const m of MECHANIC_DATA) {
-    state = m.normalize(w, state, dropped);
+    state = m.normalize(w, state, dropped, ran);
   }
-  const unproved = [...worldIndex(w).sections.keys()].sort();
+  const unproved = [...ix.sections.keys()].sort();
   return { state: { ...state, unproved }, dropped, reset: null };
 }

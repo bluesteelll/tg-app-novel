@@ -28,6 +28,9 @@ export type StateName = Brand<string, 'StateName'>;
 export type AnchorKey = Brand<string, 'AnchorKey'>;
 /** A `fired` entry: `enter:<room>` | `then:<key>` | `open:<key>` | `fail:<key>` | a module's prefix. */
 export type TriggerKey = Brand<string, 'TriggerKey'>;
+/** Whether a trigger has run in a reconciled state: the kernel's answer (`triggerRan`, explore/reconcile.ts), which
+ *  reads its `fired` key and, for a kernel trigger with no kernel effect, the fact its own event writes (GM5f D6'). */
+export type TriggerRan = (trigger: TriggerKey) => boolean;
 /** Every issue reported: the kernel's own, so a module's `line-id` issue maps to `id/missing` / `id/format` in the story
  *  tool's `decodeWorldFile` exactly as a kernel text's does. */
 export type Issue = WorldIssue;
@@ -128,8 +131,10 @@ export interface MechanicData<Id extends string, D, Sl = never> {
   decode(raw: OwnedRaw, ctx: DecodeCtx): Result<D, Issue[]>;
   /** The inverse, for emission and the version hash: `decode(encode(d))` equals `d`. */
   encode(d: D): OwnedRaw;
-  /** Reconcile steps 1-3 for this module's facts: drop refs the world lost, refit, re-arm lost gifts. */
-  normalize(w: KernelWorld, s: WorldState, dropped: string[]): WorldState;
+  /** Reconcile steps 1-3 for this module's facts: drop refs the world lost, refit, re-arm lost gifts. `ran`: whether a
+   *  trigger has run in the kernel's post-step-3 state, by which a module whose effects ride kernel triggers re-arms
+   *  them (GM5f D6-place). */
+  normalize(w: KernelWorld, s: WorldState, dropped: string[], ran: TriggerRan): WorldState;
   /** The effects a `fired` entry with this module's prefix names (the kernel's `triggerOf`, explore/reconcile.ts). */
   trigger?(w: KernelWorld, target: string): readonly Effect[] | undefined;
   /** Condition atoms this module adds: their decoder, and whether a gating condition may use them. */

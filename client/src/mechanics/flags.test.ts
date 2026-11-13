@@ -6,12 +6,13 @@
 // the runtime form `decodeWorldPublic`, which routes it out; both carry the same `mods`, so both must run alike.
 import { expect, test } from 'vitest';
 
+import { project } from '../explore/project.ts';
 import { reconcile } from '../explore/reconcile.ts';
 import { RESUME_STATE_CAP } from '../explore/reduce.ts';
 import type { ExploreEffect, Step } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
-import type { KnotName, SectionId } from '../story/staging.ts';
+import type { KnotName, PuzzleLocalId, SectionId, VarName } from '../story/staging.ts';
 import { decodeWorldPublic, decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DecodeOptions, WorldIssue } from '../world/decode.ts';
 import type { HotspotKey, ItemId, RoomId, WorldSource } from '../world/types.ts';
@@ -22,7 +23,7 @@ import type { FlagsData } from './data/flags.ts';
 import { MECHANIC_DATA } from './data/index.ts';
 import { holds } from './rules/conditions.ts';
 import { actions, reduce } from './rules/core.ts';
-import { resetSection, searchSection, sectionEntry, sectionKey, sectionPlaces, successors } from './rules/search.ts';
+import { admitSection, resetSection, searchSection, sectionEntry, sectionKey, sectionPlaces, successors } from './rules/search.ts';
 import type { SearchStats } from './rules/search.ts';
 import { visualsOf } from './rules/visual.ts';
 
@@ -573,5 +574,143 @@ test('search: a flag a gating condition reads keeps its states apart', () => {
     const got = searched(w);
     expect([got.row[0], got.left], form).toEqual(['exhausted', [tap('hall.out')]]);
     expect(got.row, form).toEqual(searched(sameForm(given, form)).row);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM5f fix2 (D6'): a set added to a trigger the save passed while it was empty. An empty trigger records no `fired` key,
+// so the load reads the fact the trigger's own event writes in the same dispatch (`visited`, `examined`, `taken`, `open`,
+// its lock puzzle's failed outcome), and only for a trigger with no kernel effect: one with a kernel effect follows its
+// own record.
+
+/** The ink VARs a chapter declares. */
+const vars = (...names: string[]): ReadonlySet<VarName> => new Set(names as VarName[]); // fixture VAR names
+const pz = (s: string) => s as PuzzleLocalId;
+/** Whether admitSection restarted the section. */
+const resets = (effects: readonly ExploreEffect[]): boolean => effects.some((e) => e.kind === 'reset');
+/** A code puzzle in the source format. */
+const codePuzzle = (): Json => ({
+  type: 'code',
+  title: txt(),
+  prompt: txt(),
+  closeup: null,
+  params: { dials: 3 },
+  maxAttempts: null,
+  giveUp: false,
+  solution: [1, 2, 3],
+  hints: [],
+});
+
+test("reconcile: a set added to a taken take's then re-arms from taken", () => {
+  // v1's medal take had an empty `then`; v2 sets `medal_taken` there, which only the box's picture reads.
+  const box = { ...object('box'), states: { lit: { prop: null } }, is: [{ when: { flag: 'medal_taken' }, state: 'lit' }] };
+  const raw = rawWorld({ s: ['hall', { hall: room([{ ...take('medal', 'medal'), then: [{ set: 'medal_taken' }] }, box, exit('out', { story: 'end' })]) }] }, ['medal'], { medal_taken: 's' });
+  for (const { form, w } of forms(raw)) {
+    const v2 = { ...w, version: 'v2' };
+    const r = reconcile(v2, at('hall', { held: [it('medal')], taken: [k('hall.medal')] }), NO_KNOTS, 'v1');
+    expect(r.state.flags, form).toEqual(['medal_taken']);
+    expect([r.state.fired, r.dropped], form).toEqual([[], []]);
+    // The save resumes with the flag, and the box's picture and the ink VAR follow it.
+    const admitted = admitSection(v2, r.state, S);
+    expect([resets(admitted.effects), admitted.state.flags, admitted.state.taken], form).toEqual([false, ['medal_taken'], ['hall.medal']]);
+    expect(visualsOf(v2, admitted.state, rm('hall')).map((v) => [v.at, v.state]), form).toEqual([['hall.box', 'lit']]);
+    expect(project(v2, admitted.state, vars('fl_medal_taken')), form).toEqual({ fl_medal_taken: true });
+    // The control: a save that never took the medal gets no flag, and its tap sets it.
+    const fresh = reconcile(v2, at('hall'), NO_KNOTS, 'v1').state;
+    expect(fresh.flags, form).toEqual([]);
+    expect(reduce(v2, fresh, tap('hall.medal')).state.flags, form).toEqual(['medal_taken']);
+  }
+});
+
+test("reconcile: a set added to an entered room's onEnter re-arms from visited", () => {
+  // v1's study had an empty `onEnter`; v2 sets `seen` there, which nothing reads.
+  const raw = rawWorld(
+    { s: ['hall', { hall: room([exit('to_study', 'study'), exit('out', { story: 'end' })]), study: room([exit('to_hall', 'hall')], [{ set: 'seen' }]) }] },
+    [],
+    { seen: 's' },
+  );
+  for (const { form, w } of forms(raw)) {
+    const v2 = { ...w, version: 'v2' };
+    const standing = reconcile(v2, at('study', { visited: [rm('hall'), rm('study')] }), NO_KNOTS, 'v1');
+    expect(standing.state.flags, form).toEqual(['seen']);
+    // It resumes in the study with no arrival (the trigger does not run again: no `fired` key), the flag from the load.
+    const admitted = admitSection(v2, standing.state, S);
+    expect([resets(admitted.effects), admitted.state.room, admitted.state.fired, admitted.state.flags], form).toEqual([false, 'study', [], ['seen']]);
+    // A save that passed the study, and the control that never entered it.
+    expect(reconcile(v2, at('hall', { visited: [rm('hall'), rm('study')] }), NO_KNOTS, 'v1').state.flags, form).toEqual(['seen']);
+    expect(reconcile(v2, at('hall'), NO_KNOTS, 'v1').state.flags, form).toEqual([]);
+  }
+});
+
+test("reconcile: a set added to an opened lock's onOpen re-arms from open", () => {
+  const vault = { ...object('safe'), lock: { slots: [{ accepts: 'coin' }], puzzle: null, locked: txt(), onOpen: [{ set: 'f' }], onFail: [] } };
+  const raw = rawWorld({ s: ['hall', { hall: room([take('coin', 'coin'), vault, exit('out', { story: 'end' })]) }] }, ['coin'], { f: 's' });
+  for (const { form, w } of forms(raw)) {
+    const v2 = { ...w, version: 'v2' };
+    const opened = at('hall', { taken: [k('hall.coin')], used: [it('coin')], slots: { [k('hall.safe')]: [it('coin')] }, open: [k('hall.safe')] });
+    const r = reconcile(v2, opened, NO_KNOTS, 'v1');
+    expect(r.state.flags, form).toEqual(['f']);
+    expect([r.state.open, r.state.fired, r.dropped], form).toEqual([['hall.safe'], [], []]);
+    // The control: the coin held, the safe shut.
+    expect(reconcile(v2, at('hall', { taken: [k('hall.coin')], held: [it('coin')] }), NO_KNOTS, 'v1').state.flags, form).toEqual([]);
+  }
+});
+
+test("reconcile: a set added to an examined look's then re-arms from examined", () => {
+  for (const { form, w } of forms(markWorld())) {
+    const v2 = { ...w, version: 'v2' };
+    expect(reconcile(v2, at('hall', { examined: [k('hall.mark')] }), NO_KNOTS, 'v1').state.flags, form).toEqual(['f']);
+    // The control: a save that never read the mark.
+    expect(reconcile(v2, at('hall'), NO_KNOTS, 'v1').state.flags, form).toEqual([]);
+  }
+});
+
+test("reconcile: a set added to a failed lock's onFail re-arms from its puzzle's failed outcome", () => {
+  const box = { ...object('box'), lock: { slots: [], puzzle: 'dial', locked: txt(), onOpen: [], onFail: [{ set: 'f' }] } };
+  const raw = { ...rawWorld({ s: ['hall', { hall: room([box, exit('out', { story: 'end' })]) }] }, [], { f: 's' }), puzzles: { dial: codePuzzle() } };
+  for (const { form, w } of forms(raw)) {
+    const v2 = { ...w, version: 'v2' };
+    const failed = at('hall', { puzzles: { [pz('dial')]: { outcome: 'failed', attempts: 1, hintsOpened: 0 } } });
+    expect(reconcile(v2, failed, NO_KNOTS, 'v1').state.flags, form).toEqual(['f']);
+    // The controls: the puzzle solved (the box open), and a fresh run.
+    const solved = at('hall', { puzzles: { [pz('dial')]: { outcome: 'solved', attempts: 0, hintsOpened: 0 } }, open: [k('hall.box')] });
+    expect(reconcile(v2, solved, NO_KNOTS, 'v1').state.flags, form).toEqual([]);
+    expect(reconcile(v2, at('hall'), NO_KNOTS, 'v1').state.flags, form).toEqual([]);
+  }
+});
+
+test('reconcile: an event fact re-arms only a trigger with no kernel effect whose event it records', () => {
+  // Each row: no flag at the load, and the trigger's next event sets it (delayed, not lost).
+  // (a) An object's `then` has no event fact: the lever's unlock opened the box without running the box's `then`.
+  const shut: Json = { slots: [], puzzle: null, locked: txt(), onOpen: [], onFail: [] };
+  const lever = rawWorld(
+    { s: ['hall', { hall: room([object('lever', [{ unlock: 'hall.box' }]), { ...object('box', [{ set: 'f' }]), lock: shut }, exit('out', { story: 'end' })]) }] },
+    [],
+    { f: 's' },
+  );
+  for (const { form, w } of forms(lever)) {
+    const v2 = { ...w, version: 'v2' };
+    const r = reconcile(v2, at('hall', { open: [k('hall.box')], fired: ['then:hall.lever'] }), NO_KNOTS, 'v1');
+    expect([r.state.flags, r.state.open, r.state.fired], `${form} (a)`).toEqual([[], ['hall.box'], ['then:hall.lever']]);
+    expect(reduce(v2, r.state, tap('hall.box')).state.flags, `${form} (a)`).toEqual(['f']);
+  }
+  // (b) A trigger with a kernel effect follows its record: v1's mark had an empty `then`, so its next tap runs it.
+  const kernel = rawWorld({ s: ['hall', { hall: room([look('mark', [{ story: 'k' }, { set: 'f' }]), exit('out', { story: 'end' })]) }] }, [], { f: 's' });
+  for (const { form, w } of forms(kernel)) {
+    const v2 = { ...w, version: 'v2' };
+    const r = reconcile(v2, at('hall', { examined: [k('hall.mark')] }), NO_KNOTS, 'v1');
+    expect([r.state.flags, r.state.fired], `${form} (b)`).toEqual([[], []]);
+    const tapped = reduce(v2, r.state, tap('hall.mark')).state;
+    expect([tapped.pendingStory, tapped.flags], `${form} (b)`).toEqual([['k'], ['f']]);
+  }
+  // (c) A take step 3 re-arms has not run: v1's coin take gave an item v2 lost, so v2 offers the take again.
+  const coin = rawWorld({ s: ['hall', { hall: room([{ ...take('coin', 'coin'), then: [{ set: 'f' }] }, exit('out', { story: 'end' })]) }] }, ['coin'], { f: 's' });
+  for (const { form, w } of forms(coin)) {
+    const v2 = { ...w, version: 'v2' };
+    const r = reconcile(v2, at('hall', { taken: [k('hall.coin')], held: [it('pebble')] }), NO_KNOTS, 'v1');
+    expect([r.state.flags, r.state.taken, r.dropped], `${form} (c)`).toEqual([[], [], ['held:pebble']]);
+    expect(actions(v2, r.state), `${form} (c)`).toContainEqual(tap('hall.coin'));
+    const tapped = reduce(v2, r.state, tap('hall.coin')).state;
+    expect([tapped.held, tapped.flags], `${form} (c)`).toEqual([['coin'], ['f']]);
   }
 });

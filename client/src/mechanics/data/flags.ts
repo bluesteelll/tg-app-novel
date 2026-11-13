@@ -11,7 +11,7 @@ import type { WorldState } from '../../explore/state.ts';
 import type { Result } from '../../story/catalog.ts';
 import type { SectionId } from '../../story/staging.ts';
 import type { HotspotKey } from '../../world/types.ts';
-import type { DecodeCtx, FlagId, Issue, IssueReport, KernelWorld, OwnedAt, OwnedRaw } from '../contract.ts';
+import type { DecodeCtx, FlagId, Issue, IssueReport, KernelWorld, OwnedAt, OwnedRaw, TriggerKey, TriggerRan } from '../contract.ts';
 import { decodeCond } from './conditions.ts';
 import type { Cond } from './conditions.ts';
 
@@ -137,14 +137,16 @@ export function encodeFlags(d: FlagsData): OwnedRaw {
 /**
  * Its facts are its own (`WorldState.flags`): reconcile's kernel steps pass them through but for step 0's renames, and
  * run this right after step 3 (engine plan §5.3, GM5f D5). A flag stays only while declared, each other one goes to
- * `dropped` as `flags:<id>`; then a declared flag joins when a setter of it (`<trigger>#<j>`) is in the post-step-3
- * `fired` (D6), so a flag is set iff a setter fired: an old save whose fired trigger gains a `set` in a new version gets
- * the flag, as step 3 re-arms a lost gift, and a setter step 3 un-fired sets nothing until it runs again. D6 is
- * load-bearing for D7's resume answer: without the re-arm a reconciled `fired: T` with `f` unset resumes, and `f` is
- * never set (T never fires again), so what `f` gates never shows. A world without the module's data (the mods-less
- * proof body) keeps `s.flags`.
+ * `dropped` as `flags:<id>`; then a declared flag joins when a setter of it (`<trigger>#<j>`) has run by `ran`, the
+ * kernel's answer over the post-step-3 state (D6, D6'): its trigger is in `fired`, or it has no kernel effect and the
+ * fact its own event writes holds. So an old save whose fired trigger gains a `set` in a new version gets the flag, as
+ * step 3 re-arms a lost gift, and so does one that passed a trigger that was empty in its version (which recorded no
+ * `fired` key); a setter step 3 un-fired sets nothing until it runs again. D6 is load-bearing for D7's resume answer:
+ * without the re-arm a reconciled save whose setter has run resumes with `f` unset, and `f` is never set (the trigger
+ * never runs again), so what `f` gates never shows. A world without the module's data (the mods-less proof body) keeps
+ * `s.flags`.
  */
-export function normalizeFlags(w: KernelWorld, s: WorldState, dropped: string[]): WorldState {
+export function normalizeFlags(w: KernelWorld, s: WorldState, dropped: string[], ran: TriggerRan): WorldState {
   const d = w.mods?.flags;
   if (d === undefined) {
     return s;
@@ -157,7 +159,8 @@ export function normalizeFlags(w: KernelWorld, s: WorldState, dropped: string[])
     return declared;
   });
   for (const [key, f] of Object.entries(d.sets)) {
-    if (Object.hasOwn(d.flags, f) && !flags.includes(f) && s.fired.includes(key.slice(0, key.lastIndexOf('#')))) {
+    // A `sets` key is `<trigger>#<source index>`, the trigger a kernel one (§1.4).
+    if (Object.hasOwn(d.flags, f) && !flags.includes(f) && ran(key.slice(0, key.lastIndexOf('#')) as TriggerKey)) {
       flags.push(f);
     }
   }
