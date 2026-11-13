@@ -212,6 +212,9 @@
     padding: 0;
     border: 0;
     gap: 0;
+    /* A stroke leaves no text selection: a stroke going down inside one would become the browser's drag and cancel. */
+    -webkit-user-select: none;
+    user-select: none;
   }
 
   /* No pointer event targets a cell: every hit, a tap's click included, is the surface's on every engine (CQ-c). */

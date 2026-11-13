@@ -580,6 +580,16 @@ test("path: the cell under the pointer comes from the surface's box", () => {
   expect([box.get('padding'), box.get('border'), box.get('gap')]).toEqual(['0', '0', '0']);
 });
 
+test('path: the stroke surface selects no text', () => {
+  // F-1 (RULINGS 350): a mouse stroke would leave a text selection, and Chromium turns the next stroke that goes down
+  // inside it into a native drag of that selection, which cancels the pointer (`pointercancel`): about every second
+  // stroke of a line drawn in several would do nothing on Telegram Desktop and Web. happy-dom has neither selection nor
+  // drag-and-drop, so the pin reads the source; the pre-merge lens reproduced the cancel, and its absence with these two
+  // declarations, in a real browser.
+  const surface = declarationsFor(pathSource, 'surface');
+  expect([surface.get('-webkit-user-select'), surface.get('user-select')]).toEqual(['none', 'none']);
+});
+
 test('path: a step that changes nothing calls no onchange', () => {
   const d = drawn({ answer: [0, 1] });
   const s = rig(d);
