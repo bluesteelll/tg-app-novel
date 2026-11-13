@@ -182,7 +182,7 @@ const FIELD_FACTS = {
   open: ['open'],
   fired: ['fired'],
   pendingStory: ['story'],
-  puzzles: ['solved', 'failed', 'abandoned', 'attempt', 'hint'],
+  puzzles: ['solved', 'failed', 'abandoned', 'attempt', 'hint', 'work'],
   unproved: [],
   flags: ['flag'],
 } as const satisfies Record<keyof WorldState, readonly FactKind[]>;
@@ -210,6 +210,8 @@ test('cues: every world field is a fact kind or silent', () => {
     }
   }
   expect(problems).toEqual([]);
+  // The reverse direction: every registered fact kind is carried by some field, so a module's kind has its field.
+  expect([...kinds].filter((kind) => !Object.values(table).some((facts) => facts.includes(kind)))).toEqual([]);
 });
 
 /** A fixture type that declares its controls, with its literal type kept (`satisfies`). */
@@ -282,5 +284,28 @@ test('motions: a flag cue sweeps the stage', () => {
   expect([motionOf(cue('added')), motionOf(cue('removed'))].map((m) => [m.preset, m.target])).toEqual([
     ['sweep', 'stage'],
     ['sweep-back', 'stage'],
+  ]);
+});
+
+test("motions: a device's work presses its part and its outcome lands on its box", () => {
+  // 08b: a part's new or old position (`fact:work:*`, id `<puzzle>.<index>=<v>`) presses the part, with no haptic: the
+  // part's own press carries the light one (RULINGS 353 Q4). An arrival at an ended device plays on the device's box:
+  // `done` glints, `jammed` jams with the error haptic, as `fact:failed:added` does.
+  const rows: Readonly<Record<string, MotionSpec>> = CUE_MOTIONS;
+  expect(Object.keys(rows).filter((key) => key.startsWith('fact:work:'))).toEqual(['fact:work:added', 'fact:work:removed']);
+  const cue = (change: 'added' | 'removed'): Cue => ({ kind: 'fact', fact: { kind: 'work', id: 'dial.0=1' }, change, cause: { verb: 'device', at: null, item: null, via: null } });
+  expect([motionOf(cue('added')), motionOf(cue('removed'))].map((m) => [m.preset, m.target, m.haptic])).toEqual([
+    ['press', 'part', null],
+    ['press', 'part', null],
+  ]);
+  // The module's keys from the rules registry (never from the table), so the check is not vacuous.
+  const keys = MECHANIC_RULES.flatMap((r) => {
+    const names: readonly string[] = r.cues;
+    return r.id === 'devices' ? names.map((c) => `module:${r.id}:${c}`) : [];
+  });
+  expect(keys).toEqual(['module:devices:done', 'module:devices:jammed']);
+  expect(keys.map((key) => [rows[key]?.preset, rows[key]?.target, rows[key]?.haptic])).toEqual([
+    ['glint', 'box', null],
+    ['jam', 'box', 'error'],
   ]);
 });

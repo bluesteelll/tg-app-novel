@@ -1,9 +1,11 @@
 // Module `devices`' data half (engine plan §7.5): a view room's `device: <hotspot>` names the hotspot whose zero-slot
 // lock holds the room's device puzzle. The device is drawn by the device, never as a hotspot button, and its session
-// opens on arrival (the rules half). Engine half: decoded at chapter load into `world.mods.devices`, written back by
-// `encode` for emission and the version hash. Function declarations and types only: mechanics/data/index.ts builds the
-// entry from them. Its data is plain JSON. Whether the hotspot exists, carries the right lock and sits in a view is the
-// story gate's (client/scripts/story/mechanics/devices.ts). Pure.
+// opens on arrival (the rules half). Its fact kind `work` (a part's position, `<puzzle>.<index>=<v>`) records the
+// changes of a run's `work`, a device's working configuration, which stays outside the section key. Engine half:
+// decoded at chapter load into `world.mods.devices`, written back by `encode` for emission and the version hash.
+// Function declarations and types only: mechanics/data/index.ts builds the entry from them. Its data is plain JSON.
+// Whether the hotspot exists, carries the right lock and sits in a view is the story gate's
+// (client/scripts/story/mechanics/devices.ts). Pure.
 import type { WorldState } from '../../explore/state.ts';
 import type { Result } from '../../story/catalog.ts';
 import type { HotspotId, RoomId } from '../../world/types.ts';

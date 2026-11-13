@@ -268,6 +268,9 @@ function keyPlan(w: KernelWorld, section: SectionId, rules: RulesRegistry): KeyP
         case 'flag':
           (flags ??= new Set()).add(id);
           break;
+        case 'work':
+          // Module `devices`' fact: a run's `work`, which no gating rule may read (engine plan §7.5).
+          throw new Error(`invariant: ${m.id} reads a 'work' fact: a device's working state stays outside the section key (§7.5)`);
         default: {
           // A module fact kind has no WorldState storage before its module declares a save slice (`flag` is kept in
           // `WorldState.flags`).

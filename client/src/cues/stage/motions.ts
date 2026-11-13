@@ -169,6 +169,10 @@ export const CUE_MOTIONS: { readonly [K in Exclude<CueKey, ControlKey>]: MotionS
   // Module `flags`' fact (08b): a flag names no hotspot, so its set sweeps the stage; only a section reset removes one.
   'fact:flag:added': row('sweep', 600, 'stage'),
   'fact:flag:removed': row('sweep-back', 600, 'stage'),
+  // Module `devices`' fact (08b): a part's new or old position presses the part. No haptic: the part's own press, its
+  // control cue, already carries the light one (RULINGS 353 Q4).
+  'fact:work:added': row('press', 240, 'part'),
+  'fact:work:removed': row('press', 240, 'part'),
   'move:walk': row('sweep', 600, 'stage'),
   'move:zoom-in': row('iris', 360, 'box'),
   'move:zoom-out': row('iris-back', 360, 'box'),

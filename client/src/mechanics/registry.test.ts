@@ -410,7 +410,7 @@ test('mechanics: the data registry loads from any module first', async () => {
       {
         id: 'devices',
         rules: 'chunk',
-        owns: { room: ['device'], facts: [] },
+        owns: { room: ['device'], facts: ['work'] },
         decode: devices.decodeDevices,
         encode: devices.encodeDevices,
         normalize: devices.normalizeDevices,

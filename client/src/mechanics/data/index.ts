@@ -78,7 +78,9 @@ const flags = {
 const devices = {
   id: 'devices',
   rules: 'chunk',
-  owns: { room: ['device'], facts: [] },
+  // The `work` fact kind is the module's: a device part's position (`<puzzle>.<index>=<v>`), kept in its run's `work`
+  // and never in the section key (§7.5).
+  owns: { room: ['device'], facts: ['work'] as const },
   decode: decodeDevices,
   encode: encodeDevices as (d: unknown) => OwnedRaw,
   normalize: normalizeDevices,
