@@ -3,9 +3,11 @@
 // is pending), with the same `puzzle` effect the device's own tap reaches, so the proof's states are unchanged; an
 // ended device plays its outcome's cue instead. A part move (`device-moved`) writes the device's run's `work` through
 // the writer, a `work` fact per moved part, and a part's picture is a decor state chosen by the visual atom `part` over
-// that saved work. The story gate's devices lint places a view type only on a device and a device only in a view, with
-// the types as a parameter (no registered type is a view before GM8a). Fixture worlds are written in the source format and decoded with the
-// real registries; a proof world carries the decoded `mods`, as the explore controller's and the story gate's do.
+// that saved work. The story gate's devices lint places a view type only on a device and a device only in a view, keeps
+// the device hotspot a plain, always-present object that only its puzzle opens, and bounds a `part` atom by its room's
+// device, with the types as a parameter (no registered type is a view before GM8a). Fixture worlds are written in the
+// source format and decoded with the real registries; a proof world carries the decoded `mods`, as the explore
+// controller's and the story gate's do.
 import { expect, test } from 'vitest';
 
 import { DEVICE_BAND_Y, DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS, devicesFindings, deviceBandY } from '../../scripts/story/mechanics/devices.ts';
@@ -441,18 +443,26 @@ function lint(raw: Json, yielded: readonly string[] = []): string[] {
 
 /**
  * A lint fixture: the hall and its device view `panel`, whose device hotspot `dial` carries `o.dial` (default: a zero-slot
- * lock with the view-type puzzle `dial`); `o.hall` adds hotspots to the hall, `o.panel` keys to the panel, `o.puzzles`
- * puzzles beside `dial` (a `LEVERS` puzzle of four parts unless replaced).
+ * lock with the view-type puzzle `dial`); `o.hall` adds hotspots to the hall and `o.hallKeys` keys, `o.spots` hotspots to
+ * the panel after the device and `o.panel` keys, `o.puzzles` puzzles beside `dial` (a `LEVERS` puzzle of four parts, each
+ * at 0..2, unless replaced).
  */
-function deviceWorld(o: { dial?: Json; hall?: readonly Json[]; panel?: Json; puzzles?: Json } = {}): Json {
+function deviceWorld(
+  o: { dial?: Json; hall?: readonly Json[]; hallKeys?: Json; spots?: readonly Json[]; panel?: Json; puzzles?: Json } = {},
+): Json {
   return source(
     {
-      hall: room([exit('to_panel', 'panel'), exit('out', { story: 'end' }), ...(o.hall ?? [])]),
-      panel: room([o.dial ?? object('dial', lock('dial'))], { view: { of: 'hall' }, device: 'dial', ...o.panel }),
+      hall: room([exit('to_panel', 'panel'), exit('out', { story: 'end' }), ...(o.hall ?? [])], o.hallKeys),
+      panel: room([o.dial ?? object('dial', lock('dial')), ...(o.spots ?? [])], { view: { of: 'hall' }, device: 'dial', ...o.panel }),
     },
     { puzzles: { dial: levers(4), ...o.puzzles } },
   );
 }
+
+/** A decor picture `id` whose state `on` shows while `when` holds. */
+const decor = (id: string, when: Json): Json => ({ id, prop: 'lever', rect: [100, 900, 160, 320], z: 1, states: { on: { prop: 'lever_up' } }, is: [{ when, state: 'on' }] });
+/** A `part` atom of `puzzle`. */
+const part = (puzzle: string, index: number, is: number): Json => ({ part: { puzzle, index, is } });
 
 test('story: a device room without a zero-slot lock is refused', () => {
   const TYPE = 'world/device-type sections.s.rooms.panel.device: hotspot';
@@ -508,6 +518,95 @@ test('story: a view-type puzzle outside a device lock is refused', () => {
 test('story: a device puzzle with a close-up is refused', () => {
   expect(lint(deviceWorld({ puzzles: { dial: { ...levers(4), closeup: 'cabinet' } } }))).toEqual([
     "world/device-closeup puzzles.dial.closeup: view-type puzzle 'dial' has close-up 'cabinet': a device is played in its room, never under a close-up (§7.5)",
+  ]);
+});
+
+test('story: a capped device without a failed state is refused', () => {
+  const capped = { puzzles: { dial: { ...levers(4), maxAttempts: 3 } } };
+  const FAILED =
+    "world/device-failed-state sections.s.rooms.panel.device: puzzle 'dial' has maxAttempts 3 and no decor or device state reads { failed: 'dial' }: a jammed device never looks live (§7.5)";
+  // Uncapped, a device never jams: no failed state is owed.
+  expect(lint(deviceWorld())).toEqual([]);
+  expect(lint(deviceWorld(capped))).toEqual([FAILED]);
+  // A decor state reading the solve, or another puzzle's failure, is no jam of this device.
+  expect(lint(deviceWorld({ ...capped, panel: { decor: [decor('lamp', { solved: 'dial' }), decor('vent', { failed: 'safe' })] } }))).toEqual([FAILED]);
+  // A decor state of the room reading `{ failed: p }`, here under a combinator, shows the jam.
+  expect(lint(deviceWorld({ ...capped, panel: { decor: [decor('jam', { all: [{ failed: 'dial' }, { visited: 'hall' }] })] } }))).toEqual([]);
+  // So does the device hotspot's own state.
+  const own = object('dial', lock('dial'), { prop: 'dial', states: { jam: { prop: 'dial_jam' } }, is: [{ when: { failed: 'dial' }, state: 'jam' }] });
+  expect(lint(deviceWorld({ ...capped, dial: own }))).toEqual([]);
+  // A decor state in another room does not.
+  expect(lint(deviceWorld({ ...capped, hallKeys: { decor: [decor('jam', { failed: 'dial' })] } }))).toEqual([FAILED]);
+});
+
+test('story: a device hotspot that is no plain object is refused', () => {
+  // An exit carrying the device's zero-slot lock.
+  const door = { ...exit('dial', 'hall'), lock: lock('dial') };
+  expect(lint(deviceWorld({ dial: door }))).toEqual(["world/device-object sections.s.rooms.panel.hotspots.0: device hotspot 'dial' is an exit: a device's hotspot is an object (§7.5)"]);
+  // An object an item is used on.
+  const used = object('dial', lock('dial'), { uses: [{ item: 'oil', do: [] }] });
+  expect(lint(deviceWorld({ dial: used }))).toEqual([
+    "world/device-object sections.s.rooms.panel.hotspots.0.uses: device hotspot 'dial' carries uses: a device is played by its parts, never used on (§7.5)",
+  ]);
+});
+
+test('story: a device hotspot with a when is refused', () => {
+  const hidden = object('dial', lock('dial'), { when: { visited: 'hall' } });
+  expect(lint(deviceWorld({ dial: hidden }))).toEqual([
+    "world/device-when sections.s.rooms.panel.hotspots.0.when: device hotspot 'dial' has a when: a device is always present in its view (§7.5)",
+  ]);
+  // `when: null` is the always-present default.
+  expect(lint(deviceWorld({ dial: object('dial', lock('dial'), { when: null }) }))).toEqual([]);
+});
+
+test('story: a device room with another puzzle lock is refused', () => {
+  // A plain slot lock and a lockless object beside the device are allowed; a second puzzle lock is not.
+  const spots = [object('box', lock(null, ['key'])), object('vase', null), object('safe', lock('safe'))];
+  expect(lint(deviceWorld({ spots, puzzles: { safe: code(3) } }))).toEqual([
+    "world/device-alone sections.s.rooms.panel.hotspots.3.lock.puzzle: hotspot 'safe' carries puzzle 'safe' beside device 'dial': a device room holds no other puzzle lock (§7.5)",
+  ]);
+  expect(lint(deviceWorld({ spots: spots.slice(0, 2) }))).toEqual([]);
+});
+
+test('story: a remote unlock of a device is refused', () => {
+  const UNLOCK = { unlock: 'panel.dial' };
+  // From a room's onEnter (at the list's path, after a give), and from a use rule's do.
+  const crate = object('crate', null, { uses: [{ item: 'oil', do: [UNLOCK] }] });
+  expect(lint(deviceWorld({ hallKeys: { onEnter: [{ give: 'oil' }, UNLOCK] }, hall: [crate] }))).toEqual([
+    'world/device-unlock sections.s.rooms.hall.onEnter: room hall onEnter unlocks device panel.dial: a device opens only by its own puzzle (§7.5)',
+    'world/device-unlock sections.s.rooms.hall.hotspots.2.uses.0.do: rule 0 of hall.crate unlocks device panel.dial: a device opens only by its own puzzle (§7.5)',
+  ]);
+  // From a hotspot's then and a lock's onOpen and onFail.
+  const note = look('note', [UNLOCK]);
+  const gate = object('gate', { ...lock(null, ['oil']), onOpen: [UNLOCK], onFail: [UNLOCK] });
+  expect(lint(deviceWorld({ hall: [note, gate] }))).toEqual([
+    'world/device-unlock sections.s.rooms.hall.hotspots.2.then: hall.note then unlocks device panel.dial: a device opens only by its own puzzle (§7.5)',
+    'world/device-unlock sections.s.rooms.hall.hotspots.3.lock.onOpen: hall.gate onOpen unlocks device panel.dial: a device opens only by its own puzzle (§7.5)',
+    'world/device-unlock sections.s.rooms.hall.hotspots.3.lock.onFail: hall.gate onFail unlocks device panel.dial: a device opens only by its own puzzle (§7.5)',
+  ]);
+  // An unlock of an ordinary lock is no device's.
+  expect(lint(deviceWorld({ hallKeys: { onEnter: [{ unlock: 'hall.gate' }] }, hall: [object('gate', lock(null, ['oil']))] }))).toEqual([]);
+});
+
+test("story: a part atom outside its device's range is refused", () => {
+  // The device `dial` has four parts at 0..2: index 3 and is 2 are its last.
+  const within = [decor('a', part('dial', 3, 2)), decor('b', { not: part('dial', 0, 0) })];
+  expect(lint(deviceWorld({ panel: { decor: within } }))).toEqual([]);
+  // Not the room's device: another puzzle in the device room, and any part in a room with no device.
+  const DECOR = 'world/device-part sections.s.rooms';
+  expect(lint(deviceWorld({ panel: { decor: [decor('a', part('safe', 0, 1))] }, puzzles: { safe: code(3) } }))).toEqual([
+    `${DECOR}.panel.decor.0.is.0.when: {"part":{"puzzle":"safe","index":0,"is":1}} reads puzzle 'safe', but room 'panel''s device is 'dial': a part reads its own room's device (§7.5)`,
+  ]);
+  expect(lint(deviceWorld({ hallKeys: { decor: [decor('a', part('dial', 0, 1))] } }))).toEqual([
+    `${DECOR}.hall.decor.0.is.0.when: {"part":{"puzzle":"dial","index":0,"is":1}} reads puzzle 'dial', but room 'hall' has no device: a part reads its own room's device (§7.5)`,
+  ]);
+  // `index` not below the part count, and `is` above the type's max, from a decor (under a `not` too) and from the device
+  // hotspot's own state.
+  const own = object('dial', lock('dial'), { prop: 'dial', states: { on: { prop: 'dial_on' } }, is: [{ when: { any: [part('dial', 0, 1), part('dial', 1, 3)] }, state: 'on' }] });
+  expect(lint(deviceWorld({ dial: own, panel: { decor: [decor('a', part('dial', 4, 1)), decor('b', { not: part('dial', 0, 5) })] } }))).toEqual([
+    `${DECOR}.panel.hotspots.0.is.0.when: {"part":{"puzzle":"dial","index":1,"is":3}}: is 3 is outside the part's range 0..2 (§7.5)`,
+    `${DECOR}.panel.decor.0.is.0.when: {"part":{"puzzle":"dial","index":4,"is":1}}: index 4 is not below the device's 4 parts (§7.5)`,
+    `${DECOR}.panel.decor.1.is.0.when: {"part":{"puzzle":"dial","index":0,"is":5}}: is 5 is outside the part's range 0..2 (§7.5)`,
   ]);
 });
 
