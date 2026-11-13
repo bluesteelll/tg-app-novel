@@ -2205,3 +2205,15 @@ test("story: a hotspot when naming another section's fact is refused", () => {
   spot(w, 'hall', 'gate', 's')['when'] = { not: { held: 'coin' } };
   expect(of(lint(w), 'world/cross-section-cond')).toEqual([]);
 });
+
+test('story: a finding after a module effect names its source line', () => {
+  // GM3c O2: the decoder routes a `set` out of its kernel list, so a kernel effect after it sits at a compacted index;
+  // a finding names the effect's source index, and so the author's line, not the set's.
+  const w = flagWorld();
+  list(spot(w, 'hall', 'mark', 's')['then']).push({ give: 'nope' });
+  list(spot(w, 'yard', 'sign', 't')['then']).push({ unlock: 'hall.chest' });
+  const found = lint(w, { knots: null });
+  const lines = (code: Finding['code']): number[] => of(found, code).map((f) => f.line);
+  expect([lines('world/unknown-ref'), lines('world/cross-section-effect')]).toEqual([[jsonLine(w, '"give": "nope"')], [jsonLine(w, '"unlock": "hall.chest"')]]);
+  expect(of(found, 'world/cross-section-effect').map((f) => f.message)).toEqual(['yard.sign then (section t) unlocks hall.chest of section s (X15: a trigger writes only its own section)']);
+});
