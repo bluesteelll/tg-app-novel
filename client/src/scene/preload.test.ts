@@ -1891,3 +1891,29 @@ test('preload: a kept next: flight settling while an entry half is awaited start
   h.s.want(stage({ need: ['bg/v', 'sheet/v'], preview: true }));
   expect(h.upgradeCalls()).toEqual(['bg/v']);
 });
+
+test('preload: setChapter and destroy abort the upgrade in flight and forget its answer', async () => {
+  // Arm 1, setChapter. The plate stays on stage under its scene holder, so no record end can stop its upgrade: only
+  // the scheduler can, and its abort returns the registry's reservation in that turn.
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(em);
+  await entryBatch(h, ['bg/v']);
+  h.s.want(stage({ need: ['bg/v'], preview: true }));
+  expect(h.upgradeCalls()).toEqual(['bg/v']);
+  expect(h.registry.stats().pending).toBe(1);
+  h.s.setChapter(wm);
+  expect(h.registry.stats().pending).toBe(0);
+  // The late answer is forgotten: the new chapter has had no swap, and the aborted upgrade swapped nothing.
+  h.upgraded('bg/v');
+  await micro();
+  expect(h.upgradeCalls()).toEqual(['bg/v']);
+  expect(h.registry.previews()).toEqual([{ id: asId('bg/v'), visible: true }]);
+  // Arm 2, destroy: the same entry on a fresh scheduler.
+  const d = harness('auto', { hold: true });
+  d.s.setChapter(em);
+  await entryBatch(d, ['bg/v']);
+  d.s.want(stage({ need: ['bg/v'], preview: true }));
+  expect(d.registry.stats().pending).toBe(1);
+  d.s.destroy();
+  expect(d.registry.stats().pending).toBe(0);
+});
