@@ -752,6 +752,11 @@ test('project: fl_<flag> is projected when declared', () => {
 // Reconcile (X9)
 
 const stamped = (w: KernelWorld, version: string): WorldPublic => ({ ...w, version });
+/** `w` with `ids` declared as flags of `section` (module `flags`, engine plan §6.5), beside the ones it declares. */
+function declaring(w: KernelWorld, section: string, ...ids: string[]): KernelWorld {
+  const added = Object.fromEntries(ids.map((f) => [f, { section: sec(section) }]));
+  return { ...w, mods: { ...w.mods, flags: { ...w.mods.flags, flags: { ...w.mods.flags.flags, ...added } } } };
+}
 const V1 = '1111111111111111';
 const V2 = '2222222222222222';
 const MANOR = sec('manor');
@@ -967,7 +972,7 @@ test('reconcile: step 0 maps renamed items, docs, rooms, sections and hotspots b
   // save order stays and the other is dropped, its slot's item back in held; flags map too.
   const merging = stamped(
     {
-      ...bare,
+      ...declaring(bare, 'estate', 'fl_new', 'fl_keep'),
       renamed: {
         items: { [it('medal_old')]: it('medal_comet'), [it('medal_star')]: it('medal_comet') },
         sections: { [sec('house')]: sec('estate'), [MANOR]: sec('estate') },
@@ -1242,11 +1247,11 @@ const fl = (s: string) => s as FlagId; // a fixture flag id
 
 test('reconcile: a saved work goes only with a puzzle the world lost', () => {
   // Engine plan §5.2: a run's `work` is part of its run, so it stays with a kept puzzle and goes with a lost one;
-  // `flags` pass (the flags module's own normalize drops theirs).
+  // `fl_a` is a declared flag, which the flags module's own normalize keeps.
   const kept: PuzzleRun = { outcome: null, attempts: 1, hintsOpened: 0, work: [2, 0] };
   const lost: PuzzleRun = { outcome: 'solved', attempts: 0, hintsOpened: 0, work: [1] };
   const s = at('study', { puzzles: { [pz('drawer')]: kept, [pz('safe')]: lost }, flags: [fl('fl_a')] });
-  const r = reconcile(stamped(manor(), V2), s, MANOR_KNOTS, V1);
+  const r = reconcile(stamped(declaring(manor(), 'manor', 'fl_a'), V2), s, MANOR_KNOTS, V1);
   expect(r.state.puzzles).toEqual({ drawer: kept });
   expect(r.dropped).toEqual(['puzzles:safe']);
   expect(r.state.flags).toEqual(['fl_a']);

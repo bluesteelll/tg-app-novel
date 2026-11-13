@@ -134,7 +134,32 @@ export function encodeFlags(d: FlagsData): OwnedRaw {
   ];
 }
 
-/** Its facts are its own (`WorldState.flags`); reconcile's kernel steps pass them through unchanged. */
-export function normalizeFlags(_w: KernelWorld, s: WorldState): WorldState {
-  return s;
+/**
+ * Its facts are its own (`WorldState.flags`): reconcile's kernel steps pass them through but for step 0's renames, and
+ * run this right after step 3 (engine plan §5.3, GM5f D5). A flag stays only while declared, each other one goes to
+ * `dropped` as `flags:<id>`; then a declared flag joins when a setter of it (`<trigger>#<j>`) is in the post-step-3
+ * `fired` (D6), so a flag is set iff a setter fired: an old save whose fired trigger gains a `set` in a new version gets
+ * the flag, as step 3 re-arms a lost gift, and a setter step 3 un-fired sets nothing until it runs again. D6 is
+ * load-bearing for D7's resume answer: without the re-arm a reconciled `fired: T` with `f` unset resumes, and `f` is
+ * never set (T never fires again), so what `f` gates never shows. A world without the module's data (the mods-less
+ * proof body) keeps `s.flags`.
+ */
+export function normalizeFlags(w: KernelWorld, s: WorldState, dropped: string[]): WorldState {
+  const d = w.mods?.flags;
+  if (d === undefined) {
+    return s;
+  }
+  const flags = s.flags.filter((f) => {
+    const declared = Object.hasOwn(d.flags, f);
+    if (!declared) {
+      dropped.push(`flags:${f}`);
+    }
+    return declared;
+  });
+  for (const [key, f] of Object.entries(d.sets)) {
+    if (Object.hasOwn(d.flags, f) && !flags.includes(f) && s.fired.includes(key.slice(0, key.lastIndexOf('#')))) {
+      flags.push(f);
+    }
+  }
+  return { ...s, flags };
 }

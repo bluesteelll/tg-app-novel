@@ -2,6 +2,7 @@
 // load (steps 0-3, every section unproved). Engine code: the section search and the guarded section entries that
 // prove a section at its first entry are the rules half (mechanics/rules/search.ts, engine plan §3.4). Never throws
 // on save data. Pure (X4).
+import { MECHANIC_DATA } from '../mechanics/data/index.ts';
 import type { KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
 import type { Effect, HotspotKey, ItemId, RoomId, WorldPublic, WorldPublicBody } from '../world/types.ts';
 import { lockOf, worldIndex } from './reduce.ts';
@@ -68,8 +69,9 @@ function giveBack(
  * first-occurrence order; of two saved keys that land on one, the first in save order stays and the other goes to
  * `dropped`, a dropped slot's items back to held through `giveBack`, as normalize's. An item merge never puts one item
  * in a lock and in hand: a held id the map merges with a different id `used` holds goes to `dropped` (the lock keeps
- * the item); one id the save has in both lists stays in both (a world that gives the item twice). Puzzle keys stay
- * (R-E4, per-player GM6c1b); `unproved` is replaced right after. A world without `renamed`: the state itself.
+ * the item); one id the save has in both lists stays in both (a world that gives the item twice), unless a different
+ * `used` id merges onto it too, which drops it from `held` as above. Puzzle keys stay (R-E4, per-player GM6c1b);
+ * `unproved` is replaced right after. A world without `renamed`: the state itself.
  */
 function renameIds(w: WorldPublicBody, s: WorldState, dropped: string[]): WorldState {
   const r = w.renamed;
@@ -146,7 +148,7 @@ function renameIds(w: WorldPublicBody, s: WorldState, dropped: string[]): WorldS
 /**
  * Steps 1-3: drop the ids the world no longer has, fit the slots to the current locks, re-arm lost gifts. A run goes
  * whole: its `work` stays with a puzzle the world keeps and goes with one it lost (engine plan §5.2). `flags` pass
- * unchanged: their drop is the flags module's own `normalize`.
+ * unchanged: each data module's own `normalize` runs right after (`reconcile`), the flags module's among them.
  */
 function normalize(w: WorldPublicBody, s: WorldState, knots: ReadonlySet<KnotName>, dropped: string[]): WorldState {
   const ix = worldIndex(w);
@@ -251,12 +253,14 @@ function normalize(w: WorldPublicBody, s: WorldState, knots: ReadonlySet<KnotNam
 
 /**
  * The load-time reconcile of X9. The same world version → the state unchanged (the same object). Otherwise step 0
- * (`renameIds`), steps 1-3 (`normalize`) and step 5: every section joins `unproved`, the current one included.
+ * (`renameIds`), steps 1-3 (`normalize`), then each data module's `normalize` in `MECHANIC_DATA` order (GM5f D5: a
+ * module's own facts, read against the kernel's result; flags' keeps the declared flags and re-arms one whose setter
+ * fired), and step 5: every section joins `unproved`, the current one included.
  * Step 4 runs at each section's first entry instead (engine plan §3.4), through `admitSection`, or `admitEvent` when
  * an event knot is pending, so the load searches nothing and `reset` is always null. `dropped` lists every
  * `<field>:<id>` the world no longer has, every key a rename merged away and every held id a rename merged onto an
- * item a lock holds; a kept run's `work` and the `flags` pass
- * unchanged but for step 0's renames (engine plan §5.2).
+ * item a lock holds, then each module's drops (`flags:<id>`, an undeclared flag); a kept run's `work` passes unchanged
+ * (engine plan §5.2).
  */
 export function reconcile(
   w: WorldPublic,
@@ -268,7 +272,10 @@ export function reconcile(
     return { state: s, dropped: [], reset: null };
   }
   const dropped: string[] = [];
-  const state = normalize(w, renameIds(w, s, dropped), knots, dropped);
+  let state = normalize(w, renameIds(w, s, dropped), knots, dropped);
+  for (const m of MECHANIC_DATA) {
+    state = m.normalize(w, state, dropped);
+  }
   const unproved = [...worldIndex(w).sections.keys()].sort();
   return { state: { ...state, unproved }, dropped, reset: null };
 }

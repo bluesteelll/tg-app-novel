@@ -6,11 +6,12 @@
 // the runtime form `decodeWorldPublic`, which routes it out; both carry the same `mods`, so both must run alike.
 import { expect, test } from 'vitest';
 
+import { reconcile } from '../explore/reconcile.ts';
 import { RESUME_STATE_CAP } from '../explore/reduce.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
-import type { SectionId } from '../story/staging.ts';
+import type { KnotName, SectionId } from '../story/staging.ts';
 import { decodeWorldPublic, decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DecodeOptions, WorldIssue } from '../world/decode.ts';
 import type { HotspotKey, ItemId, RoomId, WorldSource } from '../world/types.ts';
@@ -442,5 +443,52 @@ test('search: a view behind a gated entry keeps its own place', () => {
   );
   for (const { form, w } of forms(raw)) {
     expect(sectionPlaces(w, S), form).toEqual({ shelf: 'hall' });
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// C4: a save across a world update (X9): after the kernel's steps 1-3, each data module's `normalize` (D5); flags' keeps
+// the declared flags and re-arms one whose setter fired (D6)
+
+const NO_KNOTS: ReadonlySet<KnotName> = new Set();
+
+test('reconcile: normalize drops an undeclared flag', () => {
+  for (const { form, w } of forms(markWorld())) {
+    const v2 = { ...w, version: 'v2' };
+    // `ghost` is declared nowhere: it goes, to the end of `dropped` (after the kernel's own drops); `f` stays.
+    const r = reconcile(v2, at('hall', { held: [it('gone')], flags: [fl('ghost'), fl('f')] }), NO_KNOTS, 'v1');
+    expect(r.state.flags, form).toEqual(['f']);
+    expect(r.dropped, form).toEqual(['held:gone', 'flags:ghost']);
+    // A renamed `old -> f` lands on `f` (step 0), which is declared, so it stays.
+    const renamed = { ...v2, renamed: { flags: { [fl('old')]: fl('f') } } };
+    const m = reconcile(renamed, at('hall', { flags: [fl('old')] }), NO_KNOTS, 'v1');
+    expect([m.state.flags, m.dropped], form).toEqual([['f'], []]);
+  }
+});
+
+test('reconcile: a declared flag whose setter fired is set', () => {
+  // v1's look `mark` queued a story; v2 adds `{ set: 'f' }` to that `then`, and its note shows only once `f` is set.
+  const raw = rawWorld({ s: ['hall', { hall: room([look('mark', [{ story: 'k' }, { set: 'f' }]), when(look('note'), { flag: 'f' }), exit('out', { story: 'end' })]) }] }, [], { f: 's' });
+  for (const { form, w } of forms(raw)) {
+    const v2 = { ...w, version: 'v2' };
+    // A save that fired it gets `f` (a flag is set iff a setter of it fired), so the note shows as on a fresh run.
+    const r = reconcile(v2, at('hall', { fired: ['then:hall.mark'] }), NO_KNOTS, 'v1');
+    expect([r.state.fired, r.state.flags, r.dropped], form).toEqual([['then:hall.mark'], ['f'], []]);
+    expect(actions(v2, r.state), form).toContainEqual(tap('hall.note'));
+    // The control: a save that never fired it gets no flag, and the note stays hidden.
+    const fresh = reconcile(v2, at('hall'), NO_KNOTS, 'v1').state;
+    expect(fresh.flags, form).toEqual([]);
+    expect(actions(v2, fresh), form).not.toContainEqual(tap('hall.note'));
+  }
+  // A setter un-fired by step 3 sets nothing: the chest gives `x` and sets `f`; a save that fired it without `x` in hand
+  // or in a lock re-arms the gift (step 3), so the flag waits for the trigger to run again.
+  const gift = rawWorld({ s: ['hall', { hall: room([object('chest', [{ give: 'x' }, { set: 'f' }]), exit('out', { story: 'end' })]) }] }, ['x'], { f: 's' });
+  for (const { form, w } of forms(gift)) {
+    const v2 = { ...w, version: 'v2' };
+    const lost = reconcile(v2, at('hall', { fired: ['then:hall.chest'] }), NO_KNOTS, 'v1');
+    expect([lost.state.fired, lost.state.flags], form).toEqual([[], []]);
+    // The positive control: with `x` held the key stays fired, and `f` is set.
+    const kept = reconcile(v2, at('hall', { fired: ['then:hall.chest'], held: [it('x')] }), NO_KNOTS, 'v1');
+    expect([kept.state.fired, kept.state.flags], form).toEqual([['then:hall.chest'], ['f']]);
   }
 });
