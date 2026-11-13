@@ -480,8 +480,10 @@ export type SearchOptions = {
    */
   readonly onEdge?: (from: number, succ: Successor, to: number | null, isNew: boolean, walk: Walk) => void;
   /**
-   * A step the search never takes: never enqueued, never reported (the build's clue check removes a puzzle's end).
-   * Absent: every step. No runtime caller passes it.
+   * A member's own step the search never takes: a successor it accepts is never enqueued and never reported (the
+   * build's clue check removes a puzzle's end), though its evaluation counts as work. It filters each member's
+   * `successors` only, not the place's free moves: the walk's zoom taps and `leave-view` steps between the members are
+   * taken whatever it accepts. Absent: every step. No runtime caller passes it.
    */
   readonly exclude?: (step: Step) => boolean;
   /**
