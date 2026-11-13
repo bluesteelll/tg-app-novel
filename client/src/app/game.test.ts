@@ -5742,6 +5742,34 @@ test("game: a pending start refunded before its chapter loads offers the stage's
   h.game.dispose();
 });
 
+test('game: a save inside a paid chapter refunded since opens its paywall, and a purchase resumes it', async () => {
+  // A ch2 owner's manual save at ch2's second line.
+  const first = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'] });
+  await playManorCh1(first);
+  await first.game.advance(); // END: the change, then ch2's first line
+  await first.game.advance(); // l002
+  await first.game.save('s1');
+  const saved = first.save().slots.get('s1');
+  first.game.dispose();
+  // The fixture's shape: a body inside ch2 with its ink, at a line other than the chapter's first.
+  const body = saved === undefined ? null : decodeSave(saved.body);
+  expect(body?.ok === true ? [body.value.chapterId, body.value.ink !== null, body.value.at.lineId] : body).toEqual([CH2, true, 'ch2.study.l002']);
+  if (saved === undefined) {
+    return;
+  }
+  // Refunded since: a new session on that slot, ch2 not owned. The server answers 403, so D11's paywall, not an error.
+  const h = harness({ chapters: [manorCh1(), manorCh2()], slots: new Map([['s1', saved]]), invoice: ['paid'] });
+  const started = await h.game.start({ kind: 'slot', story: MANOR, slot: 's1' });
+  expect([overlayKinds(h), lineOf(h.vm), h.vm.stageTap]).toEqual([['paywall'], null, true]);
+  expect([started.ok, h.vm.notice, h.assetUrls], 'no error notice, no build probe').toEqual([true, null, []]);
+  // A purchase resumes the save as saved, not the chapter's start.
+  h.game.buy();
+  await settle();
+  await settle();
+  expect([h.vm.paywall, lineOf(h.vm)]).toEqual([null, 'ch2.study.l002']);
+  h.game.dispose();
+});
+
 test("game: a resume of another save or an exit to the stories withdraws the stage's tap", async () => {
   const h = harness({ chapters: [manorCh1(), manorCh2()] });
   await startManor(h); // l001: the start knot's entry autosave

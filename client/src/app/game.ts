@@ -1020,8 +1020,9 @@ export function createGame(deps: GameDeps): Game {
         return err({ kind: 'busy' });
       }
       if (!loaded.ok) {
-        if (loaded.error.kind === 'not-entitled' && body.ink === null) {
-          // D11: the saved start of a chapter still not owned; the paywall again, over an empty stage.
+        if (loaded.error.kind === 'not-entitled') {
+          // D11: the saved start of a chapter still not owned, or a save inside a chapter refunded since (the server
+          // answered 403, so nothing was delivered); the paywall again, over an empty stage, the body kept whole.
           s.torn = true; // the stage empties under the last step
           await scene.restore(EMPTY_SNAPSHOT);
           audioOnce().restore(null);
@@ -1032,7 +1033,7 @@ export function createGame(deps: GameDeps): Game {
           vm.choices = null;
           s.step = null;
           s.shown = null;
-          s.yields.restore(EMPTY_WORLD_STATE, null, null); // no rooms under the paywall; a pending body has no world
+          s.yields.restore(EMPTY_WORLD_STATE, null, null); // no rooms under the paywall; a body's world returns with its resume
           pendingPaid(s, body, false);
           // LFL T1 (fix_r1 I1): this paywall is the session's first screen and no step follows it, so the controller's
           // chunk is asked for here as at a step; its Terms -> policy link and the Menu's meta taps run on the first tap.
@@ -1293,10 +1294,18 @@ export function createGame(deps: GameDeps): Game {
     o.flow.buy(p);
   };
 
-  /** P9 / F4 step 4: the chapter now owned starts from its saved start, with the carry it saved. */
+  /**
+   * P9 / F4 step 4: the chapter now owned starts from its saved start, with the carry it saved. A save inside it (its
+   * ink kept: refunded since) resumes as saved; `resumeBody` loads the chapter itself, so a refund in between reaches
+   * D11's paywall again.
+   */
   const startPending = async (s: Session): Promise<void> => {
     const body = s.pending;
     if (session !== s || body === null) {
+      return;
+    }
+    if (body.ink !== null) {
+      await resumeBody(s, body); // its failures show their own notices
       return;
     }
     const loaded = await loadChapter(body.chapterId);
@@ -1351,7 +1360,10 @@ export function createGame(deps: GameDeps): Game {
     }
   };
 
-  /** D11 / F4 step 3: the chapter's start is the save (`ink: null`), and the paywall opens over the game. */
+  /**
+   * D11 / F4 step 3: the chapter's start is the save (`ink: null`), or a save inside a chapter refunded since (its ink
+   * kept, resumed as saved after a purchase), and the paywall opens over the game.
+   */
   const pendingPaid = (s: Session, body: SaveBody, write: boolean): void => {
     s.runner?.dispose();
     s.runner = null;
