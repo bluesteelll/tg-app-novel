@@ -8,6 +8,7 @@ import { ROOM_SOURCE, cover, minTarget, toStage } from '../geom/cover.ts';
 import type { Box, Size } from '../geom/cover.ts';
 import type { AnchorKey, PropView, SectionAction } from '../mechanics/contract.ts';
 import { reduce } from '../mechanics/rules/core.ts';
+import { present as shown } from '../mechanics/rules/flags.ts';
 import { admitEvent, admitSection } from '../mechanics/rules/search.ts';
 import { nearRooms, viewParent } from '../mechanics/rules/view.ts';
 import { roomImages, visualsOf } from '../mechanics/rules/visual.ts';
@@ -139,7 +140,7 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
   let refused = false;
   let dead = false;
 
-  /** D4: the current room's hotspots in world order, except a taken `take` (as `actions` lists them). */
+  /** D4: the current room's hotspots in world order, except a taken `take` and a hidden one (as `actions` lists them). */
   const hotspotViews = (): HotspotView[] => {
     const room = current.section === null ? null : current.room;
     const entry = room === null ? undefined : ix.rooms.get(room);
@@ -150,7 +151,7 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     const out: HotspotView[] = [];
     for (const h of entry.room.hotspots) {
       const key = hotspotKey(room, h.id);
-      if (h.kind === 'take' && current.taken.includes(key)) {
+      if ((h.kind === 'take' && current.taken.includes(key)) || !shown(world, current, key)) {
         continue;
       }
       out.push({
@@ -286,19 +287,23 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     return doc === undefined ? null : { id, title: text(doc.title), body: doc.body.map(text) };
   };
 
-  /** The lock at `key` while it is in the current room of a current section and not open yet; else null. */
+  /**
+   * The lock at `key` while it is in the current room of a current section, present (its `when`, module `flags`) and not
+   * open yet; else null. Presence is not monotone (a `when` may read `held` or `not`): a lock the room no longer shows
+   * has nothing to insert into, so its panel closes as when its room is left (GM5f D10).
+   */
   const shutLock = (key: HotspotKey): { label: WorldText; lock: Lock } | null => {
     const entry = ix.hotspots.get(key);
     const lock = entry === undefined ? null : lockOf(entry.hotspot);
-    if (entry === undefined || lock === null || current.section === null || entry.room !== current.room || current.open.includes(key)) {
+    if (entry === undefined || lock === null || current.section === null || entry.room !== current.room || current.open.includes(key) || !shown(world, current, key)) {
       return null;
     }
     return { label: entry.hotspot.label, lock };
   };
 
   /**
-   * D11: the panel follows the latest `lock` effect and closes (null) after a room change or once the lock opens;
-   * `refused` holds only after an insert on that lock was refused.
+   * D11: the panel follows the latest `lock` effect and closes (null) after a room change, once the lock opens or once it
+   * goes absent (`shutLock`); `refused` holds only after an insert on that lock was refused.
    */
   const followLock = (route: Route, effects: readonly ExploreEffect[]): void => {
     for (const e of effects) {
@@ -337,11 +342,14 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     view.lock = lockView();
   };
 
-  /** The first exit of `room` to `target` that is lock-free or open now; locks never close (X12). */
+  /**
+   * The first exit of `room` to `target` that is present (module `flags`) and lock-free or open now. A lock never
+   * closes (X12), but a `when` can hide an exit again: `prune` keeps the path's last room reachable through this.
+   */
   const openExit = (room: RoomId, target: RoomId): HotspotKey | null => {
     for (const h of ix.rooms.get(room)?.room.hotspots ?? []) {
       const key = hotspotKey(room, h.id);
-      if (h.kind === 'exit' && 'room' in h.to && h.to.room === target && (h.lock === null || current.open.includes(key))) {
+      if (h.kind === 'exit' && 'room' in h.to && h.to.room === target && (h.lock === null || current.open.includes(key)) && shown(world, current, key)) {
         return key;
       }
     }
@@ -385,6 +393,20 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
    *  view keeps its room but clears the section, so it leaves no Back target. */
   const inView = (): boolean => current.section !== null && current.room !== null && viewParent(world, current.room) !== null;
 
+  /**
+   * GM5f D11, after every route's `walk`: outside a view, a path whose last room the current room no longer reaches
+   * (its way back went absent, a `when` turned false) is cleared, as `walk` clears it at a move through a door locked from
+   * the other side (X12 W4), and a later return of the way does not re-arm it. So `walkable` true means `back()` moves:
+   * in a view it leaves the view (§6.3 W1, whatever the path, which keeps the parent's path for the zoom-out); elsewhere
+   * `openExit` reaches the path's last room.
+   */
+  const prune = (): void => {
+    const target = path.at(-1);
+    if (target !== undefined && !inView() && current.room !== null && openExit(current.room, target) === null) {
+      path = [];
+    }
+  };
+
   /** D8: only a change of "Back has a target" reaches the listeners. */
   const reportPath = (): void => {
     const now = path.length > 0 || inView();
@@ -405,6 +427,7 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
   const settle = (out: Outcome, route: Route): void => {
     current = out.state;
     walk(route, out.effects);
+    prune();
     releaseHolders(out.effects);
     followLock(route, out.effects);
     writeView();

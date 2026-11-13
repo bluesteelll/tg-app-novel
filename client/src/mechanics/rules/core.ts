@@ -18,12 +18,13 @@ import { hotspotKey, lockOf, own, runOf, runStep, sectionScope, set, worldIndex 
 import type { Draft, ExploreAction, ExploreEffect, HotspotEntry, RunAction, WorldIndex } from '../../explore/reduce.ts';
 import type { PuzzleOutcome, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId, SectionId } from '../../story/staging.ts';
-import type { Hotspot, HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
+import type { Effect, Hotspot, HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
 import type { ArrivalOut, Cause, CauseVerb, FactAtom, KernelWorld, RulesRegistry, SectionAction } from '../contract.ts';
+import { present } from './flags.ts';
 import { APPLY, MECHANIC_RULES } from './index.ts';
 import { keepsSlot } from './use.ts';
 import { moveHow } from './view.ts';
-import { added, arrivalOut, createWriter, fire, openKey } from './writer.ts';
+import { added, arrivalOut, createWriter, fire, isKernelEffect, openKey } from './writer.ts';
 import type { KernelWriter } from './writer.ts';
 
 /** Core's module cue names (its rules entry's `cues`), declared here: derived from the entry, the type would circle
@@ -79,6 +80,7 @@ export function arrive(out: KernelWriter, room: RoomId, move: Move, cause: Cause
   if (own(d.s.lastRoom, section) !== room) {
     set(d, 'lastRoom', { ...d.s.lastRoom, [section]: room });
   }
+  // Reconcile's re-arm (GM5f D6') reads `visited` as proof that `enter:<room>` ran: write it only beside that fire.
   out.set('visited', added(d.s.visited, room), cause);
   d.effects.push({ kind: 'room', room, ...move });
   fire(out, `enter:${room}`, entry.room.onEnter, null, cause);
@@ -121,13 +123,16 @@ function eventReturned(out: CoreWriter, sid: SectionId, cause: Cause): void {
   }
 }
 
-/** The hotspot when it is in the current room of a current section and no event knot runs; else undefined. */
-function here(d: Draft, key: HotspotKey): HotspotEntry | undefined {
+/**
+ * The hotspot when it is in the current room of a current section, present (its `when`, module `flags`) and no event
+ * knot runs; else undefined, so a stale tap on a hidden hotspot is refused as one on another room's.
+ */
+function here(w: KernelWorld, d: Draft, key: HotspotKey): HotspotEntry | undefined {
   if (d.s.section === null || d.s.room === null || d.s.pendingStory.length > 0) {
     return undefined;
   }
   const entry = d.ix.hotspots.get(key);
-  return entry !== undefined && entry.room === d.s.room ? entry : undefined;
+  return entry !== undefined && entry.room === d.s.room && present(w, d.s, key) ? entry : undefined;
 }
 
 /** A tap on a locked hotspot: its puzzle when every slot is filled and the run has no outcome, else the panel. */
@@ -142,7 +147,7 @@ function lockTap(d: Draft, key: HotspotKey, lock: Lock): void {
 
 function tap(out: CoreWriter, key: HotspotKey, cause: Cause): void {
   const d = out.draft;
-  const entry = here(d, key);
+  const entry = here(out.world, d, key);
   if (entry === undefined) {
     return;
   }
@@ -157,6 +162,7 @@ function tap(out: CoreWriter, key: HotspotKey, cause: Cause): void {
     case 'look':
       d.effects.push({ kind: 'look', text: h.look, at: key });
       out.cue('core', 'look', key, null);
+      // Reconcile's re-arm (GM5f D6') reads `examined` as proof that this `then` ran: write it only beside that fire.
       out.set('examined', added(d.s.examined, key), cause);
       fire(out, `then:${key}`, h.then, key, cause);
       return;
@@ -173,6 +179,7 @@ function tap(out: CoreWriter, key: HotspotKey, cause: Cause): void {
       } else {
         out.set('docs', added(d.s.docs, g.doc), cause);
       }
+      // Reconcile's re-arm (GM5f D6') reads `taken` as proof that this `then` ran: write it only beside that fire.
       out.set('taken', [...d.s.taken, key], cause);
       d.effects.push({ kind: 'got', gift: g, at: key });
       fire(out, `then:${key}`, h.then, key, cause);
@@ -210,12 +217,12 @@ function tap(out: CoreWriter, key: HotspotKey, cause: Cause): void {
 }
 
 /**
- * The slot an insert fills: the first free slot of an unopened lock in the current room that accepts the held
+ * The slot an insert fills: the first free slot of an unopened, present lock in the current room that accepts the held
  * item; null when the insert is refused. `actions` lists exactly the inserts this accepts.
  */
-function fit(ix: WorldIndex, s: WorldState, key: HotspotKey, item: ItemId): { hotspot: Hotspot; lock: Lock; index: number } | null {
+function fit(w: KernelWorld, ix: WorldIndex, s: WorldState, key: HotspotKey, item: ItemId): { hotspot: Hotspot; lock: Lock; index: number } | null {
   const entry = ix.hotspots.get(key);
-  if (entry === undefined || entry.room !== s.room || !s.held.includes(item) || s.open.includes(key)) {
+  if (entry === undefined || entry.room !== s.room || !s.held.includes(item) || s.open.includes(key) || !present(w, s, key)) {
     return null;
   }
   const lock = lockOf(entry.hotspot);
@@ -234,7 +241,7 @@ function fit(ix: WorldIndex, s: WorldState, key: HotspotKey, item: ItemId): { ho
  */
 export function insertItem(out: KernelWriter, key: HotspotKey, item: ItemId, cause: Cause): boolean {
   const d = out.draft;
-  const f = fit(d.ix, d.s, key, item);
+  const f = fit(out.world, d.ix, d.s, key, item);
   if (f === null) {
     return false;
   }
@@ -294,6 +301,7 @@ function puzzleEnded(out: CoreWriter, p: PuzzleLocalId, outcome: PuzzleOutcome, 
   if (run.outcome !== null || outcome === 'abandoned') {
     return;
   }
+  // Reconcile's re-arm (GM5f D6') reads a lock puzzle's `failed` as proof that `fail:<key>` ran: write it only here.
   out.run(p, { ...run, outcome }, cause);
   const entry = d.ix.hotspots.get(key);
   const lock = entry === undefined ? null : lockOf(entry.hotspot);
@@ -366,14 +374,44 @@ export function reduce(
   return { state: d.s, effects: d.effects };
 }
 
+/** Whether trigger `fired` (`<kind>:<target>`, a key of S's scope) has a kernel effect in `w`'s lists, by key (A1). */
+function hasKernelEffect(ix: WorldIndex, fired: string): boolean {
+  const colon = fired.indexOf(':');
+  const kind = fired.slice(0, colon);
+  const target = fired.slice(colon + 1);
+  let effects: readonly Effect[] = [];
+  if (kind === 'enter') {
+    effects = ix.rooms.get(target as RoomId)?.room.onEnter ?? []; // a lookup key
+  } else {
+    const h = ix.hotspots.get(target as HotspotKey)?.hotspot; // a lookup key
+    const lock = h === undefined ? null : lockOf(h);
+    if (kind === 'then') {
+      effects = h === undefined || h.kind === 'exit' ? [] : h.then;
+    } else if (lock !== null) {
+      effects = kind === 'open' ? lock.onOpen : lock.onFail;
+    }
+  }
+  return effects.some(isKernelEffect);
+}
+
 /**
  * Every fact core's gating rules read in `section`, the atoms `sectionKey` is derived from: from S's scope (the one
  * definition the key and `resetSection` share), `taken` and `open` per hotspot, `slot` per lock (by key), `fired` per
- * trigger S can write, `solved` per lock puzzle (its whole outcome), `held` and `used` per item S gives, `doc` per doc
- * S gives. `examined` and `visited` stay out: no core rule reads them.
+ * trigger of S with a kernel effect, `solved` per lock puzzle (its whole outcome), `held` and `used` per item S gives,
+ * `doc` per doc S gives. `examined` and `visited` stay out: no core rule reads them.
+ *
+ * GM5f D7: a trigger whose effects are all a module's has no `fired` key fact. No condition atom reads `fired`, such a
+ * trigger writes only its module's facts, and flags' one effect, an idempotent `set`, is keyed by flags' own `reads`
+ * wherever a gating rule reads its flag; so two states that differ only in its `fired` key (and an unread flag) have the
+ * same gating successors, provided every set-only trigger that has run has set its flags (the invariant): `fire` runs
+ * the set in the same reduce on every played state, and reconcile's re-arm (data/flags.ts, GM5f D6', D6'') keeps it on
+ * every reconciled one. The test is by key (`isKernelEffect`): the proof form keeps a raw `{ set }` in its list, the
+ * runtime form does not, and both key alike (X9: one key, one cap). In a world without module effects such a trigger
+ * never fires, so every key is as before.
  */
 export function reads(w: WorldPublicBody, section: SectionId): readonly FactAtom[] {
   const scope = sectionScope(w, section);
+  const ix = worldIndex(w);
   const atoms: FactAtom[] = [];
   for (const key of scope.hotspots) {
     atoms.push({ kind: 'taken', id: key }, { kind: 'open', id: key });
@@ -382,7 +420,9 @@ export function reads(w: WorldPublicBody, section: SectionId): readonly FactAtom
     atoms.push({ kind: 'slot', id: key });
   }
   for (const fired of scope.fired) {
-    atoms.push({ kind: 'fired', id: fired });
+    if (hasKernelEffect(ix, fired)) {
+      atoms.push({ kind: 'fired', id: fired });
+    }
   }
   for (const p of scope.puzzles) {
     atoms.push({ kind: 'solved', id: p });
@@ -400,11 +440,11 @@ export function reads(w: WorldPublicBody, section: SectionId): readonly FactAtom
 // The successor relation
 
 /**
- * Every enabled player action: a tap on each hotspot of the current room except a taken `take`, and each insert
- * `reduce` would accept, while `pendingStory` is empty; only `event-returned` while it is not. Puzzle outcomes are
- * not actions here: see `successors`.
+ * Every enabled player action: a tap on each present hotspot of the current room except a taken `take`, and each
+ * insert `reduce` would accept, while `pendingStory` is empty; only `event-returned` while it is not. Puzzle outcomes
+ * are not actions here: see `successors`.
  */
-export function actions(w: WorldPublicBody, s: WorldState): ExploreAction[] {
+export function actions(w: KernelWorld, s: WorldState): ExploreAction[] {
   if (s.section === null || s.room === null) {
     return [];
   }
@@ -422,7 +462,7 @@ export function actions(w: WorldPublicBody, s: WorldState): ExploreAction[] {
   for (const h of room.room.hotspots) {
     const key = hotspotKey(current, h.id);
     keys.push(key);
-    if (!(h.kind === 'take' && s.taken.includes(key))) {
+    if (!(h.kind === 'take' && s.taken.includes(key)) && present(w, s, key)) {
       out.push({ kind: 'tap', hotspot: key });
     }
   }
@@ -430,7 +470,7 @@ export function actions(w: WorldPublicBody, s: WorldState): ExploreAction[] {
   const held = [...s.held].sort();
   for (const key of keys) {
     for (const item of held) {
-      if (fit(ix, s, key, item) !== null) {
+      if (fit(w, ix, s, key, item) !== null) {
         out.push({ kind: 'insert', hotspot: key, item });
       }
     }

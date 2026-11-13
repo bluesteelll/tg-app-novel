@@ -8,9 +8,12 @@ import { RESUME_STATE_CAP, hotspotKey, lockOf } from '../../src/explore/reduce.t
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import type { WorldState } from '../../src/explore/state.ts';
 import { HOTSPOT_MIN_SOURCE_PX, HOTSPOT_SAFE_FRAME } from '../../src/geom/cover.ts';
-import type { MechanicId } from '../../src/mechanics/contract.ts';
+import type { MechanicId, TriggerKey } from '../../src/mechanics/contract.ts';
 import type { Cond } from '../../src/mechanics/data/conditions.ts';
+import { MECHANIC_DATA } from '../../src/mechanics/data/index.ts';
+import { MECHANIC_RULES } from '../../src/mechanics/rules/index.ts';
 import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
+import { moduleEffects } from '../../src/mechanics/rules/writer.ts';
 import { PUZZLE_RULES } from '../../src/puzzles/rules/index.ts';
 import type { PuzzleTypeData } from '../../src/puzzles/rules/index.ts';
 import type { AssetCatalog } from '../../src/story/catalog.ts';
@@ -245,8 +248,13 @@ export function decodeWorldFile(f: { file: string; text: string }, o: DecodeOpti
 type RoomAt = { section: SectionId; room: RoomId; value: Room; path: string };
 type SpotAt = RoomAt & { hotspot: Hotspot; key: HotspotKey; spath: string };
 type LockAt = SpotAt & { lock: Lock; lpath: string };
-/** A trigger's effects: a room's `onEnter`, a hotspot's `then`, a lock's `onOpen` / `onFail`; `owner` names it. */
-type TriggerAt = { section: SectionId; room: RoomId; effects: readonly Effect[]; path: string; owner: string };
+/**
+ * A trigger's effects: a room's `onEnter`, a hotspot's `then`, a lock's `onOpen` / `onFail`; `owner` names it. `key` is
+ * its trigger key (`enter:<room>`, `then:<key>`, `open:<key>`, `fail:<key>`), and `at[i]` the source index of kernel
+ * effect `i`: the decoder routes a module's effect (flags' `set`) out of the list, so a kernel effect after one sits at a
+ * compacted index, and a finding names `${path}.${at[i]}`, the author's line (GM3c O2).
+ */
+type TriggerAt = { section: SectionId; room: RoomId; key: string; effects: readonly Effect[]; at: readonly number[]; path: string; owner: string };
 
 type Places = {
   rooms: RoomAt[];
@@ -257,8 +265,34 @@ type Places = {
   triggers: TriggerAt[];
 };
 
+/** Each trigger's module-owned source indices: the `<trigger>#<j>` ids of every data module's `encode`, place `effect`. */
+function ownedEffects(w: WorldSource): Map<string, Set<number>> {
+  const out = new Map<string, Set<number>>();
+  const mods: Readonly<Record<string, unknown>> = w.mods;
+  for (const a of MECHANIC_DATA.flatMap((m) => m.encode(mods[m.id]))) {
+    if (a.place === 'effect') {
+      const hash = a.id.lastIndexOf('#');
+      const trigger = a.id.slice(0, hash);
+      out.set(trigger, (out.get(trigger) ?? new Set()).add(Number(a.id.slice(hash + 1))));
+    }
+  }
+  return out;
+}
+
 function placesOf(w: WorldSource): Places {
   const p: Places = { rooms: [], roomOf: new Map(), spots: [], locks: [], triggers: [] };
+  const owned = ownedEffects(w);
+  // The source index of each kernel effect of `key`'s list: the indices no module owns, in order.
+  const trigger = (key: string, effects: readonly Effect[]): { key: string; effects: readonly Effect[]; at: number[] } => {
+    const taken = owned.get(key);
+    const at: number[] = [];
+    for (let j = 0; at.length < effects.length; j++) {
+      if (taken?.has(j) !== true) {
+        at.push(j);
+      }
+    }
+    return { key, effects, at };
+  };
   for (const [section, s] of entriesOf(w.sections)) {
     for (const [room, value] of entriesOf(s.rooms)) {
       const r: RoomAt = { section, room, value, path: `sections.${section}.rooms.${room}` };
@@ -266,19 +300,19 @@ function placesOf(w: WorldSource): Places {
       if (!p.roomOf.has(room)) {
         p.roomOf.set(room, r);
       }
-      p.triggers.push({ section, room, effects: value.onEnter, path: `${r.path}.onEnter`, owner: `room ${room} onEnter` });
+      p.triggers.push({ section, room, ...trigger(`enter:${room}`, value.onEnter), path: `${r.path}.onEnter`, owner: `room ${room} onEnter` });
       value.hotspots.forEach((hotspot, i) => {
         const spot: SpotAt = { ...r, hotspot, key: hotspotKey(room, hotspot.id), spath: `${r.path}.hotspots.${i}` };
         p.spots.push(spot);
         if (hotspot.kind !== 'exit') {
-          p.triggers.push({ section, room, effects: hotspot.then, path: `${spot.spath}.then`, owner: `${spot.key} then` });
+          p.triggers.push({ section, room, ...trigger(`then:${spot.key}`, hotspot.then), path: `${spot.spath}.then`, owner: `${spot.key} then` });
         }
         const lock = lockOf(hotspot);
         if (lock !== null) {
           const l: LockAt = { ...spot, lock, lpath: `${spot.spath}.lock` };
           p.locks.push(l);
-          p.triggers.push({ section, room, effects: lock.onOpen, path: `${l.lpath}.onOpen`, owner: `${spot.key} onOpen` });
-          p.triggers.push({ section, room, effects: lock.onFail, path: `${l.lpath}.onFail`, owner: `${spot.key} onFail` });
+          p.triggers.push({ section, room, ...trigger(`open:${spot.key}`, lock.onOpen), path: `${l.lpath}.onOpen`, owner: `${spot.key} onOpen` });
+          p.triggers.push({ section, room, ...trigger(`fail:${spot.key}`, lock.onFail), path: `${l.lpath}.onFail`, owner: `${spot.key} onFail` });
         }
       });
     }
@@ -298,7 +332,7 @@ function giftsOf(p: Places): Array<{ section: SectionId; item: ItemId | null; do
   for (const t of p.triggers) {
     t.effects.forEach((e, i) => {
       if ('give' in e) {
-        out.push({ section: t.section, item: e.give, doc: null, path: `${t.path}.${i}.give` });
+        out.push({ section: t.section, item: e.give, doc: null, path: `${t.path}.${t.at[i] ?? i}.give` });
       }
     });
   }
@@ -568,14 +602,15 @@ export function lintWorld(
   }
   for (const t of p.triggers) {
     t.effects.forEach((e, i) => {
+      const at = `${t.path}.${t.at[i] ?? i}`;
       if ('give' in e) {
-        item(e.give, `${t.path}.${i}.give`);
+        item(e.give, `${at}.give`);
       } else if ('unlock' in e) {
         const [room = '', spot = ''] = e.unlock.split('.');
         const target = p.roomOf.get(room as RoomId); // a lookup key: a missing room misses
-        ref(target?.value.hotspots.some((h) => h.id === spot) === true, `${t.path}.${i}.unlock`, `hotspot '${e.unlock}'`);
+        ref(target?.value.hotspots.some((h) => h.id === spot) === true, `${at}.unlock`, `hotspot '${e.unlock}'`);
       } else if (input.knots !== null) {
-        ref(input.knots.has(e.story), `${t.path}.${i}.story`, `knot '${e.story}' of ${chapter.id}`);
+        ref(input.knots.has(e.story), `${at}.story`, `knot '${e.story}' of ${chapter.id}`);
       }
     });
   }
@@ -657,7 +692,10 @@ export function lintWorld(
       report('world/puzzle-multi-lock', path, `puzzle '${pid}' is the puzzle of ${locks.length} locks: ${locks.map((l) => l.key).join(', ')} (X15: one lock per puzzle)`);
     }
     for (const l of locks) {
-      if (pz.maxAttempts !== null && l.lock.onFail.length === 0) {
+      // A module's effect in `onFail` (flags' `set`, which the decoder routes out of the kernel list) is an effect too
+      // (GM5f D9): a fail that only sets a flag can reveal a way on, and the soft-lock proof judges it.
+      const failFx = (): number => moduleEffects(MECHANIC_RULES, { ...toPublic(w), mods: w.mods }, `fail:${l.key}` as TriggerKey).length; // the lock's fail trigger
+      if (pz.maxAttempts !== null && l.lock.onFail.length === 0 && failFx() === 0) {
         report('world/fail-without-effect', `${l.lpath}.onFail`, `lock ${l.key}: puzzle '${pid}' has maxAttempts ${pz.maxAttempts} and the lock has no onFail effect`);
       }
       if (pz.type === 'order' && !sameMembers(pz.params.pieces, l.lock.slots.map((s) => s.accepts))) {
@@ -683,7 +721,7 @@ export function lintWorld(
       if ('unlock' in e) {
         const target = sectionOf(e.unlock.split('.')[0] as RoomId); // a lookup key
         if (target !== undefined && target !== t.section) {
-          report('world/cross-section-effect', `${t.path}.${i}.unlock`, `${t.owner} (section ${t.section}) unlocks ${e.unlock} of section ${target} (X15: a trigger writes only its own section)`);
+          report('world/cross-section-effect', `${t.path}.${t.at[i] ?? i}.unlock`, `${t.owner} (section ${t.section}) unlocks ${e.unlock} of section ${target} (X15: a trigger writes only its own section)`);
         }
       }
     });
@@ -718,6 +756,9 @@ export function lintWorld(
   }
   for (const id of Object.keys(w.docs)) {
     varType(`dc_${id}`, 'bool', `docs.${id}`);
+  }
+  for (const id of Object.keys(w.mods.flags.flags)) {
+    varType(`fl_${id}`, 'bool', `flags.${id}`);
   }
 
   // Line IDs belong to the chapter (STAGING-DSL §4), a module's too: one module walk feeds this and the texts gate.

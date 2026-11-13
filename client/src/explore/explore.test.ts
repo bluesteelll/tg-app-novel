@@ -89,6 +89,8 @@ type WorldSpec = {
   docs?: string[];
   puzzles?: Record<string, Json>;
   sections: Record<string, { start: string; rooms: Record<string, Json> }>;
+  /** Module `flags`' declarations: flag -> its section. */
+  flags?: Record<string, string>;
 };
 
 function world(spec: WorldSpec): KernelWorld {
@@ -99,6 +101,7 @@ function world(spec: WorldSpec): KernelWorld {
     docs: named(spec.docs ?? [], () => ({ title: txt(), body: [txt()] })),
     puzzles: spec.puzzles ?? {},
     sections: Object.fromEntries(Object.entries(spec.sections).map(([id, s]) => [id, { start: s.start, bgm: null, rooms: s.rooms }])),
+    ...(spec.flags === undefined ? {} : { flags: Object.fromEntries(Object.entries(spec.flags).map(([f, section]) => [f, { section }])) }),
   };
   const r = decodeWorldSource(raw);
   if (!r.ok) {
@@ -724,10 +727,41 @@ test('project: puzzle outcome codes', () => {
   expect(project(w, s, all)).toEqual({ pz_a: 1, pz_b: 2, pz_c: 3, pz_d: 0, pz_a_hints: 0, pz_b_hints: 1, pz_d_hints: 0 });
 });
 
+test('project: fl_<flag> is projected when declared', () => {
+  // Module `flags` (engine plan §6.5): `fl_<f>` (bool) is whether S's flag `f` is set, written only when declared.
+  const spec: WorldSpec = {
+    flags: { f: 's', g: 's' },
+    sections: { s: { start: 'r', rooms: { r: room([look('mark', [{ set: 'f' }]), exit('out', { story: 'end' })]) } } },
+  };
+  const w = world(spec);
+  const names = declared('fl_f', 'fl_g', 'fl_h', 'it_none');
+  const before = at('r', {}, 's');
+  expect(project(w, before, names)).toEqual({ fl_f: false, fl_g: false });
+  const after = run(w, before, tap('r.mark')).state;
+  expect(after.flags).toEqual(['f']);
+  expect(project(w, after, names)).toEqual({ fl_f: true, fl_g: false });
+  // An undeclared VAR is absent: `fl_g` is not written when the chapter does not declare it.
+  expect(project(w, after, declared('fl_f'))).toEqual({ fl_f: true });
+  // A world without flags writes no `fl_`, whatever the state holds; the projection of its other kinds is unchanged.
+  const plain = world({ sections: spec.sections });
+  expect(project(plain, after, names)).toEqual({});
+  expect(project(plain, after, declared('fl_f', 'pz_x'))).toEqual({});
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // Reconcile (X9)
 
 const stamped = (w: KernelWorld, version: string): WorldPublic => ({ ...w, version });
+/** `w` with `ids` declared as flags of `section` (module `flags`, engine plan §6.5), beside the ones it declares. */
+function declaring(w: KernelWorld, section: string, ...ids: string[]): KernelWorld {
+  const added = Object.fromEntries(ids.map((f) => [f, { section: sec(section) }]));
+  return { ...w, mods: { ...w.mods, flags: { ...w.mods.flags, flags: { ...w.mods.flags.flags, ...added } } } };
+}
+/** `w` with one `{ set }` effect per id of `ids` in kernel trigger `trigger`, at source indices 0.. (module `flags`). */
+function setting(w: KernelWorld, trigger: string, ...ids: string[]): KernelWorld {
+  const added = Object.fromEntries(ids.map((f, i) => [`${trigger}#${i}`, f as FlagId])); // fixture flag ids
+  return { ...w, mods: { ...w.mods, flags: { ...w.mods.flags, sets: { ...w.mods.flags.sets, ...added } } } };
+}
 const V1 = '1111111111111111';
 const V2 = '2222222222222222';
 const MANOR = sec('manor');
@@ -940,10 +974,11 @@ test('reconcile: step 0 maps renamed items, docs, rooms, sections and hotspots b
   expect([control.state.held, control.state.visited, control.state.taken]).toEqual([['medal_sun', 'medal_moon'], ['hall', 'study'], ['study.medal', 'study.letter']]);
 
   // Merges: two held ids onto one keep one entry; of two slot keys (or two lastRoom sections) onto one, the first in
-  // save order stays and the other is dropped, its slot's item back in held; flags map too.
+  // save order stays and the other is dropped, its slot's item back in held; flags map too (each has a setter that ran:
+  // the hall's entry, which the save has visited).
   const merging = stamped(
     {
-      ...bare,
+      ...setting(declaring(bare, 'estate', 'fl_new', 'fl_keep'), 'enter:hall', 'fl_new', 'fl_keep'),
       renamed: {
         items: { [it('medal_old')]: it('medal_comet'), [it('medal_star')]: it('medal_comet') },
         sections: { [sec('house')]: sec('estate'), [MANOR]: sec('estate') },
@@ -1218,18 +1253,21 @@ const fl = (s: string) => s as FlagId; // a fixture flag id
 
 test('reconcile: a saved work goes only with a puzzle the world lost', () => {
   // Engine plan §5.2: a run's `work` is part of its run, so it stays with a kept puzzle and goes with a lost one;
-  // `flags` pass (the flags module's own normalize drops theirs).
+  // `fl_a` is a declared flag whose setter (the study's entry, where the save stands) has run, which the flags
+  // module's own normalize keeps.
   const kept: PuzzleRun = { outcome: null, attempts: 1, hintsOpened: 0, work: [2, 0] };
   const lost: PuzzleRun = { outcome: 'solved', attempts: 0, hintsOpened: 0, work: [1] };
   const s = at('study', { puzzles: { [pz('drawer')]: kept, [pz('safe')]: lost }, flags: [fl('fl_a')] });
-  const r = reconcile(stamped(manor(), V2), s, MANOR_KNOTS, V1);
+  const r = reconcile(stamped(setting(declaring(manor(), 'manor', 'fl_a'), 'enter:study', 'fl_a'), V2), s, MANOR_KNOTS, V1);
   expect(r.state.puzzles).toEqual({ drawer: kept });
   expect(r.dropped).toEqual(['puzzles:safe']);
   expect(r.state.flags).toEqual(['fl_a']);
 });
 
 test('search: work and flags stay outside the section key', () => {
-  // Engine plan §5.2: a device's working configuration and the flags are no part of the proof key.
+  // Engine plan §5.2: a device's working configuration is no part of the proof key, nor is a flag no gating rule reads
+  // (`fl_a`: the manor declares no flag); `flags: a flag a hotspot when reads is part of the section key` pins the keyed
+  // case.
   const w = manor();
   const s = at('study', { puzzles: { [pz('drawer')]: { outcome: null, attempts: 1, hintsOpened: 0 } } });
   const key = sectionKey(w, s, MANOR);
@@ -1292,6 +1330,7 @@ const LIST_FACTS = [
   ['open', 'open'],
   ['fired', 'fired'],
   ['pendingStory', 'story'],
+  ['flags', 'flag'],
 ] as const;
 
 /** The fact changes from `a` to `b` as `kind:id:change`, sorted: every non-silent field's diff. */
@@ -1368,6 +1407,9 @@ test('writer: a fact cue with no hotspot needs no box', () => {
   walk(manor({ golden: true }), MANOR);
   // A start room whose onEnter gives an item and runs an event knot.
   walk(world({ items: ['coin'], sections: { s: { start: 'hall', rooms: { hall: room([exit('out', { story: 'end' })], [{ give: 'coin' }, { story: 'voice' }]) } } } }), sec('s'));
+  // A start room whose onEnter unlocks a lock of its own and sets a flag (module `flags`, GM5f).
+  const den = room([object('chest', lock(['coin'])), exit('out', { story: 'end' })], [{ unlock: 'den.chest' }, { set: 'f' }]);
+  walk(world({ items: ['coin'], flags: { f: 'g' }, sections: { g: { start: 'den', rooms: { den } } } }), sec('g'));
   expect([...lost]).toEqual([]);
   // The positive control: the walks met cues with no hotspot.
   expect(homeless).toBeGreaterThan(0);
@@ -1620,9 +1662,10 @@ test('search: a ch1 save in the desk view re-proves after a version change and r
 
 test("search: a module's read of every kernel fact kind enters the derived key", () => {
   // Core reads 8 of the 15 kernel kinds. Each other kind a module may read has its rule: `examined`, `visited`,
-  // `attempt` and `hint` add a part (only when some module reads them, so core's key stays byte-identical); `failed` /
-  // `abandoned` name a puzzle whose whole outcome joins the outcome part; `story` adds nothing, since the queue is
-  // always in the key; a kind with no kernel storage is a bug and throws.
+  // `attempt` and `hint` add a part (only when some module reads them, so core's key stays byte-identical), as does
+  // module `flags`' `flag` (kept in `WorldState.flags`); `failed` / `abandoned` name a puzzle whose whole outcome joins
+  // the outcome part; `story` adds nothing, since the queue is always in the key; a kind with no storage is a bug and
+  // throws.
   const w = world({
     items: ['key'],
     puzzles: { lin: code(2, 2), lk: code(2) },
@@ -1639,6 +1682,7 @@ test("search: a module's read of every kernel fact kind enters the derived key",
     [{ kind: 'hint', id: 'lin' }, { puzzles: { [pz('lin')]: { outcome: null, attempts: 0, hintsOpened: 1 } } }],
     [{ kind: 'failed', id: 'lin' }, { puzzles: { [pz('lin')]: { outcome: 'failed', attempts: 0, hintsOpened: 0 } } }],
     [{ kind: 'abandoned', id: 'lin' }, { puzzles: { [pz('lin')]: { outcome: 'abandoned', attempts: 0, hintsOpened: 0 } } }],
+    [{ kind: 'flag', id: 'lit' }, { flags: [fl('lit')] }],
   ];
   for (const [atom, patch] of cases) {
     const t = frozen({ ...s, ...patch });
@@ -1653,7 +1697,7 @@ test("search: a module's read of every kernel fact kind enters the derived key",
       expect(sectionKey(w, t, S, [CORE, reader(atom)]), atom.kind).toBe(sectionKey(w, t, S));
     }
   }
-  expect(() => sectionKey(w, s, S, [CORE, reader({ kind: 'flag' as FactKind, id: 'lit' })])).toThrow(/invariant/);
+  expect(() => sectionKey(w, s, S, [CORE, reader({ kind: 'part' as FactKind, id: 'lit' })])).toThrow(/invariant/);
 });
 
 /** mulberry32 (test-local): a seeded generator, so a red names a reproducible state. */

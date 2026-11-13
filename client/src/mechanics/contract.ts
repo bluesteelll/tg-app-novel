@@ -28,6 +28,9 @@ export type StateName = Brand<string, 'StateName'>;
 export type AnchorKey = Brand<string, 'AnchorKey'>;
 /** A `fired` entry: `enter:<room>` | `then:<key>` | `open:<key>` | `fail:<key>` | a module's prefix. */
 export type TriggerKey = Brand<string, 'TriggerKey'>;
+/** Whether a trigger has run in a reconciled state: the kernel's answer (`triggerRan`, explore/reconcile.ts), which
+ *  reads its `fired` key and, for a kernel trigger with no kernel effect, the fact its own event writes (GM5f D6'). */
+export type TriggerRan = (trigger: TriggerKey) => boolean;
 /** Every issue reported: the kernel's own, so a module's `line-id` issue maps to `id/missing` / `id/format` in the story
  *  tool's `decodeWorldFile` exactly as a kernel text's does. */
 export type Issue = WorldIssue;
@@ -64,14 +67,13 @@ export const SILENT_FIELDS = {
   room: 'every change is a move cue',
   lastRoom: 'bookkeeping of the move',
   unproved: 'bookkeeping of reconcile',
-  flags: 'no rule sets a flag until module `flags` (GM5f) owns the `flag` fact kind, which then carries its changes',
 } as const;
 
 /** 'carry': an item the chapter start gave (§6.6). */
 export type CauseVerb = 'tap' | 'insert' | 'use' | 'combine' | 'enter' | 'return' | 'trigger' | 'solve' | 'fail' | 'device' | 'leave-view' | 'carry';
 export type Cause = { readonly verb: CauseVerb; readonly at: HotspotKey | null; readonly item: ItemId | null; readonly via: TriggerKey | null };
-/** The list fields of WorldState a rule writes (`unproved` is reconcile's). */
-export type ListField = 'visited' | 'held' | 'used' | 'docs' | 'taken' | 'examined' | 'open' | 'fired' | 'pendingStory';
+/** The list fields of WorldState a rule writes (`unproved` is reconcile's; `flags` module `flags`' effects'). */
+export type ListField = 'visited' | 'held' | 'used' | 'docs' | 'taken' | 'examined' | 'open' | 'fired' | 'pendingStory' | 'flags';
 
 /**
  * The one write path of every rule. Each list-field change appends one fact change per added / removed member. `Id`
@@ -129,8 +131,10 @@ export interface MechanicData<Id extends string, D, Sl = never> {
   decode(raw: OwnedRaw, ctx: DecodeCtx): Result<D, Issue[]>;
   /** The inverse, for emission and the version hash: `decode(encode(d))` equals `d`. */
   encode(d: D): OwnedRaw;
-  /** Reconcile steps 1-3 for this module's facts: drop refs the world lost, refit, re-arm lost gifts. */
-  normalize(w: KernelWorld, s: WorldState, dropped: string[]): WorldState;
+  /** Reconcile steps 1-3 for this module's facts: drop refs the world lost, refit, re-arm lost gifts. `ran`: whether a
+   *  trigger has run in the kernel's post-step-3 state, by which a module whose effects ride kernel triggers re-arms
+   *  them (GM5f D6-place). */
+  normalize(w: KernelWorld, s: WorldState, dropped: string[], ran: TriggerRan): WorldState;
   /** The effects a `fired` entry with this module's prefix names (the kernel's `triggerOf`, explore/reconcile.ts). */
   trigger?(w: KernelWorld, target: string): readonly Effect[] | undefined;
   /** Condition atoms this module adds: their decoder, and whether a gating condition may use them. */
@@ -174,10 +178,26 @@ export interface MechanicRules<Id extends string, A extends { readonly kind: str
   visuals?(w: KernelWorld, s: WorldState, room: RoomId): readonly PropView[];
   /** Evaluates an atom kind its data half declared. */
   holds?(w: KernelWorld, s: WorldState, atom: { readonly kind: string; readonly value: unknown }): boolean;
+  /**
+   * The effects this module's data adds to the trigger `trigger` (an effect key it owns, decoded as
+   * `<trigger>#<source index>`), each at its source index, in index order: the kernel's runner (`fire`, rules/writer.ts)
+   * runs them among the trigger's kernel effects in source order, and fires a trigger whose only effects are a module's.
+   * Such a trigger's `fired` key is no key fact (core's `reads`, GM5f D7), which is sound only while the module's effects
+   * are idempotent and its own `reads` keys each fact they write wherever a gating rule reads it: a module whose effects
+   * are not idempotent lists its triggers' `fired` keys in its own `reads`. It is sound, too, only while every such
+   * trigger that has run has written its module's effects: the runner does on every played state, and on a reconciled
+   * one the module's `normalize` re-arms them through `ran` (flags': GM5f D6', D6''), or D7's unkeyed record is unsound.
+   */
+  effects?(w: KernelWorld, trigger: TriggerKey): readonly ModuleEffect[];
 }
 
-/** A module's share of S's own facts (`MechanicRules.scope`): items S's module data gives, `fired` keys it writes. */
-export type ModuleScope = { readonly items: readonly ItemId[]; readonly fired: readonly TriggerKey[] };
+/** One module effect of a trigger: `index` is its source index in the trigger's list; `run` writes it with the
+ *  trigger's cause (`via`: the trigger). */
+export type ModuleEffect = { readonly index: number; run(out: KernelWriter, via: Cause): void };
+
+/** A module's share of S's own facts (`MechanicRules.scope`): items S's module data gives, `fired` keys it writes, and
+ *  the flags S declares (module `flags`), which only S's reset clears. */
+export type ModuleScope = { readonly items: readonly ItemId[]; readonly fired: readonly TriggerKey[]; readonly flags?: readonly FlagId[] };
 
 /** What an arrival may do: open a puzzle (the same states a hotspot's own tap reaches) and play a module cue. */
 export type ArrivalOut<Id extends string = string, C extends string = string> = {

@@ -4,7 +4,8 @@ import { expect, test } from 'vitest';
 
 import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
-import type { KernelWorld } from '../../src/mechanics/contract.ts';
+import type { WorldState } from '../../src/explore/state.ts';
+import type { FlagId, KernelWorld } from '../../src/mechanics/contract.ts';
 import { searchSection, sectionEntry, sectionPlaces } from '../../src/mechanics/rules/search.ts';
 import type { SearchResult, SearchStats } from '../../src/mechanics/rules/search.ts';
 import { decodeAssetCatalog } from '../../src/story/catalog.ts';
@@ -33,6 +34,12 @@ import { decodeWorldFile, lintWorld } from './world.ts';
 // a configuration with no real view searches alike with and without it; with it, `views-real` equals `base` and
 // `views+recipes-real` exhausts under both bounds with `recipes-real`'s count, every real view merged. A miss is a
 // STOP with its per-seed numbers (RULINGS 316 Q7, 317); P2-b's claim above stays measured without the quotient.
+// GM5f, module `flags` (engine plan §6.5): P2-a's `flags` layout with the real module, the emulated gives of f1 and f2
+// become sets of two declared flags, drawn where the emulation draws. `flags-visual` reads them only in the drawer's
+// picture, so with a trigger's `fired` key keyed only for a kernel effect (D7) it must count as `base`, seed by seed on
+// both arms (asserted); `flags-real` reads both in the gate's always-true `when`, and `full-mix-real-flags` is
+// `full-mix-real` with them: each must equal its emulation (`flags`, `full-mix-real`) seed by seed on both arms, and
+// `flags-real` exhausts. A miss is a STOP with its per-seed numbers (cut C7, Q3).
 
 type Json = Record<string, unknown>;
 let lineCounter = 0;
@@ -74,7 +81,9 @@ function mulberry32(seed: number): () => number {
 const CONFIGS = ['base', 'views', 'flags', 'kept-tools', 'recipes', 'clue-facts', 'full-mix'] as const;
 /** P2-b's configurations: the real modules in P2-a's layouts; `full-mix-real` is P2-a's full mix with both real. */
 const REAL_CONFIGS = ['views-real', 'recipes-real', 'views+recipes-real', 'full-mix-real'] as const;
-type Config = (typeof CONFIGS)[number] | (typeof REAL_CONFIGS)[number];
+/** GM5f's configurations: module `flags` in P2-a's `flags` layout (`full-mix-real-flags`: `full-mix-real` with it). */
+const FLAG_CONFIGS = ['flags-real', 'flags-visual', 'full-mix-real-flags'] as const;
+type Config = (typeof CONFIGS)[number] | (typeof REAL_CONFIGS)[number] | (typeof FLAG_CONFIGS)[number];
 const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
 const S = 'p2' as SectionId;
 /** The spike's cap: the kernel's one cap (X9), the line the design's claim is about. */
@@ -111,6 +120,9 @@ function withRealViews(rooms: Record<string, Json>): Record<string, Json> {
   return out;
 }
 
+/** The gate's `when` in `flags-real`: always true (reachability unchanged), and it reads both flags (both are keyed). */
+const GATE_READER = { any: [{ flag: 'f1' }, { flag: 'f2' }, { not: { any: [{ flag: 'f1' }, { flag: 'f2' }] } }] };
+
 /**
  * One section at ch1's density (`story/ch1/world.json`: 3 rooms, 11 hotspots, 2 locks, both with a puzzle, 3 items,
  * 2 docs). Fixed: the start room holds the exits to the other two and the gate (a 3-slot lock with a 3-attempt order
@@ -119,19 +131,23 @@ function withRealViews(rooms: Record<string, Json>): Record<string, Json> {
  * `then` gives the third item) and of the two doc takes, and which far room's `onEnter` queues a knot. Each emulation
  * adds its hotspots at seeded rooms. A real configuration draws exactly as its emulation: real recipes take the
  * emulation's two input rooms and still draw the bench's room (no bench is placed), so every later draw and P2-a's
- * layouts are unchanged.
+ * layouts are unchanged. Real flags set f1 and f2 where `flags` gives them (the look's `then`, the far room's `onEnter`)
+ * and declare them instead of adding items; `flags-real` and `full-mix-real-flags` read them in the gate's `when`,
+ * `flags-visual` in the drawer's picture.
  */
 function generated(seed: number, config: Config): Json {
   const rnd = mulberry32(seed);
   const rooms = ['r0', 'r1', 'r2'];
   const place = (): string => rooms[Math.floor(rnd() * rooms.length)] ?? 'r0';
-  const realMix = config === 'full-mix-real';
-  // P2-a's emulations; P2-b's full mix keeps the three that have no real module yet.
-  const has = (c: Config): boolean => config === c || config === 'full-mix' || (realMix && (c === 'flags' || c === 'kept-tools' || c === 'clue-facts'));
+  const realMix = config === 'full-mix-real' || config === 'full-mix-real-flags';
+  const realFlags = config === 'flags-real' || config === 'flags-visual' || config === 'full-mix-real-flags';
+  // P2-a's emulations; P2-b's full mix keeps the three that have no real module yet (GM5f's, two).
+  const has = (c: Config): boolean => config === c || config === 'full-mix' || (realMix && ((c === 'flags' && !realFlags) || c === 'kept-tools' || c === 'clue-facts'));
   const realViews = config === 'views-real' || config === 'views+recipes-real' || realMix;
   const realRecipes = config === 'recipes-real' || config === 'views+recipes-real' || realMix;
+  const gate = exit('gate', { story: 'p2_out' }, lock(['i1', 'i2', 'i3'], 'gate', [{ story: 'p2_forced' }, { unlock: 'r0.gate' }]));
   const spots: Record<string, Json[]> = {
-    r0: [exit('to_r1', 'r1'), exit('to_r2', 'r2'), exit('gate', { story: 'p2_out' }, lock(['i1', 'i2', 'i3'], 'gate', [{ story: 'p2_forced' }, { unlock: 'r0.gate' }]))],
+    r0: [exit('to_r1', 'r1'), exit('to_r2', 'r2'), config === 'flags-real' || config === 'full-mix-real-flags' ? { ...gate, when: GATE_READER } : gate],
     r1: [exit('to_r0', 'r0')],
     r2: [exit('to_r0', 'r0')],
   };
@@ -139,10 +155,12 @@ function generated(seed: number, config: Config): Json {
     spots[room]?.push(h);
   };
   const lookRoom = place();
-  add(lookRoom, look('mark', has('flags') ? [{ give: 'f2' }] : []));
+  add(lookRoom, look('mark', has('flags') ? [{ give: 'f2' }] : realFlags ? [{ set: 'f2' }] : []));
   add(place(), take('i1', { item: 'i1' }));
   add(place(), take('i3', { item: 'i3' }));
-  add(place(), object('drawer', lock([], 'drawer'), [{ give: 'i2' }]));
+  const drawer = object('drawer', lock([], 'drawer'), [{ give: 'i2' }]);
+  const lit = { states: { lit: { prop: null } }, is: [{ when: { any: [{ flag: 'f1' }, { flag: 'f2' }] }, state: 'lit' }] };
+  add(place(), config === 'flags-visual' ? { ...drawer, ...lit } : drawer);
   add(place(), take('d1', { doc: 'd1' }));
   add(place(), take('d2', { doc: 'd2' }));
   const voice = rnd() < 0.5 ? 'r1' : 'r2';
@@ -179,6 +197,8 @@ function generated(seed: number, config: Config): Json {
     }
     if (has('flags') && r === flagRoom) {
       onEnter.push({ give: 'f1' });
+    } else if (realFlags && r === flagRoom) {
+      onEnter.push({ set: 'f1' });
     }
     base[r] = { bg: 'room', title: txt(), onEnter, hotspots: spots[r] ?? [] };
   }
@@ -192,6 +212,7 @@ function generated(seed: number, config: Config): Json {
     },
     sections: { [S]: { start: 'r0', bgm: null, rooms: has('views') ? withViews(base) : realViews ? withRealViews(base) : base } },
     ...(realRecipes ? { recipes: [{ a: 'a1', b: 'a2', gives: 'product' }] } : {}),
+    ...(realFlags ? { flags: { f1: { section: S }, f2: { section: S } } } : {}),
   };
 }
 
@@ -214,8 +235,9 @@ function measure(raw: unknown, places: boolean): Measured[] {
   return measured(raw, places).results;
 }
 
-/** `measure`, with the decoded world's module data (P2-b's non-vacuity checks read it). */
-function measured(raw: unknown, places: boolean): { readonly results: Measured[]; readonly mods: KernelWorld['mods'] } {
+/** `measure`, with the decoded world's module data (P2-b's non-vacuity checks read it); `met` sees every successor state
+ *  an edge reports (an `onEdge` probe). */
+function measured(raw: unknown, places: boolean, met?: (s: WorldState) => void): { readonly results: Measured[]; readonly mods: KernelWorld['mods'] } {
   const r = decodeWorldSource(raw);
   if (!r.ok) {
     throw new Error(`the generated world does not decode: ${JSON.stringify(r.error)}`);
@@ -229,6 +251,7 @@ function measured(raw: unknown, places: boolean): { readonly results: Measured[]
       places,
       onEdge: (_from, succ) => {
         edges[succ.step.kind] = (edges[succ.step.kind] ?? 0) + 1;
+        met?.(succ.state);
       },
       onStats: (s) => {
         stats = s;
@@ -369,6 +392,61 @@ test('spike p2: real views and a recipe fit the cap with the place quotient', ()
     expect(without.states, `seed ${seed} views+recipes-real without the quotient`).toBeGreaterThanOrEqual(1);
   }
 }, 60_000);
+
+test('spike p2: visual-only flags add no states', () => {
+  // GM5f D7 (asserted): `flags-visual` sets f1 and f2 where `flags` gives them, and only the drawer's picture reads
+  // them. Neither setter has a kernel effect and no gating rule reads a flag, so no flag fact enters the key and the
+  // search counts as `base`'s, seed by seed on both arms.
+  const f1 = 'f1' as FlagId; // the generator's flag ids
+  const f2 = 'f2' as FlagId;
+  for (const seed of SEEDS) {
+    const raw = generated(seed, 'flags-visual');
+    const { on, off } = arms('flags-visual', seed, raw);
+    const base = generated(seed, 'base');
+    expect(spent(only(on)), `seed ${seed} flags-visual against base, places=on`).toEqual(spent(only(measure(base, true))));
+    expect(spent(only(off)), `seed ${seed} flags-visual against base, places=off`).toEqual(spent(only(measure(base, false))));
+    // Non-vacuity: two declared flags, the drawer's picture, and an `onEdge` probe that meets a state holding f1 and one
+    // holding f2 (each setter runs). Not one holding both: neither flag is keyed, so the place a state keys to keeps the
+    // first state that reached it, and on seed 6 (the look in r1, f1 set on entering r2) no kept r1 state holds f1.
+    const held = new Set<FlagId>();
+    const probe = measured(raw, true, (s) => {
+      for (const f of s.flags) {
+        held.add(f);
+      }
+    });
+    expect(Object.keys(probe.mods.flags.flags), `seed ${seed}`).toEqual(['f1', 'f2']);
+    expect(Object.keys(probe.mods.visual.hotspots).map((key) => key.split('.')[1]), `seed ${seed}`).toEqual(['drawer']);
+    expect([...held].sort(), `seed ${seed}: the states the search met hold f1 and f2`).toEqual([f1, f2]);
+  }
+}, 60_000);
+
+test('spike p2: real flags are measured', () => {
+  // GM5f: `flags-real` reads both flags in the gate's always-true `when`, so each is keyed, as `flags`' emulated items
+  // and their triggers' `fired` keys are; `full-mix-real-flags` is `full-mix-real` with them. Each equals its emulation
+  // seed by seed on both arms, and `flags-real` exhausts under both bounds.
+  for (const [config, emulated] of [
+    ['flags-real', 'flags'],
+    ['full-mix-real-flags', 'full-mix-real'],
+  ] as const) {
+    for (const seed of SEEDS) {
+      const raw = generated(seed, config);
+      const decoded = decodeWorldSource(raw);
+      // Non-vacuity: two declared flags and the gate's reader.
+      expect(decoded.ok ? [Object.keys(decoded.value.mods.flags.flags), Object.keys(decoded.value.mods.flags.when)] : decoded.error, `${config} seed ${seed}`).toEqual([['f1', 'f2'], ['r0.gate']]);
+      const { on, off } = arms(config, seed, raw);
+      for (const [arm, m, places] of [
+        ['on', only(on), true],
+        ['off', only(off), false],
+      ] as const) {
+        expect(m.states, `${config} seed ${seed} places=${arm}`).toBeGreaterThanOrEqual(1);
+        expect(spent(m), `${config} seed ${seed} places=${arm} against ${emulated}`).toEqual(spent(only(measure(generated(seed, emulated), places))));
+        if (config === 'flags-real') {
+          expect(m.result, `${config} seed ${seed} places=${arm} (${m.states} places, work ${m.stats.work}, bound ${m.stats.bound ?? '-'})`).toBe('exhausted');
+        }
+      }
+    }
+  }
+}, 240_000);
 
 // ---------------------------------------------------------------------------------------------------------------
 // The world lint registry (engine plan §3.2, GM1b): `lintWorld` runs every per-world entry of MECHANIC_LINTS with the
