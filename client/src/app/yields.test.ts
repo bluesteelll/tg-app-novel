@@ -2990,6 +2990,25 @@ test('yields: a dial change on a commit frame is no move away - awaiting stays n
   r.yields.dispose();
 });
 
+test('yields: a second report while the reached answer posts plays no second reached', async () => {
+  // `puzzle:reached` marks the edge into reached (D3): a report while already reached and in flight re-plays nothing,
+  // keeps the frame awaiting and posts nothing more.
+  const answer = deferred<void>();
+  const r = rig({ world: reachWorld(), puzzleTypes: REACH_TYPES, attempts: [RIGHT], attemptGate: answer.promise });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: TRACE_PZ, then: AFTER });
+  r.yields.host.onchange([...DRAWN]);
+  r.yields.host.onreach?.(CANONICAL);
+  const mark = r.cues.length;
+  r.yields.host.onreach?.(CANONICAL);
+  await settle();
+  expect(frameKeys(r, mark)).toEqual([]);
+  expect(r.puzzle.frame?.awaiting).toBe(true);
+  expect(r.posted).toEqual([CANONICAL]);
+  answer.resolve();
+  await settle();
+  r.yields.dispose();
+});
+
 test('yields: a mismatch resets the device and shows the update toast', async () => {
   // A wrong reply to a reach post (engine plan §7.4): the device returns to its start answer with its one cue,
   // `puzzle:reset`, which ends the answer hold; the sticky update toast and a console line follow. Nothing was counted:
