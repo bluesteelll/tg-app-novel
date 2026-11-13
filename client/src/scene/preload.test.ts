@@ -4,7 +4,7 @@ import type { AssetEntry, AssetManifest, ImageEntry, Result, SizeTier } from '..
 import type { AssetId, ChapterId } from '../story/staging.ts';
 import { ENSURE_HOLDER, PRELOAD_IN_FLIGHT, createAssetScheduler, windowDeps } from './preload.ts';
 import type { StageWindow } from './preload.ts';
-import { HARD_CAP_BYTES, createAssetRegistry } from './registry.ts';
+import { HARD_CAP_BYTES, UPGRADE_DEADLINE_MS, createAssetRegistry } from './registry.ts';
 import type { AcquireOptions, AssetError, AssetRegistry, Decoded, HeldFile, HoldImage, LoadError, LoadImage, SceneError, TextureHandle } from './registry.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1972,6 +1972,87 @@ test('preload: a swapped upgrade asks for a frame; a failed, aborted or refused 
   }
   expect(refused.upgradeCalls()).toEqual(['bg/v', 'bg/v', 'bg/v']);
   expect(refused.sharpenedIds()).toEqual([]);
+});
+
+// The same rule across a chain (lane SH5b fix4, F1): with several previews, "one frame per swapped record" differs from
+// "one frame when no preview is left" and from "one frame when the chain ends". So each answer is followed by a snapshot
+// of the upgrades asked and the frames asked, and the whole sequence is compared: a swap is drawn at its own swap,
+// without waiting for the records after it.
+
+test('preload: each upgrade of a chain asks its own frame at its swap, and a failure in the middle of the chain asks none', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(em);
+  await entryBatch(h, ['bg/v', 'sheet/v']);
+  h.s.want(stage({ need: ['bg/v', 'sheet/v', 'bg/n', 'sheet/n'], preview: true }));
+  await flush();
+  expect(h.upgradeCalls()).toEqual(['bg/v']);
+  expect(h.sharpenedIds()).toEqual([]);
+  // The loader's stored-box check (loader.ts): the full file decoded to another box than the half's stored one.
+  const detail = 'upgrade decoded 540x1024, stored box 1080x2048';
+  const seen: (readonly [string[], string[]])[] = [];
+  const answer = async (id: string, r?: Result<void, LoadError>): Promise<void> => {
+    h.upgraded(id, r);
+    await micro();
+    seen.push([h.upgradeCalls(), h.sharpenedIds()]);
+  };
+  await answer('bg/v');
+  await answer('sheet/v', { ok: false, error: { kind: 'decode', detail } });
+  await answer('bg/n');
+  await answer('sheet/n');
+  expect(seen).toEqual([
+    [['bg/v', 'sheet/v'], ['bg/v']],
+    [['bg/v', 'sheet/v', 'bg/n'], ['bg/v']],
+    [['bg/v', 'sheet/v', 'bg/n', 'sheet/n'], ['bg/v', 'bg/n']],
+    [['bg/v', 'sheet/v', 'bg/n', 'sheet/n'], ['bg/v', 'bg/n', 'sheet/n']],
+  ]);
+  expect(h.errors.at(-1)).toEqual({ kind: 'decode', id: 'sheet/v', detail });
+  // A preview is left when the chain ends.
+  expect(h.registry.previews()).toEqual([{ id: asId('sheet/v'), visible: true }]);
+});
+
+test('preload: an upgrade timed out at the end of the chain asks no frame, and every swap before it asked its own at its swap', async () => {
+  vi.useFakeTimers();
+  try {
+    const h = harness('auto', { hold: true });
+    h.s.setChapter(em);
+    const ids = ['cg/c', 'bg/v', 'sheet/v'];
+    const ensured = h.s.ensure(ids.map(asId), live(), { preview: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await ensured).toEqual({ ok: true, value: undefined });
+    for (const id of ids) {
+      await h.visible(id, `scene:${id}`);
+    }
+    h.registry.releaseHolder(ENSURE_HOLDER);
+    h.s.want(stage({ need: ids, preview: true }));
+    await micro();
+    expect(h.upgradeCalls()).toEqual(['cg/c']);
+    expect(vi.getTimerCount()).toBe(1);
+    const seen: (readonly [string[], string[]])[] = [];
+    const snapshot = (): void => {
+      seen.push([h.upgradeCalls(), h.sharpenedIds()]);
+    };
+    h.upgraded('cg/c');
+    await micro();
+    snapshot();
+    h.upgraded('bg/v');
+    await micro();
+    snapshot();
+    // The deadline aborts the sheet's upgrade; the fake then answers `aborted`, as a fetch does once its signal fired.
+    await vi.advanceTimersByTimeAsync(UPGRADE_DEADLINE_MS);
+    h.upgraded('sheet/v');
+    await micro();
+    snapshot();
+    expect(seen).toEqual([
+      [['cg/c', 'bg/v'], ['cg/c']],
+      [['cg/c', 'bg/v', 'sheet/v'], ['cg/c', 'bg/v']],
+      [['cg/c', 'bg/v', 'sheet/v'], ['cg/c', 'bg/v']],
+    ]);
+    expect(h.errors.at(-1)).toEqual({ kind: 'fetch', id: 'sheet/v', error: { kind: 'network', detail: 'timeout' } });
+    expect(h.registry.previews()).toEqual([{ id: asId('sheet/v'), visible: true }]);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 // Stated rules of the entry (lane SH5b fix2, the pre-merge lenses' probes): each pins what the scheduler already does.
