@@ -486,6 +486,9 @@ test('path: a cancelled stroke keeps its cells and the next starts from the end'
   // The cancel: the stroke ends by the release, the drawn cells stay and nothing posts.
   s.cancel(1, 1);
   expect([s.surface.hasPointerCapture(1), d.changes.length, d.reports]).toEqual([false, 2, []]);
+  // The cancelled pointer moves on (a mouse or a pen in range keeps its id): without the capture it steps nothing.
+  s.at('pointermove', 2, 1);
+  expect([d.changes.length, d.cues.length]).toEqual([2, 2]);
   s.at('pointerdown', 1, 2);
   s.at('pointermove', 2, 2);
   s.at('pointerup', 2, 2);
@@ -565,6 +568,13 @@ test("path: the cell under the pointer comes from the surface's box", () => {
   // A move whose target is cell 4 but whose point is in cell 1: the point decides.
   s.at('pointermove', 1, 1, {}, d.cell(4));
   expect(d.changes).toEqual([[0], [0, 1]]);
+  // A collapsed box gives no point: a move then steps nothing, and the stroke goes on from its last point.
+  vi.spyOn(s.surface, 'getBoundingClientRect').mockReturnValue(new DOMRect(10, 20, 0, 0));
+  s.at('pointermove', 0);
+  expect([d.changes.length, d.cues.length]).toEqual([2, 2]);
+  vi.spyOn(s.surface, 'getBoundingClientRect').mockReturnValue(new DOMRect(10, 20, 150, 100));
+  s.at('pointermove', 2);
+  expect(d.changes.at(-1)).toEqual([0, 1, 2]);
   // The box arithmetic assumes the surface's box is the grid's: no padding and no border on it.
   const box = declarationsFor(pathSource, 'surface');
   expect([box.get('padding'), box.get('border'), box.get('gap')]).toEqual(['0', '0', '0']);
