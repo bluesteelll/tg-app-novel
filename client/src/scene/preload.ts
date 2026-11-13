@@ -4,9 +4,9 @@
 // the step's window (`want`: need, warm, hope and the event's room) over one ordered queue with two fetches in flight
 // (an item whose record is live or in flight to be decoded joins it at once, outside the slots: QO19, S36 step 1b), the
 // eviction order of a refused need, and the blocking `ensure` of a batch's assets under the holder `ensure`; a chapter
-// entry at the half tier (shots §5.8 "Entry at the half tier"): its previews' upgrades, one at a time outside the slots,
-// and the entry gate that holds every later rank until the visible upgrades and the need previews are done. Pure over
-// the registry: no Pixi, no fetch.
+// entry at the half tier (shots §5.8 "Entry at the half tier"): its previews' upgrades, one at a time outside the slots
+// (each swap tells the stage, `sharpened`, which draws on demand), and the entry gate that holds every later rank until
+// the visible upgrades and the need previews are done. Pure over the registry: no Pixi, no fetch.
 import type { AssetManifest, ImageEntry, Result } from '../story/catalog.ts';
 import type { ShotWindow } from '../story/shots.ts';
 import type { AssetId } from '../story/staging.ts';
@@ -111,7 +111,16 @@ const upgradeRank = (id: AssetId): number => {
 const matches = (tag: string, pattern: string): boolean => (pattern.endsWith(':') ? tag.startsWith(pattern) : tag === pattern);
 const isWindow = (tag: string): boolean => tag.startsWith(WIN) || tag.startsWith(WARM);
 
-export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onError(e: AssetError): void }): AssetScheduler {
+export function createAssetScheduler<T>(deps: {
+  registry: AssetRegistry<T>;
+  onError(e: AssetError): void;
+  /**
+   * Shots §5.8 step 3: an upgrade swapped `id`'s full file into its texture (the registry answered `true`), so the
+   * picture changed outside any timeline. Called once per swapped record. A refused, failed or aborted upgrade calls
+   * nothing, nor does an answer that `setChapter` or `destroy` forgot. Optional: a scheduler with no stage needs no frame.
+   */
+  sharpened?(id: AssetId): void;
+}): AssetScheduler {
   const { registry } = deps;
   let manifest: AssetManifest | null = null;
   let queue: Item[] = [];
@@ -435,6 +444,9 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
       }
       upgrading = null;
       report(r);
+      if (r.ok && r.value) {
+        deps.sharpened?.(id);
+      }
       kick();
     });
   };

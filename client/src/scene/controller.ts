@@ -476,7 +476,6 @@ export function createSceneController(): SceneController {
         tier,
         frames: pixiFrames({ Texture, Rectangle }),
       });
-      const scheduler = createAssetScheduler({ registry, onError: report });
       // The current Application (the rebuild replaces it), and the only path to a frame: none while the context is lost
       // or the revive flow holds frames, so no frame binds a texture not yet revived (MEMORY-PLAN I7).
       const loop = createRenderLoop({
@@ -491,6 +490,13 @@ export function createSceneController(): SceneController {
           }
           c.app.render();
         },
+      });
+      const scheduler = createAssetScheduler({
+        registry,
+        onError: report,
+        // K6: an upgrade's in-place swap changes the picture outside any timeline, so it asks for one frame, as the
+        // revive's resume does; the loop's render keeps its guards.
+        sharpened: () => loop.requestRender(),
       });
       const executor = createExecutor<Texture>({
         adapter: pixiAdapter(app, layers),

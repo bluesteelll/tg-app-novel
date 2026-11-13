@@ -181,10 +181,15 @@ function harness(mode: 'auto' | 'deferred' = 'auto', o?: { hold?: true; tier?: S
   const tier = o?.tier ?? 'full';
   const registry = o?.hold === true ? createAssetRegistry<Tex>({ hold, variant: 'avif', tier }) : createAssetRegistry<Tex>({ load, variant: 'avif', tier });
   const errors: AssetError[] = [];
+  // The stage's frame requests after an upgrade's swap (lane SH5b fix2, P1), by id in call order.
+  const sharp: string[] = [];
   const s = createAssetScheduler({
     registry: o?.hold === true ? recording(registry, log) : registry,
     onError: (e) => {
       errors.push(e);
+    },
+    sharpened: (id) => {
+      sharp.push(id);
     },
   });
   /** The first call of `id` (in the window fixtures' manifests: its file, or its half) not yet settled. */
@@ -203,6 +208,7 @@ function harness(mode: 'auto' | 'deferred' = 'auto', o?: { hold?: true; tier?: S
     // The upgrades (lane SH5b), by id in call order.
     upgradeCalls: (): string[] => upgrades.map((u) => u.id),
     upgradesOpen: (): number => upgrades.filter((u) => !u.done).length,
+    sharpenedIds: (): string[] => [...sharp],
     upgraded: (id: string, r: Result<void, LoadError> = { ok: true, value: undefined }): void => {
       const u = upgrades.find((x) => x.id === id && !x.done);
       if (u === undefined) {
@@ -1916,4 +1922,49 @@ test('preload: setChapter and destroy abort the upgrade in flight and forget its
   expect(d.registry.stats().pending).toBe(1);
   d.s.destroy();
   expect(d.registry.stats().pending).toBe(0);
+});
+
+// Shots §5.8 step 3 (lane SH5b fix2, P1): the stage draws on demand, so an upgrade's in-place swap asks it for a frame;
+// one that swapped nothing asks for none.
+
+test('preload: a swapped upgrade asks for a frame; a failed, aborted or refused one asks for none', async () => {
+  const fetchFailed: Result<void, LoadError> = { ok: false, error: { kind: 'fetch', error: { kind: 'http', status: 500 } } };
+  /** A fresh entry whose plate's upgrade is in flight, nothing asked yet. */
+  const entered = async (): Promise<ReturnType<typeof harness>> => {
+    const h = harness('auto', { hold: true });
+    h.s.setChapter(em);
+    await entryBatch(h, ['bg/v']);
+    h.s.want(stage({ need: ['bg/v'], preview: true }));
+    expect(h.upgradeCalls()).toEqual(['bg/v']);
+    expect(h.sharpenedIds()).toEqual([]);
+    return h;
+  };
+  // Arm 1: the swap asks once, after the registry answered true.
+  const swapped = await entered();
+  swapped.upgraded('bg/v');
+  await micro();
+  expect(swapped.sharpenedIds()).toEqual(['bg/v']);
+  expect(swapped.registry.previews()).toEqual([]);
+  // Arm 2: a failed fetch leaves the half and asks nothing.
+  const failed = await entered();
+  failed.upgraded('bg/v', fetchFailed);
+  await micro();
+  expect(failed.sharpenedIds()).toEqual([]);
+  expect(failed.registry.previews()).toEqual([{ id: asId('bg/v'), visible: true }]);
+  // Arm 3: setChapter aborted it; the late answer is forgotten.
+  const aborted = await entered();
+  aborted.s.setChapter(wm);
+  aborted.upgraded('bg/v');
+  await micro();
+  expect(aborted.sharpenedIds()).toEqual([]);
+  // Arm 4: three failures, each tried again at a swap point; the registry then refuses (true, false) with no call.
+  const refused = await entered();
+  for (let i = 0; i < 3; i += 1) {
+    refused.upgraded('bg/v', fetchFailed);
+    await micro();
+    refused.s.want(stage({ need: ['bg/v'], preview: true }));
+    await micro();
+  }
+  expect(refused.upgradeCalls()).toEqual(['bg/v', 'bg/v', 'bg/v']);
+  expect(refused.sharpenedIds()).toEqual([]);
 });

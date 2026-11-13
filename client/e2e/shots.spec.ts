@@ -494,6 +494,54 @@ async function recordTheEntry(page: Page): Promise<void> {
   }, LAMP_LINE);
 }
 
+/** A GL clear the page made (`recordFrames`): its page time and the scene's live previews then (-1 unreadable). */
+type Drawn = { t: number; previews: number };
+
+/**
+ * For the next document: every GL clear, with the scene's `previews` at that moment. Pixi clears the back buffer once
+ * per rendered frame (its renderer's `clear` defaults to `clearBeforeRender`), and the app renders to no other target,
+ * so each clear is a drawn frame.
+ */
+async function recordFrames(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const w = window as unknown as Record<string, unknown> & { __drawn?: Drawn[]; __novelDebug?: { stats(): { scene: { previews?: number } } } };
+    const drawn: Drawn[] = [];
+    w.__drawn = drawn;
+    const wrap = (ctor: unknown): void => {
+      if (typeof ctor !== 'function') {
+        return;
+      }
+      const proto = (ctor as { prototype: { clear?: (mask: number) => void } }).prototype;
+      const clear = proto.clear;
+      if (clear === undefined) {
+        return;
+      }
+      proto.clear = function (this: unknown, mask: number): void {
+        if (drawn.length < 10_000) {
+          let previews = -1;
+          try {
+            previews = w.__novelDebug?.stats().scene.previews ?? -1;
+          } catch {
+            previews = -1; // the hook mid-teardown
+          }
+          drawn.push({ t: performance.now(), previews });
+        }
+        clear.call(this, mask);
+      };
+    };
+    wrap(w['WebGLRenderingContext']);
+    wrap(w['WebGL2RenderingContext']);
+  });
+}
+
+/** `recordFrames`' clears on this page: every one, or (with `from`) those at or after page time `from` with no preview. */
+function drawnFrames(page: Page, from?: number): Promise<number> {
+  return page.evaluate((t) => {
+    const all = (window as unknown as { __drawn?: Drawn[] }).__drawn ?? [];
+    return t === null ? all.length : all.filter((f) => f.t >= t && f.previews === 0).length;
+  }, from ?? null);
+}
+
 /** The page's resource timing of the first answered of `urls` (URL paths), in page ms; null while none has ended. */
 function answered(page: Page, urls: readonly string[]): Promise<{ start: number; end: number } | null> {
   return page.evaluate((list) => {
@@ -530,6 +578,7 @@ test('shots: a resume shows the half tier first and sharpens', async ({ page, re
     }
   });
   await recordTheEntry(page);
+  await recordFrames(page);
   const launchedAt = Date.now();
   await launch(page, UID_SHARPEN);
   await play(page, 'stories.continue');
@@ -543,6 +592,8 @@ test('shots: a resume shows the half tier first and sharpens', async ({ page, re
   expect(half, `${WIDE_PLATE}'s half file fetched`).not.toBeNull();
   expect(lineAt, `${LAMP_LINE} seen by the observer`).not.toBeNull();
   expect(half?.end ?? Number.POSITIVE_INFINITY, `${WIDE_PLATE}'s half answered before ${LAMP_LINE} showed`).toBeLessThanOrEqual(lineAt ?? Number.NEGATIVE_INFINITY);
+  // The recorder sees this context's frames (the restore and the line's step drew some), so a 0 below is no frame drawn.
+  expect(await drawnFrames(page), 'GL clears recorded on this page').toBeGreaterThan(0);
 
   // Six serial upgrades (the three visible records, then a001's three close-up needs), each FULL_DELAY_MS late: about
   // 12.5 s, so the named LINE_MS and not the default expect timeout. Every read keeps the entry's peak.
@@ -559,7 +610,14 @@ test('shots: a resume shows the half tier first and sharpens', async ({ page, re
       { timeout: LINE_MS, intervals: [250], message: 'every preview sharpened' },
     )
     .toBe(0);
-  console.log(`shots F5: entry peak liveBytes ${peak.liveBytes} B, pendingLoads ${peak.pendingLoads} over ${peak.samples} samples`);
+  // Shots §5.8 step 3: the stage draws on demand and F5 sends no input, so only the swaps' own frame requests can draw
+  // the full files: a frame after the line whose scene had no preview left.
+  await expect
+    .poll(() => drawnFrames(page, lineAt ?? Number.POSITIVE_INFINITY), { message: 'a frame drawn after every preview sharpened, with no input' })
+    .toBeGreaterThan(0);
+  console.log(
+    `shots F5: entry reservation peak liveBytes (textures plus the loads and the upgrade in flight) ${peak.liveBytes} B, pendingLoads ${peak.pendingLoads} over ${peak.samples} samples`,
+  );
   await atRest(page);
   const rest = await windowScene(page);
   const asked = (urls: readonly string[]): string => {
