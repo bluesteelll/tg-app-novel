@@ -94,6 +94,8 @@ type WorldSpec = {
   docs?: string[];
   puzzles?: Record<string, Json>;
   sections: Record<string, { start: string; rooms: Record<string, Json> }>;
+  /** Module `flags`' declarations: flag -> its section. */
+  flags?: Record<string, string>;
 };
 
 const V1 = '1111111111111111';
@@ -106,6 +108,7 @@ function world(spec: WorldSpec, version = V1): WorldPublic {
     docs: Object.fromEntries((spec.docs ?? []).map((id) => [id, { title: txt(`title ${id}`), body: [txt(`p1 ${id}`), txt(`p2 ${id}`)] }])),
     puzzles: spec.puzzles ?? {},
     sections: Object.fromEntries(Object.entries(spec.sections).map(([id, s]) => [id, { start: s.start, bgm: null, rooms: s.rooms }])),
+    ...(spec.flags === undefined ? {} : { flags: Object.fromEntries(Object.entries(spec.flags).map(([f, section]) => [f, { section }])) }),
   };
   const r = decodeWorldSource(raw);
   if (!r.ok) {
@@ -1417,3 +1420,36 @@ test('controller: inventory and lock views follow the state', () => {
   expect(h.view.lock).toBeNull();
 });
 
+// ---------------------------------------------------------------------------------------------------------------
+// GM5f: presence (module `flags`, engine plan §6.5): a hotspot's `when` decides whether it is shown and reachable
+
+/** `h` with a presence `when`. */
+const when = (h: Json, cond: unknown): Json => ({ ...h, when: cond });
+
+test('controller: a gated hotspot shows once its flag is set', () => {
+  // a -> b; b's way back to a and its box show only once b's look `mark` has set `f`.
+  const h = harness(
+    world({
+      flags: { f: 'gate' },
+      sections: {
+        gate: {
+          start: 'a',
+          rooms: {
+            a: room('a', [exit('to_b', 'b')]),
+            b: room('b', [{ ...look('mark'), then: [{ set: 'f' }] }, when(exit('to_a', 'a'), { flag: 'f' }), when(object('box', null), { flag: 'f' })]),
+          },
+        },
+      },
+    }),
+  );
+  h.c.enter(sec('gate'), EMPTY_WORLD_STATE);
+  h.c.dispatch(tap('a.to_b'));
+  expect(h.view.hotspots.map((v) => v.key)).toEqual(['b.mark']);
+  // The way back is hidden, so Back routes nowhere and dispatches nothing.
+  const before = h.effects.length;
+  expect(h.c.back()).toBe(false);
+  expect(h.effects.length).toBe(before);
+  h.c.dispatch(tap('b.mark'));
+  expect(h.c.state().flags).toEqual(['f']);
+  expect(h.view.hotspots.map((v) => v.key)).toEqual(['b.mark', 'b.to_a', 'b.box']);
+});

@@ -15,6 +15,7 @@ import type { HotspotKey, ItemId, Lock, RoomId } from '../../world/types.ts';
 import type { KernelWorld, RulesRegistry, SectionAction, TriggerKey } from '../contract.ts';
 import { reduce } from './core.ts';
 import { MECHANIC_RULES } from './index.ts';
+import { gated } from './flags.ts';
 import { viewActions, viewParent } from './view.ts';
 import { isKernelEffect, moduleEffects } from './writer.ts';
 
@@ -103,8 +104,9 @@ type PlaceMove = { readonly from: RoomId; readonly step: SectionAction; readonly
 
 /**
  * The place quotient of section S (engine plan §6.3, synthesis §3.7). A view V of room P **merges** into P's place iff
- * - (a) its entry is ungated: (a2) every exit of S's rooms into V lies in P and has no lock, and at least one does (a
- *   locked exit opens on state; a view no exit enters is reached by no move), so (a1) P is a room of S; (a3) no module
+ * - (a) its entry is ungated: (a2) every exit of S's rooms into V lies in P and has no lock and no `when` (module
+ *   `flags`' presence), and at least one does (a locked exit opens on state, a `when` shows it on state; a view no exit
+ *   enters is reached by no move), so (a1) P is a room of S; (a3) no module
  *   of the registry has a `tap` hook (core hands every tap to the hooks first, and one may take the entering tap on
  *   data this rule cannot read);
  * - (b) V's arrival writes nothing: `enter:V` has no kernel effect (by key, `isKernelEffect`: the proof world keeps a
@@ -140,8 +142,8 @@ function placesOf(w: KernelWorld, section: SectionId, rules: RulesRegistry, visi
         if (!zoomIn) {
           // (c1) for r: its exit leads out of its own views; (a2) for v: an entry from a room that is not its parent.
           unfree.add(r).add(v);
-        } else if (h.lock !== null) {
-          unfree.add(v); // (a2): a gated entry
+        } else if (h.lock !== null || gated(w, hotspotKey(r, h.id))) {
+          unfree.add(v); // (a2): a gated entry (a lock, or a presence `when`)
         } else if (!zoom.has(v)) {
           zoom.set(v, hotspotKey(r, h.id));
         }

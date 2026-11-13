@@ -294,7 +294,7 @@ test('mechanics: the rules registry loads from either module first', async () =>
   };
   // rules/use.ts, rules/visual.ts, rules/conditions.ts, rules/view.ts, rules/combine.ts and rules/flags.ts sit on the
   // cycle too (use.ts <-> core.ts, visual.ts -> conditions.ts -> index.ts, view.ts <-> core.ts, combine.ts ->
-  // conditions.ts and use.ts, flags.ts -> writer.ts -> index.ts).
+  // conditions.ts and use.ts, flags.ts -> conditions.ts -> index.ts, core.ts -> flags.ts).
   const firsts = [
     () => import('./rules/core.ts'),
     () => import('./rules/index.ts'),
@@ -337,7 +337,7 @@ function useSource(): Json {
 }
 
 test('mechanics: the data registry loads from any module first', async () => {
-  // data/use.ts, data/visual.ts and data/combine.ts import data/conditions.ts (`decodeCond`), which imports
+  // data/use.ts, data/visual.ts, data/combine.ts and data/flags.ts import data/conditions.ts (`decodeCond`), which imports
   // data/index.ts (its default registry), which holds their entries: the same cycle as the rules registry's. index.ts
   // builds each entry from its module's function declarations, so each load order leaves the registry whole (every
   // member compared: vitest's runner reads an uninitialized `const` as undefined), and a decode through the freshly
@@ -388,7 +388,7 @@ test('mechanics: the data registry loads from any module first', async () => {
       {
         id: 'flags',
         rules: 'chunk',
-        owns: { world: ['flags'], effect: ['set'], atoms: ['flag'], facts: ['flag'] },
+        owns: { world: ['flags'], effect: ['set'], hotspot: ['when'], atoms: ['flag'], facts: ['flag'] },
         decode: flags.decodeFlags,
         encode: flags.encodeFlags,
         normalize: flags.normalizeFlags,

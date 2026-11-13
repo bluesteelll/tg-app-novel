@@ -1,6 +1,7 @@
 // Module `visual`'s rules half (engine plan §6.4): a room's picture derived from the state. Each `take` or `object`
 // hotspot with a picture, then each decor, is one anchor whose state is the first `is` whose `when` holds, else
-// `default`; a taken take draws nothing (B-001 by construction). `visualsOf` composes every module's `visuals` hook in
+// `default`; a taken take draws nothing (B-001 by construction), nor does a hidden one (its `when`, module `flags`).
+// `visualsOf` composes every module's `visuals` hook in
 // draw order, and `roomImages` lists every image a room can show (its usage `props` and its `state:` preload). It adds
 // no action, no cue and no gating read. Explore-ui chunk code (the `rules-lazy` arch rule): rules/index.ts builds the
 // entry from these function declarations, and the registry is read only inside function bodies. Pure.
@@ -11,6 +12,7 @@ import type { RoomId } from '../../world/types.ts';
 import type { AnchorKey, FactAtom, KernelWorld, PropView, RulesRegistry, StateName } from '../contract.ts';
 import type { IsRule, StateArt } from '../data/visual.ts';
 import { holds } from './conditions.ts';
+import { present } from './flags.ts';
 import { MECHANIC_RULES } from './index.ts';
 
 /** The module enables no action: its states follow the kernel's facts. */
@@ -48,7 +50,7 @@ export function visuals(w: KernelWorld, s: WorldState, room: RoomId): readonly P
     }
     const key = hotspotKey(room, h.id);
     const v = own(d.hotspots, key);
-    if ((h.prop === null && v === undefined) || (h.kind === 'take' && s.taken.includes(key))) {
+    if ((h.prop === null && v === undefined) || (h.kind === 'take' && s.taken.includes(key)) || !present(w, s, key)) {
       continue;
     }
     const states = v?.states ?? NO_STATES;

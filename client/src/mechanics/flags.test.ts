@@ -13,16 +13,17 @@ import type { WorldState } from '../explore/state.ts';
 import type { SectionId } from '../story/staging.ts';
 import { decodeWorldPublic, decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DecodeOptions, WorldIssue } from '../world/decode.ts';
-import type { HotspotKey, RoomId, WorldSource } from '../world/types.ts';
+import type { HotspotKey, ItemId, RoomId, WorldSource } from '../world/types.ts';
 import type { DecodeCtx, FlagId, KernelWorld, MechanicData, OwnedRaw, SectionAction } from './contract.ts';
 import { condReads, decodeCond } from './data/conditions.ts';
 import type { Cond } from './data/conditions.ts';
 import type { FlagsData } from './data/flags.ts';
 import { MECHANIC_DATA } from './data/index.ts';
 import { holds } from './rules/conditions.ts';
-import { reduce } from './rules/core.ts';
-import { resetSection, searchSection, sectionEntry, sectionPlaces } from './rules/search.ts';
+import { actions, reduce } from './rules/core.ts';
+import { resetSection, searchSection, sectionEntry, sectionKey, sectionPlaces, successors } from './rules/search.ts';
 import type { SearchStats } from './rules/search.ts';
+import { visualsOf } from './rules/visual.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fixture worlds, in the source format
@@ -42,6 +43,13 @@ const exit = (id: string, to: string | { story: string }, lock: Json | null = nu
 });
 const look = (id: string, then: readonly Json[] = []): Json => ({ id, kind: 'look', rect: RECT, label: txt(), look: txt(id), then });
 const object = (id: string, then: readonly Json[] = []): Json => ({ id, kind: 'object', rect: RECT, label: txt(), lock: null, then, look: null, prop: null });
+/** An object whose lock (no puzzle) has one slot per item of `accepts`. */
+const safe = (id: string, accepts: readonly string[]): Json => ({
+  ...object(id),
+  lock: { slots: accepts.map((a) => ({ accepts: a })), puzzle: null, locked: txt(), onOpen: [], onFail: [] },
+});
+/** `h` with a presence `when` (module `flags`). */
+const when = (h: Json, cond: unknown): Json => ({ ...h, when: cond });
 const room = (hotspots: readonly Json[], onEnter: readonly Json[] = [], extra: Json = {}): Json => ({ bg: 'room', title: txt(), onEnter, hotspots, ...extra });
 const view = (of: string, hotspots: readonly Json[], onEnter: readonly Json[] = []): Json => room(hotspots, onEnter, { view: { of } });
 
@@ -88,8 +96,10 @@ const S = 's' as SectionId;
 const T = 't' as SectionId;
 const k = (s: string) => s as HotspotKey;
 const rm = (s: string) => s as RoomId;
+const it = (s: string) => s as ItemId;
 const fl = (s: string) => s as FlagId;
 const tap = (hotspot: string): SectionAction => ({ kind: 'tap', hotspot: k(hotspot) });
+const insert = (hotspot: string, item: string): SectionAction => ({ kind: 'insert', hotspot: k(hotspot), item: it(item) });
 
 /** A state in `roomId` of `section` (default `s`). */
 function at(roomId: string, extra: Partial<WorldState> = {}, section: SectionId = S): WorldState {
@@ -119,6 +129,12 @@ function searched(w: KernelWorld, section: SectionId = S): { row: unknown[]; met
     },
   });
   return { row: [r.result, r.states, stats?.expansions, stats?.work, stats?.bound], met };
+}
+
+/** The hotspots of room `room` of section `section` in a public body read as JSON. */
+function spotsOf(body: Json, section: string, room: string): Json[] {
+  const sections = body['sections'] as Record<string, { rooms: Record<string, { hotspots: Json[] }> }>; // the source format's nesting
+  return sections[section]?.rooms[room]?.hotspots ?? [];
 }
 
 /** The issues of a decode, as `<path> <reason>`, sorted. */
@@ -310,5 +326,121 @@ test('flags: both world forms run module effects alike', () => {
   // Non-vacuous: the search meets a state holding the flag, in both forms.
   for (const { form, w } of [p2, r2]) {
     expect(searched(w).met.some((s) => s.flags.includes(fl('f'))), form).toBe(true);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// C2: a hotspot's `when`, its presence
+
+const HALL = 'sections.s.rooms.hall.hotspots';
+
+test('flags: a hotspot when decodes as a gating condition', () => {
+  // Any gating condition (a flag atom, a kernel atom, a combinator); `null` is the default, always present.
+  const gate = { all: [{ flag: 'f' }, { not: { held: 'key' } }] };
+  const raw = rawWorld({ s: ['hall', { hall: room([look('mark', [{ set: 'f' }]), when(look('vase'), gate), when(look('urn'), null), exit('out', { story: 'end' })]) }] }, ['key'], { f: 's' });
+  const src = source(raw);
+  expect(src.mods.flags.when).toEqual({ 'hall.vase': gate });
+  // The round trip writes the condition back where it was written, and nothing for `null`.
+  const body = structuredClone(toPublic(src)) as unknown as Json; // the public body, as JSON
+  const spots = spotsOf(body, 's', 'hall');
+  expect([spots[1]?.['when'], spots[2] !== undefined && Object.hasOwn(spots[2], 'when')]).toEqual([gate, false]);
+  const back = decodeWorldPublic({ ...body, version: '0123456789abcdef' });
+  expect(back.ok && back.value.mods.flags).toEqual(src.mods.flags);
+  // `decodeCond`'s faults at the hotspot's own path, every one in one pass.
+  const bad = rawWorld({ s: ['hall', { hall: room([when(look('a'), { flag: 'F' }), when(look('b'), { all: [] }), when(look('c'), { bogus: 1 }), when(look('d'), 3)]) }] });
+  expect(issues(decodeWorldSource(bad))).toEqual([`${HALL}.0.when.flag id`, `${HALL}.1.when.all shape`, `${HALL}.2.when shape`, `${HALL}.3.when shape`].sort());
+});
+
+/** The hall's look `mark` sets `f`; its safe (one slot, for the key) is present only while `f` is set; the den's
+ *  chest is the same lock in another room. The player starts holding the key. */
+const safeWorld = (): Json =>
+  rawWorld(
+    {
+      s: [
+        'hall',
+        {
+          hall: room([look('mark', [{ set: 'f' }]), when(safe('safe', ['key']), { flag: 'f' }), exit('to_den', 'den'), exit('out', { story: 'end' })]),
+          den: room([safe('chest', ['key']), exit('to_hall', 'hall')]),
+        },
+      ],
+    },
+    ['key'],
+    { f: 's' },
+  );
+
+test('flags: a gated hotspot is no action until its flag is set', () => {
+  for (const { form, w } of forms(safeWorld())) {
+    const s = at('hall', { held: [it('key')] });
+    const on = (list: readonly SectionAction[]): unknown[] => list.filter((a) => 'hotspot' in a && a.hotspot === k('hall.safe'));
+    expect(on(actions(w, s)), form).toEqual([]);
+    // A stale tap: no effect and the same state, as a tap on another room's hotspot.
+    const tapped = reduce(w, s, tap('hall.safe'));
+    expect([tapped.state === s, tapped.effects], form).toEqual([true, []]);
+    expect(tapped.effects, form).toEqual(reduce(w, s, tap('den.chest')).effects);
+    // A stale insert: the same state and the base's refusal, as a stale insert on a lock of another room.
+    const inserted = reduce(w, s, insert('hall.safe', 'key'));
+    expect(inserted.state, form).toBe(s);
+    expect(inserted.effects, form).toEqual([
+      { kind: 'refused', at: 'hall.safe', item: 'key', reason: 'no-fit' },
+      { kind: 'cue', cue: { kind: 'module', module: 'core', name: 'refused', at: 'hall.safe', item: 'key' } },
+    ]);
+    expect(JSON.stringify(inserted.effects), form).toBe(JSON.stringify(reduce(w, s, insert('den.chest', 'key')).effects).replaceAll('den.chest', 'hall.safe'));
+    // Once the setter fires, both are listed and accepted.
+    const lit = reduce(w, s, tap('hall.mark')).state;
+    expect(on(actions(w, lit)), form).toEqual([tap('hall.safe'), insert('hall.safe', 'key')]);
+    expect(reduce(w, lit, tap('hall.safe')).effects.filter((e) => e.kind === 'lock'), form).toEqual([{ kind: 'lock', hotspot: 'hall.safe' }]);
+    expect(reduce(w, lit, insert('hall.safe', 'key')).state.open, form).toEqual(['hall.safe']);
+  }
+});
+
+test('flags: a gated hotspot draws nothing and takes no use until its flag is set', () => {
+  // The statue has a picture and a `use` rule for the key; it is present only while `f` is set.
+  const statue = { ...when(object('statue'), { flag: 'f' }), prop: 'statue', uses: [{ item: 'key', do: [{ give: 'gem' }] }] };
+  const raw = rawWorld({ s: ['hall', { hall: room([look('mark', [{ set: 'f' }]), statue, exit('out', { story: 'end' })]) }] }, ['key', 'gem'], { f: 's' });
+  const use: SectionAction = { kind: 'use', item: it('key'), target: k('hall.statue') };
+  for (const { form, w } of forms(raw)) {
+    const s = at('hall', { held: [it('key')] });
+    const drawn = (x: WorldState): string[] => visualsOf(w, x, rm('hall')).map((v) => v.at);
+    const uses = (x: WorldState): unknown[] => successors(w, x).flatMap((n) => (n.step.kind === 'use' ? [n.step] : []));
+    expect([drawn(s), uses(s)], form).toEqual([[], []]);
+    // A stale use is refused with no effect.
+    const stale = reduce(w, s, use);
+    expect([stale.state === s, stale.effects], form).toEqual([true, []]);
+    const lit = reduce(w, s, tap('hall.mark')).state;
+    expect([drawn(lit), uses(lit)], form).toEqual([['hall.statue'], [use]]);
+    expect(reduce(w, lit, use).state.held, form).toEqual(['gem']);
+  }
+});
+
+test('flags: a flag a hotspot when reads is part of the section key', () => {
+  // `g` gates the vase; `u` is declared in the section and read by nothing.
+  const raw = rawWorld({ s: ['hall', { hall: room([look('mark', [{ set: 'g' }]), when(look('vase'), { flag: 'g' }), exit('out', { story: 'end' })]) }] }, [], { g: 's', u: 's' });
+  for (const { form, w } of forms(raw)) {
+    const s = at('hall');
+    expect(sectionKey(w, at('hall', { flags: [fl('g')] }), S), form).not.toBe(sectionKey(w, s, S));
+    // The positive control: an unread flag splits no state.
+    expect(sectionKey(w, at('hall', { flags: [fl('u')] }), S), form).toBe(sectionKey(w, s, S));
+  }
+});
+
+test('search: a view behind a gated entry keeps its own place', () => {
+  // Both views have a lockless zoom entry from the hall; the desk's shows only once `f` is set, so entering it is no
+  // free move (a2): the desk keeps its own place, and the ungated shelf merges.
+  const raw = rawWorld(
+    {
+      s: [
+        'hall',
+        {
+          hall: room([look('mark', [{ set: 'f' }]), when(exit('to_desk', 'desk'), { flag: 'f' }), exit('to_shelf', 'shelf'), exit('out', { story: 'end' })]),
+          desk: view('hall', [look('pad')]),
+          shelf: view('hall', [look('box')]),
+        },
+      ],
+    },
+    [],
+    { f: 's' },
+  );
+  for (const { form, w } of forms(raw)) {
+    expect(sectionPlaces(w, S), form).toEqual({ shelf: 'hall' });
   }
 });

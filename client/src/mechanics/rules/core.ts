@@ -20,6 +20,7 @@ import type { PuzzleOutcome, WorldState } from '../../explore/state.ts';
 import type { PuzzleLocalId, SectionId } from '../../story/staging.ts';
 import type { Hotspot, HotspotKey, ItemId, Lock, RoomId, WorldPublicBody } from '../../world/types.ts';
 import type { ArrivalOut, Cause, CauseVerb, FactAtom, KernelWorld, RulesRegistry, SectionAction } from '../contract.ts';
+import { present } from './flags.ts';
 import { APPLY, MECHANIC_RULES } from './index.ts';
 import { keepsSlot } from './use.ts';
 import { moveHow } from './view.ts';
@@ -121,13 +122,16 @@ function eventReturned(out: CoreWriter, sid: SectionId, cause: Cause): void {
   }
 }
 
-/** The hotspot when it is in the current room of a current section and no event knot runs; else undefined. */
-function here(d: Draft, key: HotspotKey): HotspotEntry | undefined {
+/**
+ * The hotspot when it is in the current room of a current section, present (its `when`, module `flags`) and no event
+ * knot runs; else undefined, so a stale tap on a hidden hotspot is refused as one on another room's.
+ */
+function here(w: KernelWorld, d: Draft, key: HotspotKey): HotspotEntry | undefined {
   if (d.s.section === null || d.s.room === null || d.s.pendingStory.length > 0) {
     return undefined;
   }
   const entry = d.ix.hotspots.get(key);
-  return entry !== undefined && entry.room === d.s.room ? entry : undefined;
+  return entry !== undefined && entry.room === d.s.room && present(w, d.s, key) ? entry : undefined;
 }
 
 /** A tap on a locked hotspot: its puzzle when every slot is filled and the run has no outcome, else the panel. */
@@ -142,7 +146,7 @@ function lockTap(d: Draft, key: HotspotKey, lock: Lock): void {
 
 function tap(out: CoreWriter, key: HotspotKey, cause: Cause): void {
   const d = out.draft;
-  const entry = here(d, key);
+  const entry = here(out.world, d, key);
   if (entry === undefined) {
     return;
   }
@@ -210,12 +214,12 @@ function tap(out: CoreWriter, key: HotspotKey, cause: Cause): void {
 }
 
 /**
- * The slot an insert fills: the first free slot of an unopened lock in the current room that accepts the held
+ * The slot an insert fills: the first free slot of an unopened, present lock in the current room that accepts the held
  * item; null when the insert is refused. `actions` lists exactly the inserts this accepts.
  */
-function fit(ix: WorldIndex, s: WorldState, key: HotspotKey, item: ItemId): { hotspot: Hotspot; lock: Lock; index: number } | null {
+function fit(w: KernelWorld, ix: WorldIndex, s: WorldState, key: HotspotKey, item: ItemId): { hotspot: Hotspot; lock: Lock; index: number } | null {
   const entry = ix.hotspots.get(key);
-  if (entry === undefined || entry.room !== s.room || !s.held.includes(item) || s.open.includes(key)) {
+  if (entry === undefined || entry.room !== s.room || !s.held.includes(item) || s.open.includes(key) || !present(w, s, key)) {
     return null;
   }
   const lock = lockOf(entry.hotspot);
@@ -234,7 +238,7 @@ function fit(ix: WorldIndex, s: WorldState, key: HotspotKey, item: ItemId): { ho
  */
 export function insertItem(out: KernelWriter, key: HotspotKey, item: ItemId, cause: Cause): boolean {
   const d = out.draft;
-  const f = fit(d.ix, d.s, key, item);
+  const f = fit(out.world, d.ix, d.s, key, item);
   if (f === null) {
     return false;
   }
@@ -400,11 +404,11 @@ export function reads(w: WorldPublicBody, section: SectionId): readonly FactAtom
 // The successor relation
 
 /**
- * Every enabled player action: a tap on each hotspot of the current room except a taken `take`, and each insert
- * `reduce` would accept, while `pendingStory` is empty; only `event-returned` while it is not. Puzzle outcomes are
- * not actions here: see `successors`.
+ * Every enabled player action: a tap on each present hotspot of the current room except a taken `take`, and each
+ * insert `reduce` would accept, while `pendingStory` is empty; only `event-returned` while it is not. Puzzle outcomes
+ * are not actions here: see `successors`.
  */
-export function actions(w: WorldPublicBody, s: WorldState): ExploreAction[] {
+export function actions(w: KernelWorld, s: WorldState): ExploreAction[] {
   if (s.section === null || s.room === null) {
     return [];
   }
@@ -422,7 +426,7 @@ export function actions(w: WorldPublicBody, s: WorldState): ExploreAction[] {
   for (const h of room.room.hotspots) {
     const key = hotspotKey(current, h.id);
     keys.push(key);
-    if (!(h.kind === 'take' && s.taken.includes(key))) {
+    if (!(h.kind === 'take' && s.taken.includes(key)) && present(w, s, key)) {
       out.push({ kind: 'tap', hotspot: key });
     }
   }
@@ -430,7 +434,7 @@ export function actions(w: WorldPublicBody, s: WorldState): ExploreAction[] {
   const held = [...s.held].sort();
   for (const key of keys) {
     for (const item of held) {
-      if (fit(ix, s, key, item) !== null) {
+      if (fit(w, ix, s, key, item) !== null) {
         out.push({ kind: 'insert', hotspot: key, item });
       }
     }

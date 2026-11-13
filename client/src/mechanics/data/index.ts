@@ -66,7 +66,7 @@ const flags = {
   id: 'flags',
   rules: 'chunk',
   // The `flag` fact kind is the module's: `WorldState.flags` holds its facts, and its atom reads it in any condition.
-  owns: { world: ['flags'], effect: ['set'], atoms: ['flag'], facts: ['flag'] as const },
+  owns: { world: ['flags'], effect: ['set'], hotspot: ['when'], atoms: ['flag'], facts: ['flag'] as const },
   decode: decodeFlags,
   encode: encodeFlags as (d: unknown) => OwnedRaw,
   normalize: normalizeFlags,

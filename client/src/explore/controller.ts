@@ -8,6 +8,7 @@ import { ROOM_SOURCE, cover, minTarget, toStage } from '../geom/cover.ts';
 import type { Box, Size } from '../geom/cover.ts';
 import type { AnchorKey, PropView, SectionAction } from '../mechanics/contract.ts';
 import { reduce } from '../mechanics/rules/core.ts';
+import { present as shown } from '../mechanics/rules/flags.ts';
 import { admitEvent, admitSection } from '../mechanics/rules/search.ts';
 import { nearRooms, viewParent } from '../mechanics/rules/view.ts';
 import { roomImages, visualsOf } from '../mechanics/rules/visual.ts';
@@ -139,7 +140,7 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
   let refused = false;
   let dead = false;
 
-  /** D4: the current room's hotspots in world order, except a taken `take` (as `actions` lists them). */
+  /** D4: the current room's hotspots in world order, except a taken `take` and a hidden one (as `actions` lists them). */
   const hotspotViews = (): HotspotView[] => {
     const room = current.section === null ? null : current.room;
     const entry = room === null ? undefined : ix.rooms.get(room);
@@ -150,7 +151,7 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     const out: HotspotView[] = [];
     for (const h of entry.room.hotspots) {
       const key = hotspotKey(room, h.id);
-      if (h.kind === 'take' && current.taken.includes(key)) {
+      if ((h.kind === 'take' && current.taken.includes(key)) || !shown(world, current, key)) {
         continue;
       }
       out.push({
@@ -337,11 +338,12 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     view.lock = lockView();
   };
 
-  /** The first exit of `room` to `target` that is lock-free or open now; locks never close (X12). */
+  /** The first exit of `room` to `target` that is present (module `flags`) and lock-free or open now; locks never close
+   *  (X12). */
   const openExit = (room: RoomId, target: RoomId): HotspotKey | null => {
     for (const h of ix.rooms.get(room)?.room.hotspots ?? []) {
       const key = hotspotKey(room, h.id);
-      if (h.kind === 'exit' && 'room' in h.to && h.to.room === target && (h.lock === null || current.open.includes(key))) {
+      if (h.kind === 'exit' && 'room' in h.to && h.to.room === target && (h.lock === null || current.open.includes(key)) && shown(world, current, key)) {
         return key;
       }
     }
