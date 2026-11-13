@@ -813,3 +813,17 @@ test('reconcile: a moved setter clears its flag until a current setter runs', ()
     expect([resets(admitted.effects), admitted.state.taken, admitted.state.flags], `${form} (kept beside)`).toEqual([false, ['hall.oil'], ['lamp_lit']]);
   }
 });
+
+test('reconcile: re-armed flags follow source order', () => {
+  // v2's mark sets `g`, then `f` (D6'' Rule: the save's flags in save order, then the re-armed ones in source order).
+  const raw = rawWorld({ s: ['hall', { hall: room([look('mark', [{ set: 'g' }, { set: 'f' }]), exit('out', { story: 'end' })]) }] }, [], { f: 's', g: 's' });
+  for (const { form, w } of forms(raw)) {
+    const v2 = { ...w, version: 'v2' };
+    // v1's mark had an empty `then`: both re-arm from `examined`, in the order a v2 tap of the mark sets them.
+    expect(reconcile(v2, at('hall', { examined: [k('hall.mark')] }), NO_KNOTS, 'v1').state.flags, form).toEqual(['g', 'f']);
+    expect(reduce(v2, at('hall'), tap('hall.mark')).state.flags, `${form} (played)`).toEqual(['g', 'f']);
+    // v1's mark set only `f`: the save's `f` keeps its place, and `g` re-arms after it.
+    const saved = at('hall', { examined: [k('hall.mark')], fired: ['then:hall.mark'], flags: [fl('f')] });
+    expect(reconcile(v2, saved, NO_KNOTS, 'v1').state.flags, `${form} (saved first)`).toEqual(['f', 'g']);
+  }
+});
