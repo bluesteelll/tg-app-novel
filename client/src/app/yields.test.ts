@@ -2980,6 +2980,16 @@ test('yields: a move away from a reached answer cancels its pending post', async
   r.yields.dispose();
 });
 
+test('yields: a dial change on a commit frame is no move away - awaiting stays null', async () => {
+  // Only a reach frame moves away (D8); a commit frame keeps `awaiting: null` (D10), so its Try stays as built.
+  const r = rig();
+  await r.yields.onYield({ kind: 'puzzle', puzzle: DRAWER, then: AFTER });
+  expect(r.puzzle.frame?.awaiting).toBeNull();
+  r.yields.host.onchange([2, 1, 0, 3]);
+  expect(r.puzzle.frame?.awaiting).toBeNull();
+  r.yields.dispose();
+});
+
 test('yields: a mismatch resets the device and shows the update toast', async () => {
   // A wrong reply to a reach post (engine plan §7.4): the device returns to its start answer with its one cue,
   // `puzzle:reset`, which ends the answer hold; the sticky update toast and a console line follow. Nothing was counted:
