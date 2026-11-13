@@ -833,3 +833,57 @@ test('reconcile: re-armed flags follow source order', () => {
     expect(reconcile(v2, saved, NO_KNOTS, 'v1').state.flags, `${form} (saved first)`).toEqual(['f', 'g']);
   }
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM5f fix3 (G1, G2): an event fact proves only its own trigger's run. Each v2 hall holds a set-only setter of `f` beside
+// another hotspot or puzzle of the same kind, and `f` gates the note, so a flag re-armed from the other's fact would be
+// a key no play produces (a restart). The own control loads the same world with the setter's own fact as well: the fact
+// is read by its key, not by its kind.
+
+/** The source world whose hall holds `hotspots`, a note `f` gates and the way out; `f` declared in `s`. */
+function noteHall(hotspots: readonly Json[], items: readonly string[] = [], extra: Json = {}): Json {
+  return { ...rawWorld({ s: ['hall', { hall: room([...hotspots, when(look('note'), { flag: 'f' }), exit('out', { story: 'end' })]) }] }, items, { f: 's' }), ...extra };
+}
+
+/** Under v2 `raw`, both forms: `other` (no setter of `f` has run) loads with no flag and resumes; `own` gets `f`. */
+function keyedByTarget(raw: Json, other: WorldState, own: WorldState): void {
+  for (const { form, w } of forms(raw)) {
+    const v2 = { ...w, version: 'v2' };
+    const r = reconcile(v2, other, NO_KNOTS, 'v1');
+    expect([r.state.flags, resets(admitSection(v2, r.state, S).effects)], form).toEqual([[], false]);
+    expect(reconcile(v2, own, NO_KNOTS, 'v1').state.flags, `${form} (own)`).toEqual(['f']);
+  }
+}
+
+test("reconcile: another look's examined does not re-arm a look's then", () => {
+  const raw = noteHall([look('mark', [{ set: 'f' }]), look('plaque')]);
+  keyedByTarget(raw, at('hall', { examined: [k('hall.plaque')] }), at('hall', { examined: [k('hall.plaque'), k('hall.mark')] }));
+});
+
+test("reconcile: another take's taken does not re-arm a take's then", () => {
+  const raw = noteHall([{ ...take('medal', 'medal'), then: [{ set: 'f' }] }, take('coin', 'coin')], ['medal', 'coin']);
+  const own = at('hall', { taken: [k('hall.coin'), k('hall.medal')], held: [it('coin'), it('medal')] });
+  keyedByTarget(raw, at('hall', { taken: [k('hall.coin')], held: [it('coin')] }), own);
+});
+
+test("reconcile: another lock's open does not re-arm a lock's onOpen", () => {
+  // The lever's unlock opened the box (no slot); the safe's onOpen sets `f` and needs the coin.
+  const shut = (onOpen: readonly Json[]): Json => ({ slots: [], puzzle: null, locked: txt(), onOpen, onFail: [] });
+  const raw = noteHall(
+    [object('lever', [{ unlock: 'hall.box' }]), { ...object('box'), lock: shut([]) }, { ...object('safe'), lock: { ...shut([{ set: 'f' }]), slots: [{ accepts: 'coin' }] } }, take('coin', 'coin')],
+    ['coin'],
+  );
+  const leverRan = { fired: ['then:hall.lever'] };
+  const own = at('hall', { ...leverRan, taken: [k('hall.coin')], used: [it('coin')], slots: { [k('hall.safe')]: [it('coin')] }, open: [k('hall.box'), k('hall.safe')] });
+  keyedByTarget(raw, at('hall', { ...leverRan, open: [k('hall.box')] }), own);
+});
+
+test("reconcile: another puzzle's failed outcome does not re-arm a lock's onFail", () => {
+  // Both puzzles fail after one wrong attempt (`codePuzzle`), so each save is one play produces.
+  const lock = (puzzle: string, onFail: readonly Json[]): Json => ({ slots: [], puzzle, locked: txt(), onOpen: [], onFail });
+  const raw = noteHall([{ ...object('box'), lock: lock('dial', [{ set: 'f' }]) }, { ...object('chest'), lock: lock('wheel', []) }], [], {
+    puzzles: { dial: codePuzzle(), wheel: codePuzzle() },
+  });
+  const failed = { outcome: 'failed', attempts: 1, hintsOpened: 0 } as const;
+  keyedByTarget(raw, at('hall', { puzzles: { [pz('wheel')]: failed } }), at('hall', { puzzles: { [pz('dial')]: failed, [pz('wheel')]: failed } }));
+});
