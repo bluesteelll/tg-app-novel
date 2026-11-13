@@ -12,6 +12,7 @@
   // effect, as the explore layer's is (RULINGS 201 E1: no `use:` action): its controls emit to `oncue`, the session's
   // bus through yields, which moves each point from the root's px to the stage host's.
   import { cueRoot } from '../../cues/root.ts';
+  import type { GestureCue } from '../../cues/types.ts';
   import { t } from '../../i18n/index.ts';
   import type { PuzzleHostProps } from '../puzzle-view.svelte.ts';
   import HintLadder from './HintLadder.svelte';
@@ -29,6 +30,7 @@
     onusehint,
     ongetmore,
     oncue,
+    onreach,
   }: PuzzleHostProps = $props();
 
   const uid = $props.id();
@@ -37,7 +39,8 @@
 
   const ended = $derived(frame !== null && (frame.line === 'solved' || frame.line === 'failed'));
   const waiting = $derived(frame !== null && frame.retryAfter !== null && frame.retryAfter > 0);
-  const canTry = $derived(frame !== null && frame.ui !== null && !frame.busy && !ended && !waiting);
+  // A reach frame's Try re-posts its reached answer, so it is off while nothing awaits (`awaiting` false).
+  const canTry = $derived(frame !== null && frame.ui !== null && !frame.busy && !ended && !waiting && frame.awaiting !== false);
   const canGiveUp = $derived(frame !== null && frame.mode === 'linear' && frame.giveUp && !ended);
   const asking = $derived(frame !== null && askingFor === frame.id);
 
@@ -101,6 +104,20 @@
       cues?.update(oncue);
     }
   });
+
+  /**
+   * A type UI's gesture step (engine plan §8.3; GM7r) as its control's `ui` cue on the host's `oncue`: the step's part
+   * cell is its element, which the stage's `control` motion plays on; no point, so yields moves nothing.
+   */
+  function gesture(name: GestureCue, index: number): void {
+    oncue?.({
+      cue: { kind: 'ui', control: name, item: null, index },
+      box: null,
+      point: null,
+      diff: [],
+      el: root?.querySelector(`[data-cue-part="${index}"]`) ?? null,
+    });
+  }
 </script>
 
 {#if frame !== null}
@@ -119,7 +136,16 @@
             </div>
           {:else if frame.ui !== null}
             {@const Ui = frame.ui}
-            <Ui params={frame.params} answer={frame.answer} busy={frame.busy || ended} {lang} {onchange} {item} />
+            <Ui
+              params={frame.params}
+              answer={frame.answer}
+              busy={frame.busy || ended}
+              {lang}
+              {onchange}
+              {item}
+              {onreach}
+              oncue={gesture}
+            />
           {/if}
         </div>
         <p class="status" role="status" data-cue-status>{status}</p>

@@ -37,6 +37,11 @@ export type PuzzleFrameView = {
   attemptsLeft: number | null;
   /** Seconds left before Try opens again after a 429; GameSession owns the countdown. */
   retryAfter: number | null;
+  /**
+   * A reach frame's reached answer awaits a decisive reply (engine plan §7.5): true from the type UI's report until a
+   * move away or a mismatch; false while nothing is reached, and Try is off. Null for a commit frame: Try as built.
+   */
+  awaiting: boolean | null;
   /** The puzzle allows Give up; the frame offers it in a linear puzzle only. */
   giveUp: boolean;
   hintTiers: number;
@@ -71,6 +76,11 @@ export type PuzzleHostCallbacks = {
    * host without a bus (a test's) plays none.
    */
   oncue?: (e: CueEvent) => void;
+  /**
+   * A reach type UI's report (engine plan §7.4, §7.5; GM7r): the working answer turned reached, `canonical` its posted
+   * form. yields posts it once per solve; a commit frame ignores it. Optional: a host that opens no reach type needs none.
+   */
+  onreach?: (canonical: readonly number[]) => void;
 };
 
 /**
@@ -89,6 +99,7 @@ export function forwardHost(get: () => PuzzleHostCallbacks | undefined): PuzzleH
     onusehint: (tier) => get()?.onusehint(tier),
     ongetmore: () => get()?.ongetmore(),
     oncue: (e) => get()?.oncue?.(e),
+    onreach: (c) => get()?.onreach?.(c),
   };
 }
 
