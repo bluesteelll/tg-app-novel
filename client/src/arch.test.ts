@@ -111,9 +111,11 @@ const PURE_WORLD_FILES = [
   'puzzles/rules/code.ts',
   'puzzles/rules/order.ts',
   'puzzles/rules/path.ts',
+  'puzzles/rules/grid.ts',
   'puzzles/play/code.ts',
   'puzzles/play/order.ts',
   'puzzles/play/path.ts',
+  'puzzles/play/grid.ts',
   'explore/state.ts',
   'explore/reduce.ts',
   'explore/project.ts',
@@ -1130,6 +1132,7 @@ test('arch: pure world modules', () => {
  */
 const LAZY_COMPONENTS = [
   'puzzles/ui/CodeLock.svelte',
+  'puzzles/ui/GridPuzzle.svelte',
   'puzzles/ui/OrderPuzzle.svelte',
   'puzzles/ui/PathPuzzle.svelte',
   'ui/puzzles/PuzzleHost.svelte',
@@ -1174,6 +1177,7 @@ test('arch: lazy ui only by dynamic import', () => {
   }
   expect(dynamicLazyTargets('puzzles/registry.ts', SOURCES['puzzles/registry.ts'] ?? '')).toEqual([
     'puzzles/ui/CodeLock.svelte',
+    'puzzles/ui/GridPuzzle.svelte',
     'puzzles/ui/OrderPuzzle.svelte',
     'puzzles/ui/PathPuzzle.svelte',
   ]);

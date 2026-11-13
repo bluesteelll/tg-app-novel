@@ -409,6 +409,20 @@ test('rules: grid places a symbol only on a free cell, and only as a change', ()
   expect(place(G22, [1, 0, 0], 1, 2), 'a length mismatch').toBeNull();
 });
 
+/** The grid's two controls join `ControlCue` through the registry, with no cues/types.ts edit (tsc: false before). */
+const GRID_CONTROLS: 'grid-cell' | 'grid-symbol' extends ControlCue ? true : false = true;
+
+test('puzzles: grid declares its cell and its symbol', () => {
+  expect(GRID_CONTROLS).toBe(true);
+  // Both are activations, no gesture: `GestureCue` stays the path's stroke alone (PATH_GESTURE above).
+  expect(GRID_RULES.controls).toEqual([
+    { name: 'grid-cell', on: 'click' },
+    { name: 'grid-symbol', on: 'click' },
+  ]);
+  expect(uiMotion('grid-cell')).toEqual(UI_MOTIONS.control);
+  expect(uiMotion('grid-symbol')).toEqual(UI_MOTIONS.control);
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // The type registry (engine plan §7.1, §7.3): the pins every type's data half keeps, each checked against fixtures
 // that break it, so a checker that lost a rule is red here and not only on a future type.
@@ -475,7 +489,7 @@ test('puzzles: every type has a data half, a loader and a lint', () => {
   const types = PUZZLE_TYPES.map((t) => t.type);
   expect(new Set(types).size).toBe(types.length);
   const sorted = [...types].sort();
-  expect(sorted).toEqual(['code', 'order', 'path']);
+  expect(sorted).toEqual(['code', 'grid', 'order', 'path']);
   expect(Object.keys(PUZZLE_RULES).sort()).toEqual(sorted);
   expect(Object.keys(PUZZLE_UI).sort()).toEqual(sorted);
   expect(Object.keys(PUZZLE_LINTS).sort()).toEqual(sorted);
@@ -483,15 +497,16 @@ test('puzzles: every type has a data half, a loader and a lint', () => {
     // The keyed view is the registry's own object, not a copy that could drift from it.
     expect(PUZZLE_RULES[t.type], t.type).toBe(t);
     expect(PUZZLE_UI[t.type], t.type).toBeTypeOf('function');
-    // `code`, `order` and `path` save no working configuration and demonstrate nothing (§7.2).
+    // `code`, `order`, `path` and `grid` save no working configuration and demonstrate nothing (§7.2).
     expect('workFits' in t, t.type).toBe(false);
     expect('demo' in t, t.type).toBe(false);
   }
   // The commit types' start configuration is shown before any input (§7.1 `startShown`; per-player's floor excludes
-  // it); a path shows no full-length configuration before input.
+  // it); a path shows no full-length configuration before input, a grid its givens and blanks.
   expect(code.startShown(DIALS4)).toEqual(code.initial(DIALS4));
   expect(order.startShown(MEDALS)).toEqual(order.initial(MEDALS));
   expect(PUZZLE_RULES.path.startShown(P32)).toBeNull();
+  expect(PUZZLE_RULES.grid.startShown(G23)).toEqual(PUZZLE_RULES.grid.initial(G23));
 });
 
 test('puzzles: a commit type posts its wrong answers; a reach type has none or a local one', () => {
@@ -547,6 +562,8 @@ test('puzzles: a commit type checks its solution and a reach type solves, reache
   // A reach type's lint half reads the play half's own rule (R8, R8b): the device's `reached` and `canonical`.
   expect(PUZZLE_LINTS.path.reached).toBe(PATH_PLAY.reached);
   expect(PUZZLE_LINTS.path.canonical).toBe(PATH_PLAY.canonical);
+  expect(PUZZLE_LINTS.grid.reached).toBe(GRID_PLAY.reached);
+  expect(PUZZLE_LINTS.grid.canonical).toBe(GRID_PLAY.canonical);
   // The checker against its own fixtures: each misses one member set; the full ones pass.
   const count = (): 1 => 1;
   const valid = (): null => null;
@@ -606,7 +623,7 @@ test('puzzles: a fixture type passed as types decodes in a world', () => {
     expect(r.value.puzzles[GATE]?.params).toBe(TUMBLER_PARAMS);
   }
   // Without `types` the decoder knows PUZZLE_TYPES only, and names them.
-  const issue = { ok: false, error: [{ path: 'puzzles.gate.type', reason: 'shape', detail: '"tumbler" is not code or order or path' }] };
+  const issue = { ok: false, error: [{ path: 'puzzles.gate.type', reason: 'shape', detail: '"tumbler" is not code or order or path or grid' }] };
   expect(decodeWorldPublic(publicRaw)).toEqual(issue);
   expect(decodeWorldSource(sourceRaw)).toEqual(issue);
 });
