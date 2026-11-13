@@ -210,6 +210,24 @@ test('flags: module effects run at their source indices', () => {
   }
 });
 
+test('flags: two sets in one trigger run in source order', () => {
+  // A trigger's own module effects, two of them: the look's two sets, and the box's two sets around a kernel give. The
+  // writer records each at its source index, so the flags and their cues keep the author's order.
+  const raw = rawWorld(
+    { s: ['hall', { hall: room([look('a', [{ set: 'f' }, { set: 'g' }]), object('box', [{ set: 'f' }, { give: 'x' }, { set: 'g' }]), exit('out', { story: 'end' })]) }] },
+    ['x'],
+    { f: 's', g: 's' },
+  );
+  for (const { form, w } of forms(raw)) {
+    const r = reduce(w, at('hall'), tap('hall.a'));
+    expect(r.state.flags, form).toEqual(['f', 'g']);
+    expect(factCues(r.effects), form).toEqual(['examined:hall.a:added', 'fired:then:hall.a:added', 'flag:f:added', 'flag:g:added']);
+    const box = reduce(w, at('hall'), tap('hall.box'));
+    expect(factCues(box.effects), form).toEqual(['fired:then:hall.box:added', 'flag:f:added', 'held:x:added', 'flag:g:added']);
+    expect([box.state.flags, box.state.held], form).toEqual([['f', 'g'], ['x']]);
+  }
+});
+
 test('flags: the declarations and set effects decode, every fault in one pass', () => {
   // The clean world decodes with its declarations and its set at `<trigger>#<source index>`.
   const raw = rawWorld({ s: ['hall', { hall: room([object('box', [{ give: 'x' }, { set: 'f' }]), exit('out', { story: 'end' })], [{ set: 'g' }]) }] }, ['x'], { f: 's', g: 's' });
