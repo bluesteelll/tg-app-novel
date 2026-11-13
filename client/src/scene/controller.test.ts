@@ -8,6 +8,7 @@ import type { AssetId, BgId } from '../story/staging.ts';
 import { applyStep, restoreStep } from './controller.ts';
 import { createExecutor } from './executor.ts';
 import type { GroupRef, StageAdapter, VisualCommand } from './executor.ts';
+import { ENSURE_HOLDER } from './preload.ts';
 import type { StageWindow } from './preload.ts';
 import { createAssetRegistry } from './registry.ts';
 import type { AssetError, Decoded, LoadImage } from './registry.ts';
@@ -118,4 +119,27 @@ test("controller: an entry's restore takes its slots from their halves", async (
   await restoreStep(later, { bg: 'x' as BgId, cg: null, chars: [], props: [] });
   expect(later.urls[0]).toBe('/assets/x.avif');
   expect(later.registry.previews()).toEqual([]);
+});
+
+test("controller: a step lets go of the batch's ensure holder once its slots are taken (D7)", async () => {
+  // The game's stage ensures every id of a step under ENSURE_HOLDER, then applies (or restores) it. Once the slots are
+  // taken, an ensured id the step does not show is held by nothing and is dropped (principle 4: textures released
+  // after a scene); the shown one stays live under its slot.
+  const rows: unknown[] = [];
+  for (const step of ['apply', 'restore'] as const) {
+    const p = parts();
+    const y = 'bg/y' as AssetId; // test fixture id, ensured but not shown
+    const ensured = await Promise.all([BG_X, y].map((id) => p.registry.acquire(id, ENSURE_HOLDER, { entry: X, priority: 'visible' })));
+    const before = [p.registry.state(BG_X), p.registry.state(y)];
+    if (step === 'apply') {
+      await applyStep(p, [CUT], { instant: true, window: W });
+    } else {
+      await restoreStep(p, { bg: 'x' as BgId, cg: null, chars: [], props: [] });
+    }
+    rows.push([step, ensured.map((r) => r.ok), before, p.registry.state(BG_X), p.registry.state(y)]);
+  }
+  expect(rows).toEqual([
+    ['apply', [true, true], ['live', 'live'], 'live', 'none'],
+    ['restore', [true, true], ['live', 'live'], 'live', 'none'],
+  ]);
 });
