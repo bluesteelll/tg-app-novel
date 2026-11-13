@@ -1398,6 +1398,9 @@ test('writer: a fact cue with no hotspot needs no box', () => {
   walk(manor({ golden: true }), MANOR);
   // A start room whose onEnter gives an item and runs an event knot.
   walk(world({ items: ['coin'], sections: { s: { start: 'hall', rooms: { hall: room([exit('out', { story: 'end' })], [{ give: 'coin' }, { story: 'voice' }]) } } } }), sec('s'));
+  // A start room whose onEnter unlocks a lock of its own and sets a flag (module `flags`, GM5f).
+  const den = room([object('chest', lock(['coin'])), exit('out', { story: 'end' })], [{ unlock: 'den.chest' }, { set: 'f' }]);
+  walk(world({ items: ['coin'], flags: { f: 'g' }, sections: { g: { start: 'den', rooms: { den } } } }), sec('g'));
   expect([...lost]).toEqual([]);
   // The positive control: the walks met cues with no hotspot.
   expect(homeless).toBeGreaterThan(0);

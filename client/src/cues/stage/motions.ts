@@ -140,7 +140,9 @@ export const CUE_MOTIONS: { readonly [K in Exclude<CueKey, ControlKey>]: MotionS
   'fact:taken:removed': row('glint', 420, 'box'),
   'fact:examined:added': row('tick', 360, 'box'),
   'fact:examined:removed': row('tick-back', 360, 'box'),
-  'fact:open:added': row('burst', 480, 'box', { haptic: 'success' }),
+  // An `onEnter` unlock (a section entry, a walk) opens a lock with no hotspot of its cause: it sweeps the stage, as the
+  // trigger's `fired` does, with no haptic.
+  'fact:open:added': row('burst', 480, 'box', { haptic: 'success', byCause: { enter: row('sweep', 600, 'stage') } }),
   'fact:open:removed': row('iris-back', 360, 'box'),
   'fact:slot:added': row('drop', 420, 'ribbon', { resolveAt: 'emit', haptic: 'light' }),
   'fact:slot:removed': row('fly', 480, 'ribbon', { with: [SLOT_PULSE] }),
