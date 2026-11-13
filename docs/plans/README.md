@@ -38,6 +38,13 @@ after a fix round the orchestrator's pre-merge verifiers asked for (RULINGS 271,
 approved design on the shelf (RULINGS 290); engine GM4 runs (lane A, RULINGS 285) and carries the critical path; next,
 engine GM4u after GM4 in lane A and shots SH5a in lane C after the docs lane `docs-errata-17` (RULINGS 291), two lanes
 at most (RULINGS 255, 276); the rest is planned, in the one order below.
+Changed by RULINGS 292-316 (as of `48489b7`; docs lane `docs-errata-18`, group B): built since also engine GM4
+(`d695053`), GM4u (`aac7a97`; ch1's first committed view) and GM5 (`5190235`), and shots SH5a (`48489b7`; engine R
+2.603, RULINGS 314); GM5's and SH5a's merges each followed a fix round the orchestrator's pre-merge verifiers asked for
+(RULINGS 310, 311); P2-b, measured in GM5, triggered the conditional lane GM5q (RULINGS 309); the lever Y stays an
+approved design on the shelf (RULINGS 314); engine GM5q runs (lane A, RULINGS 313, 316) and carries the critical path;
+next, engine GM5f after GM5q in lane A and shots SH5b in lane C after the docs lane `docs-errata-18` (RULINGS 315), two
+lanes at most (RULINGS 255, 276); the rest is planned, in the one order below.
 
 - [engine](engine/README.md) — the mechanics engine: module contract, world data, puzzle types, the cue union and bus, lanes GM1a-GM9r.
 - [per-player](per-player/README.md) — per-player codes and labels on the art: the server half, the values store, labels, lanes GM6a-GM6d2.

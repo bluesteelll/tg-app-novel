@@ -62,6 +62,17 @@
 - **Carried from SH2 (RULINGS 207):** SH2's critique O3: this lane adds `Room.view`, so it adds a fixture with a real view
   and runs SH2's mutation M-SH2g (`shot/room-frame` skips views) in its original form, red on `shots: a view whose bg
   is declared as an insert fails` (SH2 restated it on rooms, having no view to test).
+- **Ruled since: RULINGS 285, 286, 287, 288, 292** — launched from `56cc302` in lane A. **Lock 19 as ruled:** the 12
+  above, plus RULINGS 286 Q1's six (`client/src/mechanics/registry.test.ts`, `client/src/mechanics/rules/core.ts`
+  (`how` and the exported `arrive`, typed on `KernelWriter`), `client/scripts/story/{softlock,playthrough}.ts` (one
+  hunk each), `client/scripts/story/shots/shots.test.ts` (M-SH2g), `client/scripts/story/build.test.ts` (emit's view
+  red-first)) and RULINGS 288 Q10's `client/scripts/story/world.test.ts` (two moved assertions: the room-key message
+  gains `view`, the registered codes gain `VIEW_LINT`'s four). Commits C1-C4 (the commit (3) round trip pinned
+  "once" for a leaf view and "twice" for a view with another neighbour, cut §1.3a) and riders R1, R2; round 1's F1
+  fixed test-only (`ff27852`); round 2's R2-C (main's pre-existing `dead ||` in Back's walk branch) carried to GM4u.
+  Merged `d695053`: 19 files, 23 new vitest names (tag GM4; 1756), e2e 104 by name; story-gen and content
+  byte-identical; engine +154 B (E 0.09; sample 1.711, later replaced by the GM4 + GM4u pair's 4.60, RULINGS 296 Q2,
+  304); explore-ui +291 B ([§6.3](06-mechanics-as-modules.md#63-view-full-screen-zoom-views-gm4-o5) as built).
 
 ### GM4u `mech-view-ui` (new)
 - **Goal:** the view bar's leave control (`ui:view-leave`), the demo view, the e2e.
@@ -76,6 +87,15 @@
   declares its cue` covers it; (2) the demo view; e2e `mechanics: zoom into the desk and back with the BackButton and with
   the leave control`, `mechanics: a reload inside a view resumes there and offers Back`.
 - **Gates:** check, test, story, build (explore-ui; world bytes per hotspot MEASURED), e2e full.
+- **Ruled since: RULINGS 286, 293, 296, 298, 300, 302, 304** — launched from `d695053` in lane A. **Lock 14 as ruled:**
+  the 8 above, plus `client/scripts/story/world.ts` and `client/scripts/story/world.test.ts` (RULINGS 286 Q2: the
+  one-way-exit exemption), `client/src/explore/controller.test.ts` test-only (GM4's R2-C and G-M1), and
+  `client/scripts/story/mechanics/view.ts` with `client/src/mechanics/view.test.ts` (A-1: a start view refused), and
+  one line of `client/src/cues/stage/stage.svelte.test.ts` (RULINGS 296 Q1, `onleaveview: no`). Merged `aac7a97`: 14
+  files, 7 new vitest names (tag GM4U; 1763) and 2 e2e (106); engine +306 B (the GM4 + GM4u pair's R sample 4.60
+  replaces GM4's 1.711, RULINGS 296 Q2, 304); explore-ui +89 B. The leave control, the demo `desk_view`, the depth-2
+  and start-view rulings, the via-less zoom-out's box and M-MEM-1's correction:
+  [§6.3](06-mechanics-as-modules.md#63-view-full-screen-zoom-views-gm4-o5) as built.
 
 ### GM5 `mech-combine`
 - **Goal:** §6.2; P2-b with real views and recipes (§7.6). Round 4 (m6): if P2-b shows a view-heavy section past the
@@ -95,8 +115,24 @@
   `fixWorldIds` from `client/scripts/story/fix.ts` over a fixture world whose `recipes.0.say` has no `id`: it is in
   `skipped` with "the text is under no item, doc, puzzle or section", absent from `added`, and the world lint reports
   `id/missing` at it; a pin of `fix.ts:208`, `:241-244` as built, green on the parent; a red means the tool's owner
-  rule changed and §3.2's statement is stale).
+  rule changed and §3.2's statement is stale). **Ruled: RULINGS 306** (Q4) — both tests live in
+  `client/scripts/story/world.test.ts` (`:2035`, `:2047` as merged), not in `combine.test.ts`: the app test program
+  must not reach `world.ts` / `fix.ts`.
 - **Gates:** check, test, story, build, e2e full.
+- **Ruled since: RULINGS 305, 306, 307, 308, 309, 310, 312** — launched from `aac7a97` in lane A. **Ruled: RULINGS
+  306** — **lock 22:** the 15 above, plus `client/src/ui/explore/ExploreView.svelte`, `client/src/cues/stage/motions.test.ts`
+  and `client/scripts/story/world.test.ts` (RULINGS 305: 18), plus Q1's four: `client/src/mechanics/registry.test.ts`
+  (the strict registry pins and `kinds`), `client/scripts/story/softlock.ts` (one `case 'combine'`),
+  `client/src/explore/reduce.ts` (`look.at` widened to `| null`, type only) and one line of
+  `client/src/cues/stage/stage.svelte.test.ts`; **E_engine 0.2** (the decoder is engine-side; STOP +1.033 KB; GM5f
+  restates its own term), E_explore 0.6; one refusal, one error haptic (`refused-with` carries none). RULINGS 307:
+  keep-both refused (W1 (a)), the bar stays centred (M1's stable slot withdrawn), the commutation property compares
+  B's steps; RULINGS 308: bar taps through `h.tap` only in a batch that flips `inView` over a shown layer; RULINGS 309:
+  P2-b ruled, GM5q runs; RULINGS 310: fix2 (G-LAYER's pin, three more pins, `barShift` cleared in a `finally`, one
+  giver per product). No demo recipe (Q5: carried to the next ch1 content lane). Merged `5190235`: 22 files, 37 new
+  vitest names (tag GM5; 1800), e2e 106 by name; story-gen and content byte-identical; engine +580 B (sample 2.90),
+  explore-ui +565 B ([§6.2](06-mechanics-as-modules.md#62-combine-gm5-r11) and
+  [§7.6](07-puzzle-types.md#76-state-space-budget-and-spike-p2-r2-m4) as built).
 
 ### GM5q `mech-place-quotient` (round 4, m6; only if P2-b demands it)
 - **Goal:** the place quotient for views (synthesis §3.7): `sectionKey` abstracts which view of a room the player is
@@ -109,6 +145,11 @@
 - **Commits:** (1) `search: equal quotient keys have equal successor keys` (seeded; seen red on a gated view entry,
   the mutation that drops the "no gating rule reads the view" condition); (2) P2-b re-run with the quotient, reported.
 - **Gates:** check, test, story (ch1 406 states unchanged; the P2-b section under the cap), build.
+- **Ruled: RULINGS 309** — P2-b triggered it: `views+recipes-real` is at the cap on every seed
+  ([§7.6](07-puzzle-types.md#76-state-space-budget-and-spike-p2-r2-m4)), so GM5q runs next in lane A after GM5's
+  merge, with this lock (4). Its STOP: `views+recipes-real` still at the cap on any seed with the quotient, back to the
+  orchestrator for §7.6's response (3). The ms per section only on a quiet machine. (Its launch and cut are RULINGS
+  313's, after this docs lane's scope.)
 
 ### GM5f `mech-flags`
 - **Goal:** §6.5 (round 3: `fact:flag:removed` gets its row, §8.4).

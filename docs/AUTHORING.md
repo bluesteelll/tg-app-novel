@@ -311,8 +311,8 @@ Two rules for whoever delivers character and prop art (pass them on with an asse
 
 - **The expressions of one character share one canvas, and every character and prop canvas has even sides.** The
   asset tool refuses anything else, so `npm --prefix client run assets` and `npm --prefix client run build` fail
-  ([manifest.ts:216-240](../client/scripts/assets/manifest.ts#L216), printed by
-  [assets.ts:140-147](../client/scripts/assets.ts#L140)), with these message shapes:
+  ([manifest.ts:273-297](../client/scripts/assets/manifest.ts#L273), `canvasProblems`, printed by
+  [assets.ts:590-595](../client/scripts/assets.ts#L590)), with these message shapes:
 
   ```text
   assets: char/<char>/<expr>: canvas <w>×<h> has an odd side (char and prop canvases are even)
@@ -328,7 +328,7 @@ Two rules for whoever delivers character and prop art (pass them on with an asse
 
 Keep the transparent margin around the figure as it is: the asset tool cuts every character and prop file to its
 visible pixels plus 2 px and stores where that box sat on the canvas, so the sprite still stands where the full canvas
-puts it ([encode.ts:12](../client/scripts/assets/encode.ts#L12), `encodeImage` :75;
+puts it ([encode.ts:18](../client/scripts/assets/encode.ts#L18), `TRIM_MARGIN`; `encodeImage` :174;
 [ARCHITECTURE.md](ARCHITECTURE.md#texture-memory-and-the-context-loss-revive)). Backgrounds, CGs and covers are never
 cut.
 
@@ -541,6 +541,46 @@ own section (`world/cross-section-exit`; both are rows of [STAGING-DSL §11](STA
 table). An exit `{ "story": "<knot>" }` is how the player **leaves** the section; every section needs one the player
 can always reach (the soft-lock check, below).
 
+**Zoom views** (Changed by RULINGS 286, 292, 296, 300, 304 (as of `48489b7`; docs lane `docs-errata-18`, group A); as
+merged, GM4 `d695053` and GM4u `aac7a97`). A room with `"view": { "of": "<room id>" }` is a **view** of the room `of`,
+its parent: a full-screen close-up the player enters through an ordinary exit of the parent. A view is a full room
+otherwise (its own `bg`, `title`, `onEnter` and hotspots). The key is strict: exactly `of`, a room id; anything else is
+`world/schema` at `<room>.view` ([data/view.ts:20-45](../client/src/mechanics/data/view.ts#L20)). The demo's first
+view is ch1's `desk_view`: the study's exit `to_desk` enters it, and it has no exit back and no hotspot
+([story/ch1/world.json:121-123](../story/ch1/world.json#L121), `:142`):
+
+```json
+{ "id": "to_desk", "kind": "exit", "rect": [450, 700, 400, 250],
+  "label": { "id": "ch1.manor.l012", "ru": "Look over the desk" },
+  "to": { "room": "desk_view" }, "lock": null, "sfx": null }
+```
+
+```json
+"desk_view": { "bg": "room", "title": { "id": "ch1.manor.r004", "ru": "Writing desk" },
+               "onEnter": [], "hotspots": [], "view": { "of": "study" } }
+```
+
+- **In and out.** Only the parent has an exit into a view (`world/view-entry`). A view's exits lead back to its parent
+  or into its own child views; a story exit is allowed (`world/view-exits`). A view of a view is the deepest
+  (`world/view-depth`), and a parent is a room of the view's own section (`world/view-section`). A section never
+  starts in a view: a `start` naming one is `world/view-entry` at `sections.<section>.start` (RULINGS 296). The four
+  codes are in [Module and type lint codes](#module-and-type-lint-codes).
+- **No exit back needed.** An exit into a view, at any depth, needs no exit back: `world/one-way-exit` skips it
+  ([world.ts:601-606](../client/scripts/story/world.ts#L601)). The player leaves a view with Telegram's Back button or
+  the leave control in the room's bar; both run `leave-view`, one level up to the parent. A view of a view cannot have
+  an exit back to its parent view (`world/view-entry`), so it leaves by `leave-view` only.
+- **`leave-view` ignores locks.** A locked exit back from a view does not hold the player, so a view is never a trap.
+- **Back walks the way the player came.** Back in a view leaves one level per press. After a zoom-out, Back from the
+  parent walks the path the player took to the parent, never back into the view. A reload inside a view resumes there
+  and offers Back.
+- **Enter every view from its parent.** A view no exit enters builds with `world/unreachable` (W) only. If a story
+  update removes a view's only entering exit, every save standing in that view **restarts its section** on load (the
+  area-reset toast) and loses that section's progress (RULINGS 300).
+- **Art.** A view's `bg` is a room background; in a shot chapter its shot has frame `room` (`shot/room-frame`,
+  [STAGING-DSL §14.3](STAGING-DSL.md#143-shot-lint-codes)). The budget pairs a view with its parent: a view's
+  neighbours are its parent first, then the rooms of its exits ([STAGING-DSL §8](STAGING-DSL.md#8-assets-and-preloading),
+  `room-set`).
+
 ### Locks and slots
 
 A lock sits on an `exit` or an `object`: `{ slots, puzzle, locked, onOpen?, onFail }` (PUZZLES-PLAN "Lock"):
@@ -560,7 +600,7 @@ The example's front door is a one-slot lock without a puzzle:
             "onFail": [] } }
 ```
 
-The lint's lock rules ([world.ts:571-641](../client/scripts/story/world.ts#L571); their rows of
+The lint's lock rules ([world.ts:633-703](../client/scripts/story/world.ts#L633); their rows of
 [STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces), second table):
 - a puzzle belongs to at most one lock (`world/puzzle-multi-lock`), and a lock's puzzle is never also yielded by a
   `puzzle` tag (`puzzle/in-section`);
@@ -582,6 +622,28 @@ Effects live in triggers: a room's `onEnter`, the `then` of a `look`, `take` or 
 `onOpen` and `onFail`. **Every trigger fires at most once** (PUZZLES-PLAN "Effects"). Re-entering the study does not
 run `study_voice` again; tapping an opened desk does not give a second key. An item or document is given in one
 section only (`world/cross-section-effect`).
+
+**Recipes** (Changed by RULINGS 306, 307, 310, 312 (as of `48489b7`; docs lane `docs-errata-18`, group A); as merged,
+GM5 `5190235`; no committed chapter has one yet). The optional top-level key `recipes` lists item combinations: the
+player selects an item in the ribbon and taps another one onto it, in either order
+([data/combine.ts:14-25](../client/src/mechanics/data/combine.ts#L14)):
+
+```json
+"recipes": [ { "a": "lens", "b": "frame", "gives": "spyglass",
+                "say": { "id": "ch1.recipes.s1py", "ru": "The lens clicks into the frame." } } ]
+```
+
+- `keep` (default `[]`) lists the inputs that stay held, a tool; at most one of the two: a recipe always uses up an
+  input (`world/schema` otherwise). `when` (default `null`) is a condition of the recipe's section; `say` (default
+  `null`) is a toast on every run. The first recipe of the pair whose `when` holds runs; with none, both items shake
+  and nothing changes.
+- A recipe's inputs come from one section, and its product has no other giver: no take, trigger, `use` rule or other
+  recipe, in any section, gives it, and no lock of another section accepts it (`world/recipe-scope`; [Module and type
+  lint codes](#module-and-type-lint-codes)). The player may combine anywhere, in any section.
+- A recipe's `say` needs its line ID by hand: `--fix-ids` skips it, because the text sits under no item, document,
+  puzzle or section, and the gate reports `id/missing` at it.
+- A recipe multiplies the states the soft-lock check explores ([World lint codes and soft-lock
+  counterexamples](#world-lint-codes-and-soft-lock-counterexamples), the per-section budget).
 
 ### The safe frame and target sizes
 
@@ -691,7 +753,7 @@ E story/ch1/main.ink:13 ink/forbidden '-> DONE' only directly after a puzzle or 
 ### Event knots
 
 A `{ "story": "<knot>" }` effect names an **event knot** of the section. The game runs it, then returns to the rooms.
-An event knot ([graph.ts:652-673](../client/scripts/story/graph.ts#L652);
+An event knot ([graph.ts:746-767](../client/scripts/story/graph.ts#L746);
 [STAGING-DSL §6 `explore`](STAGING-DSL.md#explore) "Effect", and the `explore/*` rows of STAGING-DSL §11, second
 table):
 - ends in its own section's yield, `# explore: <section>` then `-> DONE` (`explore/event-return`);
@@ -745,7 +807,7 @@ A wrong type fails: `VAR dc_note = 0` prints
 `world/var-type VAR dc_note is declared int: the projection writes a bool (X2)`. The seeded playthroughs write the
 same projection ([playthrough.ts:414-422](../client/scripts/story/playthrough.ts#L414)), which is how
 `pz_box 1,3` reaches the `play:` line. In the game the yield router writes them through `StoryRunner.enter`
-([yields.ts:403](../client/src/app/yields.ts#L403); L13 story-runtime, L15a).
+([yields.ts:814](../client/src/app/yields.ts#L814); L13 story-runtime, L15a).
 
 ### World lint codes and soft-lock counterexamples
 
@@ -754,7 +816,7 @@ The full list of `world/*`, `puzzle/*` and `explore/*` codes is the second table
 `world/softlock`.
 
 For each section the gate explores every state a player can reach and proves that each one can still reach a leave
-([softlock.ts:58-110](../client/scripts/story/softlock.ts#L58)). The `world:` line reports
+([softlock.ts:60-117](../client/scripts/story/softlock.ts#L60)). The `world:` line reports
 `softlock OK (<n> states)`, or `softlock FAIL (<k> of <n> sections)`. A failure prints the shortest action path to
 the first stuck state.
 
@@ -769,19 +831,36 @@ Read it left to right: the player taps the hall's exit to the study, sits throug
 desk's puzzle and fails it. The drawer never opens, the key never appears, and the front door stays locked. Fix the
 path, not the symptom: here `"onFail": [ { "unlock": "study.desk" } ]` forces the drawer open on failure, and the
 gate reports `softlock OK (26 states)`. The steps are `tap <room>.<hotspot>`, `insert <room>.<hotspot> <item>`,
-`return from <knot>` and `<step> → <puzzle> closed|solved|failed|abandoned`.
+`return from <knot>` and `<step> → <puzzle> closed|solved|failed|abandoned`; as merged (GM3, GM4, GM5) also
+`use <item> on <target>`, `leave view <room>` and `combine <a> + <b>`
+([softlock.ts:28-57](../client/scripts/story/softlock.ts#L28)). A playthrough's step names `leave-view` as
+`leave-view (current room)` ([playthrough.ts:121-125](../client/scripts/story/playthrough.ts#L121), `stepName`).
 
 A section with more than 5,000 states is `world/state-cap`: split it into smaller sections
 ([reduce.ts:28](../client/src/explore/reduce.ts#L28)). An item, document, room or puzzle no reachable state touches is
 `world/unreachable` (W). Both are rows of [STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces), second table, like
 `world/softlock`.
 
+**A per-section budget** (provisional until GM5q's measurement with the place quotient; Changed by RULINGS 309 (as of
+`48489b7`; docs lane `docs-errata-18`, group A); spike P2-b, MEASURED on eight seeds at ch1's density: 3 rooms, 11
+hotspots, 2 locks). Each feature multiplies a section's states roughly:
+- a section like that alone: 406-528 states;
+- zoom views at 2 per room: x2.8-2.9 (1,174-1,456 states);
+- one recipe (two takes and a product): x4.0-5.0 (1,868-2,300 states);
+- views at 2 per room **and** one recipe: over 5,000 on every seed, so `world/state-cap` fails. The real ch1 with one
+  recipe went from 540 to 1,284 states.
+
+Until GM5q lands, keep a section's product of factors under 5,000: put a recipe in a section with few views, or split
+the section (the `softlock OK (<n> states)` line shows where you stand).
+
 ### Module and type lint codes
 
 STAGING-DSL §11 lists the codes of `LINT_CODES` only. The mechanics engine's world passes and the puzzle types declare
 their own codes, outside that table, so a new mechanic never edits it
 ([engine §3.2](plans/engine/03-module-contract.md#32-the-two-halves-and-the-registries), "Lint codes"). The gate prints
-them like any other finding. As merged at `837b1ed` (every one is an error, E):
+them like any other finding. As merged at `837b1ed` (every one is an error, E); Changed by RULINGS 217, 292, 312 (as
+of `48489b7`; docs lane `docs-errata-18`, group A): the rows from `world/use-unknown-ref` on are GM3's `use`, GM4's
+`view` and GM5's `combine`, and `world/keep-consumed` is a warning (W):
 
 | Code | Registered by | What the gate refuses |
 |---|---|---|
@@ -793,15 +872,24 @@ them like any other finding. As merged at `837b1ed` (every one is an error, E):
 | `world/reach-has-clue` | `clues` | a clue on a puzzle whose goal the screen shows |
 | `world/clue-reachable` | `clues` | a clue that names no fact of this world, or holds in no state of the lock's section reached before the puzzle is solved or failed |
 | `world/answer-len` | `puzzle-shape` ([puzzles/shape.ts:22](../client/scripts/story/puzzles/shape.ts#L22)) | a puzzle whose posted answer is outside 1..16 entries |
-| `world/cross-section-cond` | `conditions` ([mechanics/conditions.ts:21](../client/scripts/story/mechanics/conditions.ts#L21)) | a gating condition atom naming an id outside its section |
+| `world/cross-section-cond` | `conditions` ([mechanics/conditions.ts:24](../client/scripts/story/mechanics/conditions.ts#L24)) | a gating condition atom naming an id outside its section |
 | `world/visual-only-atom` | `conditions` | a visual-only module atom inside a gating condition |
 | `world/cond-size` | `conditions` | a condition deeper than 4 or with more than 16 atoms (clues included) |
 | `world/text-unwalked` | `texts` ([mechanics/texts.ts:76](../client/scripts/story/mechanics/texts.ts#L76)) | a text inside a module's data that no text walker returns |
+| `world/use-unknown-ref` | `use` ([mechanics/use.ts:69](../client/scripts/story/mechanics/use.ts#L69)) | a `use` rule naming an item, hotspot or knot this world or chapter does not have |
+| `world/use-cross-section` | `use` | a `use` rule whose item, gift or `unlock` belongs to another section, or whose gift another section's lock requires (X15) |
+| `world/keep-consumed` | `use` | (W) a slot that keeps its item held while another rule consumes that item |
+| `world/view-depth` | `view` ([mechanics/view.ts:16](../client/scripts/story/mechanics/view.ts#L16)) | a view of a view of a view (an `of` chain longer than 2), or any cycle of `of` |
+| `world/view-section` | `view` | a view whose `of` is a room of another section |
+| `world/view-entry` | `view` | an exit into a view from any room but its `of` (so a view of a view has no exit back to its parent view); a section `start` that is a view |
+| `world/view-exits` | `view` | an exit of a view to a room other than its `of` or its own child view (a story exit is allowed) |
+| `world/recipe-unknown-ref` | `combine` ([mechanics/combine.ts:34](../client/scripts/story/mechanics/combine.ts#L34)) | a recipe naming an item the world does not have |
+| `world/recipe-scope` | `combine` | a recipe whose inputs no one section gives; a product with another giver (a take, a trigger, a `use` rule or another recipe, in any section); a product another section's lock accepts (X15) |
 
-The registry is `MECHANIC_LINTS` ([mechanics/index.ts:56](../client/scripts/story/mechanics/index.ts#L56)). The
+The registry is `MECHANIC_LINTS` ([mechanics/index.ts:60](../client/scripts/story/mechanics/index.ts#L60)). The
 puzzle types' own tables in `PUZZLE_LINTS` ([puzzles/index.ts:30](../client/scripts/story/puzzles/index.ts#L30)) are
 empty for `code` and `order`: their `world/solution*` codes are STAGING-DSL §11's. The test `story: module and type
-lint codes are unique and none is a DSL code` ([world.test.ts:933](../client/scripts/story/world.test.ts#L933)) keeps
+lint codes are unique and none is a DSL code` ([world.test.ts:960](../client/scripts/story/world.test.ts#L960)) keeps
 each code in one table. This table is written by hand; no test compares it with the registries.
 
 ## Part 3: stories
@@ -917,6 +1005,10 @@ E story/locales/en/story.json:0 catalog/stories chapters.ch2: paid chapter ch2's
   hotspot the room keeps. No lint can see a forgotten entry; a save then loses that hotspot's progress. The four
   `world/renamed-*` codes are in [Module and type lint codes](#module-and-type-lint-codes); `flags` and `puzzles`
   entries are refused for now.
+- **Never remove a shipped recipe or change its `gives`** (Changed by RULINGS 310 (as of `48489b7`; docs lane
+  `docs-errata-18`, group A)). An old save past the recipe restarts that section when the player next resumes or
+  enters it (the area-reset toast), and the old product stays in hand as an orphan nothing uses. To rename a product,
+  add a `renamed.items` entry (above): the save follows the rename.
 
 ## Part 4: story meta
 
@@ -1035,7 +1127,7 @@ points or more; the example's `Open the box on the stairs without a hint.` is on
 ### Choices are statistics
 
 A choice's line ID is also its statistics identity: the game records which option a player picked by that ID
-(LS3 server-stats, LS4 stats-client, L15a; [game.ts:1667](../client/src/app/game.ts#L1667); [STAGING-DSL §9 "Story meta"](STAGING-DSL.md#story-meta), META-PLAN
+(LS3 server-stats, LS4 stats-client, L15a; [game.ts:2020](../client/src/app/game.ts#L2020); [STAGING-DSL §9 "Story meta"](STAGING-DSL.md#story-meta), META-PLAN
 M1). So:
 - **keep the ID when you edit the option's text**;
 - **retire the ID when you remove the option** ([Removing a line](#removing-a-line-retired-ids)), never reuse it.

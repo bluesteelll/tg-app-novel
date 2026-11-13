@@ -323,6 +323,59 @@ peak is the full shot plus 3.19 MiB (A, §5.9); rev. 4: plus the first cut's pre
 **Skip mode** still awaits each `ensure` (link-bound; S4 §3.5: 150 unseen 225 KB shots ~169 s at 200,000 B/s, A).
 D1-D3 prefetch overlaps it.
 
+**Ruled since: RULINGS 295, 297, 299, 301, 302, 309, 311, 314** — as built (SH5a `48489b7`, lock 15; cut r4 and its
+Addendum (RULINGS 302)). Where this section and the points below differ, the points hold.
+- **Every presented step hands a `ShotWindow`** (D1, `client/src/app/game.ts:732-747`, `windowOf`): a line by its ID,
+  a choice set by its first choice's ID, else `k:<knot>`, through `windowFor` (`client/src/app/stage-route.ts:143`),
+  which adds the event's room inside a room event (`withEventRoom` `:133`, the `StageWindow` of
+  `client/src/scene/preload.ts:22`). An **end step hands the empty window** (`EMPTY_WINDOW`), and so does a chapter
+  without a decoding `look`, so the entry tag still ends; a **yield step hands none** (D13), so the previous window
+  stays through it; `restore` hands none.
+- **Every room batch hands `r:<room>`'s window** (`roomWindow`, `game.ts:750-759`, keyed by `roomWindowKey`,
+  `stage-route.ts:160`): while a section is current and the batch sets no CG; a room's props come back on a story cut
+  (`withRoomProps` `:172`).
+- **The swap point:** the executor reports a batch's window once, at its swap point, after the old shot's holders
+  are released (`swapped`, `client/src/scene/executor.ts:445`); any other sweep that freed a holder reports
+  `released` (`:447`), and the controller forwards both to the scheduler's `want` / `retry` through one seat
+  (`windowDeps`, `preload.ts:62-64`). A batch settled by the executor's `destroy` reports no swap (IMPL-2, carried to
+  the next `game.ts` holder).
+- **Steps 1-6 and step 6's eviction order** (`want` `preload.ts:458`, `retry` `:497`, `evictFor` `:256`, `shedFor`
+  `:289`, `readmit` `:225`): a refused `need` item or `warm` fetch evicts (a) the window's resident `hope`, then its
+  warm decodes, shed back to their held files; (b) EN's `room:` and `state:` holders (`EN_TAG`, `preload.ts:83`;
+  RULINGS 297 D4) with no id in need, warm or the event's room (none in `hope` first, the most recently requested
+  first); (c) the `next:*` holders; (d) the event's room, last. `need ∪ warm` is spared.
+  A visible ask never evicts its own warm holder, a refused warm fetch runs step 6, and no step outside a section has
+  an `eventRoom` (the three rules fix4 pinned, RULINGS 311).
+- **The warm form** (`client/src/scene/registry.ts`, priority `'warm'` `:82`, state `'held'` `:110`, `state(id)`
+  `:163`): a warm file is fetched and held as a Blob with no decode, counted at its file bytes; at the tap a visible
+  ensure decodes it from the held Blob with no fetch. The Blob stays as the record's `keptBytes` while it lives
+  (`:45`, `:280`), for revive after a context loss, as on main.
+- **Joins take no slot:** a request for a record that is live or decoding joins inside the call, outside the
+  `PRELOAD_IN_FLIGHT` slots (`preload.ts:14`); a held record's decode is queued as a decode.
+- **The entry tag** `next:<id>` ends at the chapter's first window, after that window joined its files (step 1c).
+  **S36's handover:** GameSession no longer releases `next:<id>` at the handover (`enterKnot`, `game.ts:1133-1148`),
+  and `preloadNext` (`:1100-1131`) asks the next chapter's `k:<first>` window from its own `look` (need, warm, then
+  hope, each id once) plus its first knot's `char/` sprites.
+- **`hold` keeps only `char/`:** with a decoding `look`, a knot hold keeps its sprites and sounds and no bg, CG or prop
+  (`game.ts:1084-1097`); the windows ask for those. Without a decoding `look` it keeps every image, as before.
+- **Ruled: RULINGS 302** — Q9: SH5a's engine STOP was judged on the **net** delta: the measured engine delta minus
+  the measured share of `story/shots.ts`'s `decodeLook` + `stepWindow`, which land here without a term (SH3a's
+  decoders' 1.0 was booked at SH4), against +3.112 KB; a raw delta above +3.612 KB stays a STOP; the 230,000 B row and
+  the ledgers bind on the raw figures; the R sample is net / 1.3. MEASURED: +2,211 B raw on `aac7a97`, +1,657 B net,
+  sample 1.27; on the merge tree +2,286 B ([engine §11.1](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)).
+- **P-entry (RULINGS 309, 269):** the entry row's +119 B br (two hashed chunk names, the texts byte-identical after
+  normalising) is no entry change: an entry row is judged by module identity across a build-id change.
+- **Open, carried with owners (`carry.md` "SH5a carries"):**
+  - **gap (i)'s bound is false on built ch1** (memory lens F1): a runtime window exceeds its own row by a whole
+    decoded plate (arrival a001-a012 8,853,770 B, `bg/hall`; street s001-s004 8,855,284 B, `cg/letter`), masked at the
+    chapter level; owners the next `client/scripts/budget.ts` holder and SH11;
+  - **a room's warm openers are fetched again on every room entry** (player lens V1; real ch1 25 vs 15 GETs; a paid
+    explore chapter pays it in full, `no-store`); owners the preload-priority lane (RULINGS 152 Q14 (b)) and SH5b;
+  - **no preemption:** a need queued behind in-flight hope or warm fetches waits for them (player lens V2, the same
+    class as main's FIFO knot preloads); owners the preload-priority lane and SH5b;
+  - with them: a warm decode may refill the room step 6 (a) freed for a deferred need (memory lens F2), and ch2's
+    opening bg is not resident at the ch1 -> ch2 handover (V5, as on main), both to the preload-priority lane and SH5b.
+
 ### 5.9 Memory ledger and arithmetic (gate counts = decoded + the larger kept file, `budget.ts:806-808`)
 
 **Inputs** (E unless noted; rev. 2 re-computes the sheets for the per-expression model of S3, the full small-face set
@@ -407,6 +460,13 @@ lever 3 (an OTS or a wide for a branch) narrowed the framing (critique r3 C1); a
 removes an angle, a face state or a branch-specific shot.
 
 LOW (half tier) has 4x headroom on every row (A).
+
+**Ruled since: RULINGS 304, 311, 314** — MEASURED on built content (SH5a `48489b7`, its memory lens on the real ch1 and
+ch3): no sample over the steady or the hard cap; the runtime window's maximum equals the `step-window ch1` row
+(24,538,074 B) and the `step-window ch3` row. ch1's hall holds 32,655,862 B counted at rest (the window's need, EN's
+two neighbour bgs and the legacy knot hold's two sprites; no row bounds that total, the M-MEM-2 class). **The desk view
+holds 26,712,144 B** (35,559,504 B on main before SH5a, under the legacy knot hold), because `hold` keeps only `char/`
+images; the knot hold's off-stage `char/ally/neutral` (3,044,496 B) remains. The gap (i) bound is open (§5.8 above).
 
 **150 MB model** (rev. 2, m1): the texture caps are unchanged. MEMORY-PLAN's steady model is **106.6 MiB** with the
 32 MiB steady cap and its hard-cap transient **122.6 MiB**, both under 143.05 MiB (`docs/MEMORY-PLAN.md:190-191`, S4
