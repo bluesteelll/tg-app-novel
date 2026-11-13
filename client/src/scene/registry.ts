@@ -4,8 +4,10 @@
 // tier (MEMORY-PLAN 4.C: an entry's half file on a LOW phone) fixed at creation until a one-way demotion; after a GPU
 // context change, the revive that brings every live texture to the current renderer (MEMORY-PLAN M2, 4.A, section 8);
 // the warm form (shots §5.8): a record held as its fetched file, decoded only for a non-warm holder, shed back to the
-// file when the last of those leaves. Generic over the texture type, so it holds no Pixi value and is tested in node
-// over a fake loader; `scene/loader.ts` is the real `HoldImage`.
+// file when the last of those leaves; preview records (shots §5.8 "Entry at the half tier"): a chapter entry's files
+// started from their half on a full-tier registry and upgraded in place to the full file, one call at a time. Generic
+// over the texture type, so it holds no Pixi value and is tested in node over a fake loader; `scene/loader.ts` is the
+// real `HoldImage`.
 import type { AssetFetchError, AssetRef, ImageEntry, ImageFile, Result, SizeTier } from '../story/catalog.ts';
 import type { Box } from '../story/shots.ts';
 import type { AssetId } from '../story/staging.ts';
@@ -25,6 +27,8 @@ export const MAX_TEXTURE_PX = 2048;
 export const REVIVE_DEADLINE_MS = 3000;
 /** How a revive pass settles: every record handled, or the revive aborted first. */
 export type ReviveEnd = 'done' | 'aborted';
+/** Shots §5.8 step 5: a preview record's upgrade is tried at most this many times (fetch or decode failures). */
+export const UPGRADE_TRIES = 3;
 
 export type AssetError =
   | { kind: 'missing-id'; id: AssetId }
@@ -48,6 +52,9 @@ export type LoadError = { kind: 'fetch'; error: AssetFetchError } | { kind: 'dec
  * `open()`: the decoded bitmap is still open (not closed after its upload).
  * `revive(gen)`: brings the texture to generation `gen`, in place (the same texture object): a kept bitmap is uploaded,
  * an uploaded one is decoded again from the kept file.
+ * `upgrade(ref, geometry)` (shots §5.8 step 3): fetches `ref`, the full file of a texture decoded from its half, and
+ * swaps it into the same texture at `geometry` (the full one); `w`, `h` and `keptBytes` follow it, and the held file
+ * becomes it. Optional: a loader without it never upgrades (the scene suites' literals).
  */
 export type Decoded<T> = {
   texture: T;
@@ -57,6 +64,7 @@ export type Decoded<T> = {
   gen: number | null;
   open(): boolean;
   revive(gen: number, signal: AbortSignal): Promise<Result<void, LoadError>>;
+  upgrade?(ref: AssetRef, geometry: TextureGeometry, signal: AbortSignal): Promise<Result<void, LoadError>>;
   release(): void;
 };
 /**
@@ -80,7 +88,11 @@ export type HoldImage<T> = (ref: AssetRef, signal: AbortSignal) => Promise<Resul
 export type TextureHandle<T> = { readonly id: AssetId; readonly texture: T; readonly w: number; readonly h: number };
 /** `warm`: the file only, never decoded for this holder (shots §5.8 step 3). */
 export type Priority = 'visible' | 'preload' | 'warm';
-export type AcquireOptions = { entry: ImageEntry; priority: Priority; signal?: AbortSignal };
+/**
+ * `preview` (shots §5.8 step 1): a new non-warm record on a full-tier registry starts from the entry's half, if it has
+ * one, and is listed by `previews()` until it is upgraded; an existing record is joined as it is.
+ */
+export type AcquireOptions = { entry: ImageEntry; priority: Priority; signal?: AbortSignal; preview?: boolean };
 /**
  * `bytes` = what the caps count: every record's file (the manifest's bytes while it is fetched, its real size once
  * held) plus the decoded bytes of each record with a non-warm holder, decoded or in flight. `keptBytes`: the files of
@@ -146,6 +158,23 @@ export interface AssetRegistry<T> {
    * refused `decode` at once; a `visible` one tries it again, and its success lifts the mark.
    */
   acquire(id: AssetId, holder: string, o: AcquireOptions & { priority: 'visible' | 'preload' }): Promise<Result<TextureHandle<T>, AssetError>>;
+  /**
+   * Runs `run` with every new visible record it starts made a preview, as `preview` does (the stage's takes inside the
+   * scene's apply / restore of a chapter entry's first step); returns what `run` returns.
+   */
+  previewing<R>(run: () => R): R;
+  /**
+   * Shots §5.8 step 3: brings a live preview record to its full file in place (the same handle and texture), resolving
+   * `true` once it is full. `false` when there is nothing to do: no record, no preview, not live or not yet revived, a
+   * revive running, a loader with no upgrade, or UPGRADE_TRIES failures. A call while one is in flight answers that
+   * one. Admission evicts nothing: the full file and its decoded bytes must fit HARD with a visible holder, else
+   * STEADY, or the answer is `over-cap` (no try used, `overCap` not counted). In flight it is counted (the half stays
+   * counted too) and pending; the record's end, its texture's loss and a revive abort it; a fetch or decode failure
+   * leaves the half live.
+   */
+  upgrade(id: AssetId, signal?: AbortSignal): Promise<Result<boolean, AssetError>>;
+  /** The live preview records, in the order they started, and whether each has a visible holder. */
+  previews(): ReadonlyArray<{ id: AssetId; visible: boolean }>;
   /** Removes one holder; idempotent. */
   release(id: AssetId, holder: string): void;
   /** `'preload:'` (a trailing `:`) releases that family; any other name is that exact holder only. */
@@ -190,12 +219,21 @@ export interface AssetRegistry<T> {
 type Rec<T> = {
   readonly id: AssetId;
   readonly entry: ImageEntry;
-  /** The file of the registry's tier when the record started (the entry's half, or the entry itself): what it counts. */
-  readonly file: ImageFile;
+  /**
+   * The file of the registry's tier when the record started (the entry's half, or the entry itself): what it counts.
+   * An upgrade makes it the entry.
+   */
+  file: ImageFile;
   /** `file` in the session's variant: what the load fetches and the admission reserves. */
-  readonly ref: AssetRef;
-  /** The file's texture geometry (its tier's resolution on the entry's canvas), computed once when the record starts. */
-  readonly geometry: TextureGeometry;
+  ref: AssetRef;
+  /** The file's texture geometry (its tier's resolution on the entry's canvas): set when the record starts or upgrades. */
+  geometry: TextureGeometry;
+  /** Started from the entry's half on a full-tier registry (shots §5.8), until its upgrade. */
+  preview: boolean;
+  /** The upgrade in flight: its controller, the bytes it reserves (the full file and its decode), its answer. */
+  upgrading: { readonly controller: AbortController; readonly bytes: number; readonly done: Promise<Result<boolean, AssetError>> } | null;
+  /** Failed upgrades (fetch or decode; an abort is none). */
+  failures: number;
   readonly holders: Map<string, Priority>;
   /** The fetch stage's: aborted only when the record ends, so a shed never refetches. */
   readonly controller: AbortController;
@@ -267,17 +305,22 @@ export function createAssetRegistry<T>(
   /** The revive in progress, if any. */
   let reviving: { abort(): void } | null = null;
   let destroyed = false;
+  /** Inside `previewing`: the visible records started now are previews. */
+  let previewScope = false;
 
   const refOf = (file: ImageFile): AssetRef => (deps.variant === 'avif' ? file.avif : file.webp);
   /** A record decodes for its non-warm holders only; with warm ones alone it is its file. */
   const decodes = (rec: Rec<T>): boolean => [...rec.holders.values()].some((p) => p !== 'warm');
   /** A fetch or a decode in flight. */
   const loading = (rec: Rec<T>): boolean => rec.held === null || rec.attempt !== null;
-  /** Each record's file (the manifest's bytes in flight, its real size once kept), plus its decode if it has one. */
+  /**
+   * Each record's file (the manifest's bytes in flight, its real size once kept), plus its decode if it has one, plus
+   * the full file and decode an upgrade in flight reserves.
+   */
   const counted = (): number => {
     let bytes = 0;
     for (const rec of records.values()) {
-      bytes += (rec.decoded?.keptBytes ?? rec.held?.bytes ?? rec.ref.bytes) + (decodes(rec) ? rec.file.decodedBytes : 0);
+      bytes += (rec.decoded?.keptBytes ?? rec.held?.bytes ?? rec.ref.bytes) + (decodes(rec) ? rec.file.decodedBytes : 0) + (rec.upgrading?.bytes ?? 0);
     }
     return bytes;
   };
@@ -298,8 +341,18 @@ export function createAssetRegistry<T>(
     }
   };
 
-  /** The texture leaves the record (its frames first: each is a view of the source that release() destroys); a decode in flight is aborted. */
+  /** An upgrade in flight is aborted and its reservation returned at once. */
+  const stopUpgrade = (rec: Rec<T>): void => {
+    rec.upgrading?.controller.abort();
+    rec.upgrading = null;
+  };
+
+  /**
+   * The texture leaves the record (its frames first: each is a view of the source that release() destroys); a decode
+   * or an upgrade in flight is aborted.
+   */
   const undecode = (rec: Rec<T>): void => {
+    stopUpgrade(rec);
     for (const f of rec.frames.values()) {
       deps.frames?.dispose(f);
     }
@@ -339,14 +392,15 @@ export function createAssetRegistry<T>(
 
   /**
    * Removes one holder of this record (never of a later record for the same id): an empty set ends the record; the last
-   * non-warm holder leaving sheds it to its file in this turn (texture or decode gone, reservation returned).
+   * non-warm holder leaving sheds it to its file in this turn (texture or decode gone, reservation returned), except a
+   * preview record, which ends: its file is the half, which no warm holder may decode on a full-tier registry.
    */
   const drop = (rec: Rec<T>, holder: string): void => {
     const was = rec.holders.get(holder);
     if (!rec.holders.delete(holder)) {
       return;
     }
-    if (rec.holders.size === 0) {
+    if (rec.holders.size === 0 || (rec.preview && !decodes(rec))) {
       end(rec, { kind: 'aborted', id: rec.id });
     } else if (was !== 'warm' && !decodes(rec)) {
       undecode(rec);
@@ -431,13 +485,16 @@ export function createAssetRegistry<T>(
     }
   };
 
-  const start = (id: AssetId, entry: ImageEntry, file: ImageFile, ref: AssetRef, holder: string, priority: Priority): Rec<T> => {
+  const start = (id: AssetId, entry: ImageEntry, file: ImageFile, ref: AssetRef, holder: string, priority: Priority, preview: boolean): Rec<T> => {
     const rec: Rec<T> = {
       id,
       entry,
       file,
       ref,
       geometry: textureGeometry(entry, file === entry ? 'full' : 'half'),
+      preview,
+      upgrading: null,
+      failures: 0,
       holders: new Map([[holder, priority]]),
       controller: new AbortController(),
       held: null,
@@ -551,8 +608,10 @@ export function createAssetRegistry<T>(
     if (entry.w > MAX_TEXTURE_PX || entry.h > MAX_TEXTURE_PX) {
       return Promise.resolve(fail({ kind: 'too-large', id, w: entry.w, h: entry.h }));
     }
-    // The record's file is resolved once, here: a demotion later never moves a record that has started.
-    const file = tier === 'half' && entry.half !== undefined ? entry.half : entry;
+    // The record's file is resolved once, here: a demotion later never moves a record that has started; only an upgrade
+    // moves a preview to the full file. The scope marks the stage's takes, which are visible.
+    const preview = !warm && tier === 'full' && entry.half !== undefined && (o.preview === true || (previewScope && o.priority === 'visible'));
+    const file = (tier === 'half' || preview) && entry.half !== undefined ? entry.half : entry;
     const ref = refOf(file);
     if (o.priority !== 'visible' && (undecodable.has(ref.url) || (warm && 'load' in deps))) {
       return Promise.resolve(fail({ kind: 'decode', id, detail: `no file to hold: ${ref.url}` }));
@@ -561,8 +620,76 @@ export function createAssetRegistry<T>(
     if (refused !== null) {
       return Promise.resolve(fail(refused));
     }
-    return waitFor(start(id, entry, file, ref, holder, o.priority), holder, o.signal, warm);
+    return waitFor(start(id, entry, file, ref, holder, o.priority, preview), holder, o.signal, warm);
   }
+
+  const upgrade = (id: AssetId, signal?: AbortSignal): Promise<Result<boolean, AssetError>> => {
+    const done = (v: boolean): Promise<Result<boolean, AssetError>> => Promise.resolve({ ok: true, value: v });
+    const rec = records.get(id);
+    if (rec === undefined || !rec.preview) {
+      return done(false);
+    }
+    if (rec.upgrading !== null) {
+      return rec.upgrading.done;
+    }
+    const d = rec.decoded;
+    const swap = d?.upgrade;
+    if (d === null || swap === undefined || isStale(rec, reviveGen) || reviving !== null || rec.failures >= UPGRADE_TRIES || signal?.aborted === true) {
+      return done(false);
+    }
+    // Shots §5.8 step 3: one file at a time beside the half, evicting nothing; a visible record under the hard cap.
+    const ref = refOf(rec.entry);
+    const need = ref.bytes + rec.entry.decodedBytes;
+    const cap = hasVisibleHolder(rec) ? HARD_CAP_BYTES : STEADY_CAP_BYTES;
+    const used = counted();
+    if (used + need > cap) {
+      return Promise.resolve(fail({ kind: 'over-cap', id, needBytes: need, liveBytes: used, capBytes: cap }));
+    }
+    const controller = new AbortController();
+    const stop = (): void => {
+      if (rec.upgrading?.controller === controller) {
+        stopUpgrade(rec);
+      }
+    };
+    signal?.addEventListener('abort', stop, { once: true });
+    const geometry = textureGeometry(rec.entry, 'full');
+    let attempt: Promise<Result<void, LoadError>>;
+    try {
+      attempt = swap.call(d, ref, geometry, controller.signal);
+    } catch (e) {
+      attempt = Promise.resolve(fail({ kind: 'decode', detail: String(e) }));
+    }
+    const answer = attempt
+      .catch((e: unknown) => fail({ kind: 'decode' as const, detail: String(e) }))
+      .then((r): Result<boolean, AssetError> => {
+        signal?.removeEventListener('abort', stop);
+        if (rec.upgrading?.controller === controller) {
+          rec.upgrading = null;
+        }
+        if (rec.dead || rec.decoded !== d) {
+          // Ended, or its texture gone meanwhile: the loader's late bitmap went with the texture.
+          return aborted(id);
+        }
+        if (r.ok) {
+          // The loader swapped the full file into the texture (it never swaps once aborted): count what it holds.
+          rec.file = rec.entry;
+          rec.ref = ref;
+          rec.geometry = geometry;
+          rec.preview = false;
+          if ('load' in deps) {
+            const { load } = deps;
+            rec.held = { bytes: ref.bytes, decode: (s, g) => load(ref, s, g), drop: () => {} };
+          }
+          return { ok: true, value: true };
+        }
+        if (r.error.kind !== 'aborted') {
+          rec.failures += 1;
+        }
+        return fail(assetError(id, r.error));
+      });
+    rec.upgrading = { controller, bytes: need, done: answer };
+    return answer;
+  };
 
   /** The next record a revive to `gen` takes: one an acquire waits on first, then by insertion; visible ones only. */
   const next = (gen: number, tried: ReadonlySet<Rec<T>>, visibleOnly: boolean): Rec<T> | null => {
@@ -655,6 +782,25 @@ export function createAssetRegistry<T>(
 
   return {
     acquire,
+    previewing(run) {
+      const was = previewScope;
+      previewScope = true;
+      try {
+        return run();
+      } finally {
+        previewScope = was;
+      }
+    },
+    upgrade,
+    previews() {
+      const out: { id: AssetId; visible: boolean }[] = [];
+      for (const rec of records.values()) {
+        if (rec.preview && rec.decoded !== null) {
+          out.push({ id: rec.id, visible: hasVisibleHolder(rec) });
+        }
+      }
+      return out;
+    },
     release(id, holder) {
       const rec = records.get(id);
       if (rec !== undefined) {
@@ -686,6 +832,10 @@ export function createAssetRegistry<T>(
     revive(gen, signal) {
       reviving?.abort();
       reviveGen = gen;
+      // The revive re-uploads every texture: no upgrade may swap a source under it (MEMORY-PLAN section 8).
+      for (const rec of records.values()) {
+        stopUpgrade(rec);
+      }
       let settleVisible: (e: ReviveEnd) => void = () => {};
       let settleAll: (e: ReviveEnd) => void = () => {};
       const visible = new Promise<ReviveEnd>((resolve) => {
@@ -784,7 +934,7 @@ export function createAssetRegistry<T>(
           // Its file alone, held or in flight: kept bytes, never texture bytes.
           keptBytes += rec.held?.bytes ?? rec.ref.bytes;
         }
-        pending += loading(rec) ? 1 : 0;
+        pending += loading(rec) || rec.upgrading !== null ? 1 : 0;
       }
       return { live, bytes: counted(), pending, overCap, keptBytes, keptMismatch, openBitmaps, stale, reviveFailed };
     },
