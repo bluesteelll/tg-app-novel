@@ -16,6 +16,8 @@ import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { WorldState } from '../explore/state.ts';
 import { ROOM_SOURCE, cover, toStage } from '../geom/cover.ts';
 import type { ChunkError, PuzzleUiProps } from '../puzzles/registry.ts';
+import { PUZZLE_TYPES } from '../puzzles/rules/index.ts';
+import type { PuzzleTypeData, PuzzleTypes } from '../puzzles/rules/index.ts';
 import type { HintPort, HintPortError } from '../puzzles/session.ts';
 import type { SceneStats } from '../scene/controller.ts';
 import type { VisualCommand } from '../scene/executor.ts';
@@ -31,6 +33,7 @@ import { createScreens } from '../ui/screens.ts';
 import { createViewModel } from '../ui/state.svelte.ts';
 import type { CueStageProps } from '../ui/state.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
+import type { DecodeOptions } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import type { WaitRow } from '../requests.test.ts';
 import { ROOM_FADE_MS, TAKE_FADE_MS, VIEW_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
@@ -89,9 +92,10 @@ function manorWorld(): WorldPublic {
 /**
  * The cue fixture (engine plan GM3s): the hall holds one hotspot per effect the yields map to a cue (a look, a take with
  * a prop, a document, a lock, the exits) and an exit out of the section; the cellar's onEnter gives a coin; the
- * study's runs an event knot. `extra` adds puzzles that no hotspot opens (a yield opens them).
+ * study's runs an event knot. `extra` adds puzzles that no hotspot opens (a yield opens them); `o` is the decoder's
+ * (a fixture puzzle type passes its registry, N6).
  */
-function cueWorld(extra: Json = {}): WorldPublic {
+function cueWorld(extra: Json = {}, o: DecodeOptions = {}): WorldPublic {
   const raw = {
     format: 1,
     items: {
@@ -128,7 +132,7 @@ function cueWorld(extra: Json = {}): WorldPublic {
       },
     },
   };
-  const r = decodeWorldSource(raw);
+  const r = decodeWorldSource(raw, o);
   if (!r.ok) {
     throw new Error(`invariant: the cue fixture world decodes: ${JSON.stringify(r.error)}`);
   }
@@ -253,6 +257,8 @@ type RigOptions = {
   attemptGate?: Promise<void>;
   /** Loaders in place of the counting ones (a deferred or failing chunk). */
   loaders?: Partial<LazyChunks>;
+  /** The puzzle type registry the sessions take (`h.puzzleTypes`); none = `PUZZLE_TYPES`. */
+  puzzleTypes?: PuzzleTypes;
 };
 
 /** The views as they stood when a cue reached the bus. */
@@ -299,6 +305,8 @@ function rig(o: RigOptions = {}) {
   const holders = new Map<string, Set<string>>();
   let stage: StagingSnapshot = { bg: null, cg: null, chars: [], bgm: null, props: [] };
   const calls = { explore: 0, host: 0, ui: 0, attempts: 0, stage: 0, status: 0 };
+  /** Every answer an attempt posted, in order (N5). */
+  const posted: number[][] = [];
   /** Every cue the session's bus carries, through the scene role's subscription. */
   const cues: CueEvent[] = [];
   /** The puzzle views at each of those cues. */
@@ -344,8 +352,9 @@ function rig(o: RigOptions = {}) {
         await o.statusGate;
         return o.status === undefined ? { ok: false, error: { kind: 'network', detail: 'none' } } : { ok: true, value: o.status };
       },
-      postAttempt: async () => {
+      postAttempt: async (_id, answer) => {
         calls.attempts += 1;
+        posted.push([...answer]);
         await o.attemptGate;
         return answers.shift() ?? { ok: true, value: { correct: false, solved: false, attemptsLeft: null, spent: false } };
       },
@@ -372,6 +381,7 @@ function rig(o: RigOptions = {}) {
     clock,
     chunks,
     hints: () => o.hints ?? null,
+    puzzleTypes: o.puzzleTypes,
     // A stand-in: the controller reads only the two sizes of its box.
     // D-P (GM3p): the frame's points move from the frame root's px to the host's by their rects' offset.
     stageHost: () =>
@@ -439,6 +449,7 @@ function rig(o: RigOptions = {}) {
     haptics,
     holders,
     calls,
+    posted,
     entered,
     cues,
     views,
@@ -2824,6 +2835,79 @@ test('yields: a busy reply leaves the frame to the attempt in flight', async () 
   answer.resolve();
   await settle();
   expect([r.puzzle.frame?.line, r.puzzle.frame?.busy]).toEqual(['wrong', false]);
+  r.yields.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM7r: a reach type posts its reported canonical answer (engine plan §7.4, §7.5 "Posting per reply kind")
+
+/**
+ * A fixture overlay reach type outside PUZZLE_TYPES (the registry pins of §7.1 kept: a reach type has no posted wrong):
+ * three cells of 0..3, all 0 at the start. The type UI draws an answer and reports its canonical form.
+ */
+const TRACE: PuzzleTypeData<'trace', { readonly cells: number }> = {
+  type: 'trace',
+  check: 'reach',
+  goal: 'shown',
+  presentation: 'overlay',
+  wrong: 'none',
+  commit: 'control',
+  decodeParams: () => ({ ok: true, value: { cells: 3 } }),
+  answerShape: () => ({ len: 3, max: 3 }),
+  initial: () => [0, 0, 0],
+  startShown: () => null,
+};
+/** The registry the reach rigs pass as `h.puzzleTypes` (and decode their world with). */
+const REACH_TYPES: PuzzleTypes = [...PUZZLE_TYPES, TRACE];
+const TRACE_PZ = 'trace' as PuzzleLocalId;
+const GATE = 'gate' as PuzzleLocalId;
+/** The drawn answer that reaches, and its canonical form (distinct, so a post of the drawn answer is seen). */
+const DRAWN: readonly number[] = [1, 2, 3];
+const CANONICAL: readonly number[] = [3, 2, 1];
+/** The cue world with the puzzle `trace` of the fixture reach type, `maxAttempts` tries. */
+const reachWorld = (maxAttempts: number | null = null): WorldPublic =>
+  cueWorld(
+    {
+      trace: {
+        type: 'trace',
+        title: txt('trace'),
+        prompt: txt('prompt'),
+        closeup: null,
+        params: { cells: 3 },
+        maxAttempts,
+        giveUp: false,
+        solution: [...CANONICAL],
+        hints: [txt('hint')],
+      },
+    },
+    { types: REACH_TYPES },
+  );
+
+test('session: a reach puzzle posts once per solve and none per stroke', async () => {
+  // The fixture reach type opens through `h.puzzleTypes`. Its strokes post nothing; the type UI's report posts its
+  // canonical answer, not the drawn one, once; a report while that post is in flight posts nothing more.
+  const answer = deferred<void>();
+  const r = rig({ world: reachWorld(), puzzleTypes: REACH_TYPES, attempts: [RIGHT], attemptGate: answer.promise });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: TRACE_PZ, then: AFTER });
+  expect(r.puzzle.frame?.type).toBe('trace');
+  r.yields.host.onchange([1, 0, 0]);
+  r.yields.host.onchange([1, 2, 0]);
+  r.yields.host.onchange([...DRAWN]);
+  await settle();
+  expect(r.posted).toEqual([]);
+  r.yields.host.onreach?.(CANONICAL);
+  r.yields.host.onreach?.(CANONICAL);
+  await settle();
+  expect(r.posted).toEqual([CANONICAL]);
+  answer.resolve();
+  await settle();
+  expect([r.puzzle.frame, r.yields.world().puzzles[TRACE_PZ]?.outcome]).toEqual([null, 'solved']);
+  // A commit frame ignores a report: nothing posts and the frame does not wait.
+  await r.yields.onYield({ kind: 'puzzle', puzzle: GATE, then: AFTER });
+  expect(r.puzzle.frame?.type).toBe('code');
+  r.yields.host.onreach?.([1, 1, 1, 1]);
+  await settle();
+  expect([r.posted, r.puzzle.frame?.busy]).toEqual([[CANONICAL], false]);
   r.yields.dispose();
 });
 

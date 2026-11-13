@@ -339,6 +339,9 @@ function recordingHost(tag: string, calls: unknown[][]): PuzzleHostCallbacks {
     oncue: (e) => {
       calls.push([tag, 'oncue', keyOfCue(e)]);
     },
+    onreach: (c) => {
+      calls.push([tag, 'onreach', c]);
+    },
   };
 }
 
@@ -359,6 +362,7 @@ function callEveryCallback(c: PuzzleHostCallbacks): ReturnType<PuzzleHostCallbac
   c.onusehint(2);
   c.ongetmore();
   c.oncue?.(TRY_CUE);
+  c.onreach?.([3, 2, 1]);
   return named;
 }
 
@@ -373,6 +377,7 @@ const everyCallbackOn = (tag: string): unknown[][] => [
   [tag, 'onusehint', 2],
   [tag, 'ongetmore'],
   [tag, 'oncue', 'ui:puzzle-try'],
+  [tag, 'onreach', [3, 2, 1]],
 ];
 
 test("puzzle-view: forwardHost reaches the current session's host and nothing after it ends", () => {
@@ -380,7 +385,7 @@ test("puzzle-view: forwardHost reaches the current session's host and nothing af
   let current: PuzzleHostCallbacks | undefined = recordingHost('a', calls);
   const forward = forwardHost(() => current);
   // One forwarder per callback, no more: a lane adding a callback edits the forwarder and this list.
-  expect(Object.keys(forward).sort()).toEqual(['item', 'onchange', 'oncue', 'ongetmore', 'ongiveup', 'onhint', 'onretry', 'ontry', 'onusehint']);
+  expect(Object.keys(forward).sort()).toEqual(['item', 'onchange', 'oncue', 'ongetmore', 'ongiveup', 'onhint', 'onreach', 'onretry', 'ontry', 'onusehint']);
   expect(callEveryCallback(forward)).toEqual({ name: 'a medal', glyph: 'sun' });
   expect(calls).toEqual(everyCallbackOn('a'));
   // A later session: the same forwarders reach its host only (the getter runs at each call, never at creation).

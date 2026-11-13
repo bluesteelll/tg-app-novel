@@ -71,6 +71,11 @@ export type PuzzleHostCallbacks = {
    * host without a bus (a test's) plays none.
    */
   oncue?: (e: CueEvent) => void;
+  /**
+   * A reach type UI's report (engine plan §7.4, §7.5; GM7r): the working answer turned reached, `canonical` its posted
+   * form. yields posts it once per solve; a commit frame ignores it. Optional: a host that opens no reach type needs none.
+   */
+  onreach?: (canonical: readonly number[]) => void;
 };
 
 /**
@@ -89,6 +94,7 @@ export function forwardHost(get: () => PuzzleHostCallbacks | undefined): PuzzleH
     onusehint: (tier) => get()?.onusehint(tier),
     ongetmore: () => get()?.ongetmore(),
     oncue: (e) => get()?.oncue?.(e),
+    onreach: (c) => get()?.onreach?.(c),
   };
 }
 

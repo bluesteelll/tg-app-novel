@@ -27,6 +27,7 @@ import type { AnchorKey, Cause, CauseVerb, MechanicId, PropView, SectionAction, 
 import type { MECHANIC_RULES } from '../mechanics/rules/index.ts';
 import { loadPuzzleUi } from '../puzzles/registry.ts';
 import type { ChunkError } from '../puzzles/registry.ts';
+import type { PuzzleTypes } from '../puzzles/rules/index.ts';
 import { createPuzzleSession } from '../puzzles/session.ts';
 import type { AttemptResult, HintPort, PuzzleEnd, PuzzleError, PuzzleMode, PuzzleSession } from '../puzzles/session.ts';
 import type { SceneController } from '../scene/controller.ts';
@@ -117,6 +118,8 @@ export type YieldsHost = {
   chunks: LazyChunks;
   /** The hint port a new puzzle session takes (META-PLAN M21: the wallet's), or null; none given is null. */
   hints?: () => HintPort | null;
+  /** The puzzle type registry a session takes; `PUZZLE_TYPES` when absent: a test passes a fixture type beside them. */
+  puzzleTypes?: PuzzleTypes;
   /** The Stage element the scene mounted into (X10: the controller's box); null before the first mount. */
   stageHost(): HTMLElement | null;
   chapter(): LoadedChapter | null;
@@ -252,6 +255,11 @@ type Open = {
    * reader, so its one answer writes the ladder and plays its cue once.
    */
   asked: ReturnType<PuzzleSession['hints']> | null;
+  /**
+   * A reach frame's reached canonical answer awaiting a decisive reply (engine plan §7.5, "Posting per reply kind"):
+   * set by the type UI's report, posted by `postReach`; null for a commit frame, and cleared by a move away.
+   */
+  reach: readonly number[] | null;
 };
 
 /** The end cue of a dropped frame (`dropPuzzle`): the session's end, `closed` for a no-outcome drop, null at `dispose`. */
@@ -1088,12 +1096,12 @@ export function createYields(h: YieldsHost): Yields {
     }
     dropPuzzle('closed'); // at most one session
     const port = h.hints?.() ?? null;
-    const made = createPuzzleSession({ api: h.api, hints: port, world: w, chapter: ch.id, puzzle: local, mode, run, lang: () => vm.lang, dispatch: act });
+    const made = createPuzzleSession({ api: h.api, hints: port, world: w, chapter: ch.id, puzzle: local, mode, run, lang: () => vm.lang, dispatch: act, types: h.puzzleTypes });
     if (!made.ok) {
       h.storyError({ kind: 'load', message: `puzzle ${made.error.puzzle} has no session` });
       return;
     }
-    const o: Open = { session: made.value, port, local, mode, then, closeup: p.closeup !== null, id: ++frameSeq, hidden: false, appeared: false, loading: false, asked: null };
+    const o: Open = { session: made.value, port, local, mode, then, closeup: p.closeup !== null, id: ++frameSeq, hidden: false, appeared: false, loading: false, asked: null, reach: null };
     open = o;
     o.session.onEnd((e) => onEnd(o, e));
     if (p.closeup !== null) {
@@ -1210,6 +1218,20 @@ export function createYields(h: YieldsHost): Yields {
     return true;
   };
 
+  /**
+   * A reach frame's post (engine plan §7.5 "Posting per reply kind"): the reached canonical answer becomes the session's
+   * answer and goes through `post(o)`, so it refuses as `post` does (busy, a countdown, a frame not shown); false while
+   * nothing is reached. The answer is set even when `post` refuses: a reach frame posts only through here, which sets it
+   * again.
+   */
+  const postReach = (o: Open): boolean => {
+    if (o.reach === null) {
+      return false;
+    }
+    o.session.setAnswer(o.reach);
+    return post(o);
+  };
+
   const puzzleHost: PuzzleHostCallbacks = {
     item: (id) => {
       const w = h.chapter()?.world ?? null;
@@ -1320,6 +1342,14 @@ export function createYields(h: YieldsHost): Yields {
     },
     oncue: (e) => {
       bus.emit(inStageHost(e)); // the frame family's controls (engine plan §8.3), on the session's bus
+    },
+    onreach: (c) => {
+      const o = open;
+      if (o === null || o.session.check !== 'reach') {
+        return; // a commit frame posts from Try only
+      }
+      o.reach = c;
+      postReach(o);
     },
   };
 

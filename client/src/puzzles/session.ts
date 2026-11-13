@@ -69,6 +69,8 @@ export interface PuzzleSession {
   readonly id: PuzzleId;
   readonly local: PuzzleLocalId;
   readonly mode: PuzzleMode;
+  /** The instance's reply kind (engine plan §7.5): 'reach' posts the type UI's reported answer, 'commit' a Try's. */
+  readonly check: 'commit' | 'reach';
   answer(): readonly number[];
   setAnswer(a: readonly number[]): void;
   /** Single-flight; a wrong answer dispatches `attempt-failed`, and the attempt limit ends the session `failed`. */
@@ -138,6 +140,7 @@ class Session implements PuzzleSession {
   readonly id: PuzzleId;
   readonly local: PuzzleLocalId;
   readonly mode: PuzzleMode;
+  readonly check: 'commit' | 'reach';
   readonly #deps: PuzzleSessionDeps;
   readonly #puzzle: PublicPuzzle;
   readonly #instance: PuzzleInstance;
@@ -169,6 +172,7 @@ class Session implements PuzzleSession {
     this.id = puzzleId(deps.chapter, deps.puzzle);
     this.local = deps.puzzle;
     this.mode = deps.mode;
+    this.check = instance.check;
     this.#answer = instance.start(deps.run);
     this.#attempts = deps.run.attempts;
     this.#hintsOpened = deps.run.hintsOpened;
