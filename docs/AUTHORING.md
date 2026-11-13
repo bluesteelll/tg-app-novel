@@ -1123,8 +1123,8 @@ E story/locales/en/story.json:0 catalog/stories chapters.ch2: paid chapter ch2's
   **A room's rename moves no hotspot:** list `"<old room>.<id>": "<new room>.<id>"` under `hotspots` for every
   hotspot the room keeps. No lint can see a forgotten entry; a save then loses that hotspot's progress. The four
   `world/renamed-*` codes are in [Module and type lint codes](#module-and-type-lint-codes); `flags` and `puzzles`
-  entries are refused for now. Changed by RULINGS 328 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix
-  rounds 1 and 2); as merged, GM5f `402d4d8`: a `flags` entry is accepted when its target is a declared flag
+  entries are refused for now. Changed by RULINGS 327, 331, 334 (as of `f6487fc`; docs lane `docs-errata-19`,
+  group A, fix rounds 1 to 3); as merged, GM5f `402d4d8`: a `flags` entry is accepted when its target is a declared flag
   ([core.ts:39-40](../client/scripts/story/mechanics/core.ts#L39)), and the load maps a saved flag through it
   ([reconcile.ts:196](../client/src/explore/reconcile.ts#L196)). **A flag rename changes no flag an old save
   ends with**, with or without the entry: the load sets each declared flag exactly when one of its setters has run,
