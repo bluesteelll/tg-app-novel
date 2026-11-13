@@ -1,8 +1,8 @@
 import { expect, test, vi } from 'vitest';
 
-import type { AssetEntry, AssetManifest, ImageEntry, Result } from '../story/catalog.ts';
+import type { AssetEntry, AssetManifest, ImageEntry, Result, SizeTier } from '../story/catalog.ts';
 import type { AssetId, ChapterId } from '../story/staging.ts';
-import { PRELOAD_IN_FLIGHT, createAssetScheduler, windowDeps } from './preload.ts';
+import { ENSURE_HOLDER, PRELOAD_IN_FLIGHT, createAssetScheduler, windowDeps } from './preload.ts';
 import type { StageWindow } from './preload.ts';
 import { HARD_CAP_BYTES, createAssetRegistry } from './registry.ts';
 import type { AcquireOptions, AssetError, AssetRegistry, Decoded, HeldFile, HoldImage, LoadError, LoadImage, SceneError, TextureHandle } from './registry.ts';
@@ -70,6 +70,8 @@ const urlOf = (m: AssetManifest, id: string): string => {
 };
 
 type HoldCall = { url: string; bytes: number; signal: AbortSignal; resolve(r: Result<HeldFile<Tex>, LoadError>): void; done: boolean };
+/** A fake `Decoded.upgrade` call (lane SH5b): `id` by the full file's URL; it settles on demand, never by itself. */
+type UpgradeCall = { id: string; url: string; signal: AbortSignal; settle(r: Result<void, LoadError>): void; done: boolean };
 
 /** Records every acquire (`acquire <holder> <id>`) and every holder release (`release <name>`) the scheduler makes. */
 function recording(registry: AssetRegistry<Tex>, log: string[]): AssetRegistry<Tex> {
@@ -92,11 +94,13 @@ function recording(registry: AssetRegistry<Tex>, log: string[]): AssetRegistry<T
 /**
  * `{ hold: true }` (lane SH5a): the registry gets a fake `hold` instead of `load`; its fetches and its held files'
  * decodes are separate calls, each settled at once (`auto`) or on demand (`deferred`), counted by URL. The scheduler
- * then sees the registry through `recording`.
+ * then sees the registry through `recording`. `{ tier }` (lane SH5b): the registry's tier, `'full'` by default. Every
+ * Decoded can upgrade (lane SH5b): each call is recorded and settles only through `upgraded` or `settle`.
  */
-function harness(mode: 'auto' | 'deferred' = 'auto', o?: { hold: true }) {
+function harness(mode: 'auto' | 'deferred' = 'auto', o?: { hold?: true; tier?: SizeTier }) {
   const calls: Call[] = [];
   const released = new Map<string, number>();
+  const upgrades: UpgradeCall[] = [];
   const decoded = (url: string, keptBytes: number): Decoded<Tex> | null => {
     const e = URLS.get(url);
     if (e === undefined) {
@@ -114,6 +118,34 @@ function harness(mode: 'auto' | 'deferred' = 'auto', o?: { hold: true }) {
         d.gen = gen;
         return Promise.resolve({ ok: true, value: undefined });
       },
+      // As the loader's swap: the same texture takes the full file's size and bytes; one aborted first swaps nothing.
+      upgrade: (ref, _geometry, signal) =>
+        new Promise((resolve) => {
+          const u: UpgradeCall = {
+            id: entryIdOf(ref.url),
+            url: ref.url,
+            signal,
+            done: false,
+            settle(r) {
+              if (u.done) {
+                return;
+              }
+              u.done = true;
+              if (signal.aborted) {
+                resolve({ ok: false, error: { kind: 'aborted' } });
+                return;
+              }
+              const full = URLS.get(ref.url);
+              if (r.ok && full !== undefined) {
+                d.w = full.w;
+                d.h = full.h;
+                d.keptBytes = ref.bytes;
+              }
+              resolve(r);
+            },
+          };
+          upgrades.push(u);
+        }),
       release: () => released.set(url, (released.get(url) ?? 0) + 1),
     };
     return d;
@@ -146,7 +178,8 @@ function harness(mode: 'auto' | 'deferred' = 'auto', o?: { hold: true }) {
       }
     });
   const log: string[] = [];
-  const registry = o?.hold === true ? createAssetRegistry<Tex>({ hold, variant: 'avif', tier: 'full' }) : createAssetRegistry<Tex>({ load, variant: 'avif', tier: 'full' });
+  const tier = o?.tier ?? 'full';
+  const registry = o?.hold === true ? createAssetRegistry<Tex>({ hold, variant: 'avif', tier }) : createAssetRegistry<Tex>({ load, variant: 'avif', tier });
   const errors: AssetError[] = [];
   const s = createAssetScheduler({
     registry: o?.hold === true ? recording(registry, log) : registry,
@@ -154,9 +187,9 @@ function harness(mode: 'auto' | 'deferred' = 'auto', o?: { hold: true }) {
       errors.push(e);
     },
   });
-  /** The first call of `id` (in the window fixtures' manifests) not yet settled. */
+  /** The first call of `id` (in the window fixtures' manifests: its file, or its half) not yet settled. */
   const open = <C extends { url: string; done: boolean }>(list: C[], id: string): C => {
-    const c = list.find((x) => x.url === winUrl(id) && !x.done);
+    const c = list.find((x) => (x.url === winUrl(id) || x.url === halfUrl(id)) && !x.done);
     if (c === undefined) {
       throw new Error(`invariant: ${id} has a call in flight`);
     }
@@ -167,6 +200,17 @@ function harness(mode: 'auto' | 'deferred' = 'auto', o?: { hold: true }) {
     registry,
     calls,
     errors,
+    // The upgrades (lane SH5b), by id in call order.
+    upgradeCalls: (): string[] => upgrades.map((u) => u.id),
+    upgradesOpen: (): number => upgrades.filter((u) => !u.done).length,
+    upgraded: (id: string, r: Result<void, LoadError> = { ok: true, value: undefined }): void => {
+      const u = upgrades.find((x) => x.id === id && !x.done);
+      if (u === undefined) {
+        throw new Error(`invariant: ${id} has an upgrade in flight`);
+      }
+      u.settle(r);
+    },
+    fetchUrls: (): string[] => fetches.map((c) => c.url),
     succeed,
     succeedAll: () => {
       for (const c of [...calls]) {
@@ -197,7 +241,7 @@ function harness(mode: 'auto' | 'deferred' = 'auto', o?: { hold: true }) {
     decoded: (id: string): void => succeed(open(calls, id)),
     /** A visible holder outside the scheduler (a slot of the stage), as the executor's take adds it. */
     visible: (id: string, holder: string) => registry.acquire(asId(id), holder, { entry: winEntry(id), priority: 'visible' }),
-    /** Lands every fetch and settles every decode in flight, until none is left. */
+    /** Lands every fetch and settles every decode and upgrade in flight, until none is left. */
     settle: async (): Promise<void> => {
       for (let i = 0; i < 8; i += 1) {
         for (const c of fetches.filter((x) => !x.done)) {
@@ -207,6 +251,10 @@ function harness(mode: 'auto' | 'deferred' = 'auto', o?: { hold: true }) {
         await flush();
         for (const c of calls.filter((x) => !x.done)) {
           succeed(c);
+        }
+        await flush();
+        for (const u of upgrades.filter((x) => !x.done)) {
+          u.settle({ ok: true, value: undefined });
         }
         await flush();
       }
@@ -687,27 +735,71 @@ const nx = manifest('ch7', {
   'bg/opening': sized('opening', 10.169),
   ...Object.fromEntries([1, 2, 3, 4, 5, 6].map((i) => [`prop/n${i}`, sized(`n${i}`, 0.1)])),
 });
-for (const m of [wm, nx]) {
+// A chapter entry at the half tier (shots §5.8 "Entry at the half tier", lane SH5b): window images at the fixtures'
+// sizes, each with a half exactly half its file per side (a quarter of its bytes; the catalog's rule), and two 19 MiB
+// plates with none. Ranks by kind: a cg, plates, sheets and a talk file.
+const halved = (file: string, decoded: number, held = 0): ImageEntry => {
+  const e = sized(file, decoded, held);
+  const quarter = (n: number): number => Math.round(n / 4);
+  return {
+    ...e,
+    half: {
+      w: e.w / 2,
+      h: e.h / 2,
+      decodedBytes: quarter(e.decodedBytes),
+      avif: { url: `/assets/${file}-half.avif`, bytes: quarter(e.avif.bytes) },
+      webp: { url: `/assets/${file}-half.webp`, bytes: quarter(e.webp.bytes) },
+    },
+  };
+};
+const em = manifest('ch8', {
+  'cg/c': halved('e_cg', 4, 0.2),
+  'bg/v': halved('e_v', 8, 0.2),
+  'sheet/v': halved('e_sv', 2, 0.1),
+  'bg/n': halved('e_n', 8, 0.2),
+  'sheet/n': halved('e_sn', 2, 0.1),
+  'prop/w': halved('e_w', 1, 0.05),
+  'prop/hope': halved('e_h', 1, 0.05),
+  'bg/p': halved('e_p', 8, 0.2),
+  'bg/x': halved('e_x', 2, 0.1),
+  'bg/big1': sized('e_big1', 19),
+  'bg/big2': sized('e_big2', 19),
+});
+for (const m of [wm, nx, em]) {
   for (const e of Object.values(m.assets)) {
     if (e.kind === 'image') {
       URLS.set(e.avif.url, e);
+      if (e.half !== undefined) {
+        URLS.set(e.half.avif.url, { kind: 'image', ...e.half });
+      }
     }
   }
 }
-const winUrl = (id: string): string => urlOf(Object.hasOwn(wm.assets, id) ? wm : nx, id);
+const winUrl = (id: string): string => urlOf(Object.hasOwn(wm.assets, id) ? wm : Object.hasOwn(em.assets, id) ? em : nx, id);
+/** An entry fixture's half file URL; a fixture without a half has none. */
+const halfUrl = (id: string): string => {
+  const e = em.assets[asId(id)];
+  return e?.kind === 'image' && e.half !== undefined ? e.half.avif.url : `no-half:${id}`;
+};
+/** The entry fixture whose full or half file is `url` (an upgrade fetches the full one). */
+function entryIdOf(url: string): string {
+  const hit = Object.entries(em.assets).find(([, e]) => e.kind === 'image' && (e.avif.url === url || e.half?.avif.url === url));
+  return hit?.[0] ?? `unknown:${url}`;
+}
 function winEntry(id: string): ImageEntry {
-  const e = wm.assets[asId(id)] ?? nx.assets[asId(id)];
+  const e = wm.assets[asId(id)] ?? em.assets[asId(id)] ?? nx.assets[asId(id)];
   if (e?.kind !== 'image') {
     throw new Error(`invariant: ${id} is a window fixture image`);
   }
   return e;
 }
-const stage = (o: { need?: string[]; warm?: string[]; near?: number; hope?: string[]; eventRoom?: string[] }): StageWindow => ({
+const stage = (o: { need?: string[]; warm?: string[]; near?: number; hope?: string[]; eventRoom?: string[]; preview?: true }): StageWindow => ({
   need: (o.need ?? []).map(asId),
   warm: (o.warm ?? []).map(asId),
   near: o.near ?? 0,
   hope: (o.hope ?? []).map(asId),
   eventRoom: (o.eventRoom ?? []).map(asId),
+  ...(o.preview === true ? { preview: true } : {}),
 });
 /** Microtasks only: what a settle does in the turn it runs, with no timer between. */
 const micro = async (): Promise<void> => {
@@ -1507,4 +1599,245 @@ test('preload: the window seat forwards a swap to want and a release to retry', 
   seat.released();
   expect(calls).toEqual(['want', 'retry']);
   expect(asked).toEqual([w]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// A chapter entry at the half tier (shots §5.8 "Entry at the half tier" steps 1-5, lane SH5b): the entry's previews,
+// the upgrade chain (one at a time, outside the slots, the top image first) and the entry gate (only NEED items until
+// the visible upgrades and the need previews are done), on the hold harness over `em`. The fake upgrades settle only
+// when a test says so.
+
+/** The entry's first batch: `ids` ensured as previews (step 1), then taken by the stage as the executor does. */
+async function entryBatch(h: ReturnType<typeof harness>, ids: readonly string[]): Promise<void> {
+  const r = await h.s.ensure(ids.map(asId), live(), { preview: true });
+  expect(r).toEqual({ ok: true, value: undefined });
+  for (const id of ids) {
+    await h.visible(id, `scene:${id}`);
+  }
+  h.registry.releaseHolder(ENSURE_HOLDER);
+}
+
+test('preload: an entry window admits its need as previews at once, beside the visible upgrades', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(em);
+  await entryBatch(h, ['bg/v']);
+  const before = h.fetchUrls().length;
+  // The swap point (step 4): the first cut's half files start in this turn, in the two slots, beside the plate's upgrade.
+  h.s.want(stage({ need: ['bg/v', 'bg/n', 'sheet/n'], preview: true }));
+  expect(h.fetchUrls().slice(before)).toEqual([halfUrl('bg/n'), halfUrl('sheet/n')]);
+  expect(h.upgradeCalls()).toEqual(['bg/v']);
+});
+
+test("preload: an entry window's need previews upgrade after the visible records", async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(em);
+  await entryBatch(h, ['bg/v', 'sheet/v']);
+  h.s.want(stage({ need: ['bg/v', 'sheet/v', 'bg/n', 'sheet/n'], preview: true }));
+  const open = [h.upgradesOpen()];
+  expect(h.upgradeCalls()).toEqual(['bg/v']);
+  await flush();
+  open.push(h.upgradesOpen());
+  // The need previews are live from their halves; the plate's upgrade is still the only one.
+  expect(h.registry.previews().map((p) => [p.id, p.visible])).toEqual([
+    ['bg/v', true],
+    ['sheet/v', true],
+    ['bg/n', false],
+    ['sheet/n', false],
+  ]);
+  expect(h.upgradeCalls()).toEqual(['bg/v']);
+  for (let i = 0; i < 4; i += 1) {
+    // The upgrade in flight ends; the next one starts.
+    h.upgraded(h.upgradeCalls().at(-1) ?? '');
+    await flush();
+    open.push(h.upgradesOpen());
+  }
+  // The visible sheet before the need plate, though the plate ranks first: visible records lead.
+  expect(h.upgradeCalls()).toEqual(['bg/v', 'sheet/v', 'bg/n', 'sheet/n']);
+  expect(Math.max(...open), 'one upgrade at a time').toBe(1);
+  expect(h.registry.previews()).toEqual([]);
+});
+
+test('preload: an entry window admits nothing but need until its visible upgrades and need previews are done', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(em);
+  await entryBatch(h, ['bg/v']);
+  const before = h.fetchUrls().length;
+  h.s.want(stage({ need: ['bg/v', 'bg/n'], warm: ['prop/w'], near: 1, hope: ['prop/hope'], preview: true }));
+  // A slot is free, but the gate holds the warm opener and the hope while the plate's upgrade runs.
+  expect(h.fetchUrls().slice(before)).toEqual([halfUrl('bg/n')]);
+  await flush();
+  expect(h.state('bg/n')).toBe('live');
+  expect(h.fetchUrls().slice(before)).toEqual([halfUrl('bg/n')]);
+  // The plate is sharp and the need preview landed: the need's upgrade runs next and the gate opens in that turn.
+  h.upgraded('bg/v');
+  await micro();
+  expect(h.upgradeCalls()).toEqual(['bg/v', 'bg/n']);
+  expect(h.fetchUrls().slice(before)).toEqual([halfUrl('bg/n'), winUrl('prop/w'), winUrl('prop/hope')]);
+});
+
+test('preload: visible previews upgrade top image first', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(em);
+  // Started sheet, plate, CG: the upgrades go CG, plate, sheet (step 3).
+  await entryBatch(h, ['sheet/v', 'bg/v', 'cg/c']);
+  h.s.want(stage({ need: ['sheet/v', 'bg/v', 'cg/c'], preview: true }));
+  expect(h.upgradeCalls()).toEqual(['cg/c']);
+  for (const id of ['cg/c', 'bg/v']) {
+    h.upgraded(id);
+    await flush();
+  }
+  expect(h.upgradeCalls()).toEqual(['cg/c', 'bg/v', 'sheet/v']);
+});
+
+test('preload: ensure with preview starts previews; without, the full files', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(em);
+  expect(await h.s.ensure([asId('bg/v')], live(), { preview: true })).toEqual({ ok: true, value: undefined });
+  expect(await h.s.ensure([asId('bg/n')], live())).toEqual({ ok: true, value: undefined });
+  expect(h.fetchUrls()).toEqual([halfUrl('bg/v'), winUrl('bg/n')]);
+  expect(h.registry.previews()).toEqual([{ id: asId('bg/v'), visible: true }]);
+});
+
+test('preload: a later window upgrades a preview a tap showed at the half tier', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(em);
+  // Two 19 MiB plates on stage, in the window.
+  await h.visible('bg/big1', 'scene:big1');
+  await h.visible('bg/big2', 'scene:big2');
+  h.s.want(stage({ need: ['bg/big1', 'bg/big2'] }));
+  await flush();
+  // A tap inside the entry's first step shows its plate at the half tier.
+  expect(await h.s.ensure([asId('bg/v')], live(), { preview: true })).toEqual({ ok: true, value: undefined });
+  await h.visible('bg/v', 'scene:v');
+  h.registry.releaseHolder(ENSURE_HOLDER);
+  // A release report: the chain tries the plate, whose full file would pass HARD (48.25 MiB): refused, the half stays.
+  h.s.retry();
+  await flush();
+  expect(h.upgradeCalls()).toEqual([]);
+  // Room is made, but the plate was tried since the last swap point: not before the next one.
+  h.registry.release(asId('bg/big2'), 'scene:big2');
+  h.s.releasePreload('preload:win:bg/big2');
+  expect(h.state('bg/big2')).toBe('none');
+  h.s.retry();
+  await flush();
+  expect(h.upgradeCalls()).toEqual([]);
+  // The next window is a swap point (step 5): the plate is tried again and upgraded.
+  h.s.want(stage({ need: ['bg/big1', 'bg/v'] }));
+  expect(h.upgradeCalls()).toEqual(['bg/v']);
+  h.upgraded('bg/v');
+  await flush();
+  expect(h.registry.previews()).toEqual([]);
+});
+
+test('preload: a need preview is spared by step 6 like any need item', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(em);
+  h.s.want(stage({ need: ['bg/n'], preview: true }));
+  await flush();
+  // The need item is live from its half, its upgrade in flight (held).
+  expect(h.registry.previews()).toEqual([{ id: asId('bg/n'), visible: false }]);
+  expect(h.upgradeCalls()).toEqual(['bg/n']);
+  // EN holds a 19 MiB plate under a room tag (29.25 MiB with the upgrade's reservation).
+  h.s.preload('room:r', [asId('bg/big1')]);
+  await flush();
+  expect(h.state('bg/big1')).toBe('live');
+  // The next step needs another 19 MiB plate, refused under STEADY: step 6 releases EN's tag, never the need preview.
+  h.s.want(stage({ need: ['bg/n', 'bg/big2'], preview: true }));
+  await flush();
+  expect(['bg/n', 'bg/big1', 'bg/big2'].map(h.state)).toEqual(['live', 'none', 'live']);
+  expect(h.log).toContain('release room:r');
+  expect(h.log).not.toContain('release preload:win:bg/n');
+  expect(h.registry.previews()).toEqual([{ id: asId('bg/n'), visible: false }]);
+});
+
+test('preload: a warm item never starts a preview', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(em);
+  h.s.want(stage({ need: ['bg/n'], warm: ['prop/w'], near: 1, hope: ['prop/hope'], preview: true }));
+  expect(h.fetchUrls()).toEqual([halfUrl('bg/n')]);
+  await flush();
+  await flush();
+  // The gate opened once the need landed: the warm opener and the hope load their full files, and the opener's decode
+  // is the full file's; only the need is a preview.
+  expect(h.fetchUrls()).toEqual([halfUrl('bg/n'), winUrl('prop/w'), winUrl('prop/hope')]);
+  expect(h.calls.filter((c) => c.url === winUrl('prop/w') || c.url === halfUrl('prop/w')).map((c) => c.url)).toEqual([winUrl('prop/w')]);
+  expect(h.registry.previews().map((p) => p.id)).toEqual(['bg/n']);
+});
+
+test('preload: on a half-tier registry an entry window changes nothing', async () => {
+  const w = stage({ need: ['bg/n'], warm: ['prop/w'], near: 1, hope: ['prop/hope'] });
+  // Arm 1, the half tier: the same window with and without the entry's flag fetches the same files, turn by turn.
+  const run = async (preview: boolean) => {
+    const h = harness('auto', { hold: true, tier: 'half' });
+    h.s.setChapter(em);
+    h.s.want(preview ? { ...w, preview: true } : w);
+    const turns = [h.fetchUrls()];
+    for (let i = 0; i < 4; i += 1) {
+      await flush();
+      turns.push(h.fetchUrls());
+    }
+    return { h, turns };
+  };
+  const plain = await run(false);
+  const entry = await run(true);
+  expect(entry.turns).toEqual(plain.turns);
+  expect(entry.turns[0]).toEqual([halfUrl('bg/n'), halfUrl('prop/w')]);
+  // Arm 2, a session demoted by a resize: full from now on, so the entry previews and gates.
+  const d = harness('deferred', { hold: true, tier: 'half' });
+  d.registry.demote();
+  d.s.setChapter(em);
+  d.s.want({ ...w, preview: true });
+  expect(d.fetchUrls()).toEqual([halfUrl('bg/n')]);
+  d.land('bg/n');
+  await micro();
+  expect(d.fetchUrls()).toEqual([halfUrl('bg/n')]);
+  // The need lands: no visible preview, no need left, and the need's own upgrade holds nothing; the gate opens.
+  d.decoded('bg/n');
+  await micro();
+  expect(d.fetchUrls()).toEqual([halfUrl('bg/n'), winUrl('prop/w'), winUrl('prop/hope')]);
+  expect(d.upgradeCalls()).toEqual(['bg/n']);
+  // Arm 1 again: no preview and no upgrade on the half tier.
+  expect([entry.h.registry.previews(), entry.h.upgradeCalls(), plain.h.upgradeCalls()]).toEqual([[], [], []]);
+});
+
+test("preload: a resumed puzzle's keep swaps end its restored plate and close-up at the full tier, and plan no window", async () => {
+  // Shots §5.8 step 3 at an entry's windowless stages (lane SH5b, W2): each hands the keep window, whose swap counts as
+  // a release; the entry tag waits for the first real window (S36). Literal, as the stage hands KEEP_WINDOW.
+  const keep: StageWindow = { need: [], warm: [], near: 0, hope: [], eventRoom: [], keep: true };
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('next:ch8', [asId('bg/x')], em);
+  await flush();
+  expect(h.state('bg/x')).toBe('live');
+  h.s.setChapter(em);
+  // The resume's restore: the controller wraps the executor's take in previewing.
+  expect((await h.registry.previewing(() => h.visible('bg/p', 'scene:bg'))).ok).toBe(true);
+  // The yield's own (empty) batch.
+  h.log.length = 0;
+  h.s.want(keep);
+  expect(h.log).not.toContain('release next:ch8');
+  expect(h.s.stats().window).toEqual({ pending: 0, ids: [] });
+  await micro();
+  expect(h.upgradeCalls()).toEqual(['bg/p']);
+  // The puzzle's close-up, while the plate's upgrade is held: its half, then its keep swap; still one upgrade.
+  await entryBatch(h, ['cg/c']);
+  h.s.want(keep);
+  await micro();
+  expect(h.upgradeCalls()).toEqual(['bg/p']);
+  expect(h.fetchUrls()).toEqual([winUrl('bg/x'), halfUrl('bg/p'), halfUrl('cg/c')]);
+  // The plate is sharp: the close-up's upgrade starts in that turn, and both end at the full tier.
+  h.upgraded('bg/p');
+  await micro();
+  expect(h.upgradeCalls()).toEqual(['bg/p', 'cg/c']);
+  await h.settle();
+  expect(h.registry.previews()).toEqual([]);
+  expect(h.upgradeCalls()).toEqual(['bg/p', 'cg/c']);
+  expect(h.fetchUrls()).toEqual([winUrl('bg/x'), halfUrl('bg/p'), halfUrl('cg/c')]);
+  expect(h.registry.stats().bytes).toBe(mib(2) + mib(0.1) + mib(8) + mib(0.2) + mib(4) + mib(0.2));
+  expect(h.state('bg/x')).toBe('live');
+  expect(h.log).not.toContain('release next:ch8');
+  // The first real window joins the tag's file, then releases the tag (S36).
+  h.log.length = 0;
+  h.s.want(stage({ need: ['bg/p', 'bg/x'] }));
+  expect(h.log).toEqual(['acquire preload:win:bg/p bg/p', 'acquire preload:win:bg/x bg/x', 'release next:ch8']);
 });

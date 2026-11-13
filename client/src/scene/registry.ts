@@ -204,6 +204,8 @@ export interface AssetRegistry<T> {
    * in-flight records keep the file they started with until they end; the layout does not depend on the tier (I4).
    */
   demote(): void;
+  /** The tier records start at now: the creation tier until `demote()`, then `'full'` (the entry gate reads it, shots §5.8). */
+  tier(): SizeTier;
   stats(): RegistryStats;
   warmStats(): WarmStats;
   /**
@@ -894,6 +896,7 @@ export function createAssetRegistry<T>(
     demote() {
       tier = 'full';
     },
+    tier: () => tier,
     frames(h, boxes) {
       const rec = records.get(h.id);
       const cut = deps.frames;

@@ -65,11 +65,40 @@ const CH1 = manifest('ch1', {
   'char/ally/worried': image('m_worried', 3_051_405, 0),
   'prop/study_set': image('m_study_set', 2_909_330, 0),
 });
+/** An entry with its half (MEMORY-PLAN 4.C): half its stored px per side, a quarter of its decoded bytes. */
+const halved = (file: string, decoded: number, held: number, halfHeld: number): ImageEntry => ({
+  ...image(file, decoded, held),
+  half: {
+    w: 512,
+    h: 512,
+    decodedBytes: decoded / 4,
+    avif: { url: `/assets/${file}-half.avif`, bytes: halfHeld },
+    webp: { url: `/assets/${file}-half.webp`, bytes: halfHeld },
+  },
+});
+/**
+ * ch4 a001 (shots §5.8 "Entry at the half tier", lane SH5b; shapes-c6 (e)): the wide's plate, sheet and talk on stage,
+ * the close-up's plate, sheet and talk in need, its smile face and talk hoped for. A plate decodes 1080 × 2048 × 4; the
+ * file sizes are the plan's (§5.8 rev. 5 m6).
+ */
+const A4 = manifest('ch4', {
+  'bg/lamp_wide': halved('l_wide', PLATE, 225_000, 84_375),
+  'sheet/lamp_wide': halved('l_wide_sheet', 4_194_304, 48_907, 18_340),
+  'talk/lamp_wide/keeper/worried': halved('l_wide_talk', 1_048_576, 5_464, 2_049),
+  'bg/lamp_keeper_cu': halved('l_cu', PLATE, 225_000, 84_375),
+  'sheet/lamp_keeper_cu': halved('l_cu_sheet', 4_194_304, 48_907, 18_340),
+  'talk/lamp_keeper_cu/keeper/worried': halved('l_cu_talk', 1_048_576, 5_464, 2_049),
+  'face/lamp_keeper_cu/keeper/smile': halved('l_cu_face', 1_048_576, 43_608, 16_353),
+  'talk/lamp_keeper_cu/keeper/smile': halved('l_cu_smile', 1_048_576, 5_464, 2_049),
+});
 const ENTRIES = new Map<string, [string, ImageEntry]>();
-for (const m of [SH, NX, CH1]) {
+for (const m of [SH, NX, CH1, A4]) {
   for (const [id, e] of Object.entries(m.assets)) {
     if (e.kind === 'image') {
       ENTRIES.set(e.avif.url, [id, e]);
+      if (e.half !== undefined) {
+        ENTRIES.set(e.half.avif.url, [id, { kind: 'image', ...e.half }]);
+      }
     }
   }
 }
@@ -88,10 +117,15 @@ const micro = async (): Promise<void> => {
   }
 };
 
-/** The stage: `stall` names ids whose decodes wait for `finish(id)`; every other fetch and decode settles at once. */
+/**
+ * The stage: `stall` names ids whose decodes wait for `finish(id)`; every other fetch and decode settles at once. An
+ * upgrade (lane SH5b) waits for `sharpen()`, which settles the oldest one in flight.
+ */
 function stage(first: AssetManifest) {
   const fetched: string[] = [];
+  const urls: string[] = [];
   const decodes: Call<Decoded<Tex>>[] = [];
+  const upgrades: (Call<void> & { settle(): void })[] = [];
   const stall = new Set<string>();
   const released = new Map<string, number>();
   const at = (url: string): [string, ImageEntry] => {
@@ -103,7 +137,7 @@ function stage(first: AssetManifest) {
   };
   const texture = (url: string, keptBytes: number): Decoded<Tex> => {
     const [, e] = at(url);
-    return {
+    const d: Decoded<Tex> = {
       texture: { url },
       w: e.w,
       h: e.h,
@@ -111,8 +145,32 @@ function stage(first: AssetManifest) {
       gen: 1,
       open: () => false,
       revive: () => Promise.resolve({ ok: true, value: undefined }),
+      // As the loader's swap: the same texture takes the full file's size and bytes; one aborted first swaps nothing.
+      upgrade: (ref, _geometry, signal) =>
+        new Promise((resolve) => {
+          const [id, full] = at(ref.url);
+          const call: Call<void> & { settle(): void } = {
+            id,
+            signal,
+            resolve,
+            done: false,
+            settle: (): void => {
+              call.done = true;
+              if (signal.aborted) {
+                resolve({ ok: false, error: { kind: 'aborted' } });
+                return;
+              }
+              d.w = full.w;
+              d.h = full.h;
+              d.keptBytes = ref.bytes;
+              resolve({ ok: true, value: undefined });
+            },
+          };
+          upgrades.push(call);
+        }),
       release: () => released.set(url, (released.get(url) ?? 0) + 1),
     };
+    return d;
   };
   const file = (url: string, bytes: number): HeldFile<Tex> => ({
     bytes,
@@ -129,6 +187,7 @@ function stage(first: AssetManifest) {
   });
   const hold: HoldImage<Tex> = (ref) => {
     fetched.push(at(ref.url)[0]);
+    urls.push(ref.url);
     return Promise.resolve({ ok: true, value: file(ref.url, ref.bytes) });
   };
   const registry = createAssetRegistry<Tex>({ hold, variant: 'avif', tier: 'full' });
@@ -149,6 +208,17 @@ function stage(first: AssetManifest) {
     errors,
     stall,
     fetched,
+    urls,
+    /** The upgrades in flight, oldest first, by id. */
+    sharpening: (): string[] => upgrades.filter((u) => !u.done).map((u) => u.id),
+    /** The oldest upgrade in flight settles now. */
+    sharpen: (): void => {
+      const u = upgrades.find((x) => !x.done);
+      if (u === undefined) {
+        throw new Error('invariant: an upgrade is in flight');
+      }
+      u.settle();
+    },
     fetches: (id: string): number => fetched.filter((x) => x === id).length,
     decodes: (id: string): number => decodes.filter((c) => c.id === id).length,
     releases: (id: string): number => released.get(entry(id).avif.url) ?? 0,
@@ -169,16 +239,25 @@ function stage(first: AssetManifest) {
       s.want(w);
       await flush();
     },
-    /** A tap: the batch's files at visible priority, then the swap; returns the ids fetched at the tap. */
-    cut: async (ids: string[], w: StageWindow | null): Promise<string[]> => {
+    /**
+     * A tap: the batch's files at visible priority, then the swap; returns the ids fetched at the tap. `preview` (lane
+     * SH5b): a chapter entry's first step, as GameSession and the controller pass it (shots §5.8 steps 1, 4).
+     */
+    cut: async (ids: string[], w: StageWindow | null, o?: { preview: true }): Promise<string[]> => {
       const before = fetched.length;
-      const r = await s.ensure(ids.map(asId), new AbortController().signal);
+      const preview = o?.preview === true;
+      const r = await (preview ? s.ensure(ids.map(asId), new AbortController().signal, { preview }) : s.ensure(ids.map(asId), new AbortController().signal));
       if (!r.ok) {
         throw new Error(`invariant: the batch loads: ${JSON.stringify(r.error)}`);
       }
       const atTap = fetched.slice(before);
-      for (const id of ids) {
-        await registry.acquire(asId(id), `scene:${id}`, { entry: entry(id), priority: 'visible' });
+      if (preview) {
+        // The executor takes every slot synchronously inside the controller's previewing scope.
+        await registry.previewing(() => Promise.all(ids.map((id) => registry.acquire(asId(id), `scene:${id}`, { entry: entry(id), priority: 'visible' }))));
+      } else {
+        for (const id of ids) {
+          await registry.acquire(asId(id), `scene:${id}`, { entry: entry(id), priority: 'visible' });
+        }
       }
       registry.releaseHolder('ensure');
       for (const old of onStage.filter((x) => !ids.includes(x))) {
@@ -186,7 +265,7 @@ function stage(first: AssetManifest) {
       }
       onStage = [...ids];
       if (w !== null) {
-        s.want(w);
+        s.want(preview ? { ...w, preview } : w);
       }
       await flush();
       return atTap;
@@ -369,4 +448,52 @@ test("window: back in the hall the cellar's bg is admitted while the street's op
   h.finish('bg/cellar');
   await h.settle();
   expect(['bg/cellar', 'prop/study_set'].map(h.state)).toEqual(['live', 'none']);
+});
+
+test('window: an entry holds at most its window plus one half file while it sharpens', async () => {
+  // Shots §5.8 "Entry at the half tier" (lane SH5b): ch4's resume at a001. The wide shows over its halves, the window's
+  // need starts the close-up's halves beside the upgrades, one upgrade at a time; the hope waits for the gate.
+  const h = stage(A4);
+  const wide = ['bg/lamp_wide', 'sheet/lamp_wide', 'talk/lamp_wide/keeper/worried'];
+  const cu = ['bg/lamp_keeper_cu', 'sheet/lamp_keeper_cu', 'talk/lamp_keeper_cu/keeper/worried'];
+  const hope = ['face/lamp_keeper_cu/keeper/smile', 'talk/lamp_keeper_cu/keeper/smile'];
+  const fileOf = (id: string): ImageEntry => {
+    const e = A4.assets[asId(id)];
+    if (e?.kind !== 'image') {
+      throw new Error(`invariant: ${id} is an A4 image`);
+    }
+    return e;
+  };
+  const halfOf = (id: string): number => {
+    const half = fileOf(id).half;
+    return half === undefined ? 0 : half.decodedBytes + half.avif.bytes;
+  };
+  const fullOf = (id: string): number => fileOf(id).decodedBytes + fileOf(id).avif.bytes;
+  let peak = 0;
+  let most = 0;
+  const sample = (): void => {
+    peak = Math.max(peak, h.registry.stats().bytes);
+    most = Math.max(most, h.sharpening().length);
+  };
+  await h.cut(wide, win({ need: [...wide, ...cu], hope }), { preview: true });
+  sample();
+  // Every need image starts from its half: the wide's at the batch, the close-up's at the swap.
+  expect(h.urls.slice(0, 6)).toEqual([...wide, ...cu].map((id) => fileOf(id).half?.avif.url));
+  const order: string[] = [];
+  for (let i = 0; i < 12 && h.sharpening().length > 0; i += 1) {
+    order.push(h.sharpening()[0] ?? '');
+    h.sharpen();
+    await flush();
+    sample();
+  }
+  // The bound: the window at its full files plus one half file, the largest.
+  const window = [...wide, ...cu, ...hope];
+  const bound = window.reduce((n, id) => n + fullOf(id), 0) + Math.max(...window.map(halfOf));
+  expect(peak).toBeLessThanOrEqual(bound);
+  expect(most, 'one upgrade at a time').toBe(1);
+  expect(order).toEqual([...wide, ...cu]);
+  // At rest: no preview, every record full, nothing in flight; the hope was admitted once the gate opened.
+  expect(h.registry.previews()).toEqual([]);
+  expect(h.registry.stats()).toMatchObject({ live: 8, pending: 0, bytes: window.reduce((n, id) => n + fullOf(id), 0) });
+  expect(h.errors).toEqual([]);
 });
