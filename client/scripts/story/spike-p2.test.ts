@@ -5,8 +5,8 @@ import { expect, test } from 'vitest';
 import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import type { KernelWorld } from '../../src/mechanics/contract.ts';
-import { searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
-import type { SearchResult } from '../../src/mechanics/rules/search.ts';
+import { searchSection, sectionEntry, sectionPlaces } from '../../src/mechanics/rules/search.ts';
+import type { SearchResult, SearchStats } from '../../src/mechanics/rules/search.ts';
 import { decodeAssetCatalog } from '../../src/story/catalog.ts';
 import type { ChapterId, SectionId } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
@@ -25,6 +25,14 @@ import { decodeWorldFile, lintWorld } from './world.ts';
 // differs from `views`', refutes the claim and is a STOP with its counts. Every other configuration (the emulated mix,
 // `recipes-real`, `views+recipes-real`, `full-mix-real`) is measured and logged, never re-tuned. The generator's
 // parameters are fixed here, before any measurement.
+// GM5q, the place quotient (rules/search.ts `placesOf`): a free view keys under its parent's place, and the search
+// expands a place's state over every member. Each configuration is searched with it (`places=on`) and without it
+// (`places=off`, P2-a's and P2-b's search), under the search's two bounds: at most RESUME_STATE_CAP places and at most
+// RESUME_WORK_PER_STATE successor evaluations per place of that cap, walk moves included. A `p2:` line per arm reports
+// places (states without the quotient), member expansions, work and the bound a capped search stopped at. Asserted:
+// a configuration with no real view searches alike with and without it; with it, `views-real` equals `base` and
+// `views+recipes-real` exhausts under both bounds with `recipes-real`'s count, every real view merged. A miss is a
+// STOP with its per-seed numbers (RULINGS 316 Q7, 317); P2-b's claim above stays measured without the quotient.
 
 type Json = Record<string, unknown>;
 let lineCounter = 0;
@@ -187,19 +195,27 @@ function generated(seed: number, config: Config): Json {
   };
 }
 
-/** One search: its result, its time and the edges it met per step kind (every successor, deduped or not). */
-type Measured = SearchResult & { readonly ms: number; readonly edges: Readonly<Record<string, number>> };
+/**
+ * One search: its result, its time, the edges it met per step kind (every successor, deduped or not), what it spent
+ * (`onStats`), and its section's real views that do not merge into a place.
+ */
+type Measured = SearchResult & {
+  readonly ms: number;
+  readonly edges: Readonly<Record<string, number>>;
+  readonly stats: SearchStats;
+  readonly unmerged: readonly string[];
+};
 
 /**
  * Decodes a source world (a world the decoder refuses fails the test) and searches every section from its entry;
  * `places` false: without the place quotient (GM5q), each room its own place.
  */
-function measure(raw: unknown, places = true): Measured[] {
+function measure(raw: unknown, places: boolean): Measured[] {
   return measured(raw, places).results;
 }
 
 /** `measure`, with the decoded world's module data (P2-b's non-vacuity checks read it). */
-function measured(raw: unknown, places = true): { readonly results: Measured[]; readonly mods: KernelWorld['mods'] } {
+function measured(raw: unknown, places: boolean): { readonly results: Measured[]; readonly mods: KernelWorld['mods'] } {
   const r = decodeWorldSource(raw);
   if (!r.ok) {
     throw new Error(`the generated world does not decode: ${JSON.stringify(r.error)}`);
@@ -207,14 +223,21 @@ function measured(raw: unknown, places = true): { readonly results: Measured[]; 
   const w = { ...toPublic(r.value), mods: r.value.mods };
   const results = (Object.keys(w.sections) as SectionId[]).map((section) => {
     const edges: Record<string, number> = {};
+    let stats: SearchStats = { expansions: 0, work: 0, bound: null };
     const t0 = performance.now();
     const found = searchSection(w, sectionEntry(w, EMPTY_WORLD_STATE, section), section, CAP, {
       places,
       onEdge: (_from, succ) => {
         edges[succ.step.kind] = (edges[succ.step.kind] ?? 0) + 1;
       },
+      onStats: (s) => {
+        stats = s;
+      },
     });
-    return { ...found, ms: performance.now() - t0, edges };
+    const ms = performance.now() - t0;
+    const merged = sectionPlaces(w, section);
+    const unmerged = Object.keys(w.mods.view.of).filter((v) => !Object.hasOwn(merged, v));
+    return { ...found, ms, edges, stats, unmerged };
   });
   return { results, mods: r.value.mods };
 }
@@ -227,16 +250,34 @@ function only(results: readonly Measured[]): Measured {
   return first;
 }
 
-const report = (config: string, seed: number | string, m: Measured): void => {
-  console.log(`p2: ${config} seed=${seed} states=${m.result === 'cap' ? 'cap' : m.states} ms=${m.ms.toFixed(1)}`);
+/** One `p2:` line per search (`ms` is not a measurement while another lane loads the machine). */
+const report = (config: string, seed: number | string, m: Measured, places: boolean): void => {
+  const { expansions, work, bound } = m.stats;
+  console.log(
+    `p2: ${config} seed=${seed} places=${places ? 'on' : 'off'} states=${m.result === 'cap' ? 'cap' : m.states} expansions=${expansions} work=${work} bound=${bound ?? '-'} ms=${m.ms.toFixed(1)}`,
+  );
 };
 
+/** Both arms of one search, each reported. */
+function arms(config: string, seed: number | string, raw: unknown): { readonly on: Measured[]; readonly off: Measured[] } {
+  const on = measure(raw, true);
+  const off = measure(raw, false);
+  for (const m of on) {
+    report(config, seed, m, true);
+  }
+  for (const m of off) {
+    report(config, seed, m, false);
+  }
+  return { on, off };
+}
+
 test('spike p2: views at 2 per room fit the cap at ch1 density', () => {
+  // P2-a's claim, measured as P2-a searched: without the place quotient.
   for (const seed of SEEDS) {
-    const base = only(measure(generated(seed, 'base')));
-    const views = only(measure(generated(seed, 'views')));
-    report('base', seed, base);
-    report('views', seed, views);
+    const base = only(measure(generated(seed, 'base'), false));
+    const views = only(measure(generated(seed, 'views'), false));
+    report('base', seed, base, false);
+    report('views', seed, views, false);
     expect(base.result, `seed ${seed} base`).toBe('exhausted');
     expect(views.result, `seed ${seed} views (${views.states} states)`).toBe('exhausted');
     // The emulation adds positions: a view room is a room the player stands in.
@@ -244,21 +285,26 @@ test('spike p2: views at 2 per room fit the cap at ch1 density', () => {
   }
 }, 60_000);
 
+/** What a search answered and spent, the terms both arms must share when the quotient has nothing to merge. */
+const spent = (m: Measured): unknown => [m.result, m.states, m.stats.expansions, m.stats.work, m.stats.bound];
+
 test('spike p2: the emulated mix is measured', () => {
   for (const seed of SEEDS) {
     for (const config of CONFIGS) {
-      const m = only(measure(generated(seed, config)));
-      report(config, seed, m);
+      const { on, off } = arms(config, seed, generated(seed, config));
+      const [m, without] = [only(on), only(off)];
       expect(m.states, `${config} seed ${seed}`).toBeGreaterThanOrEqual(1);
+      // No `view` key (an emulated view is a room with an exit back): the quotient has nothing to merge.
+      expect(spent(m), `${config} seed ${seed} with the quotient against without`).toEqual(spent(without));
     }
   }
-  // The calibration rows: the real ch1, as it is and with two view rooms per room (reported, never pinned: later
-  // lanes change ch1's content).
+  // The calibration rows: the real ch1, as it is and with two view rooms per room (reported both ways, never pinned:
+  // later lanes change ch1's content).
   const ch1 = JSON.parse(readFileSync(new URL('../../../story/ch1/world.json', import.meta.url), 'utf8')) as Json & { sections: Record<string, Json & { rooms: Record<string, Json> }> };
   const ch1Views = { ...ch1, sections: Object.fromEntries(Object.entries(ch1.sections).map(([id, s]) => [id, { ...s, rooms: withViews(s.rooms) }])) };
   for (const [name, raw] of [['ch1', ch1], ['ch1+views', ch1Views]] as const) {
-    for (const m of measure(raw)) {
-      report(name, '-', m);
+    const { on, off } = arms(name, '-', raw);
+    for (const m of [...on, ...off]) {
       expect(m.states, name).toBeGreaterThanOrEqual(1);
     }
   }
@@ -271,7 +317,7 @@ test('spike p2: real views at 2 per room fit the cap at ch1 density', () => {
     const views = only(measure(generated(seed, 'views'), false));
     const real = measured(generated(seed, 'views-real'), false);
     const m = only(real.results);
-    report('views-real', seed, m);
+    report('views-real', seed, m, false);
     // Non-vacuity: two real views of each of the three rooms, and the search leaves them by `leave-view`.
     expect(Object.keys(real.mods.view.of), `seed ${seed}`).toHaveLength(6);
     expect(m.edges['leave-view'] ?? 0, `seed ${seed} leave-view edges`).toBeGreaterThan(0);
@@ -285,18 +331,44 @@ test('spike p2: real views at 2 per room fit the cap at ch1 density', () => {
 test('spike p2: real views and recipes are measured', () => {
   for (const config of ['recipes-real', 'views+recipes-real', 'full-mix-real'] as const) {
     for (const seed of SEEDS) {
-      const real = measured(generated(seed, config));
-      const m = only(real.results);
-      report(config, seed, m);
-      expect(m.states, `${config} seed ${seed}`).toBeGreaterThanOrEqual(1);
+      const raw = generated(seed, config);
+      const { on, off } = arms(config, seed, raw);
       // Non-vacuity: one real recipe, and a search that ends takes its combine.
-      expect(real.mods.combine.recipes, `${config} seed ${seed}`).toHaveLength(1);
-      if (config === 'recipes-real' && m.result !== 'cap') {
-        expect(m.edges['combine'] ?? 0, `${config} seed ${seed} combine edges`).toBeGreaterThan(0);
+      expect(measured(raw, true).mods.combine.recipes, `${config} seed ${seed}`).toHaveLength(1);
+      for (const [arm, m] of [['on', only(on)], ['off', only(off)]] as const) {
+        expect(m.states, `${config} seed ${seed} places=${arm}`).toBeGreaterThanOrEqual(1);
+        if (config === 'recipes-real' && m.result !== 'cap') {
+          expect(m.edges['combine'] ?? 0, `${config} seed ${seed} places=${arm} combine edges`).toBeGreaterThan(0);
+        }
       }
     }
   }
 }, 120_000);
+
+test('spike p2: real views and a recipe fit the cap with the place quotient', () => {
+  // GM5q's claim (RULINGS 309, 317): with the place quotient, a ch1-density section with real views at 2 per room and
+  // one real recipe exhausts under both bounds, with no more places than the recipe alone, and the real views alone add
+  // no place to the base. Every generator view is a pure close-up (no hotspot, no onEnter, a lockless entry from its
+  // room, left by leave-view), so all six merge.
+  for (const seed of SEEDS) {
+    const { on, off } = arms('views+recipes-real', seed, generated(seed, 'views+recipes-real'));
+    const [m, without] = [only(on), only(off)];
+    const recipes = only(measure(generated(seed, 'recipes-real'), true));
+    const views = only(measure(generated(seed, 'views-real'), true));
+    const base = only(measure(generated(seed, 'base'), true));
+    report('views-real', seed, views, true);
+    // Exhausted: under both bounds (a capped search names its bound in the message).
+    expect(m.result, `seed ${seed} views+recipes-real (${m.states} places, work ${m.stats.work}, bound ${m.stats.bound ?? '-'})`).toBe('exhausted');
+    expect(m.states, `seed ${seed} views+recipes-real against recipes-real`).toBe(recipes.states);
+    // The members are walked: every idle place expands its views too.
+    expect(m.stats.expansions, `seed ${seed} views+recipes-real expansions`).toBeGreaterThan(m.states);
+    expect([views.result, views.states], `seed ${seed} views-real against base`).toEqual(['exhausted', base.states]);
+    expect(m.unmerged, `seed ${seed} views+recipes-real: real views not merged`).toEqual([]);
+    expect(views.unmerged, `seed ${seed} views-real: real views not merged`).toEqual([]);
+    // Without the quotient: P2-b's row, reported above (cap on every seed in gm5-mech-combine/p2b.md).
+    expect(without.states, `seed ${seed} views+recipes-real without the quotient`).toBeGreaterThanOrEqual(1);
+  }
+}, 60_000);
 
 // ---------------------------------------------------------------------------------------------------------------
 // The world lint registry (engine plan §3.2, GM1b): `lintWorld` runs every per-world entry of MECHANIC_LINTS with the
