@@ -1177,6 +1177,51 @@ test('registry: an upgrade not answered within 20 s ends as a failed try and lea
   }
 });
 
+test('registry: an upgraded record shed to its file decodes again from the full file at the full geometry', async () => {
+  // Cut §1.3's stored-box invariant across a shed: the upgrade re-points the record's file, its geometry and (on a
+  // load-only registry) its held file, so a later decode is the full file at resolution 1, never the half's.
+  const h = harness();
+  const a = halved('a', bg('a'));
+  const p = h.preview('bg/a', a, 'scene:bg');
+  h.succeedAll();
+  ok(await p);
+  // A warm holder (a step window's warm item) joins the live preview.
+  expect((await h.registry.acquire(asId('bg/a'), 'preload:win:bg/a', { entry: a, priority: 'warm' })).ok).toBe(true);
+  const up = h.registry.upgrade(asId('bg/a'));
+  h.upgrades[0]?.settle({ ok: true, value: undefined });
+  expect(await up).toEqual({ ok: true, value: true });
+  // The visible holder leaves: the upgraded record is no preview, so it sheds to its (full) file.
+  h.registry.release(asId('bg/a'), 'scene:bg');
+  expect(h.registry.state(asId('bg/a'))).toBe('held');
+  // The image comes back: decoded again from the held full file, at the full geometry.
+  const again = h.acquire('bg/a', a, 'scene:bg2', 'visible');
+  const last = h.calls[h.calls.length - 1];
+  expect([last?.url, last?.geometry.resolution]).toEqual(['/assets/a.avif', 1]);
+  h.succeedAll();
+  ok(await again);
+});
+
+test('registry: a preview not yet revived is not upgraded', async () => {
+  const h = harness();
+  const p = h.preview('bg/a', halved('a', bg('a')), 'scene:bg');
+  h.succeedAll();
+  ok(await p);
+  // A revive to generation 2 that is aborted before it brought the record there: the record stays stale, no revive runs.
+  h.setReviveMode('hold');
+  const ac = new AbortController();
+  h.registry.revive(2, ac.signal);
+  ac.abort();
+  expect(h.registry.stats().stale).toBe(1);
+  const up = h.registry.upgrade(asId('bg/a'));
+  expect(h.upgrades).toHaveLength(0);
+  expect(await up).toEqual({ ok: true, value: false });
+  // Once a revive brings it to the generation, it is upgraded.
+  h.setReviveMode('auto');
+  expect(await h.registry.revive(2, noAbort()).all).toBe('done');
+  void h.registry.upgrade(asId('bg/a'));
+  expect(h.upgrades).toHaveLength(1);
+});
+
 test('registry: a revive aborts an upgrade in flight and the half stays live', async () => {
   const h = harness();
   const p = h.preview('bg/a', halved('a', bg('a')), 'scene:bg');

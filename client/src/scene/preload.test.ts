@@ -770,6 +770,11 @@ const em = manifest('ch8', {
   'bg/x': halved('e_x', 2, 0.1),
   'bg/big1': sized('e_big1', 19),
   'bg/big2': sized('e_big2', 19),
+  // The upgrade order's tail (lane SH5b fix2): one preview of each later kind, and a kind UPGRADE_ORDER does not name.
+  'face/e': halved('e_f', 1, 0.05),
+  'talk/e': halved('e_t', 1, 0.05),
+  'char/e': halved('e_c', 1, 0.05),
+  'cover/e': halved('e_o', 1, 0.05),
 });
 for (const m of [wm, nx, em]) {
   for (const e of Object.values(m.assets)) {
@@ -1967,4 +1972,112 @@ test('preload: a swapped upgrade asks for a frame; a failed, aborted or refused 
   }
   expect(refused.upgradeCalls()).toEqual(['bg/v', 'bg/v', 'bg/v']);
   expect(refused.sharpenedIds()).toEqual([]);
+});
+
+// Stated rules of the entry (lane SH5b fix2, the pre-merge lenses' probes): each pins what the scheduler already does.
+
+test('preload: a release after setChapter starts no upgrade before the entry\'s first swap point', async () => {
+  const h = harness('deferred', { hold: true });
+  // The handover: setChapter keeps next:ch8 with its file in flight (no swap in the old chapter this time).
+  h.s.setChapter(wm);
+  h.s.preload('next:ch8', [asId('bg/x')], em);
+  h.s.setChapter(em);
+  // enterChapter's restore(EMPTY_SNAPSHOT) sweeps the old chapter's stage: the executor reports `released`.
+  windowDeps(h.s).released();
+  // The entry's first batch: both halves held.
+  const p = h.s.ensure([asId('bg/v'), asId('sheet/v')], live(), { preview: true });
+  h.land('bg/v');
+  await micro();
+  h.decoded('bg/v');
+  await micro();
+  expect(h.upgradeCalls()).toEqual([]);
+  // The kept flight settles while the sheet's half is still awaited: no full file may join the link.
+  h.land('bg/x');
+  await micro();
+  h.decoded('bg/x');
+  await micro();
+  expect(h.state('sheet/v')).toBe('pending');
+  expect(h.upgradeCalls()).toEqual([]);
+  h.land('sheet/v');
+  await micro();
+  h.decoded('sheet/v');
+  await micro();
+  expect(await p).toEqual({ ok: true, value: undefined });
+  // The stage takes the batch, and its swap starts the chain: the fixture can upgrade.
+  await h.visible('bg/v', 'scene:bg/v');
+  await h.visible('sheet/v', 'scene:sheet/v');
+  h.registry.releaseHolder(ENSURE_HOLDER);
+  h.s.want(stage({ need: ['bg/v', 'sheet/v'], preview: true }));
+  expect(h.upgradeCalls()).toEqual(['bg/v']);
+});
+
+test('preload: the entry gate waits for a NEED join to settle and opens at its settle', async () => {
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(em);
+  // As enterKnot's hold does: the knot preload has bg/n's full file in flight before the entry's swap.
+  h.s.preload('preload:k', [asId('bg/n')]);
+  await micro();
+  const before = h.fetchUrls().length;
+  // The entry's window: its need joins that flight (a NEED join); the warm opener waits behind the gate.
+  h.s.want(stage({ need: ['bg/n'], warm: ['prop/w'], near: 1, preview: true }));
+  await micro();
+  expect(h.fetchUrls().slice(before)).toEqual([]);
+  // The flight lands and decodes: the TAG settle and then the join settle; no visible preview is left, so the gate opens.
+  h.land('bg/n');
+  await micro();
+  h.decoded('bg/n');
+  await micro();
+  await micro();
+  expect(h.state('bg/n')).toBe('live');
+  expect(h.fetchUrls().slice(before)).toEqual([winUrl('prop/w')]);
+});
+
+test('preload: a need preview refused over the cap is asked again from its half', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(em);
+  // 38 MiB on stage, past STEADY: a window item (preload priority) is refused, and step 6 never evicts a visible holder.
+  await h.visible('bg/big1', 'scene:a');
+  await h.visible('bg/big2', 'scene:b');
+  h.s.want(stage({ need: ['bg/v'], preview: true }));
+  await h.settle();
+  expect(h.state('bg/v')).toBe('none');
+  // A holder leaves: the deferred need is asked again (step 7), still as a preview.
+  const before = h.fetchUrls().length;
+  h.registry.release(asId('bg/big2'), 'scene:b');
+  h.s.retry();
+  // The fetch and decode answer at once; an upgrade that starts then waits (not settled here), so the preview stays.
+  await flush();
+  expect(h.fetchUrls().slice(before)).toEqual([halfUrl('bg/v')]);
+  expect(h.state('bg/v')).toBe('live');
+  expect(h.registry.previews()).toEqual([{ id: asId('bg/v'), visible: false }]);
+});
+
+test('preload: setChapter opens the entry gate', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(em);
+  await entryBatch(h, ['bg/v']);
+  h.s.want(stage({ need: ['bg/v'], preview: true }));
+  // The gate is closed while the plate's upgrade runs: a TAG preload waits.
+  const held = h.fetchUrls().length;
+  h.s.preload('preload:k0', [asId('prop/w')]);
+  expect(h.fetchUrls().slice(held)).toEqual([]);
+  // A new chapter: its own entry decides the gate, so a TAG preload goes at once.
+  h.s.setChapter(wm);
+  const before = h.fetchUrls().length;
+  h.s.preload('preload:k', [asId('bg/wide')]);
+  expect(h.fetchUrls().slice(before)).toEqual([winUrl('bg/wide')]);
+});
+
+test('preload: visible previews of the other kinds upgrade face, talk, char, prop, then any other kind', async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(em);
+  // Started in the reverse of the upgrade order, the unnamed kind first.
+  const five = ['cover/e', 'prop/w', 'char/e', 'talk/e', 'face/e'];
+  await entryBatch(h, five);
+  h.s.want(stage({ need: five, preview: true }));
+  for (let i = 0; i < 4; i += 1) {
+    h.upgraded(h.upgradeCalls().at(-1) ?? '');
+    await micro();
+  }
+  expect(h.upgradeCalls()).toEqual(['face/e', 'talk/e', 'char/e', 'prop/w', 'cover/e']);
 });
