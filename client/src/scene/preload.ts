@@ -43,7 +43,7 @@ export interface AssetScheduler {
   /**
    * Swaps the manifest; releases every `preload:*` (the window's holders included), every `next:*` except
    * `next:<m.chapterId>`, and `ensure`. The kept tag is the entry tag: the first `want` after this releases it once its
-   * files were joined (shots §5.8 step 1c).
+   * files were joined (shots §5.8 step 1c). Its previews' upgrades wait for the chapter's first swap point (step 3).
    */
   setChapter(m: AssetManifest): void;
   resolve(id: AssetId, from?: AssetManifest): Result<ImageEntry, AssetError>;
@@ -63,8 +63,8 @@ export interface AssetScheduler {
   ensure(ids: readonly AssetId[], signal: AbortSignal, o?: { preview?: boolean }): Promise<Result<void, SceneError>>;
   /**
    * The step's window at its swap point (shots §5.8 steps 1-7): the window's holders follow `w`. Every swap point lets
-   * the previews be tried again (step 5) and kicks their upgrades; a keep window (KEEP_WINDOW) plans nothing, keeps the
-   * window and the entry tag, and is a `retry`.
+   * the previews be tried again (step 5) and kicks their upgrades; the first swap point after `setChapter` starts the
+   * chain (step 3). A keep window (KEEP_WINDOW) plans nothing, keeps the window and the entry tag, and is a `retry`.
    */
   want(w: StageWindow): void;
   /** Step 7 after a holder was released: the deferred need and warm items again, then the held warm files' decodes. */
@@ -135,6 +135,11 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
   let gated = false;
   /** The previews tried since the last swap point (a want, a keep window's included) or setChapter (step 5). */
   const tried = new Set<AssetId>();
+  /**
+   * Shots §5.8 step 3: a swap point (a `want`, a keep window's included) has passed since `setChapter`; until then no
+   * upgrade starts, whatever settles.
+   */
+  let swapSeen = false;
   /** The one upgrade in flight (step 3), outside the two slots. */
   let upgrading: { readonly id: AssetId; readonly controller: AbortController } | null = null;
 
@@ -435,17 +440,18 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
   };
 
   /**
-   * Shots §5.8 steps 3-5, after want's pump, in retry (a keep window's included), in every settle and join settle and
-   * when an upgrade ends: unless one is in flight, the next preview not tried since the last swap point is upgraded,
-   * visible records first, then the others, each by UPGRADE_ORDER, then in the order they started. Then the entry gate
-   * opens, and pumps in this turn, once no visible preview is left untried or upgrading and no NEED item is queued, in
-   * flight or joining.
+   * Shots §5.8 steps 3-5. A swap point starts the chain: want's pump, and a keep window's `want` through `retry`. Every
+   * settle and join settle, `retry` after a release and an upgrade's end only carry it: before the first swap point
+   * since `setChapter` they start nothing. Once one has passed, unless an upgrade is in flight, the next preview not
+   * tried since the last swap point is upgraded, visible records first, then the others, each by UPGRADE_ORDER, then in
+   * the order they started. Then the entry gate opens, and pumps in this turn, once no visible preview is left untried or
+   * upgrading and no NEED item is queued, in flight or joining.
    */
   const kick = (): void => {
     if (dead) {
       return;
     }
-    if (upgrading === null) {
+    if (upgrading === null && swapSeen) {
       // A stable sort over `previews()`, which lists the records in the order they started.
       const due = registry.previews().filter((p) => !tried.has(p.id));
       const next = [...due].sort((a, b) => Number(b.visible) - Number(a.visible) || upgradeRank(a.id) - upgradeRank(b.id))[0];
@@ -510,6 +516,7 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
       upgrading?.controller.abort();
       upgrading = null;
       tried.clear();
+      swapSeen = false;
       gated = false;
       manifest = m;
       const kept = `next:${m.chapterId}`;
@@ -566,7 +573,9 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
       if (dead) {
         return;
       }
-      // Every swap point lets each preview be tried again (shots §5.8 step 5).
+      // A swap point, a keep window's included: from now on the chain may start (step 3), and every preview may be
+      // tried again (step 5).
+      swapSeen = true;
       tried.clear();
       if (w.keep === true) {
         // A windowless entry stage: no plan, the window (D13) and the entry tag (S36) stay; the swap is a release.

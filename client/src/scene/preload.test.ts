@@ -1841,3 +1841,53 @@ test("preload: a resumed puzzle's keep swaps end its restored plate and close-up
   h.s.want(stage({ need: ['bg/p', 'bg/x'] }));
   expect(h.log).toEqual(['acquire preload:win:bg/p bg/p', 'acquire preload:win:bg/x bg/x', 'release next:ch8']);
 });
+
+// Shots §5.8 step 3 (lane SH5b, RULINGS 330): an entry's upgrades start at its first swap point. Before it, a settle
+// or a join settle carries no chain: nothing has started one.
+
+test("preload: an entry's previews are not upgraded before its first swap point", async () => {
+  const h = harness('auto', { hold: true });
+  h.s.setChapter(em);
+  await entryBatch(h, ['bg/v', 'sheet/v']);
+  // As enterKnot's hold does before the first step's swap: a join of a live preview and a TAG fetch, both settling.
+  h.s.preload('preload:k', [asId('sheet/v'), asId('bg/n')]);
+  await flush();
+  expect(h.upgradeCalls()).toEqual([]);
+  // The batch's swap starts the chain in its own turn.
+  h.s.want(stage({ need: ['bg/v', 'sheet/v'], preview: true }));
+  expect(h.upgradeCalls()).toEqual(['bg/v']);
+});
+
+test('preload: a kept next: flight settling while an entry half is awaited starts no upgrade', async () => {
+  const h = harness('deferred', { hold: true });
+  // A swap in the old chapter, then the handover: setChapter keeps next:ch8 with its file in flight.
+  h.s.setChapter(wm);
+  h.s.want(stage({ need: [] }));
+  h.s.preload('next:ch8', [asId('bg/x')], em);
+  h.s.setChapter(em);
+  // The entry's first batch: both halves held.
+  const p = h.s.ensure([asId('bg/v'), asId('sheet/v')], live(), { preview: true });
+  h.land('bg/v');
+  await micro();
+  h.decoded('bg/v');
+  await micro();
+  expect(h.upgradeCalls()).toEqual([]);
+  // The kept flight settles while the sheet's half is still awaited: no full file joins the link.
+  h.land('bg/x');
+  await micro();
+  h.decoded('bg/x');
+  await micro();
+  expect(h.state('sheet/v')).toBe('pending');
+  expect(h.upgradeCalls()).toEqual([]);
+  // The sheet lands, the stage takes the batch, and its swap starts the chain.
+  h.land('sheet/v');
+  await micro();
+  h.decoded('sheet/v');
+  await micro();
+  expect(await p).toEqual({ ok: true, value: undefined });
+  await h.visible('bg/v', 'scene:bg/v');
+  await h.visible('sheet/v', 'scene:sheet/v');
+  h.registry.releaseHolder(ENSURE_HOLDER);
+  h.s.want(stage({ need: ['bg/v', 'sheet/v'], preview: true }));
+  expect(h.upgradeCalls()).toEqual(['bg/v']);
+});
