@@ -30,7 +30,9 @@ export type Upload = (source: ImageSource) => number | null;
  * Alpha follows Pixi's own loader (loadTextures.mjs:25, :64-69): a default-decoded bitmap uploaded with
  * `premultiply-alpha-on-upload`. The texture is laid out as the file's canvas (MEMORY-PLAN 4.B): Pixi sizes and
  * anchors a sprite on `orig` and draws the stored pixels at `trim`, so a trimmed file renders where its untrimmed
- * canvas would.
+ * canvas would. `upgrade` (shots §5.8 step 3) swaps a half file's texture to its full file in place: the same texture
+ * and source, the source resized to the stored box at resolution 1, so its size, the texture's frame and every frame
+ * cut from it stay as they were; the held file becomes the full Blob.
  */
 export function createImageLoader(deps: { fetchAsset: FetchAsset; upload: Upload }): HoldImage<Texture> {
   return async (ref, signal) => {
@@ -42,8 +44,12 @@ export function createImageLoader(deps: { fetchAsset: FetchAsset; upload: Upload
       return aborted;
     }
     let kept: Blob | null = got.value;
+    /** The kept Blob's size: what the caps count; an upgrade sets it to the full file's. */
+    let size = kept.size;
     const file: HeldFile<Texture> = {
-      bytes: kept.size,
+      get bytes() {
+        return size;
+      },
       async decode(s, geometry) {
         const blob = kept;
         if (blob === null || s.aborted) {
@@ -61,7 +67,8 @@ export function createImageLoader(deps: { fetchAsset: FetchAsset; upload: Upload
           return aborted;
         }
         // Read before the bitmap closes: a closed bitmap reports 0 × 0.
-        const { width: w, height: h } = bitmap;
+        let { width: w, height: h } = bitmap;
+        let keptBytes = blob.size;
         const source = new ImageSource({ resource: bitmap, alphaMode: 'premultiply-alpha-on-upload', label: ref.url, resolution: geometry.resolution });
         // Never collected by Pixi's GC: it would re-upload from a closed bitmap. The registry owns the lifetime. Set after
         // construction: ImageSource's constructor sets `autoGarbageCollect = true` over the option (pixi.js 8.22
@@ -80,9 +87,15 @@ export function createImageLoader(deps: { fetchAsset: FetchAsset; upload: Upload
         }
         const decoded: Decoded<Texture> = {
           texture,
-          w,
-          h,
-          keptBytes: blob.size,
+          get w() {
+            return w;
+          },
+          get h() {
+            return h;
+          },
+          get keptBytes() {
+            return keptBytes;
+          },
           get gen() {
             return gen;
           },
@@ -120,6 +133,55 @@ export function createImageLoader(deps: { fetchAsset: FetchAsset; upload: Upload
             if (gen !== null) {
               next.close();
             }
+            return { ok: true, value: undefined };
+          },
+          async upgrade(fullRef, full, us) {
+            if (!alive || us.aborted) {
+              return aborted;
+            }
+            const fetched = await deps.fetchAsset(fullRef.url, us);
+            if (!fetched.ok) {
+              return fetched.error.kind === 'aborted' ? aborted : { ok: false, error: { kind: 'fetch', error: fetched.error } };
+            }
+            if (!alive || us.aborted) {
+              return aborted;
+            }
+            // `createImageBitmap` is read at call time, never captured (the e2e wraps it).
+            let next: ImageBitmap;
+            try {
+              next = await createImageBitmap(fetched.value);
+            } catch (e) {
+              return { ok: false, error: { kind: 'decode', detail: detail(e) } };
+            }
+            if (!alive || us.aborted) {
+              next.close();
+              return aborted;
+            }
+            // The stored box in full px, never the canvas: a trimmed file's canvas is larger than its pixels (shots §5.8,
+            // SH5b cut §1.3). The source's size stays this box; only its pixel size moves to the full file's.
+            const box = full.trim ?? full.canvas;
+            if (next.width !== box.w || next.height !== box.h) {
+              const seen = `${next.width}x${next.height}`;
+              next.close();
+              return { ok: false, error: { kind: 'decode', detail: `upgrade decoded ${seen}, stored box ${box.w}x${box.h}` } };
+            }
+            // One synchronous swap: the new bitmap is the resource before the resize re-uploads it (GlTextureSystem
+            // listens to `resize`), and stays open until that upload is done.
+            bitmap.close();
+            source.resource = next;
+            if (!source.resize(box.w, box.h, 1)) {
+              source.update();
+            }
+            gen = deps.upload(source);
+            if (gen !== null) {
+              next.close();
+            }
+            bitmap = next;
+            kept = fetched.value;
+            size = fetched.value.size;
+            keptBytes = fetched.value.size;
+            w = box.w;
+            h = box.h;
             return { ok: true, value: undefined };
           },
           release() {

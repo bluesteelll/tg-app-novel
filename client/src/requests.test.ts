@@ -149,6 +149,7 @@ const REQUEST_SITES: readonly SiteRow[] = [
   { kind: 'other', file: 'story/chapters.ts', fn: 'fetchJson', member: 'FetchAsset', reason: "a chapter file: the story path's wait (continueStory), no view's" },
   { kind: 'other', file: 'scene/controller.ts', fn: 'mount', member: 'FetchAsset', reason: 'the transport handed to the image loader: a hand-off' },
   { kind: 'other', file: 'scene/loader.ts', fn: 'createImageLoader', member: 'FetchAsset', reason: "the scene's image fetch: a view waits on it only as a batch's loads, through held (BATCH_MEMBER)" },
+  { kind: 'other', file: 'scene/loader.ts', fn: 'upgrade', member: 'FetchAsset', reason: "a preview's full file (shots §5.8 step 3): nothing waits, the half stays live" },
   { kind: 'other', file: 'audio/manager.ts', fn: 'createAudioManager', member: 'FetchAsset', reason: 'the transport handed to the BGM player: a hand-off' },
   { kind: 'other', file: 'audio/bgm.ts', fn: 'take', member: 'FetchAsset', reason: 'a gated track: it plays when it lands, nothing waits' },
   { kind: 'other', file: 'audio/sfx.ts', fn: 'fill', member: 'FetchAsset', reason: 'a one-shot fill: it plays when it lands, nothing waits' },
