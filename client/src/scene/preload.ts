@@ -488,6 +488,17 @@ export function createAssetScheduler<T>(deps: { registry: AssetRegistry<T>; onEr
       plan(w.eventRoom, WIN, () => EVENT);
       // 1c. The entry tag ends once its records were joined.
       if (entry !== null) {
+        // RULINGS 302 Q8: a warm file the entry tag decoded keeps that decode under its window holder, so the release
+        // never sheds it to its file only for step 3 to decode it again. Only the tag's own records, only here.
+        const tagged = holding.get(entry);
+        for (const id of w.warm) {
+          const tag = WIN + id;
+          const r = resolve(id);
+          const known = resident(tag) || [...queue, ...inFlight, ...joins].some((x) => x.tag === tag);
+          if (r.ok && tagged?.has(id) === true && !known && registry.state(id) === 'live') {
+            join({ tag, id, entry: r.value, rank: DECODE });
+          }
+        }
         drop(entry);
         entry = null;
       }

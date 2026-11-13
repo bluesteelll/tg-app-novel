@@ -1388,6 +1388,32 @@ test('preload: a warm id another holder decodes is joined and stays decoded when
   expect([h.fetchesOf('bg/street'), h.decodesOf('bg/street')]).toEqual([1, 1]);
 });
 
+test('preload: a warm file decoded under the entry tag keeps its decode at the first window, and only there', async () => {
+  // RULINGS 302 Q8 (lane SH5b rider R1): a handover's warm file the next chapter's tag decoded keeps that decode
+  // across 1c's release of the tag, so step 3 never decodes it a second time.
+  const h = harness('deferred', { hold: true });
+  h.s.setChapter(wm);
+  h.s.preload('next:ch7', [asId('prop/n1')], nx);
+  await h.settle();
+  expect(h.state('prop/n1')).toBe('live');
+  h.s.setChapter(nx);
+  h.s.want(stage({ need: ['prop/n2'], warm: ['prop/n1'] }));
+  expect(h.state('prop/n1')).toBe('live');
+  await h.settle();
+  expect([h.state('prop/n1'), h.fetchesOf('prop/n1'), h.decodesOf('prop/n1')]).toEqual(['live', 1, 1]);
+  // The guard (O3): with no entry tag, a warm record another holder decodes is joined by step 3 once no warm fetch is
+  // left, as before; never in the window's own turn.
+  h.s.preload('room:r', [asId('prop/n3')]);
+  await h.settle();
+  expect(h.state('prop/n3')).toBe('live');
+  h.log.length = 0;
+  h.s.want(stage({ warm: ['prop/n4', 'prop/n3'] }));
+  expect(h.acquired().filter((a) => a === 'preload:win:prop/n3 prop/n3')).toEqual([]);
+  h.land('prop/n4');
+  await flush();
+  expect(h.acquired().filter((a) => a === 'preload:win:prop/n3 prop/n3')).toEqual(['preload:win:prop/n3 prop/n3']);
+});
+
 test('preload: a join that carries a fetch in flight holds one of the two slots', async () => {
   const h = harness('deferred', { hold: true });
   h.s.setChapter(wm);
