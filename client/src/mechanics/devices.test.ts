@@ -20,7 +20,10 @@ import type { PuzzleRun, WorldState } from '../explore/state.ts';
 import { PUZZLE_TYPES } from '../puzzles/rules/index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from '../puzzles/rules/index.ts';
 import type { AssetCatalog } from '../story/catalog.ts';
-import type { ChapterId, KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
+import { decodeSave, encodeSave } from '../story/save-codec.ts';
+import type { SaveBody } from '../story/save-codec.ts';
+import { EMPTY_SNAPSHOT } from '../story/staging.ts';
+import type { ChapterId, KnotName, LineId, PuzzleLocalId, SectionId, StoryVersion } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, RoomId } from '../world/types.ts';
 import type { DecodeCtx, FlagId, KernelWorld, OwnedAt, RulesRegistry, SectionAction } from './contract.ts';
@@ -137,6 +140,20 @@ const opens = (effects: readonly ExploreEffect[]): ExploreEffect[] => effects.fi
 const facts = (effects: readonly ExploreEffect[]): string[] =>
   effects.flatMap((e) => (e.kind === 'cue' && e.cue.kind === 'fact' ? [`${e.cue.fact.kind} ${e.cue.change} ${e.cue.fact.id}`] : []));
 const move = (work: readonly number[], puzzle = 'dial'): SectionAction => ({ kind: 'device-moved', puzzle: pz(puzzle), work });
+/** A save body around a world state, as the autosave writes one (format 2, the empty stage, one backlog line). */
+const bodyOf = (world: WorldState): SaveBody => ({
+  format: 2,
+  chapterId: 'ch1' as ChapterId,
+  storyVersion: '0123456789abcdef' as StoryVersion,
+  ink: '{"inkSaveVersion":10}',
+  at: { lineId: 'ch1.start.c001' as LineId, knot: kn('start'), yield: null },
+  staging: EMPTY_SNAPSHOT,
+  checkpoint: null,
+  chapterStart: { carry: {}, items: [] },
+  backlog: [{ lineId: 'ch1.start.0001' as LineId, speaker: null, ru: 'Line 1.' }],
+  world,
+  worldVersion: 'fedcba9876543210',
+});
 
 /** A fixture view type the default registry lacks (GM8a registers the first real one): `parts` levers at 0..2, each
  *  starting at 2; a saved work fits while it has one value per lever. */
@@ -288,9 +305,45 @@ test('device: a stale part move writes nothing', () => {
   // G4: the run has ended.
   expect(writes(at('panel', { puzzles: run({ outcome: 'failed', attempts: 2 }) }))).toBe(false);
   expect(writes(at('panel', { open: [DEVICE], puzzles: run({ outcome: 'solved' }) }))).toBe(false);
-  // A value the save cannot keep (RULINGS 353 O3): never written, so one bad dispatch never refuses the whole save.
-  for (const bad of [-1, 1.5, Number.NaN, 2 ** 53]) {
-    expect(writes(at('panel'), move([0, bad, 0, 0])), String(bad)).toBe(false);
+  // A work the save cannot keep (RULINGS 353 O3; fix1 F1, F2): never written, so one bad dispatch never refuses the whole
+  // save. A hole is read as `undefined` (`every` skips it, the spread does not), and a work that is no array is no move.
+  const deleted = [1, 0, 1, 0];
+  delete deleted[1];
+  const rows: ReadonlyArray<readonly [label: string, work: unknown, expected: 'wrote' | 'no-op']> = [
+    ['-1', [0, -1, 0, 0], 'no-op'],
+    ['1.5', [0, 1.5, 0, 0], 'no-op'],
+    ['NaN', [0, Number.NaN, 0, 0], 'no-op'],
+    ['2^53', [0, 2 ** 53, 0, 0], 'no-op'],
+    ['a deleted index', deleted, 'no-op'],
+    ['an elided index', [2, , 2, 2], 'no-op'],
+    ['new Array(4)', new Array<number>(4), 'no-op'],
+    ['a raised length', Object.assign([1, 0, 1, 0], { length: 6 }), 'no-op'],
+    ["'x'", 'x', 'no-op'],
+    ['undefined', undefined, 'no-op'],
+    ['null', null, 'no-op'],
+    ['the control', [1, 0, 0, 0], 'wrote'],
+    ['2^53 - 1', [0, 2 ** 53 - 1, 0, 0], 'wrote'],
+  ];
+  // Each row judged alone (`expect.soft`): written, a no-op (the same state, no effect) or a throw, which only this judge
+  // catches. Every state a dispatch returns then saves and loads: the save round trip is the contract, not the guard.
+  for (const [label, work, expected] of rows) {
+    const s = at('panel');
+    let r: { state: WorldState; effects: ExploreEffect[] } | null = null;
+    try {
+      // The dispatch a play half could send at run time, past the action's static type (the guard's subject).
+      r = reduce(w, s, { kind: 'device-moved', puzzle: DIAL, work: work as readonly number[] });
+    } catch {
+      r = null;
+    }
+    const outcome = r === null ? 'threw' : r.state !== s || r.effects.length > 0 ? 'wrote' : 'no-op';
+    expect.soft(outcome, label).toBe(expected);
+    if (r !== null) {
+      const loaded = decodeSave(encodeSave(bodyOf(r.state)));
+      expect.soft(loaded.ok ? 'decodes' : loaded.error.detail, `${label}: the save round trip`).toBe('decodes');
+      if (expected === 'wrote') {
+        expect.soft(loaded.ok ? loaded.value.world.puzzles : null, `${label}: the loaded runs`).toEqual(r.state.puzzles);
+      }
+    }
   }
 });
 

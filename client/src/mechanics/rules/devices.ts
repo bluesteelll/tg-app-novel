@@ -75,12 +75,13 @@ function isCount(v: number): boolean {
 /**
  * `device-moved`: the run's `work` becomes the move's, its part changes recorded as `work` facts at the device. A move
  * outside a section's room, while a knot is pending, for a puzzle that is not the room's device or whose run has ended,
- * or with a value the save cannot keep, is a no-op: each guard reads the world and the state, never a type, so none can
- * refuse a move a live device session made.
+ * with a work that is no array, or with a value the save cannot keep, a hole included (`every` skips a hole, so the
+ * guard reads every index), is a no-op: each guard reads the world and the state, never a type, so none can refuse a
+ * move a live device session made.
  */
 export function applyDevices(w: KernelWorld, a: DeviceMoved, out: KernelWriter<'devices', DevicesCue>): void {
   const s = out.state;
-  if (s.section === null || s.room === null || s.pendingStory.length > 0 || !a.work.every(isCount)) {
+  if (s.section === null || s.room === null || s.pendingStory.length > 0 || !Array.isArray(a.work) || !Array.from(a.work).every(isCount)) {
     return;
   }
   const device = deviceAt(w, s.room);
