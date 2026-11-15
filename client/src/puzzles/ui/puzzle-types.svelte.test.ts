@@ -934,3 +934,12 @@ test('grid: a grid that is not square names and lays out its cells by row and co
   const square = filled().view.container.querySelector<HTMLElement>('.cells');
   expect(square?.style.getPropertyValue('grid-template-columns')).toBe('repeat(2, minmax(48px, 1fr))');
 });
+
+test("grid: each cell's cue index is its board index", () => {
+  // Gates F3 (fix1): a tap on a cell emits a `ui` cue whose index is the element's `data-cue-index` (cues/root.ts),
+  // so each cell's index is its board index, its part (cell-major), as rendered. The given cells count too: the stage
+  // keys a cue target by the element, whatever its state.
+  const d = filled({ params: G23, answer: [1, 2, 0, 0, 0, 1] });
+  const marks = [...d.view.container.querySelectorAll('button.cell')].map((b) => [b.getAttribute('data-cue'), b.getAttribute('data-cue-part'), b.getAttribute('data-cue-index')]);
+  expect(marks).toEqual([0, 1, 2, 3, 4, 5].map((i) => ['grid-cell', String(i), String(i)]));
+});
