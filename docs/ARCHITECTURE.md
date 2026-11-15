@@ -604,7 +604,9 @@ per-player GM6t `a064399`, the entry closure 39,179 B of 40,000 (+662), the engi
 name churn, module identity unchanged), the JS before the first line 235,720 B, all JS 270,402 B. RULINGS 206's ±15 B
 engine noise holds within one build id; across a build-id change the engine row is judged by module identity
 ([build-id.ts:23](../client/scripts/build-id.ts#L23) hashes every file under `src`, `vite-plugins` and `public`;
-RULINGS 269). As merged since (RULINGS 277, 284, 290): SH3c `5d3013e`, a build tool only, every row equal (the
+RULINGS 269). Changed by RULINGS 351 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): a CSS-only edit in a component changes the build id as well,
+so every chunk is renamed (GM7p fix3's two `user-select` declarations did); rows are judged by module identity, never
+by raw chunk names. As merged since (RULINGS 277, 284, 290): SH3c `5d3013e`, a build tool only, every row equal (the
 catalog has no `src` entry yet); GM4g `56cc302`, each `room-set` row counts the transition pair, img(R) + props(R)
 + max(the largest neighbour room's img + props, the largest close-up), every image through `imgIds`
 ([budget.ts:1169-1201](../client/scripts/budget.ts#L1169); a room move is a dip under black, and both rooms' sets

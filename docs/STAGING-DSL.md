@@ -939,11 +939,41 @@ check (the second table below).
 | `world/fail-without-effect` | E | a lock puzzle with `maxAttempts` and an empty `onFail` (Changed by RULINGS 327-334 (as of `f6487fc`; docs lane `docs-errata-19`, group A): a module effect counts, so an `onFail` that only sets a flag passes; GM5f D9) |
 | `world/var-type` | E | a declared projection VAR with the wrong type (`pz_*` int, `it_*` / `dc_*` bool; Changed by RULINGS 327-334 (as of `f6487fc`; docs lane `docs-errata-19`, group A): `fl_*` bool, GM5f) |
 | `world/softlock` | E | the model checker found a reachable state (over `successors`, closed puzzles included) with no path to a `leave` effect; prints the action path |
-| `world/unreachable` | W | an item, doc, room or puzzle no reachable state touches (Changed by RULINGS 328 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1): not a hotspot, so a hotspot whose `when` never holds is not reported) |
+| `world/unreachable` | W | an item, doc, room or puzzle no reachable state touches (Changed by RULINGS 328 (as of `f6487fc`; docs lane `docs-errata-19`, group A, fix round 1): not a hotspot, so a hotspot whose `when` never holds is not reported; Changed by RULINGS 361 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): a section whose gating rule reads a visual-only atom is not searched (the "Devices" note below), so an item only that section's `use` rules or recipes give is reported here too, beside the error that fails the world) |
 | `world/state-cap` | E | the checker exceeded `RESUME_STATE_CAP` (5,000) states: the section is too large to prove at resume (PUZZLES-PLAN X9); split it. Changed by RULINGS 317, 326 (as of `f6487fc`; docs lane `docs-errata-19`, group A): or it passed 40,000 successor evaluations (8 per state of the cap; GM5q); the message names the bound, and a free zoom view counts with its parent ([AUTHORING](AUTHORING.md#world-lint-codes-and-soft-lock-counterexamples)) |
 | `play/event-no-return` | E | a seeded run entered an event knot and stopped without its explore yield |
 
 From LW3, world texts follow §4: `id/*` and `loc/*` apply to them, and IDs are unique across ink and world.
+
+**Devices** (Changed by RULINGS 352, 353, 358, 360, 361 (as of `b0b1b41`; docs lane `docs-errata-20`, group A); as merged, GM8i `6e459a3`). The mechanics
+module `devices` adds two world keys and its own lint codes. Its codes live in its own table, outside this section's
+tables, like every module code ([AUTHORING "Module and type lint codes"](AUTHORING.md#module-and-type-lint-codes)):
+- **Room key `device`:** `"device": "<hotspot id>"` on a view room. That hotspot's zero-slot lock holds the room's
+  device puzzle, played in the room; its session opens when the player arrives
+  (`client/src/mechanics/data/devices.ts:34`, `client/src/mechanics/rules/devices.ts:49-63`). A `device` naming no
+  hotspot of its room is `world/unknown-ref`.
+- **Visual atom `part`:** `{ "part": { "puzzle": p, "index": i, "is": v } }` holds while part `i` of `p`'s saved
+  working state (else the type's start) is `v` (`client/src/mechanics/data/devices.ts:65`,
+  `client/src/mechanics/rules/devices.ts:107-109`). It is visual only: it may drive a decor or hotspot state's `is`. In
+  a gating condition it is refused at its line (`world/visual-only-atom`, E), and that section is then neither
+  soft-lock-checked nor clue-checked, so the same run may also show `world/unreachable` (W) rows (fix1, RULINGS 358,
+  361).
+- **Fact kind `work`:** id `<puzzle>.<index>=<v>`, written as removals then additions when a part moves
+  (`client/src/mechanics/rules/writer.ts:240-252`); it stays outside the section key
+  (`client/src/mechanics/rules/search.ts:271-273`). **Action `device-moved`:** `{ puzzle, work }`, verb `device`, at
+  the device key; a no-op unless the session is live, in its room, with no knot pending, and every value is a
+  non-negative safe integer with no hole (`client/src/mechanics/rules/devices.ts:82-93`).
+- **Cues:** `fact:work:*` (`press`, 240 ms, target `part`, no haptic), `module:devices:done` (`glint`, 420 ms, target
+  `box`), `module:devices:jammed` (`jam`, 480 ms, target `box`, haptic error)
+  (`client/src/cues/stage/motions.ts:174-175`, `:233-234`).
+- **Codes** (`client/scripts/story/mechanics/devices.ts:28-43`, all E): `world/view-type-site`, `world/device-type`,
+  `world/device-parts-frame` (registered; its check is GM8a's), `world/device-closeup`, `world/device-failed-state`,
+  `world/device-object`, `world/device-when`, `world/device-alone`, `world/device-unlock`, `world/device-part`.
+- **The band:** every part's top edge must lie at or below `DEVICE_BAND_Y` = 64 + ceil((8 + 120 + 0) x 1080 / 320) =
+  **496** canonical px (500 at a top inset of 1 CSS px). At the 360 px design width (OPEN-QUESTIONS Q67) the formula
+  gives 448, so 496 is the stricter value (`client/scripts/story/mechanics/devices.ts:47-66`).
+- **No world holds a device yet.** No registered puzzle type is a view type; GM8a makes the first one, so a device
+  cannot be authored before GM8a.
 
 **Seeded playthroughs:**
 - **Runs** — 200 runs per chapter (seeds 1–200, mulberry32), random choice index, step cap 5,000.

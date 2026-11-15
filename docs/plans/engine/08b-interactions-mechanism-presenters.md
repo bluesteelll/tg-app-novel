@@ -81,7 +81,8 @@ through `oncue` and never through the root listener (W5).
   (`client/src/cues/controls.test.ts`, new): parses each `.svelte` under the scanned directories with
   `svelte/compiler` `parse(src, { modern: true })` (verify: the Svelte 5 modern AST's `RegularElement.attributes` shape
   at the GM3u cut; fallback: the markup regex style of `arch.test.ts:188`). Non-vacuous: it asserts the scanned file
-  set equals **`LAZY_COMPONENTS` (`arch.test.ts:892-901`) restricted to `ui/explore/**`, `ui/puzzles/**` and
+  set equals **`LAZY_COMPONENTS` (`arch.test.ts:892-901`; Changed by RULINGS 351 (as of `b0b1b41`; docs lane `docs-errata-20`, group A):
+  `client/src/arch.test.ts:1181-1198`) restricted to `ui/explore/**`, `ui/puzzles/**` and
   `puzzles/ui/**`** (round 4 m3: GM3s adds `cues/stage/CueStage.svelte` to `LAZY_COMPONENTS`, an `aria-hidden`,
   `pointer-events: none` layer with no control, outside the three directories), and that >= 1 control per scanned file
   is found.
@@ -124,11 +125,21 @@ through `oncue` and never through the root listener (W5).
   under the viewport's top inset) and for any root while its 300 ms entrance scales it (0.98 -> 1 about its centre):
   before the fix a tap's ripple in that window could land up to 3.6 x 6.4 design px up-left of the finger.
 - **Gesture input (m13, principle 5).** ExploreView's buttons use `touch-action: manipulation`
-  (`ExploreView.svelte:110`), which lets the WebView start a pan and fire `pointercancel` mid-stroke on Android and iOS;
+  (`ExploreView.svelte:110`; Changed by RULINGS 351 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): `:155`, `:202`), which lets the WebView start a
+  pan and fire `pointercancel` mid-stroke on Android and iOS;
   desktop Playwright and jsdom never show it. Every gesture surface therefore carries `style:touch-action="none"`,
   takes pointer capture at `pointerdown` (`setPointerCapture(e.pointerId)`), and treats `pointercancel` as the stroke's
   end, as `pointerup` does: the cells drawn so far stay, nothing is posted until `reached`, and the next stroke starts
   from the path's end cell.
+  Changed by RULINGS 344, 350, 351 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): as merged (GM7p `8be35a0`, D9a, Q10), the cancel ends the stroke
+  **through the capture's implicit release** (Pointer Events 3 §4.1.3.3 releases a captured pointer right after
+  `pointercancel`), with no listener: a non-delegated `onpointercancel` attribute would put Svelte's `$.event` in the
+  entry chunk (about 0.2 KB br, over the +0.1 KB entry STOP), so PathPuzzle handles only the delegated `pointerdown` /
+  `pointermove` / `pointerup` (`client/src/puzzles/ui/PathPuzzle.svelte:159-166`), and a stroke is live while the
+  surface holds its pointer's capture. fix3 (RULINGS 350 F-1) added `-webkit-user-select: none; user-select: none` on
+  the stroke surface (`:216-217`): a mouse stroke left a text selection, and the next stroke that went down inside it
+  was cancelled by Chromium's native drag; GM7g's grid carries the same two lines from its first commit
+  (`client/src/puzzles/ui/GridPuzzle.svelte:133-134`).
 - **Entrances and outros (W3; round 3).** The room layer's root and the puzzle frame's root carry `in:layerIn` and
   `out:layerOut` with `|global` (Svelte 5 plays a `|global` outro when an ancestor block is destroyed), from
   `cues/root.ts` over `LAYER_MOTIONS` (`cues/visible.ts`: fade + scale, 300 ms; reduced: fade 150 ms). When
@@ -171,8 +182,9 @@ through `oncue` and never through the root listener (W5).
   fallback `new Event('pointerdown', { bubbles: true })`) and expects exactly one `ui` cue with its name; for each
   `[data-cue-gesture]` surface it drives the gesture's fixture script (`GESTURE_SCRIPTS['path-stroke']`: pointerdown on
   cell 0, pointermove across cells 1 and 2, pointerup; then, round 3 m13, pointerdown on cell 0, pointermove to 1,
-  `pointercancel`, pointerdown on 1, pointermove to 2, pointerup) and expects one `ui:path-stroke` cue per newly entered
-  cell and, after the cancel script, the answer `[0, 1, 2]`
+  `pointercancel`, then the UA's release (Changed by RULINGS 351 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): as merged, the release
+  ends the stroke, Q10), pointerdown on 1, pointermove to 2, pointerup) and expects one `ui:path-stroke` cue per newly
+  entered cell and, after the cancel script, the answer `[0, 1, 2]`
   (`explore: every declared control emits its cue`, `puzzles: every declared control emits its cue`). Named mutations:
   **M-I5g** (the root listens for `click` only) -> red on the first `pointerdown` control (GM8b's `push`; until then a
   fixture control in the test); **M-I5h** (the path UI's stroke handler never calls `oncue`) -> red in GM7p.
@@ -226,7 +238,7 @@ maximum (RULINGS 114, 122). The haptic column adds touch feedback **on top of** 
 | `fact:hint:added` | `pulse` at the hint control | a faint glow on the puzzle's anchor | - |
 | `fact:story:added` | `dim` (an event knot starts) + the room layer's `layer-out` | the room slowly pushes in and darkens | - |
 | `fact:flag:added` (GM5f) | `sweep`. Changed by RULINGS 327, 334 (as of `f6487fc`; docs lane `docs-errata-19`, group A): as merged (GM5f `402d4d8`), `row('sweep', 600, 'stage')` (`client/src/cues/stage/motions.ts:170`), recorded by a `set` with its trigger's cause; author m6 (to MR1): it equals a walk's sweep, and a hotspot a flag reveals with no prop or state picture shows no other signal | the state crossfade where visible; a room light pulse otherwise | - |
-| `fact:work:added` / `fact:work:removed` (GM8i; a part's new / old position, id `<puzzle>.<index>=<v>`) | `press` at the part's hit area | part throw tween | light |
+| `fact:work:added` / `fact:work:removed` (GM8i; a part's new / old position, id `<puzzle>.<index>=<v>`) | `press` at the part's hit area | part throw tween | light; Changed by RULINGS 353, 361 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): as merged (GM8i `6e459a3`, Q4), **no haptic**: `row('press', 240, 'part')` (`client/src/cues/stage/motions.ts:174-175`), the part's own press carries it; today the cue lands on the session frame, not the part (`client/src/cues/stage/index.ts:150-151` resolves `part` only for a puzzle cue with an index; D5, GM8h's, before GM8d) |
 | `fact:used:removed` (round 3 m6; a section reset, mostly) | `fly` a ghost from the target box back to the ribbon slot + slot `pulse` (round 10: `edge` with no live ribbon) | the item lifts out of its target and returns | - |
 | `fact:doc:removed` (round 9: `resolveAt: 'emit'`) | round 11 (the critic's question): `glint` across the bar's Inventory control (box site, target `inventory`, captured at emit) + `with`: `settle` on the control (element site); with no live control the `glint` plays at `edge` and the `settle` is skipped | the paper fades from the room | - |
 | `fact:taken:removed` | `glint` at the box (the prop is back) | the prop fades back in at its anchor (with the visual diff) | - |
@@ -268,8 +280,8 @@ maximum (RULINGS 114, 122). The haptic column adds touch feedback **on top of** 
 | `puzzle:wrong` | frame `shake` | the lock anchor shakes | error |
 | `puzzle:failed` (round 8, m1: from `dropPuzzle`, called by `onEnd`, as the frame leaves; round 9: `resolveAt: 'emit'`) | `jam` on the frame wrapper (element site), nested under the root's `frameOut`; round 10 (m2): `holdEnd`, so the wrapper stays jammed and dimmed until the root's outro removes it | the lock shudders and dims | error |
 | `puzzle:solved` (round 8, m1: the same site; round 9: `resolveAt: 'emit'`) | `flourish` on the frame wrapper (element site; its sparks draw at the wrapper's box), nested under the root's `frameOut`; round 10 (m2): `holdEnd`, so the scaled-out wrapper never snaps back to rest before the root's outro removes it | the lock opens (tween) and light blooms | success |
-| `puzzle:reached` | device `pulse` | the device glows | - |
-| `puzzle:reset` | `jam` (device) | parts snap back | error |
+| `puzzle:reached` | device `pulse`; Changed by RULINGS 351 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): as built, target `frame` (`client/src/cues/stage/motions.ts:201`, `row('pulse', 420, 'frame')`) | the device glows | - |
+| `puzzle:reset` | `jam` (device); Changed by RULINGS 351 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): as built, target `frame` (`motions.ts:202`, `row('jam', 480, 'frame', { haptic: 'error' })`) | parts snap back | error |
 | `puzzle:hint-shown` | `unfold` the tier (target `tier`, `[data-cue-tier=<index>]`) | the close-up or device glows | - |
 | `puzzle:renewed` (per-player R-E14; GM3m adds the key, per-player GM6c2 emits it) | frame `breathe` (target `frame`) + `with`: `roll` on the attempts line (target `attempts`, round 7 m4) | the close-up or device glows once | - |
 | `puzzle:demo` (round 4 m7; GM3m adds the key, GM8h's demo runner emits it, index = part) | `pulse` at the part (target `part`, `[data-cue-part=<index>]` in the device host; round 7 m4) | the part lights and rings (MR1 owes) | - |

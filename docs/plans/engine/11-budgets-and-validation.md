@@ -16,7 +16,7 @@
 | first-line latency | - | 0 added requests; the world is already fetched with the chapter; round 11: `prefetch()` runs at the first line as today, at a resume onto a yield and after a section's first room, never before a chapter's first line (D13 kept); round 12 (critique_engine_r11 m4, m5): and at every yield step between its pictures' loads and its transition (`ahead`); D13 holds on every path but one stated exception, a resume onto a yield, whose chunks (<= 29.3 KB br at the LIMITs) share the link with the resumed pictures (<= 0.12 s at 2 Mbit/s bandwidth-bound, ARITHMETIC), so "D13 kept" now reads "D13 kept, with that exception"; reconcile r1 (LFL merged, RULINGS 155): LFL requests the meta controller chunk at the first step shown (`GameMeta.stepShown`, from `present`), so at a resume onto a yield it joins those chunks: <= 29.3 + 6.0 (`metaControllerChunkBr`, `client/scripts/budget.ts:116` on `cec347c`) = 35.3 KB br, <= 0.14 s at 2 Mbit/s (ARITHMETIC: 35,300 x 8 / 2,000,000 = 0.141 s); its request still follows the resumed step, never precedes a chapter's first line (LFL's G2, `client/e2e/perf.spec.ts`); the first line of a chapter is never delayed (no prefetch runs before it on a path that has one); per first room entry the state images (`state:<room>`, each <= 60,000 B AVIF / 90,000 B WebP) follow the room's own bg, counted once by the chapter's `transfer` row; round 13 (critique_engine_r12 W2): a zoom round trip fetches none again, a return after the room left the keep set fetches its k images again (k x LIMIT, §6.4) | TTFL e2e as built |
 | story checks | - | new lints each seen red on a seeded world; line IDs for every new `WorldText`; scan-dist unchanged (no answer of a `secret` puzzle in `dist/`: `ritual` / `setting` solutions only in server content, proven by the emit tests, m3); round 3: `world/answer-len` with its server pin, `world/device-failed-state`, `world/attempts-without-wrong`; round 4: `world/view-type-site`, `world/device-type`, `world/device-parts-frame`; round 5: `world/device-closeup` (W2), `world/device-parts-frame` with the safe frame and the derived band (m5), `world/reach-solution`'s "not reached at `initial`" clause (W3); round 6: every module text a line of the walk (en checks, shipped en, `id/chapter-prefix`, needles) and `world/text-unwalked` (W1), the band 496 (m1), ch3's join at a knot top with no `graph/entry-below-top` (W2); every new code in a registered lint file's `codes`, unique across registries (GM1d's test), and `dsl-doc: lint table equals lint codes` pinned at 86 rows in every lane; round 7: `world/text-unwalked` fed by the walk's own per-module IDs (`WorldLintInput.moduleLines`), `texts.ts` value-importing nothing (a source test), `--fix-ids`' world-place skip pinned (GM5) | `story` gate; `test` |
 | world json (ch3, new, round 4) | - (no world) | GM8d's demo section, MEASURED in its build log against the same rows; round 5: one more placeholder bg (`fog_gallery`, m8) in the ch3 transfer and room-set rows | rows (8 KB br, 32 KB raw); room-set for its rooms and device views |
-| answer length (round 3, W3) | server 16 (`puzzles/mod.rs:21`); Changed by RULINGS 164, 168 (as of `9b4fd25`; docs lane `docs-errata-11`, group A): the server bound is **64** since GM6s1 (`81a15b0`; `server/src/puzzles/mod.rs:34` `MAX_ANSWER_LEN` on `9b4fd25`, and from GM6s2 the content load refuses an `answerLen` above it, `server/src/content.rs:1041-1042`) | build bound 16, 64 from GM7g; every posted length <= the bound | `world/answer-len` + the `<=` pin, each seen red |
+| answer length (round 3, W3) | server 16 (`puzzles/mod.rs:21`); Changed by RULINGS 164, 168 (as of `9b4fd25`; docs lane `docs-errata-11`, group A): the server bound is **64** since GM6s1 (`81a15b0`; `server/src/puzzles/mod.rs:34` `MAX_ANSWER_LEN` on `9b4fd25`, and from GM6s2 the content load refuses an `answerLen` above it, `server/src/content.rs:1041-1042`) | build bound 16, 64 from GM7g; every posted length <= the bound. Changed by RULINGS 359 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): 64 since GM7g `9dc5765` (`client/scripts/story/puzzles/shape.ts:19`) | `world/answer-len` + the `<=` pin, each seen red; Changed by RULINGS 354, 359 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): at 64 no decode-legal `path` (49) or `grid` (36) reaches the bound, so `world/answer-len` is seen red on fixtures only (`world.test.ts`'s 65 / 64 literals; a fixture reach type in `grid.test.ts`) and the real path pins the pass, `story: a 49-cell path passes the answer bound` |
 
 Changed by RULINGS 201, 208 (as of `461424d`; docs lane `docs-errata-13`, group A): two rows this table does not list:
 **all JS** has LIMIT **365.0 KB br** (`allJsBr` 365,000, `client/scripts/budget.ts:132`; RULINGS 201 QS3, written by
@@ -284,6 +284,10 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   included, changes the build id (`client/scripts/build-id.ts:23` hashes every file under `src`, `vite-plugins` and
   `public`, tests excepted), which re-hashes the chunk names and moves brotli bytes; across a build-id change a lane's
   engine row is judged by module identity, with the existing STOPs unchanged.
+  Changed by RULINGS 351 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): a CSS-only edit inside a `.svelte` file changes the build id too, so every
+  chunk is renamed and the raw br rows move by hash text (GM7p fix3, critique W1 of its amend r3: two `user-select`
+  declarations renamed every chunk). Rows, and the chunk lists a STOP reads, are therefore judged by **module
+  identity** (each chunk's raw text equal after hash normalisation), never by raw chunk names.
 - **Main `768fc9d`, MEASURED** (Changed by RULINGS 277, 284, 290 (as of `768fc9d`; docs lane `docs-errata-17`, group
   A); the orchestrator's merge checks, exact B br). Per lane, main -> merge:
   - **SH3c** `5d3013e`: main's outputs byte-identical (no `src` entry in the catalog), so every row equals
@@ -356,6 +360,37 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   15.564 = **261.444 / 270.0 (8.556 left)**; **Ledger 2** **39.172 / 40.0 (0.828 left)**. The trigger does not hold
   (neither Ledger 4 nor Ledger 1 within 1.0 KB; the engine-lever candidate waits for Ledger 4 or 1 within 2.0 KB,
   RULINGS 253); L2's return line does not hold.
+- **Main `6e459a3`, MEASURED** (Changed by RULINGS 351, 353, 354, 359, 361 (as of `b0b1b41`; docs lane `docs-errata-20`, group A); the orchestrator's
+  merge checks and the testers' paired builds, 4 builds per tree, exact B br). Per lane, main -> merge
+  (docs-errata-19 `0f9feca`, the workflow commit `874244e` and the OPEN-QUESTIONS commit `b0b1b41` are not builds):
+  - **GM7p** `8be35a0` (E_engine 0.45, E_type 1.8, RULINGS 345): engine 206,708 -> **207,174** (+466 against the +1,648 B
+    STOP restated at R 2.551, RULINGS 350; sample 0.466 / 0.45 = **1.036**), entry **39,137** (hash text), first line
+    **246,311**, all JS **285,443**, puzzle-type 1,316 -> **2,172** (PathPuzzle the largest root; STOP 4,149), first
+    load ch1 **299,361** / ch3 **278,721**; budget 112 rows, 111 PASS, 0 FAIL, 1 PENDING (RULINGS 351).
+  - **GM7g** `9dc5765` (E_engine 0.48, E_type 1.6, entry +0.1 KB, RULINGS 354): engine **207,592** (+418 against the
+    +1,666 B STOP; sample 0.418 / 0.48 = **0.871**), entry **39,179** (+42, build id and chunk names), first line
+    **246,771**, all JS **287,380**, puzzle-type **2,235** (PathPuzzle's root closure, 2 chunks with the shared `reach`
+    chunk; GridPuzzle's root closure 1,470 = 1,403 own + 67 shared, STOP 3,743), explore-ui **12,587**, cue-stage
+    **6,100**, first load ch1 **299,936** / ch3 **279,296**; 112 rows, 111 / 0 / 1 (RULINGS 355, 359).
+  - **GM8i** `6e459a3` (E_engine 0.25, E_explore 0.32, E_cue 0.02, entry +0.1 KB, RULINGS 353; STOPs restated at R 2.306
+    on `9dc5765`, RULINGS 360): engine **208,029** (+437 against +1,077; sample 0.437 / 0.25 = **1.748**), explore-ui
+    **13,101** (+514 against +1,242; sample 1.606 recorded, its R kept at 2.319; 899 B under the 14.0 KB split
+    trigger), cue-stage **6,136** (+36 against +541; sample 1.8 recorded), entry **39,169** (-10), first line
+    **247,198**, all JS **288,342**, puzzle-type **2,235**, first load ch1 **300,364** / ch3 **279,724**; 112 rows, 111 /
+    0 / 1 (RULINGS 361).
+  **R:** engine **2.4285** at GM7p's merge (n 22, the median (2.306 + 2.551) / 2; RULINGS 351), **2.306** at GM7g's (n
+  23, the 12th; RULINGS 359), **2.027** at GM8i's (n 24: -0.127, 0.123, 0.527, 0.871, 1.009, 1.036, 1.27, 1.31, 1.390,
+  1.527, 1.700, **1.748**, **2.306**, 2.551, 2.90, 3.025, 3.131, 3.364, 3.513, 3.546, 4.000, 4.60, 5.96, 11.1; the median
+  (1.748 + 2.306) / 2; RULINGS 361); later lanes use 2.027. The explore-ui R stays **2.319** (RULINGS 214's rule: the
+  list is not rebuilt; GM8i's samples 1.5625 at r1 and 1.606 at the merge recorded). Remaining engine terms
+  (ARITHMETIC): **5.651** after GM7p's and GM7g's terms were booked and spent at their merges (RULINGS 351, 359), and
+  **5.401** after GM8i's 0.25, booked inside §3.5's joint GM8i / GM8h / GM8a / GM8b row (b = min(E_GM8i, 0.72) = 0.25,
+  RULINGS 352 N16; that row's remainder 0.47). Ledgers: at `8be35a0` (R 2.4285, term 13.724) L4 **220.898**, L1
+  **260.035**, L2 **39.137**; at `9dc5765` (R 2.306, term 13.031) L4 **220.623**, L1 **259.802**, L2 **39.179**; at
+  `6e459a3` (R 2.027, term 5.401 x 2.027 = 10.948) **Ledger 4** 208.029 + 10.948 = **218.977 / 230.0 (11.023 left)**;
+  **Ledger 1** 247.198 + 10.948 = **258.146 / 270.0 (11.854 left)**; **Ledger 2** **39.169 / 40.0 (0.831 left)**. The
+  trigger does not hold; the engine-lever candidate waits for Ledger 4 or 1 within 2.0 KB (RULINGS 253); L2's return
+  line does not hold.
 - **The path rule (RULINGS 201; the union rule, budget round r198 design §3.1).** Ledgers 1 and 4 count every JS chunk
   that some supported WebView requests **automatically before its first line** on the boot -> chapter -> first-line
   path, a capability fallback included (Pixi's three renderer facades: a device requests one by what it is): the
@@ -413,7 +448,11 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   (n 18; Q9's net sample 1.27); (Changed by RULINGS 326, 337, 346 (as of `f6487fc`; docs lane `docs-errata-19`, group A)) GM5q's merge gave no sample
   (E = 0); at GM5f's, recorded by RULINGS 337 Q2: engine **2.90** (n 19; the sample 3.364); at SH5b's (RULINGS 346,
   with GM7r's 1.390 that RULINGS 341 omitted): engine **2.551** (n 21; the sample 2.551);
-  the explore-ui samples 0.582, 0.445 and 0.94 recorded, its R kept at 2.319;
+  (Changed by RULINGS 351, 359, 361 (as of `b0b1b41`; docs lane `docs-errata-20`, group A)) at GM7p's (RULINGS 351): engine **2.4285** (n 22; the sample
+  1.036); at GM7g's (RULINGS 359): engine **2.306** (n 23; the sample 0.871); at GM8i's (RULINGS 361): engine **2.027**
+  (n 24; the sample 1.748);
+  the explore-ui samples 0.582, 0.445 and 0.94 recorded, its R kept at 2.319 (and GM8i's 1.5625 / 1.606, RULINGS 356,
+  361);
   cue-stage and `scene-motion` use the all-JS R. **Stability note:** the engine sample is bimodal (1.009 | 3.025, SH1
   between), so each next sample moves the median toward its own ratio; this is why the trigger is evaluated at every
   merge, and why Ledger 3's one-time LIMIT is set on the upper quartile, not the median. **Booking:** (2a) the unit is
@@ -643,6 +682,18 @@ re-armed, closed by fix2, RULINGS 331; then G1 on the delta lenses, closed by fi
 upgrade drew no frame, and two pin gaps, closed by fix2, RULINGS 332; then one pin gap on the delta lenses, closed by
 fix4, RULINGS 343). SH5b's fix3 was fix2's loop stopping at the lane's round cap, not a lens hold (RULINGS 336). GM7r's
 lenses found no product defect (RULINGS 341). Per-merge rows: the `f6487fc` bullet above.
+
+**Ruled since: RULINGS 348-361** (as of `b0b1b41`; docs lane `docs-errata-20`, group A) — GM7p (`8be35a0`), GM7g (`9dc5765`) and GM8i (`6e459a3`) took the
+engine to 208,029 B, and **R is 2.027** (n 24; 2.4285 at GM7p's merge, 2.306 at GM7g's). At `6e459a3`: **Ledger 4
+218.977 / 230.0** (11.023 left), **Ledger 1 258.146 / 270.0** (11.854 left), **Ledger 2 39.169 / 40.0** (0.831 left),
+with 5.401 KB of engine terms left. **The trigger does not hold**; L2 stays shelved. The explore-ui row is 13,101 B,
+899 B under the 14.0 KB split trigger (03:486-488), with GM8h's +0.1 of the joint +0.3 to restate at its cut. Each
+lane's rows were judged by module identity; GM7p's CSS-only fix renamed every chunk (RULINGS 351, the RULINGS 269 note
+above). The pre-merge lens check (RULINGS 289) ran at all three code merges and held each for a round: GM7p (stack F-1,
+a mouse stroke's text selection cancelling the next stroke, and gates F1-F4, closed by fix3, RULINGS 350, 351), GM7g
+(gates F1-F4, test-only, closed by fix1, RULINGS 357, 359) and GM8i (persistence F1 / F2, a sparse or non-array
+`work`, and proof P1, a gating `part` atom crashing the story gate, closed by fix1, RULINGS 358, 360, 361). Per-merge
+rows: the `6e459a3` bullet above.
 
 **One owner per figure (reconcile r2, RC-W1).** This section owns the sums, headrooms and verdicts of the three
 designs; each design owns its own lane terms (EN §3.5, per-player §10 "Ledgers", the shots §9 / §10 with this

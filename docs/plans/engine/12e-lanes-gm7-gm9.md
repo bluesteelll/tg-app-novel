@@ -79,6 +79,22 @@
   `client/src/ui/explore/explore.svelte.test.ts`'s key-set line `:1308`, test-only); **E_engine 0.45** (engine STOP +1,805 B at R 2.90) and **E_type 1.8 KB**
   (the new root's chunk STOP 4,149 B at R 2.027) (RULINGS 345). GM7p's lock is a ruling; its docs, the design defaults RULINGS 342 pre-ruled among them, come with its
   merge.
+- **Ruled since: RULINGS 348, 350, 351** (as of `b0b1b41`; docs lane `docs-errata-20`, group A) — **merged `8be35a0`** (lock 19, every file
+  touched; after fix3, RULINGS 350, 351). As built: the rule is a **visit-all path** (D1: every open cell once, `visit`
+  dropped; [§7.2](07-puzzle-types.md#72-per-type-table)); the three reach codes are not `path.ts`'s own `codes` (it
+  declares `{}`) but one shared reach pass in `client/scripts/story/mechanics/clues.ts` (`REACH_CODES` :40-44,
+  `reachFindings` :219, `CLUES_LINT` :266; D6), so the Lock line's "its `codes`" is the round-4 record; the type-UI
+  roots are found by a directory listing (`rootsUnder: 'src/puzzles/ui/'`, `client/scripts/budget.ts:251-258`; D11);
+  `pointercancel` ends a stroke through the capture's implicit release, with no listener (D9a, Q10;
+  [08b §8.3 "Gesture input"](08b-interactions-mechanism-presenters.md#83-the-mechanism-gm3m-gm3s-gm3u-gm3p));
+  fix3 put `user-select: none` on the stroke surface (RULINGS 350 F-1) and pinned gates F1-F4. Rows: engine +466 B
+  (sample 1.036; R 2.4285 after it), puzzle-type 2,172 ([§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13),
+  "Main `6e459a3`"). e2e 111 / 111 at r1; not owed after fix3, whose only module change was PathPuzzle's stylesheet
+  rule and which no committed world loads (RULINGS 348, 351). Its test `story: a path whose solution visits 17 cells is
+  refused` became GM7g's `story: a 49-cell path passes the answer bound`. Carried (`carry.md` "GM7p carries"): Solver F3
+  and A1-A3 to GM7g (taken there); N1, F1, F2, CQ-e and the real-layout e2e to GM8d; V3, Q4, Q5 and the stale comments
+  to GM8h; Q6 and review M1 to GM9p; Q8 (dead-end pruning) to the first lane whose path search stops at its bound, or
+  GM8d (RULINGS 352 G5).
 - **Commits:** (1) rules + canonical (`path: a reversed path posts its canonical form`); the path UI reports through
   GM7r's `reachEdge` (round 5, W3: `path: a stroke that reaches the end reports once`); (2) lints (two-solution and
   mismatch seeds red), `story: a path whose solution visits 17 cells is refused` (the W3 pin through a real type; a
@@ -95,13 +111,33 @@
 ### GM7g `mech-grid`
 - **Goal:** `grid`, same shape as GM7p; round 3 (W3): raise the build's `MAX_ANSWER_LEN` to 64.
   **After:** GM7p (and through it GM7r for `session.test.ts`); per-player **GM6s1** (the server's `MAX_ANSWER_LEN` 64
-  for 5 x 5; R-E12). **Beside:** GM8i.
+  for 5 x 5; R-E12). **Beside:** GM8i. Changed by RULINGS 352 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): beside GM8i **by disjoint hunk**,
+  not lock-disjoint: both held `client/scripts/story/world.test.ts` (S2, the ruled exception to one holder per file,
+  checked by the `git diff -U0` old-side headers, N1-N4); GM7g held its bound test and an insertion after GM7p's reach
+  block, GM8i its room-key line, its code list and the file's end.
 - **Lock (13; round 4 m5 +1):** `client/src/puzzles/rules/{index,grid}.ts`, new `client/src/puzzles/play/grid.ts`, new
   `client/src/puzzles/ui/GridPuzzle.svelte`, `client/src/puzzles/registry.ts`, new `client/scripts/story/puzzles/grid.ts`,
   `client/scripts/story/puzzles/index.ts` (one `PUZZLE_LINTS` line, round 4),
   new `client/scripts/story/puzzles/grid.test.ts`, `client/scripts/story/puzzles/shape.ts` (the bound 16 -> 64),
   `client/src/arch.test.ts`, `client/src/puzzles/rules/rules.test.ts`, `client/src/puzzles/ui/puzzle-types.svelte.test.ts`,
   `client/src/puzzles/session.test.ts` (round 3: `motions.ts` leaves the lock).
+- **Ruled since: RULINGS 352, 354, 355, 357, 359** (as of `b0b1b41`; docs lane `docs-errata-20`, group A) — **lock 19** (G1: these 13 +
+  `client/src/ui/puzzles/puzzle-host.svelte.test.ts`, `client/scripts/story/world.test.ts` (the S2 hunks),
+  `client/scripts/story/puzzles/path.test.ts` (the bound test restated), `client/src/i18n/mechanics.ts` (the grid's
+  accessible names and rule line), `client/src/ui/explore/explore.svelte.test.ts`'s key-set line, and
+  `client/scripts/story/puzzles/path.ts` comment-only, the Q8 comment); **E_engine 0.48** (STOP +1,666 B), **E_type
+  1.6** (STOP 3,743 B per root closure, the shared chunk counted), entry +0.1 KB (RULINGS 354). **Merged `9dc5765`**
+  after fix1 (test-only: gates F1-F4, RULINGS 357, 359). As built: the grid rule is the cut's engineering reading
+  (RULINGS 354 Q2; [§7.2](07-puzzle-types.md#72-per-type-table)): a Latin-type fill that keeps its givens,
+  `symbols >= max(rows, cols)` at decode, a dense cell-major `given` with 0 the blank, `max = symbols`, select a cell
+  then a symbol with Clear, given cells as disabled buttons, `user-select: none` from the first commit (G9); the bound
+  is 64 and Solver F3 is taken (G3, G4; `client/scripts/story/puzzles/shape.ts:19`, `:31-41`); the shared
+  `puzzles/play/reach.ts` chunk is pre-declared the RULINGS 233 Q2 way (G7: one more serial request on a cold first
+  path or grid open); Q8 is re-routed (G5). The numerals 1..6 and the cells' look are placeholders for GM8d's art. Rows:
+  engine +418 B (sample 0.871; R 2.306 after it), GridPuzzle's root closure 1,470 B; e2e 111 / 111 at r1 (RULINGS
+  355). Carried (`carry.md` "GM7g carries"): solver N1 and review M1 / M2 to the grid files' next holder (GM8d unless
+  another lane takes them first), A2 to GM8a, O3 / F3's twins / stack O1 / O3 to GM8h, N2 to GM9p, N3 to the next
+  world-lint holder.
 - **Commits:** `story: a grid with two solutions is refused`, `grid: reached on the unique fill`, round 5: `story: a
   grid whose given cells fill it is refused` (the `world/reach-solution` start clause through a real type; a green
   means the clause reads no type's `initial`), `story: a 25-cell grid
@@ -123,16 +159,41 @@
   `HOTSPOT_MIN_SOURCE_PX` from `client/src/geom/cover.ts` (GM3c moved it there), never a copy of 150. **Round 10
   (found while resolving critique_engine_r9 W1):** the `arrived` hook runs after the room's `enter:<room>` trigger and
   opens nothing while `pendingStory` is non-empty, so no device session opens under an `onEnter` event (its frame would
-  have no room on screen); the event's return (`event-returned`'s `room` effect, `reduce.ts:354`) runs the hook again.
+  have no room on screen); the event's return (`event-returned`'s `room` effect, `reduce.ts:354`; Changed by RULINGS 361 (as of `b0b1b41`; docs lane
+  `docs-errata-20`, group A): as merged, `client/src/mechanics/rules/core.ts:121-122`) runs the hook again.
   Lock unchanged (11).
 - **After:** GM5f (the index files, `cues/stage/motions.ts`), GM4 (`explore/controller.ts`, `controller.test.ts`), GM3c
   (`rules/conditions.ts`); **per-player GM6a** (W7: a device's identical parts are placements of one image). Round 3
-  m1: GM7r is no longer a predecessor (no shared file, no dependency). **Beside:** GM7p, GM7g.
+  m1: GM7r is no longer a predecessor (no shared file, no dependency). **Beside:** GM7p, GM7g. Changed by RULINGS
+  342, 352 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): **GM7g only**, by disjoint hunk on `client/scripts/story/world.test.ts` (S2; the GM7g
+  entry above), never GM7p (RULINGS 342); GM7g and GM8i ran side by side from `8be35a0`.
 - **Lock (11):** new `client/src/mechanics/{data,rules}/devices.ts`, new `client/src/mechanics/devices.test.ts`, new
   `client/scripts/story/mechanics/devices.ts`; `client/src/mechanics/{data,rules}/index.ts`,
   `client/scripts/story/mechanics/index.ts`, `client/src/mechanics/rules/conditions.ts` (`part`),
   `client/src/explore/controller.ts` (the device hotspot left out of the hotspot views; round 4: no arrival dispatch),
   `client/src/explore/controller.test.ts`, `client/src/cues/stage/motions.ts` (`fact:work:*`, `module:devices:*`).
+- **Ruled since: RULINGS 352, 353, 356, 358, 360, 361** (as of `b0b1b41`; docs lane `docs-errata-20`, group A) — **lock 20** (D1: these 11 +
+  `client/src/mechanics/registry.test.ts` (test-only), `client/scripts/story/world.test.ts` (the S2 hunks),
+  `client/scripts/story/softlock.ts` (`describe`'s `device-moved`), `client/src/mechanics/rules/search.ts` (`keyPlan`'s
+  `case 'work'`), `client/src/explore/explore.test.ts` (the `keyPlan` pin), `client/src/mechanics/rules/writer.ts` (D2:
+  `Writer.run` records `work` per index), `client/src/mechanics/contract.ts` (the doc line `:86` only) and
+  `client/src/cues/stage/motions.test.ts`; RULINGS 360 Q-F1 (a): `client/scripts/story/mechanics/clues.ts`, the
+  twentieth, for the clue guard; the conditional `conditions.test.ts` lapsed). 19 of the 20 changed
+  (`client/src/mechanics/rules/conditions.ts` did not). **E_engine 0.25** (b = min(E, 0.72), N16), **E_explore 0.32**,
+  **E_cue 0.02**, entry +0.1 KB (RULINGS 353). **Merged `6e459a3`** after fix1 (RULINGS 358, 360, 361: the `work`
+  guard refuses a hole or a non-array, the gating `part` atom is refused at its line, and its section skips the
+  soft-lock and clue searches). As built, with the plan's stale cites re-located (GM8i cut 1.1): the event return's
+  push (`reduce.ts:354` above) is `client/src/mechanics/rules/core.ts:121-122`, the resume's (`:332`) `:97-98`, the
+  zero-slot tap's `lock` effect (`reduce.ts:373`) `core.ts:144`; the module, its lints and its cues:
+  [§7.5 "Ruled since"](07-puzzle-types.md#75-devices-lifecycle-attempts-working-state-m6-m7-w2-round-3-w1-w2-m9-m10-gm8i-module-gm8h-host).
+  `world/device-parts-frame` is registered with no check (Q1 (c)): the check goes to GM8a with two lock files. The band
+  stays 496: at the 360 px design width (Q67) the same formula gives 448, so the 320 px value is the stricter. **No world
+  holds a device yet**; GM8a makes the first real view type. Rows: engine +437 B (sample 1.748; R 2.027 after it),
+  explore-ui +514, cue-stage +36; e2e 111 / 111 at fix1 (RULINGS 361). Carried (`carry.md` "GM8i carries"): D5's
+  fallback set, Q6's first-write burst and the type-dependent checks to GM8h (before GM8d); Q1 (c), Q-2 (b), P3 and
+  review M1 / M3 to GM8a; R1 to GM8d or the next `explore/reconcile.ts` holder; Q-F2 to the next `world.ts` / `story.ts`
+  holder; Q-F3 to the next `scripts/story/mechanics/conditions.ts` holder; review M2 to the next `softlock.ts` /
+  `clues.ts` holder; D-a to the next `rules/devices.ts` holder.
 - **Commits:** `device: arriving in a device view opens its session`, `device: a part move writes run.work and its
   picture follows`, `story: a device room without a zero-slot lock is refused`, `visual: four placements of one lever
   image keep four anchors` (with GM6a in the tree); round 3: `device: arriving at a jammed device plays its jam and
@@ -209,6 +270,17 @@
   ladder sheet, `covered`, the in-room Retry; it reads the `puzzle` / `puzzleActions` props GM3w added),
   `client/src/ui/explore/explore.svelte.test.ts`. No `App.svelte` (GM3w's `coversStage` is the only App seam), no
   `ui/explore-view.svelte.ts` (the props type is GM3w's) and no `cues/stage/motions.ts` (no new key).
+- **Ruled since: RULINGS 352, 353, 361** (as of `b0b1b41`; docs lane `docs-errata-20`, group A) — its two predecessors, GM8i and GM7g, are merged
+  (`6e459a3`, `9dc5765`). RULINGS 352 N15: `client/src/cues/controls.test.ts` joins its lock for one comment-only hunk
+  (the stale `:184` "none draws a stroke yet"). Must close **before GM8d** (RULINGS 352 D5, 353): the cue boxes lost
+  when the device hotspot has no button (D5's fallback set: `module:devices:*` on a zoom-in land on the exit's box, the
+  device key's cues get no box, `fact:work:*` go to the session frame) and Q6's first-write burst (four
+  `fact:work:added` cues on a four-part device's first move), with GM7p's V3, Q4 (`onblocked` / `puzzle:blocked`) and
+  Q5. Also carried (`carry.md` "GM7p carries", "GM7g carries", "GM8i carries"): GM7g's O3 (a given grid cell is a
+  disabled button; its cut decides whether it is "a refused cell", and `onblocked` needs `PathPuzzle.svelte` and
+  `GridPuzzle.svelte`), F3's twins, stack O1 / O3, `causeOf`'s `'fail'` verb, the type-dependent checks and the
+  `DEVICE_TOP_INSET_CSS` verification; GM8i booked 0.32 of the explore-ui joint +0.3, and GM8h restates its +0.1 at its
+  cut (the row is 13,101 B, 899 B under the 14.0 KB trigger).
 - **Commits:** (1) `puzzle-view: coversStage is false for a view frame` (red: GM3w's `f !== null`), `puzzle-view:
   backScreen pushes no overlay for a view frame`; reconcile r2 (RC-W5; design-shots I-7): GM3p's `yields: the host
   hears every change of the shown frame` gains the case "a device view's bar never reports" (`frameShown` reports a
@@ -285,6 +357,13 @@
   (the `[moves]` emit test), `client/src/arch.test.ts`, `client/src/puzzles/rules/rules.test.ts`,
   `client/src/puzzles/ui/puzzle-types.svelte.test.ts`. Round 3: `motions.ts` leaves the lock (`lever`, `setting-*`
   motions and haptics come from the type's `ControlDecl`s).
+- **Ruled since: RULINGS 353, 356** (as of `b0b1b41`; docs lane `docs-errata-20`, group A) — **lock +2**: `client/scripts/story/mechanics/devices.ts`
+  and `client/src/mechanics/devices.test.ts`, for the `world/device-parts-frame` check GM8i registered without one
+  (Q1 (c): T11 / T18, the part-rects accessor, the `HOTSPOT_MIN_SOURCE_PX` static pin) and for Q-2 (b), a `part` atom
+  in a puzzle's `clues` checked against any device's puzzle and its shape. GM8a makes the first real view type, so the
+  registry wiring of GM8i's module is first pinned here. Also carried (`carry.md` "GM7g carries", "GM8i carries"): A2
+  (the glob-aware lazy-ui walk), P3 (the arrival hook's evaluations against the 40,000 bound), review M1 / M3 (the
+  `world/device-part` wording).
 - **Commits:** `levers: reached on the shown target`, `story: a levers target its throws cannot reach is refused`,
   `levers: the witness is the shortest throw order`, `story: a levers tier 3 without [moves] is refused`, `emit: a
   levers tier 3 renders its throw order in both languages`, `setting: a pull posts one attempt` (through `oncommit`,
@@ -445,7 +524,11 @@
   disjoint codes.
 - **After:** **GM8i** (round 3 m1: `mechanics/data/index.ts` and `scripts/story/mechanics/index.ts`, whose last holder
   before it is GM8i), GM2b (`world.test.ts`), GM1a (`softlock.ts`); round 4: no `lint.ts` (its `world/carry-*` codes
-  are `carry.ts`'s own, §3.2). **Beside:** GM8a, GM8b, GM8d.
+  are `carry.ts`'s own, §3.2). **Beside:** GM8a, GM8b, GM8d. Changed by RULINGS 352 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): N5, GM9p
+  launches only after **both GM7g and GM8i** merged (no third holder of `client/scripts/story/world.test.ts`), so it
+  may launch now (`9dc5765`, `6e459a3`); a beside-ruling for it is made at its own launch (N10 names an S2-style rule
+  with GM8a as one option). GM8i also held `client/scripts/story/softlock.ts` before it (`describe`'s `device-moved`,
+  `gatesVisualOnly`).
   **Lock (10; round 4 -1):** new `story/items.json` (the format; no demo entry), new
   `client/src/mechanics/data/carry.ts` (decode only), `client/src/mechanics/data/index.ts`, new
   `client/scripts/story/mechanics/carry.ts`, `client/scripts/story/mechanics/index.ts`, `client/scripts/story/graph.ts`
