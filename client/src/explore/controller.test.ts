@@ -1529,7 +1529,8 @@ test('controller: Back disarms when the way back goes absent', () => {
 // a device's own end does not arrive again
 
 /** hall -> panel: panel is a view of the hall whose device hotspot `dial` carries a zero-slot lock with the code puzzle
- *  `dial` (the arrival hook keys on the `device` key only, so it is live under the default types), beside a look. */
+ *  `dial` (the arrival hook keys on the `device` key only, so it is live under the default types), beside a look and a
+ *  lockless object `crate`; the hall's lockless object `dial` shares the device's id (fix1, gates F1). */
 function devicePanel(): WorldPublic {
   return world({
     puzzles: { dial: code(null) },
@@ -1537,8 +1538,8 @@ function devicePanel(): WorldPublic {
       dev: {
         start: 'hall',
         rooms: {
-          hall: room('hall', [exit('to_panel', 'panel'), look('vase')]),
-          panel: { ...viewRoom('panel', 'hall', [object('dial', lock([], 'dial')), look('plate')]), device: 'dial' },
+          hall: room('hall', [exit('to_panel', 'panel'), look('vase'), object('dial', null)]),
+          panel: { ...viewRoom('panel', 'hall', [object('dial', lock([], 'dial')), look('plate'), object('crate', null)]), device: 'dial' },
         },
       },
     },
@@ -1563,15 +1564,17 @@ test('controller: a device view lists no button for its device hotspot', () => {
   const h = harness(devicePanel());
   h.c.enter(sec('dev'), EMPTY_WORLD_STATE);
   const log = deviceLog(h);
-  expect(h.view.hotspots.map((v) => v.key)).toEqual(['hall.to_panel', 'hall.vase']);
-  // The zoom-in opens the device's session by its arrival; the view's buttons are its other hotspots only.
+  // The hall's own `dial` is no device: only the device of the room shown is left out.
+  expect(h.view.hotspots.map((v) => v.key)).toEqual(['hall.to_panel', 'hall.vase', 'hall.dial']);
+  // The zoom-in opens the device's session by its arrival; the view's buttons are its other hotspots only, an object
+  // among them.
   h.c.dispatch(tap('hall.to_panel'));
   expect(log).toEqual(['puzzle panel.dial']);
-  expect(h.view.hotspots.map((v) => v.key)).toEqual(['panel.plate']);
+  expect(h.view.hotspots.map((v) => v.key)).toEqual(['panel.plate', 'panel.crate']);
   // Solved, the device is open: still no button.
   h.c.dispatch({ kind: 'puzzle-ended', puzzle: 'dial' as PuzzleLocalId, outcome: 'solved' });
   expect(h.c.state().open).toContain('panel.dial');
-  expect(h.view.hotspots.map((v) => v.key)).toEqual(['panel.plate']);
+  expect(h.view.hotspots.map((v) => v.key)).toEqual(['panel.plate', 'panel.crate']);
 });
 
 test("device: a device's own end does not re-arrive", () => {
