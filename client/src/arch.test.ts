@@ -111,9 +111,11 @@ const PURE_WORLD_FILES = [
   'puzzles/rules/code.ts',
   'puzzles/rules/order.ts',
   'puzzles/rules/path.ts',
+  'puzzles/rules/grid.ts',
   'puzzles/play/code.ts',
   'puzzles/play/order.ts',
   'puzzles/play/path.ts',
+  'puzzles/play/grid.ts',
   'explore/state.ts',
   'explore/reduce.ts',
   'explore/project.ts',
@@ -1041,28 +1043,76 @@ function reachesOutsideSrc(file: string, o: Origin): boolean {
   }
 }
 
-/** What a style body can make Vite load: `@import '<s>'`, and `url(<s>)` (with `@import url(<s>)`), quoted or not. */
+/**
+ * What a style body can make Vite load: `@import '<s>'`, and `url(<s>)` (with `@import url(<s>)`), quoted or not; and
+ * each quoted option of an `image-set(...)` (`imageSetStrings`).
+ */
 const CSS_REFERENCES: readonly RegExp[] = [/@import\s+(['"])(.*?)\1/g, /\burl\(\s*(['"]?)(.*?)\1\s*\)/g];
 /** A reference that loads no file of the tree: inline data, a web URL, an SVG fragment. */
 const CSS_NO_FILE = /^(?:data:|https?:|#)/i;
+const CSS_IMAGE_SET = /(?:-webkit-)?image-set\(/gi;
+
+/**
+ * The quoted string options of every `image-set(...)` and `-webkit-image-set(...)` of a style body, each read to the
+ * balancing `)`, with the index of its quote. A string inside a nested `url(...)` is that pattern's, so none is judged
+ * twice.
+ */
+function imageSetStrings(style: string): Array<{ spec: string; index: number }> {
+  const out: Array<{ spec: string; index: number }> = [];
+  for (const m of style.matchAll(CSS_IMAGE_SET)) {
+    let depth = 1;
+    // The depth at which a nested url( opened, while inside it.
+    let inUrl: number | null = null;
+    for (let i = m.index + m[0].length; i < style.length && depth > 0; i++) {
+      const ch = style[i];
+      if (ch === '"' || ch === "'") {
+        const end = style.indexOf(ch, i + 1);
+        if (end === -1) {
+          break;
+        }
+        if (inUrl === null) {
+          out.push({ spec: style.slice(i + 1, end), index: i });
+        }
+        i = end;
+      } else if (ch === '(') {
+        depth++;
+        if (inUrl === null && /(?:^|[^\w-])url\s*$/i.test(style.slice(Math.max(0, i - 8), i))) {
+          inUrl = depth;
+        }
+      } else if (ch === ')') {
+        if (inUrl === depth) {
+          inUrl = null;
+        }
+        depth--;
+      }
+    }
+  }
+  return out;
+}
 
 /** The CSS references of a .svelte / .html style body (comments blanked), judged like an import path. */
 function scanStyleReferences(file: string, style: string, out: Violation[]): void {
   if (!applies('import-outside-src', file)) {
     return;
   }
+  const judge = (raw: string, index: number): void => {
+    const spec = raw.trim();
+    if (spec === '' || CSS_NO_FILE.test(spec)) {
+      return;
+    }
+    // CSS reads a bare `x.png` relative to the stylesheet, as Vite resolves it.
+    const path = spec.startsWith('.') || spec.startsWith('/') || URL_SCHEME.test(spec) ? spec : `./${spec}`;
+    if (reachesOutsideSrc(file, { form: 'path', spec: path })) {
+      out.push({ rule: 'import-outside-src', file, ...lineAt(style, index) });
+    }
+  };
   for (const re of CSS_REFERENCES) {
     for (const m of style.matchAll(re)) {
-      const spec = (m[2] ?? '').trim();
-      if (spec === '' || CSS_NO_FILE.test(spec)) {
-        continue;
-      }
-      // CSS reads a bare `x.png` relative to the stylesheet, as Vite resolves it.
-      const path = spec.startsWith('.') || spec.startsWith('/') || URL_SCHEME.test(spec) ? spec : `./${spec}`;
-      if (reachesOutsideSrc(file, { form: 'path', spec: path })) {
-        out.push({ rule: 'import-outside-src', file, ...lineAt(style, m.index) });
-      }
+      judge(m[2] ?? '', m.index);
     }
+  }
+  for (const s of imageSetStrings(style)) {
+    judge(s.spec, s.index);
   }
 }
 
@@ -1130,6 +1180,7 @@ test('arch: pure world modules', () => {
  */
 const LAZY_COMPONENTS = [
   'puzzles/ui/CodeLock.svelte',
+  'puzzles/ui/GridPuzzle.svelte',
   'puzzles/ui/OrderPuzzle.svelte',
   'puzzles/ui/PathPuzzle.svelte',
   'ui/puzzles/PuzzleHost.svelte',
@@ -1174,6 +1225,7 @@ test('arch: lazy ui only by dynamic import', () => {
   }
   expect(dynamicLazyTargets('puzzles/registry.ts', SOURCES['puzzles/registry.ts'] ?? '')).toEqual([
     'puzzles/ui/CodeLock.svelte',
+    'puzzles/ui/GridPuzzle.svelte',
     'puzzles/ui/OrderPuzzle.svelte',
     'puzzles/ui/PathPuzzle.svelte',
   ]);
@@ -1397,8 +1449,9 @@ test('arch: entry closure fixtures', () => {
 
 // RULINGS 158 (L1): the save service and its pending cache load with the engine chunk (app/engine.ts is their one value
 // importer); the entry reads only `summaryOf`, from saves/summary.ts. A static edge from any entry module back to
-// either file - a value import, an inline type specifier, a re-export through the split module - puts both into the
-// entry chunk again with `check` green, so the invariant is stated on the same walk as the meta split above.
+// either file - a value import, an inline type specifier, a re-export through the split module - puts its target, and
+// that file's own static imports, into the entry chunk again with `check` green (an edge to the pending cache alone
+// brings that one file back, fixture S3), so the invariant is stated on the same walk as the meta split above.
 
 /** The save modules only the engine chunk loads (RULINGS 158). */
 const ENGINE_SAVE_FILES = ['saves/service.ts', 'saves/pending.ts'] as const;
@@ -2099,6 +2152,9 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['ui/S1.svelte', "<p></p>\n<style>\n  @import '../../../story/x.css';\n</style>"],
     ['ui/S2.svelte', "<p></p>\n<style>\n  p { background: url('../../../server/content/a.png'); }\n</style>"],
     ['ui/S3.svelte', '<p></p>\n<style>\n  @import url("../../assets/x.css");\n</style>'],
+    // An image-set option names a file as a url() does, in either spelling (GM7g A1).
+    ['ui/S7.svelte', "<p></p>\n<style>\n  p { background: image-set('../../../server/content/a.png' 1x); }\n</style>"],
+    ['ui/S8.svelte', '<p></p>\n<style>\n  p { background: -webkit-image-set("../../assets/x.png" 2x); }\n</style>'],
     // A URL scheme or a drive letter is no package and no path under src/ (LS1 review M2).
     ['app/content.ts', "import s from 'file:///D:/repo/story/stories.json';"],
     ['app/content.ts', "const u = new URL('file:///D:/repo/x.json', import.meta.url);"],
@@ -2318,6 +2374,8 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['ui/S4.svelte', '<p></p>\n<style>\n  p { background: url(data:image/png;base64,AAAA); }\n</style>'],
       ['ui/S5.svelte', '<svg></svg>\n<style>\n  svg { mask: url(#m); }\n</style>'],
       ['ui/S6.svelte', "<p></p>\n<style>\n  p { background: url('./bg.png'); }\n  i { background: url(icon.svg); }\n</style>"],
+      // An image-set's inline data and its file beside the component.
+      ['ui/S9.svelte', "<p></p>\n<style>\n  p { background: image-set('data:image/png;base64,AAAA' 1x, './bg.png' 2x); }\n</style>"],
     ],
   ],
   [

@@ -1,7 +1,8 @@
-// The mechanics' UI strings (engine plan §6.1 UI, 12c GM3u; §7.4 GM7r; §7.2 GM7p): the item ribbon's label, the text a
-// refused use shows when neither its item nor its room says why, the update toast of a reach mismatch, and the path
-// puzzle's rule line and cell names. Their own table, imported only by app/yields.ts (the engine), the explore UI (the
-// ribbon) and the path type UI (its rule and cells), so these texts ship with the engine and never in the entry
+// The mechanics' UI strings (engine plan §6.1 UI, 12c GM3u; §7.4 GM7r; §7.2 GM7p, GM7g): the item ribbon's label, the
+// text a refused use shows when neither its item nor its room says why, the update toast of a reach mismatch, the path
+// puzzle's rule line and cell names, and the grid puzzle's rule line, cell names and Clear. Their own table, imported
+// only by app/yields.ts (the engine), the explore UI (the ribbon) and the path and grid type UIs (their rules and
+// cells), so these texts ship with the engine and never in the entry
 // (`arch: the mechanics string table loads with the engine, never with the entry`). Russian first (its keys are the
 // contract), English second; all but `mech.content_updated` are drafts for the owner's copy pass (OPEN-QUESTIONS Q61,
 // RULINGS 226 Q6); `mech.content_updated` is the owner's adopted copy (Q15e, RULINGS 154).
@@ -15,6 +16,11 @@ export const mechanicsRu = {
   'mech.path_rule': 'Проведите одну линию от конца до конца через все свободные клетки.',
   'mech.path_cell': 'Ряд {r}, клетка {c}',
   'mech.path_end': 'Конец линии: ряд {r}, клетка {c}',
+  'mech.grid_rule': 'Выберите клетку, затем знак. В ряду и в столбце знаки не повторяются.',
+  'mech.grid_cell': 'Ряд {r}, столбец {c}: {n}',
+  'mech.grid_empty': 'Ряд {r}, столбец {c}: пусто',
+  'mech.grid_given': 'Ряд {r}, столбец {c}: {n}, задано',
+  'mech.grid_clear': 'Стереть',
 } as const;
 
 /** A key of the mechanics table; mechanicsRu defines the set. */
@@ -28,6 +34,11 @@ export const mechanicsEn: Readonly<Record<MechanicsKey, string>> = {
   'mech.path_rule': 'Draw one line from end to end through every free cell.',
   'mech.path_cell': 'Row {r}, cell {c}',
   'mech.path_end': 'Line end: row {r}, cell {c}',
+  'mech.grid_rule': 'Pick a cell, then a symbol. No symbol twice in a row or a column.',
+  'mech.grid_cell': 'Row {r}, column {c}: {n}',
+  'mech.grid_empty': 'Row {r}, column {c}: empty',
+  'mech.grid_given': 'Row {r}, column {c}: {n}, given',
+  'mech.grid_clear': 'Clear',
 };
 
 const TABLES: Readonly<Record<Lang, Readonly<Record<MechanicsKey, string>>>> = { ru: mechanicsRu, en: mechanicsEn };

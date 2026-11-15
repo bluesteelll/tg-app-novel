@@ -8,7 +8,7 @@ import type { PuzzleTypeLint } from './index.ts';
 /**
  * The search's bound, in extensions per instance (CQ-f): hitting it is a result (`countSolutions` null, refused as
  * `world/unique-solution`), never a hang. Proving uniqueness on a 7 x 7 grid would otherwise walk a huge space;
- * dead-end pruning is GM7g's, with the first path over 16 cells.
+ * dead-end pruning (Q8) is owed by the first lane whose path stops at this bound, or GM8d, the first path author.
  */
 export const PATH_SEARCH_STEPS = 1_000_000;
 
