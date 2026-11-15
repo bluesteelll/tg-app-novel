@@ -693,6 +693,9 @@ test("path: the drawn line, its tint and the surface's label", () => {
 const G22 = { rows: 2, cols: 2, symbols: 2, given: [1, 0, 0, 0] };
 const G22_FILL = [1, 2, 2, 1];
 
+/** 2 rows x 3 columns over 3 symbols, cells 0, 1 and 5 given: not square, so a swap of rows and columns shows. */
+const G23 = { rows: 2, cols: 3, symbols: 3, given: [1, 2, 0, 0, 0, 1] };
+
 /**
  * GridPuzzle with its `answer` following `onchange` (a `$state` props object, as the frame's); every call recorded
  * with the prop it was made against.
@@ -906,4 +909,28 @@ test('grid: a mismatch reset keeps the selected cell', async () => {
   expect(d.cell(3).getAttribute('aria-pressed')).toBe('true');
   await fireEvent.click(d.symbol(1));
   expect(d.changes.at(-1)).toEqual([1, 0, 0, 1]);
+});
+
+test('grid: a grid that is not square names and lays out its cells by row and column', () => {
+  // Gates F1 (fix1): every other grid test renders the square G22, where a swap of rows and columns cannot show. On
+  // 2 x 3 each cell is named by its own row and column (cell-major, `row * cols + col`), and the cells' track repeats
+  // the column count. One filled cell, two empty and three given, so each name key occurs.
+  for (const lang of LANGS) {
+    const d = filled({ params: G23, answer: [1, 2, 3, 0, 0, 1], lang });
+    expect([0, 1, 2, 3, 4, 5].map((i) => d.cell(i).getAttribute('aria-label')), lang).toEqual([
+      mechT(lang, 'mech.grid_given', { r: 1, c: 1, n: 1 }),
+      mechT(lang, 'mech.grid_given', { r: 1, c: 2, n: 2 }),
+      mechT(lang, 'mech.grid_cell', { r: 1, c: 3, n: 3 }),
+      mechT(lang, 'mech.grid_empty', { r: 2, c: 1 }),
+      mechT(lang, 'mech.grid_empty', { r: 2, c: 2 }),
+      mechT(lang, 'mech.grid_given', { r: 2, c: 3, n: 1 }),
+    ]);
+    const tracks = d.view.container.querySelectorAll<HTMLElement>('.cells');
+    expect(tracks, lang).toHaveLength(1);
+    expect(tracks[0]?.style.getPropertyValue('grid-template-columns'), lang).toBe('repeat(3, minmax(48px, 1fr))');
+    d.view.unmount();
+  }
+  // The control: the square G22's track repeats its own side, so a count written into the template fails one of the two.
+  const square = filled().view.container.querySelector<HTMLElement>('.cells');
+  expect(square?.style.getPropertyValue('grid-template-columns')).toBe('repeat(2, minmax(48px, 1fr))');
 });
