@@ -299,9 +299,13 @@ test('rules: grid params decode strictly', () => {
     [{ rows: 2, cols: '3', symbols: 3, given: [] }, 'cols must be an integer in 2..6'],
     // A line of n cells holds n distinct symbols: fewer symbols than the longer side can fill no grid.
     [{ rows: 2, cols: 3, symbols: 2, given: [0, 0, 0, 0, 0, 0] }, 'symbols must be an integer in 3..6'],
+    // The longer side may be the rows: a tall grid's floor is its row count.
+    [{ rows: 3, cols: 2, symbols: 2, given: [0, 0, 0, 0, 0, 0] }, 'symbols must be an integer in 3..6'],
     [{ rows: 2, cols: 2, symbols: 7, given: [0, 0, 0, 0] }, 'symbols must be an integer in 2..6'],
     [{ rows: 2, cols: 3, symbols: 3.5, given: [0, 0, 0, 0, 0, 0] }, 'symbols must be an integer in 3..6'],
     [{ rows: 2, cols: 3, symbols: 3, given: [0, 0, 0, 0, 0] }, 'given must be an array of 6 cells'],
+    // One cell too many is refused as one too few is.
+    [{ rows: 2, cols: 3, symbols: 3, given: [0, 0, 0, 0, 0, 0, 0] }, 'given must be an array of 6 cells'],
     [{ rows: 2, cols: 3, symbols: 3, given: 3 }, 'given must be an array of 6 cells'],
     [{ rows: 2, cols: 3, symbols: 3, given: [4, 0, 0, 0, 0, 0] }, 'given: 4 at cell 0 is not 0 (empty) or a symbol in 1..3'],
     [{ rows: 2, cols: 3, symbols: 3, given: [0, -1, 0, 0, 0, 0] }, 'given: -1 at cell 1 is not 0 (empty) or a symbol in 1..3'],
