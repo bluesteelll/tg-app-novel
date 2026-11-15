@@ -43,6 +43,9 @@ as of 48489b7: no lane of this plan runs; engine GM4 d695053, GM4u aac7a97 and G
 as of f6487fc: no lane of this plan runs; engine GM5q 5142d5d, GM5f 402d4d8 and GM7r 9516951, shots SH5b f6487fc
               merged; engine GM7p running (lane A, RULINGS 342, 344, 345); GM6c1a's row stays met (no slot ruled;
               never beside GM7p / GM7g on scripts/story/puzzles/index.ts)
+as of b0b1b41: no lane of this plan runs; engine GM7p 8be35a0, GM7g 9dc5765 and GM8i 6e459a3 merged; no code lane
+              runs (the docs lane docs-errata-20 in lane C, RULINGS 362; engine GM8h next in lane A); GM6c1a's row
+              stays met (no slot ruled; never beside GM8a / GM8b on scripts/story/puzzles/index.ts, nor GM9p)
 reconcile r2: (E-P26, engine.md §12 "Order and conflicts" engine §12 Order and conflicts owns every row below; mirrored)
 reconcile:    scene/*: M3c, LHJ (merged) -> GM2a's field -> GM6a -> SH1 -> SH4 -> SH5a -> SH5b -> SH6 -> SH7 -> SH8 ->
               {GM6d1, SH9, SH10, SH12a, SH12b, the carried preload-priority lane} one at a time by launch (GM6a before
@@ -196,6 +199,23 @@ added one start row to `requests.test.ts` (RULINGS 325), as the row's "every lat
 also held `explore/controller.ts` (its presence gate) after GM4; engine GM8i is still that row's next holder, then GM6c4
 and SH9. Every later lane of this plan follows GM6c1a or a lane still to come. Engine GM7p runs in lane A and the docs
 lane `docs-errata-19` in lane C (RULINGS 342, 347), two lanes at most (RULINGS 255, 276, 338).
+
+Changed by RULINGS 348-362 (as of `b0b1b41`; docs lane `docs-errata-20`, group B): the block's `as of b0b1b41:` row is
+new (SHAs from `git log --first-parent main`). Engine GM7p (`8be35a0`, RULINGS 351), GM7g (`9dc5765`, RULINGS 359) and
+GM8i (`6e459a3`, RULINGS 361) merged (file lists from `git diff --stat` of each merge against its first parent). GM7p
+and GM7g held `scripts/story/puzzles/index.ts` and merged, so GM6c1a's never-besides with them are spent; it still never
+runs beside GM8a or GM8b there (engine §12's row, RULINGS 178), nor beside GM9p on `client/scripts/story.ts`; its row
+stays met, with no slot ruled. GM7p held `client/scripts/budget.ts` / `budget.test.ts` and merged, so the `budget.ts`
+row's next holder of this plan is GM6d2, and the `runtime:` row's "GM6d2 after ... GM7p" edge is met. All three held
+`scripts/story/world.test.ts` (GM7g and GM8i side by side, by disjoint hunk, RULINGS 352 S2) and merged; GM9p is that
+row's next holder, GM6c1b by launch against it. GM8i added its `devices` line to `scripts/story/mechanics/index.ts` and
+held `client/src/mechanics/data/index.ts` and `client/src/explore/controller.ts` / `controller.test.ts`, and merged:
+its never-beside on the index file is spent, GM9p comes next on `mechanics/data/index.ts` (then GM6d2), and GM6c4 is
+now the `explore/controller.ts` row's next holder, then SH9. GM7g held `client/src/puzzles/session.test.ts` (test) and
+merged; GM6c2 still never runs beside GM8h on `session.ts`, and GM8h comes before GM6c4 on `ExploreView.svelte`. By
+length the chain shots SH6 -> SH7 -> GM6c2 -> GM6c3 -> GM6d1 -> engine GM9r -> GM6c4 -> SH9 is now the longest of the
+three plans (engine §12's status block). Every later lane of this plan follows GM6c1a or a lane still to come. The docs
+lane `docs-errata-20` runs in lane C (RULINGS 362), two lanes at most (RULINGS 255, 276, 338).
 
 Until GM6d2, per-player codes show in documents, item descriptions, ink lines, choices and the tier-3 hint (synthesis
 §6.4 item 4), which needs no label on the art.

@@ -242,6 +242,10 @@ rows; the "World tooling", "GameSession", "Scene", "Step window", "Half tier", "
 "Mechanics engine", "Views", "Cue motions", "Exploration UI" and "Puzzle frame cues" rows; and the build and e2e gate
 rows).
 
+Open at `b0b1b41` (RULINGS 362): this docs lane `docs-errata-20` (lane C); no code lane (engine GM8h is next in lane A,
+RULINGS 361, 362). GM7p mech-path (merged `8be35a0`, RULINGS 351), GM7g mech-grid (merged `9dc5765`, RULINGS 359) and
+GM8i mech-devices (merged `6e459a3`, RULINGS 361) are under [Built features](#built-features).
+
 - **The adopted plans' features** (the mechanics engine, per-player values and labels, drawn-shot staging): the
   planned lanes GM1a-GM9r, GM6a-GM6d2 and SH1-SH12b of [docs/plans/README.md](plans/README.md) (planned, not built),
   in the one order of [engine §12](plans/engine/12f-order-and-conflicts.md#order-and-conflicts); GM1a and GM6k were
@@ -276,6 +280,14 @@ rows).
   (with GM7p's running term: Ledger 4 222.272 / 230.0, Ledger 2 39.172 / 40.0, Ledger 1 261.444 / 270.0; RULINGS 346).
   Changed by RULINGS 352 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): GM8i ran beside GM7g **by disjoint hunk** on
   `client/scripts/story/world.test.ts` (S2), not as a plain lock-disjoint pair, and GM9p comes after both (N5).
+  Built since `f6487fc` (RULINGS 351, 359, 361): GM7p, GM7g and GM8i; no code lane runs (this docs lane holds lane C,
+  RULINGS 362); next GM8h `mech-device-host` in lane A (its launch pack and spec in preparation, RULINGS 361, 362), then
+  GM8a -> GM8b -> GM8d -> GM9r; in lane C, GM9p, SH6 and per-player GM6c1a are ready by their rows, with no slot
+  ruled; by length the chain from SH6 through per-player GM6c2, GM6c3 and GM6d1 to GM9r is now one lane longer than the
+  mechanics chain from GM8h (11 lanes against 10;
+  [engine §12](plans/engine/12f-order-and-conflicts.md#order-and-conflicts)), while RULINGS 241's order stands; two
+  lanes at most (RULINGS 255, 276, 338); R is 2.027 and the trigger does not hold (Ledger 4 218.977 / 230.0, Ledger 2
+  39.169 / 40.0, Ledger 1 258.146 / 270.0; RULINGS 361).
 - **Erasure on request**: a later lane before production; until then the manual procedure of
   [privacy-ops.md](runbooks/privacy-ops.md#answer-a-deletion-request-manual-erasure). Built since GM6k: the order it
   will run, as data (`ERASURE_ORDER`, the "Database and migrations" row); no command or route runs it yet.

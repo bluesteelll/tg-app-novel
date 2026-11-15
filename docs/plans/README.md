@@ -55,6 +55,17 @@ the docs lane `docs-errata-19` runs in lane C (RULINGS 347); next, engine GM7g a
 rows may start beside GM7p in lane C (shots SH6, engine GM8i and per-player GM6c1a), so lane C's next plan lane follows
 GM7p's merge (GM8i may run beside GM7g by its row); two lanes at most (RULINGS 255, 276, 338); the rest is planned, in
 the one order below.
+Changed by RULINGS 348-362 (as of `b0b1b41`; docs lane `docs-errata-20`, group B): built since also engine GM7p
+(`8be35a0`; the path type), GM7g (`9dc5765`; the grid type) and GM8i (`6e459a3`; the devices module; engine R 2.027,
+RULINGS 361); GM7g and GM8i ran side by side from `8be35a0`, both holding `client/scripts/story/world.test.ts` by
+disjoint hunk (RULINGS 352 S2); the three merges each followed a fix round the orchestrator's pre-merge verifiers asked
+for (RULINGS 350, 357, 358, 360); the lever Y stays an approved design on the shelf (RULINGS 361); no plan lane runs: the
+docs lane `docs-errata-20` holds lane C (RULINGS 362); next, engine GM8h after GM8i and GM7g in lane A (its launch pack
+and spec in preparation, RULINGS 361, 362), then GM8a -> GM8b -> GM8d -> GM9r; in lane C, engine GM9p, shots SH6 and
+per-player GM6c1a are ready by their rows, with no slot ruled; by length the chain from SH6 through per-player GM6c2,
+GM6c3 and GM6d1 to GM9r is now one lane longer than the mechanics chain from GM8h (11 lanes against 10 to SH12b; engine
+§12's status block), while RULINGS 241's order stands; two lanes at most (RULINGS 255, 276, 338); the rest is planned,
+in the one order below.
 
 - [engine](engine/README.md) — the mechanics engine: module contract, world data, puzzle types, the cue union and bus, lanes GM1a-GM9r.
 - [per-player](per-player/README.md) — per-player codes and labels on the art: the server half, the values store, labels, lanes GM6a-GM6d2.

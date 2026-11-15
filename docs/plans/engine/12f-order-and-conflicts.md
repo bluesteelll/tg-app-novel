@@ -58,32 +58,32 @@ done:      M3c (a6365a8), docs-errata-8 (be6c348), LRF (a93fe54), docs (d31f720,
            at RULINGS 337 Q2: engine R 2.90), GM7r gm7r-mech-reach-runtime (9516951, RULINGS 341), SH5b
            sh5b-shot-entry (f6487fc, RULINGS 346; after fix2, fix3 and fix4, RULINGS 332, 336, 343; with GM7r's
            sample 1.390: engine R 2.551)
-in flight: (as of f6487fc) GM7p gm7p-mech-path (lane A; launched from 9516951, RULINGS 342; the cut amended RULINGS
-           344, implement RULINGS 345 (E_engine 0.45 KB, STOP +1,805 B at R 2.90; E_type 1.8 KB), in its implement
-           stage and rounds; lock 19: 12e's 14 (puzzles/rules/{index,path}.ts, new puzzles/play/path.ts, new
-           puzzles/ui/PathPuzzle.svelte, puzzles/registry.ts, new scripts/story/puzzles/path.ts,
-           scripts/story/puzzles/index.ts, new scripts/story/puzzles/path.test.ts, scripts/story/mechanics/clues.ts,
-           scripts/{budget,budget.test}.ts, arch.test.ts, puzzles/rules/rules.test.ts,
-           puzzles/ui/puzzle-types.svelte.test.ts); admitted by RULINGS 342: ui/puzzles/puzzle-host.svelte.test.ts,
-           puzzles/session.test.ts, scripts/story/world.test.ts (test-only), i18n/mechanics.ts; admitted by RULINGS
-           344 Q1: ui/explore/explore.svelte.test.ts's key-set line, test-only), docs-errata-19 (lane C; launched
-           from f6487fc, RULINGS 347; docs only); two lanes at most while the resets recur (RULINGS 255, 276, 338)
-next:      GM7g mech-grid after GM7p, in lane A (GM7g's row: after GM7p on scripts/story/puzzles/index.ts and every
-           other shared file, GM7r on session.test.ts, merged; per-player GM6s1 merged; the critical path, RULINGS
-           241); lane C after docs-errata-19: no lane of the rows may start beside GM7p (SH6 never beside it on
-           arch.test.ts; GM8i not beside it on world.test.ts, RULINGS 342; per-player GM6c1a never beside it on
-           scripts/story/puzzles/index.ts), so lane C's next lane follows GM7p's merge: GM8i is the one whose row
-           allows it beside GM7g (SH6 and GM6c1a are never beside GM7g either); no slot ruled; Y only on the
+           after docs-errata-19 (main b0b1b41): docs-errata-19 (0f9feca, RULINGS 349), the workflow commit 874244e
+           (RULINGS 350), GM7p gm7p-mech-path (8be35a0, RULINGS 351; after fix3, RULINGS 350; engine R 2.4285), GM7g
+           gm7g-mech-grid (9dc5765, RULINGS 359; after fix1, RULINGS 357; engine R 2.306), GM8i gm8i-mech-devices
+           (6e459a3, RULINGS 361; after fix1, RULINGS 358, 360; beside GM7g by disjoint hunk, RULINGS 352 S2; engine
+           R 2.027), docs b0b1b41 (Q54, Q61, RULINGS 362)
+in flight: (as of b0b1b41) docs-errata-20 (lane C; launched from b0b1b41, RULINGS 362; docs only); no code lane runs
+           (lane A is free for GM8h, next); two lanes at most while the resets recur (RULINGS 255, 276, 338)
+next:      GM8h mech-device-host in lane A (GM8h's row: after GM8i and GM7g, merged, GM7r and GM5, merged; its launch
+           pack and spec in preparation, RULINGS 361, 362; it closes D5 and Q6 before GM8d, RULINGS 352, 353), then
+           the mechanics chain GM8a -> GM8b -> GM8d -> GM9r (RULINGS 241); lane C after docs-errata-20: no slot ruled;
+           ready by their rows on b0b1b41: GM9p (after GM8i and GM7g, RULINGS 352 N5; Beside GM8a, GM8b, GM8d), shots
+           SH6 (after SH5b and SH4, merged; its never-besides GM7p and GM7g merged; never beside GM8a / GM8b on
+           arch.test.ts) and per-player GM6c1a (never beside GM8a / GM8b on scripts/story/puzzles/index.ts, nor GM9p
+           on story.ts); none of the three holds a file of GM8h's lock (12e GM8h); by length the longest chain on
+           b0b1b41 is SH6 -> SH7 -> per-player GM6c2 -> GM6c3 -> GM6d1 -> GM9r -> GM6c4 -> SH9 -> SH11 -> SH12a ->
+           SH12b (11 lanes; the game.ts row), the mechanics chain from GM8h to the same tail 10; Y only on the
            merge-time trigger (carried below)
 carried:   L2, the entry lever (shelved, RULINGS 142 / 158; return line: entry headroom < 0.5 KB br, §15 item 15; it
-           does not hold on f6487fc: 0.828 KB left, RULINGS 346);
+           does not hold on b0b1b41: 0.831 KB left, RULINGS 361);
            the preload-priority lane (RULINGS 152 Q14 (b); scene/{registry,preload}.ts, the scene/* tail); it holds
            GM4's Q5, Q9, O2 and the navmem question (RULINGS 292), GM4u's M-MEM-2 (with SH11; RULINGS 304),
            SH5a's F2, V1, V2, V5 (with SH5b; RULINGS 311, 314) and SH5b's P3 (a failed full-tier window need asked
            again at every step) and the stale window.pending count under the paywall (FYI-9; RULINGS 346);
            the lever Y (with S folded in; RULINGS 201): an approved design on the shelf (Y r2, RULINGS 222); it runs
            before the next engine-adding cut once Ledger 4 or Ledger 1 leaves < 1.0 KB at a merge (none does on
-           f6487fc: 7.728 and 8.556 KB left, RULINGS 346); the trigger gates launches only (RULINGS 230);
+           b0b1b41: 11.023 and 11.854 KB left, RULINGS 361); the trigger gates launches only (RULINGS 230);
            GM3b's engine-lever candidate (the visual decoder reusing world/decode.ts's key / rect / id checks;
            RULINGS 253, 258): measured once Ledger 4 or Ledger 1 is within 2.0 KB;
            probe G withdrawn by the path rule (RULINGS 201; its return is a ruling at the queue's end)
@@ -425,6 +425,41 @@ stopped GM7r and SH5b once; both resumed with identical run copies, and the poli
 of the rows may start beside GM7p in lane C (SH6, GM8i and per-player GM6c1a, by their rows), so lane C's next plan
 lane follows GM7p's merge, with GM8i the one whose row allows it beside GM7g; no ruling slots it. The rows below keep
 GM5q, GM5f, GM7r and SH5b as the predecessors they name; all four have merged.
+
+Changed by RULINGS 348-362 (as of `b0b1b41`; docs lane `docs-errata-20`, group B): the block above is the state at
+`b0b1b41` (SHAs from `git log --first-parent main`). `docs-errata-19`, the orchestrator's workflow commit `874244e`,
+GM7p, GM7g, GM8i and the orchestrator's OPEN-QUESTIONS commit `b0b1b41` moved to `done:`. The `in flight:` line read
+"(as of f6487fc) GM7p gm7p-mech-path (lane A; launched from 9516951, RULINGS 342; the cut amended RULINGS 344,
+implement RULINGS 345 (E_engine 0.45 KB, STOP +1,805 B at R 2.90; E_type 1.8 KB), in its implement stage and rounds;
+lock 19: 12e's 14 (puzzles/rules/{index,path}.ts, new puzzles/play/path.ts, new puzzles/ui/PathPuzzle.svelte,
+puzzles/registry.ts, new scripts/story/puzzles/path.ts, scripts/story/puzzles/index.ts, new
+scripts/story/puzzles/path.test.ts, scripts/story/mechanics/clues.ts, scripts/{budget,budget.test}.ts, arch.test.ts,
+puzzles/rules/rules.test.ts, puzzles/ui/puzzle-types.svelte.test.ts); admitted by RULINGS 342:
+ui/puzzles/puzzle-host.svelte.test.ts, puzzles/session.test.ts, scripts/story/world.test.ts (test-only),
+i18n/mechanics.ts; admitted by RULINGS 344 Q1: ui/explore/explore.svelte.test.ts's key-set line, test-only),
+docs-errata-19 (lane C; launched from f6487fc, RULINGS 347; docs only); two lanes at most while the resets recur
+(RULINGS 255, 276, 338)", the `next:` line read "GM7g mech-grid after GM7p, in lane A (GM7g's row: after GM7p on
+scripts/story/puzzles/index.ts and every other shared file, GM7r on session.test.ts, merged; per-player GM6s1 merged;
+the critical path, RULINGS 241); lane C after docs-errata-19: no lane of the rows may start beside GM7p (SH6 never
+beside it on arch.test.ts; GM8i not beside it on world.test.ts, RULINGS 342; per-player GM6c1a never beside it on
+scripts/story/puzzles/index.ts), so lane C's next lane follows GM7p's merge: GM8i is the one whose row allows it beside
+GM7g (SH6 and GM6c1a are never beside GM7g either); no slot ruled; Y only on the merge-time trigger (carried below)",
+and the `carried:` line's L2 item read "it does not hold on f6487fc: 0.828 KB left, RULINGS 346" and its lever item
+"(none does on f6487fc: 7.728 and 8.556 KB left, RULINGS 346)". GM7p ran on in lane A to its merge (`8be35a0`, lock
+19; RULINGS 351), lane C idle after `docs-errata-19`'s merge (RULINGS 349). Both `next:` lanes ran as that line read,
+side by side from `8be35a0` (RULINGS 352): GM7g took lane A (lock 19, RULINGS 352 G1, 354) and GM8i lane C (lock 20,
+RULINGS 352 D1, 353, 360), both holding `client/scripts/story/world.test.ts` by disjoint hunk (S2), so the pair was
+not the plain lock-disjoint one the line assumed (S5). GM7p's merge was held for its fix round fix3 (RULINGS 350),
+GM7g's for fix1 (RULINGS 357) and GM8i's for fix1 (RULINGS 358, 360; on a trunk sync to `9dc5765`), each after the
+orchestrator's independent pre-merge lens verifiers (RULINGS 289, 348, 355, 356). Beside pairs as they ran: GM7p and
+`docs-errata-19` (RULINGS 347-349); GM7g and GM8i (RULINGS 352-359; the table's GM7g and GM8i rows list each other,
+by disjoint hunk). After GM7g's merge GM8i ran alone (RULINGS 359-361), and at `b0b1b41` this docs lane runs alone in
+lane C (RULINGS 362) while GM8h's launch pack and spec are prepared for lane A. RULINGS 348-362 record no reset; the
+policy stays two lanes. On `b0b1b41` the rows make GM8h next in lane A; in lane C, GM9p, SH6 and per-player GM6c1a are
+ready by their rows and no ruling slots any of them; by length the shot chain from SH6 through per-player GM6c2, GM6c3
+and GM6d1 to GM9r is now one lane longer than the mechanics chain from GM8h (11 lanes against 10 to SH12b), while
+RULINGS 241's order stands. The rows below keep GM7p, GM7g and GM8i as the predecessors they name; all three have
+merged.
 
 **The one order across the three designs (reconcile r1; RULINGS 143, 152, 153; design-shots §9.14 and I-2,
 adopted with one change; it replaces the paragraph "Animation and shot lanes" that earlier sections cite).** The **A(f)** placeholders of rounds 4-14 ("every lane of an adopted animation or shot design
