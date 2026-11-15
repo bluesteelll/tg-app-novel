@@ -50,6 +50,17 @@ const G33_EMPTY: GridParams = { rows: 3, cols: 3, symbols: 3, given: zeros(9) };
  * place for 1 (columns 0-2 hold one), so the line-symbol check proves it has no fill at the root.
  */
 const G44_HIDDEN: GridParams = { rows: 4, cols: 4, symbols: 4, given: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 2] };
+/**
+ * 4 rows x 3 columns over 4 symbols, `2 _ _ / 3 _ _ / _ 1 _ / _ _ 1`: every empty cell has a candidate, but column 0
+ * must take 1 in row 2 or 3 and both rows hold one. Only a column holds every symbol (`symbols === rows`), so only the
+ * column half of the line-symbol check sees it at the root.
+ */
+const G43_HIDDEN_COL: GridParams = { rows: 4, cols: 3, symbols: 4, given: [2, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 1] };
+/**
+ * Its transpose, 3 rows x 4 columns, `2 3 _ _ / _ _ 1 _ / _ _ _ 1`: row 0 must take 1 in column 2 or 3 and both
+ * columns hold one. Only a row holds every symbol (`symbols === cols`), so only the row half sees it at the root.
+ */
+const G34_HIDDEN_ROW: GridParams = { rows: 3, cols: 4, symbols: 4, given: [2, 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] };
 /** 5 x 5 over 5 symbols: the cyclic square with its diagonal blank (25 cells, one fill). */
 const G55 = cyclic(5);
 /** The largest decode-legal grid, 6 x 6 over 6 symbols, as the cyclic square with its diagonal blank (one fill). */
@@ -79,6 +90,26 @@ test('grid: solve finds the one fill', () => {
     expect(GRID_PLAY.reached(p, s ?? []), JSON.stringify(p)).toBe(true);
     expect(GRID_PLAY.canonical(p, s ?? []), JSON.stringify(p)).toEqual(s);
   }
+});
+
+// Gates F4 (fix1): G44_HIDDEN's conflict sits in a row and in a column alike, so either half of the line-symbol check
+// proves it alone. Each fixture below lets one half apply and not the other (its premise, asserted first), and is
+// proven with no extension, as G44_HIDDEN is above.
+
+test('grid: a tall grid whose column cannot hold a symbol has no fill, proven at the root', () => {
+  const p = G43_HIDDEN_COL;
+  expect([p.symbols === p.rows, p.symbols === p.cols]).toEqual([true, false]);
+  expect(GRID_RULES.decodeParams(p)).toEqual({ ok: true, value: p });
+  expect(GRID_LINT.solve(p), JSON.stringify(p)).toBeNull();
+  expect(searchFills(p), JSON.stringify(p)).toEqual({ fills: [], complete: true, steps: 0 });
+});
+
+test('grid: a wide grid whose row cannot hold a symbol has no fill, proven at the root', () => {
+  const p = G34_HIDDEN_ROW;
+  expect([p.symbols === p.rows, p.symbols === p.cols]).toEqual([false, true]);
+  expect(GRID_RULES.decodeParams(p)).toEqual({ ok: true, value: p });
+  expect(GRID_LINT.solve(p), JSON.stringify(p)).toBeNull();
+  expect(searchFills(p), JSON.stringify(p)).toEqual({ fills: [], complete: true, steps: 0 });
 });
 
 test('grid: countSolutions counts fills up to two', () => {
