@@ -22,6 +22,7 @@ import type { HotspotKey, WorldSource } from '../../../src/world/types.ts';
 import type { Finding, Severity } from '../lint.ts';
 import { PUZZLE_LINTS } from '../puzzles/index.ts';
 import type { PuzzleLintRegistry } from '../puzzles/shape.ts';
+import { gatesVisualOnly } from '../softlock.ts';
 import type { WorldLint, WorldLintInput } from './index.ts';
 
 /** Every clue code with its severity: all errors, so `npm run story` never passes a secret no player can find. */
@@ -131,9 +132,13 @@ function named(w: WorldSource, places: Places, f: Named): boolean {
  * while the puzzle can be solved; `closed` stays, Back leaves the puzzle open). A clue holds where its whole condition
  * holds in one reached state (an `all` where every conjunct does), tested on the start and on every reported
  * successor, known and leaving edges too, so a fact the section key does not hold (`examined`, `visited`) is seen at
- * the edge that sets it (D4). Null at the cap: `world/state-cap` already fails the section.
+ * the edge that sets it (D4). Null at the cap: `world/state-cap` already fails the section; null, unsearched, when a
+ * gating rule of S reads a visual-only atom (`gatesVisualOnly`): `world/visual-only-atom` already fails the world.
  */
 function unseenClues(pub: KernelWorld, section: SectionId, pid: PuzzleLocalId, clues: ReadonlyMap<number, Cond>): number[] | null {
+  if (gatesVisualOnly(pub, section)) {
+    return null; // the section key cannot encode the atom (`keyPlan`'s invariant), so S is never searched
+  }
   const missing = new Map(clues);
   const observe = (s: WorldState): void => {
     for (const [i, c] of missing) {

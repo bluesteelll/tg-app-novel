@@ -10,7 +10,7 @@ import { createAssetScheduler } from '../scene/preload.ts';
 import { STEADY_CAP_BYTES, createAssetRegistry } from '../scene/registry.ts';
 import type { AssetError, LoadImage } from '../scene/registry.ts';
 import type { AssetEntry, AssetManifest, ImageEntry } from '../story/catalog.ts';
-import type { AssetId, ChapterId, KnotName, SectionId } from '../story/staging.ts';
+import type { AssetId, ChapterId, KnotName, PuzzleLocalId, SectionId } from '../story/staging.ts';
 import type { ExploreViewStore } from '../ui/explore-view.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, ItemId, RoomId, WorldPublic, WorldText } from '../world/types.ts';
@@ -1522,4 +1522,75 @@ test('controller: Back disarms when the way back goes absent', () => {
   expect(armed).toEqual([false, true]);
   expect(plain.c.back()).toBe(true);
   expect(plain.c.state().room).toBe('p');
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM8i: devices (engine plan §7.5): a device view's device hotspot draws no button, its session opens on arrival, and
+// a device's own end does not arrive again
+
+/** hall -> panel: panel is a view of the hall whose device hotspot `dial` carries a zero-slot lock with the code puzzle
+ *  `dial` (the arrival hook keys on the `device` key only, so it is live under the default types), beside a look and a
+ *  lockless object `crate`; the hall's lockless object `dial` shares the device's id (fix1, gates F1). */
+function devicePanel(): WorldPublic {
+  return world({
+    puzzles: { dial: code(null) },
+    sections: {
+      dev: {
+        start: 'hall',
+        rooms: {
+          hall: room('hall', [exit('to_panel', 'panel'), look('vase'), object('dial', null)]),
+          panel: { ...viewRoom('panel', 'hall', [object('dial', lock([], 'dial')), look('plate'), object('crate', null)]), device: 'dial' },
+        },
+      },
+    },
+  });
+}
+
+/** Every module cue and every `puzzle` effect the controller sends, in order, from a listener that keeps cues (the
+ *  harness's drops them): `<module>:<name>@<at>` and `puzzle <hotspot>`. */
+function deviceLog(h: Harness): string[] {
+  const out: string[] = [];
+  h.c.onEffect((e) => {
+    if (e.kind === 'cue' && e.cue.kind === 'module') {
+      out.push(`${e.cue.module}:${e.cue.name}@${String(e.cue.at)}`);
+    } else if (e.kind === 'puzzle') {
+      out.push(`puzzle ${String(e.hotspot)}`);
+    }
+  });
+  return out;
+}
+
+test('controller: a device view lists no button for its device hotspot', () => {
+  const h = harness(devicePanel());
+  h.c.enter(sec('dev'), EMPTY_WORLD_STATE);
+  const log = deviceLog(h);
+  // The hall's own `dial` is no device: only the device of the room shown is left out.
+  expect(h.view.hotspots.map((v) => v.key)).toEqual(['hall.to_panel', 'hall.vase', 'hall.dial']);
+  // The zoom-in opens the device's session by its arrival; the view's buttons are its other hotspots only, an object
+  // among them.
+  h.c.dispatch(tap('hall.to_panel'));
+  expect(log).toEqual(['puzzle panel.dial']);
+  expect(h.view.hotspots.map((v) => v.key)).toEqual(['panel.plate', 'panel.crate']);
+  // Solved, the device is open: still no button.
+  h.c.dispatch({ kind: 'puzzle-ended', puzzle: 'dial' as PuzzleLocalId, outcome: 'solved' });
+  expect(h.c.state().open).toContain('panel.dial');
+  expect(h.view.hotspots.map((v) => v.key)).toEqual(['panel.plate', 'panel.crate']);
+});
+
+test("device: a device's own end does not re-arrive", () => {
+  const h = harness(devicePanel());
+  h.c.enter(sec('dev'), EMPTY_WORLD_STATE);
+  const log = deviceLog(h);
+  h.c.dispatch(tap('hall.to_panel'));
+  expect(log).toEqual(['puzzle panel.dial']);
+  // The pin: the device's own end, then the room shown again, play no `done` and open no session.
+  h.c.dispatch({ kind: 'puzzle-ended', puzzle: 'dial' as PuzzleLocalId, outcome: 'solved' });
+  h.c.roomShown();
+  expect(h.c.state().puzzles['dial' as PuzzleLocalId]?.outcome).toBe('solved');
+  expect(log).toEqual(['puzzle panel.dial']);
+  // The positive control in the same harness: a zoom-out and a zoom-in at the solved device play its `done`.
+  h.c.dispatch({ kind: 'leave-view' });
+  h.c.dispatch(tap('hall.to_panel'));
+  expect(h.c.state().room).toBe('panel');
+  expect(log).toEqual(['puzzle panel.dial', 'devices:done@panel.dial']);
 });

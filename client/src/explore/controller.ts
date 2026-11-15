@@ -18,7 +18,7 @@ import type { AssetId, BgId, PropId, SectionId } from '../story/staging.ts';
 import type { Unsubscribe } from '../telegram/index.ts';
 import type { DocView, ExploreViewStore, HotspotView, ItemView, LockView } from '../ui/explore-view.svelte.ts';
 import type { DocId, HotspotKey, ItemId, Lock, RoomId, WorldPublic, WorldText } from '../world/types.ts';
-import { hotspotKey, lockOf, worldIndex } from './reduce.ts';
+import { hotspotKey, lockOf, own, worldIndex } from './reduce.ts';
 import type { ExploreEffect } from './reduce.ts';
 import { EMPTY_WORLD_STATE } from './state.ts';
 import type { WorldState } from './state.ts';
@@ -140,7 +140,11 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
   let refused = false;
   let dead = false;
 
-  /** D4: the current room's hotspots in world order, except a taken `take` and a hidden one (as `actions` lists them). */
+  /**
+   * D4: the current room's hotspots in world order, except a taken `take`, a hidden one (as `actions` lists them) and
+   * the room's device hotspot (engine plan §7.5): a device is played by its parts in the room, its session opened by
+   * the arrival, so its hotspot draws no button.
+   */
   const hotspotViews = (): HotspotView[] => {
     const room = current.section === null ? null : current.room;
     const entry = room === null ? undefined : ix.rooms.get(room);
@@ -148,10 +152,11 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
       return [];
     }
     const c = cover(stage, ROOM_SOURCE);
+    const device = own(world.mods.devices.device, room);
     const out: HotspotView[] = [];
     for (const h of entry.room.hotspots) {
       const key = hotspotKey(room, h.id);
-      if ((h.kind === 'take' && current.taken.includes(key)) || !shown(world, current, key)) {
+      if ((h.kind === 'take' && current.taken.includes(key)) || !shown(world, current, key) || h.id === device) {
         continue;
       }
       out.push({

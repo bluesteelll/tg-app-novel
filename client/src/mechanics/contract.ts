@@ -83,7 +83,7 @@ export type ListField = 'visited' | 'held' | 'used' | 'docs' | 'taken' | 'examin
 export interface Writer<Id extends string = string, C extends string = string> {
   readonly state: WorldState;
   set<K extends ListField>(field: K, value: WorldState[K], cause: Cause): void;
-  /** solved / failed / abandoned / attempt / hint facts. */
+  /** solved / failed / abandoned / attempt / hint / work facts. */
   run(puzzle: PuzzleLocalId, run: PuzzleRun, cause: Cause): void;
   /** The kernel trigger runner. */
   fire(trigger: TriggerKey, effects: readonly Effect[], cause: Cause): void;

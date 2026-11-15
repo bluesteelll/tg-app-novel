@@ -17,6 +17,7 @@ import { CLUES_LINT } from './clues.ts';
 import { COMBINE_LINT, COMBINE_TEXTS } from './combine.ts';
 import { CONDITIONS_LINT } from './conditions.ts';
 import { CORE_LINT } from './core.ts';
+import { DEVICES_LINT } from './devices.ts';
 import { FLAGS_LINT } from './flags.ts';
 import { TEXTS_LINT } from './texts.ts';
 import type { TextWalker } from './texts.ts';
@@ -58,7 +59,7 @@ export type WorldLint<C extends string> = {
   | { readonly runsFrom: 'story' }
 );
 
-export const MECHANIC_LINTS = [CORE_LINT, CLUES_LINT, SHAPE_LINT, CONDITIONS_LINT, TEXTS_LINT, USE_LINT, VISUAL_LINT, VIEW_LINT, COMBINE_LINT, FLAGS_LINT] as const satisfies readonly WorldLint<string>[];
+export const MECHANIC_LINTS = [CORE_LINT, CLUES_LINT, SHAPE_LINT, CONDITIONS_LINT, TEXTS_LINT, USE_LINT, VISUAL_LINT, VIEW_LINT, COMBINE_LINT, FLAGS_LINT, DEVICES_LINT] as const satisfies readonly WorldLint<string>[];
 
 /**
  * Each data module's text walker (engine plan §3.2 "Module texts"), exhaustive over MECHANIC_DATA ids (an id without
@@ -71,6 +72,7 @@ export const MECHANIC_TEXTS: { readonly [M in (typeof MECHANIC_DATA)[number] as 
   view: null,
   combine: COMBINE_TEXTS,
   flags: null,
+  devices: null,
 };
 
 /** One list of effects a module's data fires in a section, with its room: the story knots it enters, in fire order. */
@@ -91,6 +93,7 @@ export const MECHANIC_STORIES: { readonly [M in (typeof MECHANIC_DATA)[number] a
   view: null,
   combine: null,
   flags: null,
+  devices: null,
 };
 
 type CodesOf<L> = L extends { readonly codes: infer C } ? keyof C & string : never;

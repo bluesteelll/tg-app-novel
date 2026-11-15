@@ -169,6 +169,10 @@ export const CUE_MOTIONS: { readonly [K in Exclude<CueKey, ControlKey>]: MotionS
   // Module `flags`' fact (08b): a flag names no hotspot, so its set sweeps the stage; only a section reset removes one.
   'fact:flag:added': row('sweep', 600, 'stage'),
   'fact:flag:removed': row('sweep-back', 600, 'stage'),
+  // Module `devices`' fact (08b): a part's new or old position presses the part. No haptic: the part's own press, its
+  // control cue, already carries the light one (RULINGS 353 Q4).
+  'fact:work:added': row('press', 240, 'part'),
+  'fact:work:removed': row('press', 240, 'part'),
   'move:walk': row('sweep', 600, 'stage'),
   'move:zoom-in': row('iris', 360, 'box'),
   'move:zoom-out': row('iris-back', 360, 'box'),
@@ -224,6 +228,10 @@ export const CUE_MOTIONS: { readonly [K in Exclude<CueKey, ControlKey>]: MotionS
   // it, the tapped item's companion cue none.
   'module:combine:refused': row('shake', 360, 'ribbon', { haptic: 'error' }),
   'module:combine:refused-with': row('shake', 360, 'ribbon'),
+  // `devices`' arrival cues (08b): a solved device glints at its box; a failed one jams there with the error haptic, the
+  // `fact:failed:added` form.
+  'module:devices:done': row('glint', 420, 'box'),
+  'module:devices:jammed': row('jam', 480, 'box', { haptic: 'error' }),
 };
 
 /** Control keys: a default per trigger kind and overrides for the core controls; a type or module control takes its

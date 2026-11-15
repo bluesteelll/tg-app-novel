@@ -1665,7 +1665,7 @@ test("search: a module's read of every kernel fact kind enters the derived key",
   // `attempt` and `hint` add a part (only when some module reads them, so core's key stays byte-identical), as does
   // module `flags`' `flag` (kept in `WorldState.flags`); `failed` / `abandoned` name a puzzle whose whole outcome joins
   // the outcome part; `story` adds nothing, since the queue is always in the key; a kind with no storage is a bug and
-  // throws.
+  // throws, as module `devices`' `work` does: a device's working state stays outside the key (§7.5).
   const w = world({
     items: ['key'],
     puzzles: { lin: code(2, 2), lk: code(2) },
@@ -1698,6 +1698,7 @@ test("search: a module's read of every kernel fact kind enters the derived key",
     }
   }
   expect(() => sectionKey(w, s, S, [CORE, reader({ kind: 'part' as FactKind, id: 'lit' })])).toThrow(/invariant/);
+  expect(() => sectionKey(w, s, S, [CORE, reader({ kind: 'work', id: 'lk.0=1' })])).toThrow(/outside the section key/);
 });
 
 /** mulberry32 (test-local): a seeded generator, so a red names a reproducible state. */

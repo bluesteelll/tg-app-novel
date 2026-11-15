@@ -272,6 +272,7 @@ test('mechanics: the rules registry loads from either module first', async () =>
     view: typeof import('./rules/view.ts'),
     combine: typeof import('./rules/combine.ts'),
     flags: typeof import('./rules/flags.ts'),
+    devices: typeof import('./rules/devices.ts'),
   ): void => {
     expect(index.MECHANIC_RULES).toStrictEqual([
       { id: 'core', actions: core.actions, apply: core.applyCore, reads: core.reads, cues: ['look', 'locked', 'refused', 'reset'] },
@@ -289,12 +290,22 @@ test('mechanics: the rules registry loads from either module first', async () =>
         effects: flags.flagEffects,
         holds: flags.holdsFlag,
       },
+      {
+        id: 'devices',
+        actions: devices.devicesActions,
+        apply: devices.applyDevices,
+        reads: devices.devicesReads,
+        cues: ['done', 'jammed'],
+        arrived: devices.arriveDevice,
+        holds: devices.holdsPart,
+      },
     ]);
     expect(core.reduce(w, at('hall'), tap('hall.statue')).effects.map((e) => e.kind)).toEqual(['look', 'cue', 'cue', 'dirty']);
   };
-  // rules/use.ts, rules/visual.ts, rules/conditions.ts, rules/view.ts, rules/combine.ts and rules/flags.ts sit on the
-  // cycle too (use.ts <-> core.ts, visual.ts -> conditions.ts -> index.ts, view.ts <-> core.ts, combine.ts ->
-  // conditions.ts and use.ts, flags.ts -> conditions.ts -> index.ts, core.ts -> flags.ts).
+  // rules/use.ts, rules/visual.ts, rules/conditions.ts, rules/view.ts, rules/combine.ts, rules/flags.ts and
+  // rules/devices.ts sit on the cycle too (use.ts <-> core.ts, visual.ts -> conditions.ts -> index.ts, view.ts <->
+  // core.ts, combine.ts -> conditions.ts and use.ts, flags.ts -> conditions.ts -> index.ts, core.ts -> flags.ts,
+  // devices.ts -> flags.ts).
   const firsts = [
     () => import('./rules/core.ts'),
     () => import('./rules/index.ts'),
@@ -304,6 +315,7 @@ test('mechanics: the rules registry loads from either module first', async () =>
     () => import('./rules/view.ts'),
     () => import('./rules/combine.ts'),
     () => import('./rules/flags.ts'),
+    () => import('./rules/devices.ts'),
   ];
   for (const first of firsts) {
     vi.resetModules();
@@ -316,6 +328,7 @@ test('mechanics: the rules registry loads from either module first', async () =>
       await import('./rules/view.ts'),
       await import('./rules/combine.ts'),
       await import('./rules/flags.ts'),
+      await import('./rules/devices.ts'),
     );
   }
 });
@@ -338,10 +351,10 @@ function useSource(): Json {
 
 test('mechanics: the data registry loads from any module first', async () => {
   // data/use.ts, data/visual.ts, data/combine.ts and data/flags.ts import data/conditions.ts (`decodeCond`), which imports
-  // data/index.ts (its default registry), which holds their entries: the same cycle as the rules registry's. index.ts
-  // builds each entry from its module's function declarations, so each load order leaves the registry whole (every
-  // member compared: vitest's runner reads an uninitialized `const` as undefined), and a decode through the freshly
-  // loaded graph reads a `when`.
+  // data/index.ts (its default registry), which holds their entries: the same cycle as the rules registry's
+  // (data/devices.ts is off it). index.ts builds each entry from its module's function declarations, so each load order
+  // leaves the registry whole (every member compared: vitest's runner reads an uninitialized `const` as undefined), and
+  // a decode through the freshly loaded graph reads a `when`.
   const checkData = (
     index: typeof import('./data/index.ts'),
     core: typeof import('./data/core.ts'),
@@ -350,6 +363,7 @@ test('mechanics: the data registry loads from any module first', async () => {
     view: typeof import('./data/view.ts'),
     combine: typeof import('./data/combine.ts'),
     flags: typeof import('./data/flags.ts'),
+    devices: typeof import('./data/devices.ts'),
   ): void => {
     expect(index.MECHANIC_DATA).toStrictEqual([
       core.core,
@@ -394,6 +408,15 @@ test('mechanics: the data registry loads from any module first', async () => {
         normalize: flags.normalizeFlags,
         atoms: { flag: { decode: flags.decodeFlagAtom, gating: true } },
       },
+      {
+        id: 'devices',
+        rules: 'chunk',
+        owns: { room: ['device'], atoms: ['part'], facts: ['work'] },
+        decode: devices.decodeDevices,
+        encode: devices.encodeDevices,
+        normalize: devices.normalizeDevices,
+        atoms: { part: { decode: devices.decodePartAtom, gating: false } },
+      },
     ]);
   };
   const firsts = [
@@ -405,6 +428,7 @@ test('mechanics: the data registry loads from any module first', async () => {
     () => import('./data/view.ts'),
     () => import('./data/combine.ts'),
     () => import('./data/flags.ts'),
+    () => import('./data/devices.ts'),
   ];
   for (const first of firsts) {
     vi.resetModules();
@@ -417,6 +441,7 @@ test('mechanics: the data registry loads from any module first', async () => {
       await import('./data/view.ts'),
       await import('./data/combine.ts'),
       await import('./data/flags.ts'),
+      await import('./data/devices.ts'),
     );
     const decoded = (await import('../world/decode.ts')).decodeWorldSource(useSource());
     expect(decoded.ok ? decoded.value.mods.use.uses[k('hall.box')]?.[0]?.when : decoded.error).toEqual({ all: [{ held: 'lens' }, { not: { open: 'hall.box' } }] });
@@ -526,6 +551,7 @@ test('mechanics: every action kind has one handler', () => {
     use: true,
     'leave-view': true,
     combine: true,
+    'device-moved': true,
   } satisfies Record<SectionAction['kind'], true>;
   expect(Object.keys(APPLY).sort()).toEqual(Object.keys(kinds).sort());
   expect(Object.values(APPLY).every((handler) => typeof handler === 'function')).toBe(true);

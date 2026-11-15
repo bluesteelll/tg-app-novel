@@ -140,8 +140,13 @@ function sameList<T>(a: readonly T[], b: readonly T[]): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i]);
 }
 
+/** A device's work: an absent one differs from any present one, so a first write is never dropped. */
+function sameWork(a: readonly number[] | undefined, b: readonly number[] | undefined): boolean {
+  return a === undefined || b === undefined ? a === b : sameList(a, b);
+}
+
 function sameRun(a: PuzzleRun, b: PuzzleRun): boolean {
-  return a.outcome === b.outcome && a.attempts === b.attempts && a.hintsOpened === b.hintsOpened;
+  return a.outcome === b.outcome && a.attempts === b.attempts && a.hintsOpened === b.hintsOpened && sameWork(a.work, b.work);
 }
 
 // A class, so a `reduce` call allocates one object: the search builds a writer per successor.
@@ -209,7 +214,10 @@ class DraftWriter implements KernelWriter {
     set(this.draft, 'slots', { ...this.draft.s.slots, [key]: cells });
   }
 
-  /** Records the outcome that left and the one that came, then a changed attempt or hint count. */
+  /**
+   * Records the outcome that left and the one that came, then a changed attempt or hint count, then a device's moved
+   * parts: each changed index's old position (`<puzzle>.<index>=<v>`) removed, then each new one added, in index order.
+   */
   run(puzzle: PuzzleLocalId, run: PuzzleRun, cause: Cause): void {
     const before = runOf(this.draft.s, puzzle);
     if (sameRun(before, run)) {
@@ -228,6 +236,20 @@ class DraftWriter implements KernelWriter {
     }
     if (before.hintsOpened !== run.hintsOpened) {
       this.#fact('hint', puzzle, run.hintsOpened > before.hintsOpened ? 'added' : 'removed', cause);
+    }
+    if (!sameWork(before.work, run.work)) {
+      const was = before.work ?? NONE;
+      const now = run.work ?? NONE;
+      was.forEach((v, i) => {
+        if (v !== now[i]) {
+          this.#fact('work', `${puzzle}.${i}=${v}`, 'removed', cause);
+        }
+      });
+      now.forEach((v, i) => {
+        if (v !== was[i]) {
+          this.#fact('work', `${puzzle}.${i}=${v}`, 'added', cause);
+        }
+      });
     }
     setRun(this.draft, puzzle, run);
   }

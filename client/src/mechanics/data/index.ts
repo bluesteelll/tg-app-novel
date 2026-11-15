@@ -14,6 +14,8 @@ import type { MechanicData, OwnedRaw } from '../contract.ts';
 import { decodeCombine, encodeCombine, normalizeCombine } from './combine.ts';
 import type { CombineData } from './combine.ts';
 import { core } from './core.ts';
+import { decodeDevices, decodePartAtom, encodeDevices, normalizeDevices } from './devices.ts';
+import type { DevicesData } from './devices.ts';
 import { decodeFlagAtom, decodeFlags, encodeFlags, normalizeFlags } from './flags.ts';
 import type { FlagsData } from './flags.ts';
 import { decodeUse, encodeUse, normalizeUse } from './use.ts';
@@ -73,7 +75,20 @@ const flags = {
   atoms: { flag: { decode: decodeFlagAtom, gating: true } },
 } satisfies MechanicData<'flags', FlagsData>;
 
-export const MECHANIC_DATA = [core, use, visual, view, combine, flags] as const;
+const devices = {
+  id: 'devices',
+  rules: 'chunk',
+  // The `work` fact kind is the module's: a device part's position (`<puzzle>.<index>=<v>`), kept in its run's `work`
+  // and never in the section key (§7.5).
+  owns: { room: ['device'], atoms: ['part'], facts: ['work'] as const },
+  decode: decodeDevices,
+  encode: encodeDevices as (d: unknown) => OwnedRaw,
+  normalize: normalizeDevices,
+  // A part's picture is a visual state: never a gating read (`world/visual-only-atom`).
+  atoms: { part: { decode: decodePartAtom, gating: false } },
+} satisfies MechanicData<'devices', DevicesData>;
+
+export const MECHANIC_DATA = [core, use, visual, view, combine, flags, devices] as const;
 
 /** A data registry as a decode takes it: `MECHANIC_DATA`, or a test's fixture modules beside it. */
 export type DataRegistry = readonly MechanicData<string, unknown, unknown>[];
