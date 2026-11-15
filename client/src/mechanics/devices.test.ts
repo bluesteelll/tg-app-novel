@@ -400,6 +400,32 @@ test('device: arriving in a device view opens its session', () => {
   expect(opens(reduce(w, zoomed.state, { kind: 'leave-view' }).effects)).toEqual([]);
 });
 
+test("device: a hotspot of another room sharing the device's id opens nothing", () => {
+  // The device is the room's own (fix1, gates F2): the hall's `dial`, an ordinary zero-slot lock on the code puzzle
+  // `safe` with the device's hotspot id, is no device, and neither is a view named with the hall's prefix (`hall_panel`).
+  const world = (view: string): KernelWorld =>
+    kernel(
+      source(
+        {
+          hall: room([exit('to_panel', view), exit('out', { story: 'end' }), object('dial', lock('safe'))]),
+          [view]: room([object('dial', lock('dial'))], { view: { of: 'hall' }, device: 'dial' }),
+        },
+        { puzzles: { dial: code(4), safe: code(3) } },
+      ),
+    );
+  for (const view of ['panel', 'hall_panel']) {
+    const w = world(view);
+    // The zoom-in opens the device of the view it enters.
+    const zoomed = reduce(w, at('hall'), tap('hall.to_panel'));
+    expect(opens(zoomed.effects), `${view}: the zoom-in`).toEqual([{ kind: 'puzzle', puzzle: 'dial', hotspot: `${view}.dial` }]);
+    // An arrival in the hall, by a leave-view or a resume, opens nothing: the hall has no device.
+    expect(opens(reduce(w, zoomed.state, { kind: 'leave-view' }).effects), `${view}: the leave-view`).toEqual([]);
+    expect(opens(reduce(w, at('hall'), { kind: 'enter-section', section: S }).effects), `${view}: the resume`).toEqual([]);
+    // Non-vacuity: the hall's own tap opens its safe.
+    expect(opens(reduce(w, at('hall'), tap('hall.dial')).effects), `${view}: the hall's tap`).toEqual([{ kind: 'puzzle', puzzle: 'safe', hotspot: 'hall.dial' }]);
+  }
+});
+
 test('device: arriving at a jammed device plays its jam and opens nothing', () => {
   const w = panel({ capped: 2 });
   const r = reduce(w, at('hall', { puzzles: run({ outcome: 'failed', attempts: 2 }) }), tap('hall.to_panel'));
