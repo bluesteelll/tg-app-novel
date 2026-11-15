@@ -55,6 +55,7 @@ export const PUZZLE_UI: { readonly [T in PuzzleType]: UiLoader } = Object.freeze
   code: loader(() => import('./ui/CodeLock.svelte')),
   order: loader(() => import('./ui/OrderPuzzle.svelte')),
   path: loader(() => import('./ui/PathPuzzle.svelte')),
+  grid: loader(() => import('./ui/GridPuzzle.svelte')),
 });
 
 /** The component of puzzle type `t`, loaded on first use. */

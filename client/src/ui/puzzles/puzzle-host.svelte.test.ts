@@ -1,5 +1,5 @@
 // LP2 in happy-dom: the puzzle frame and the hint ladder (PUZZLES-PLAN X8, X14, X18; META-PLAN M21, M27, F24), the
-// view store's BackButton rule, and the reader rules over the five puzzle components (no literal text, no I/O). Events
+// view store's BackButton rule, and the reader rules over the six puzzle components (no literal text, no I/O). Events
 // are built by hand where it matters: a raw tap is pointerdown + click with the DOM not yet updated (a double tap).
 import { cleanup, render } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
@@ -20,6 +20,7 @@ import type { Box } from '../../geom/cover.ts';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import CodeLock from '../../puzzles/ui/CodeLock.svelte';
+import GridPuzzle from '../../puzzles/ui/GridPuzzle.svelte';
 import OrderPuzzle from '../../puzzles/ui/OrderPuzzle.svelte';
 import PathPuzzle from '../../puzzles/ui/PathPuzzle.svelte';
 import type { PuzzleUiProps } from '../../puzzles/registry.ts';
@@ -535,6 +536,14 @@ test('puzzles: every declared control emits its cue', () => {
         frame: frameOf({ mode: 'explore', type: 'path', params: { cols: 3, rows: 2, ends: [0, 3], blocked: [4] }, answer: [0], awaiting: false, ui: PathPuzzle }),
       }),
     ],
+    // A grid frame: its free cells, then its palette once a cell is selected (the given cell and, at first, the palette
+    // are disabled and take no tap).
+    [
+      'grid',
+      hostProps({
+        frame: frameOf({ mode: 'explore', type: 'grid', params: { rows: 2, cols: 2, symbols: 2, given: [1, 0, 0, 0] }, answer: [1, 0, 0, 0], awaiting: false, ui: GridPuzzle }),
+      }),
+    ],
   ];
   const names = new Set<string>();
   for (const [name, props] of states) {
@@ -595,7 +604,7 @@ test('puzzles: every declared control emits its cue', () => {
   }
   // Every control the frame family declares was shown and tapped (the controls gate holds each name to its type).
   expect([...names].sort()).toEqual(
-    ['dial-down', 'dial-up', 'give-up-ask', 'give-up-no', 'give-up-yes', 'hint-more', 'hint-use', 'order-slot', 'path-cell', 'path-stroke', 'puzzle-hint', 'puzzle-retry', 'puzzle-try'].map(
+    ['dial-down', 'dial-up', 'give-up-ask', 'give-up-no', 'give-up-yes', 'grid-cell', 'grid-symbol', 'hint-more', 'hint-use', 'order-slot', 'path-cell', 'path-stroke', 'puzzle-hint', 'puzzle-retry', 'puzzle-try'].map(
       (n) => `ui:${n}`,
     ),
   );
@@ -941,7 +950,7 @@ test('puzzle host: the frame layer takes taps only on the frame and the load not
 
 // ---------------------------------------------------------------------------------------------------------------
 // The reader rules (spec 2, K26): copies of L14b's readers (menus.svelte.test.ts; RULINGS 55 accepts copies) over the
-// five puzzle components, with an exact import list per component (critique W2): a value import beyond it, such as
+// six puzzle components, with an exact import list per component (critique W2): a value import beyond it, such as
 // the Telegram facade, is an offender.
 
 const COMPONENT_SOURCES = import.meta.glob<string>(['./*.svelte', '../../puzzles/ui/*.svelte'], { query: '?raw', import: 'default', eager: true });
@@ -951,6 +960,7 @@ const VALUE_IMPORTS: Readonly<Record<string, readonly string[]>> = {
   './PuzzleHost.svelte': ['../../cues/root.ts', '../../i18n/index.ts', './HintLadder.svelte'],
   './HintLadder.svelte': ['../../i18n/index.ts'],
   '../../puzzles/ui/CodeLock.svelte': ['../../i18n/index.ts', '../rules/index.ts'],
+  '../../puzzles/ui/GridPuzzle.svelte': ['../../i18n/mechanics.ts', '../play/grid.ts', '../play/reach.ts', '../rules/index.ts'],
   '../../puzzles/ui/OrderPuzzle.svelte': ['../../i18n/index.ts', '../../ui/glyphs.ts', '../rules/index.ts'],
   '../../puzzles/ui/PathPuzzle.svelte': ['../../i18n/mechanics.ts', '../play/path.ts', '../play/reach.ts', '../rules/index.ts'],
 };
@@ -1003,7 +1013,7 @@ function literalText(source: string): string[] {
 }
 
 test('puzzle ui: components hold no literal text', () => {
-  // Non-vacuous: exactly the five components are read.
+  // Non-vacuous: exactly the six components are read.
   expect(Object.keys(COMPONENT_SOURCES).sort()).toEqual([...COMPONENTS].sort());
   const offenders: string[] = [];
   for (const name of COMPONENTS) {

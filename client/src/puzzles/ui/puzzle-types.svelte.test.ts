@@ -15,6 +15,8 @@ import type { PuzzleUiProps } from '../registry.ts';
 import type { PuzzleType } from '../rules/index.ts';
 import CodeLock from './CodeLock.svelte';
 import codeLockSource from './CodeLock.svelte?raw';
+import GridPuzzle from './GridPuzzle.svelte';
+import gridSource from './GridPuzzle.svelte?raw';
 import OrderPuzzle from './OrderPuzzle.svelte';
 import PathPuzzle from './PathPuzzle.svelte';
 import pathSource from './PathPuzzle.svelte?raw';
@@ -181,6 +183,8 @@ const PART_FIXTURES: { readonly [T in PuzzleType]: { readonly params: unknown; r
   order: { params: { pieces: PIECES }, answer: [0, 1, 2], parts: 3 },
   // A blocked cell is a part too: every cell, in row-major order.
   path: { params: { cols: 3, rows: 2, ends: [0, 3], blocked: [4] }, answer: [0, 1], parts: 6 },
+  // Every cell is a part, a given one too, cell-major; no palette button is.
+  grid: { params: { rows: 2, cols: 3, symbols: 3, given: [1, 2, 0, 0, 0, 1] }, answer: [1, 2, 0, 0, 0, 1], parts: 6 },
 };
 
 test('puzzles: every type UI marks its parts', async () => {
@@ -204,20 +208,28 @@ test('registry: each type loads its own component', async () => {
   const code = await loadPuzzleUi('code');
   const order = await loadPuzzleUi('order');
   const path = await loadPuzzleUi('path');
-  if (!code.ok || !order.ok || !path.ok) {
-    throw new Error(`expected every chunk to load: ${JSON.stringify([code, order, path])}`);
+  const grid = await loadPuzzleUi('grid');
+  if (!code.ok || !order.ok || !path.ok || !grid.ok) {
+    throw new Error(`expected every chunk to load: ${JSON.stringify([code, order, path, grid])}`);
   }
   expect(code.value).toBe(CodeLock);
   expect(order.value).toBe(OrderPuzzle);
   expect(path.value).toBe(PathPuzzle);
+  expect(grid.value).toBe(GridPuzzle);
   const lock = render(code.value, props({ params: { dials: 3 }, answer: [0, 0, 0] }));
   expect(lock.getAllByRole('button', { name: t('en', 'puzzle.dial_up') })).toHaveLength(3);
   lock.unmount();
   const slots = render(order.value, props({ params: { pieces: PIECES }, answer: [0, 1, 2], item }));
   expect(slots.getAllByRole('button').map((b) => b.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'false']);
   slots.unmount();
-  const grid = render(path.value, props({ params: { cols: 3, rows: 2, ends: [0, 3], blocked: [] }, answer: [0] }));
-  expect(grid.getAllByRole('button').map((b) => b.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false', 'false', 'false', 'false']);
+  const line = render(path.value, props({ params: { cols: 3, rows: 2, ends: [0, 3], blocked: [] }, answer: [0] }));
+  expect(line.getAllByRole('button').map((b) => b.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false', 'false', 'false', 'false']);
+  line.unmount();
+  // A grid's cells, the given one disabled, and its palette disabled until a cell is selected.
+  const board = render(grid.value, props({ params: { rows: 2, cols: 2, symbols: 2, given: [1, 0, 0, 0] }, answer: [1, 0, 0, 0] }));
+  const disabled = (cls: string): boolean[] => [...board.container.querySelectorAll<HTMLButtonElement>(`button.${cls}`)].map((b) => b.disabled);
+  expect(disabled('cell')).toEqual([true, false, false, false]);
+  expect(disabled('symbol')).toEqual([true, true, true]);
 });
 
 test('registry: chunk failure is an error value', async () => {
@@ -670,4 +682,264 @@ test("path: the drawn line, its tint and the surface's label", () => {
   const surface = d.view.container.querySelector('[data-cue-gesture="path-stroke"]');
   const label = surface?.getAttribute('aria-labelledby') ?? '';
   expect(d.view.container.querySelector(`[id="${label}"]`)?.textContent).toBe(mechT(d.p.lang, 'mech.path_rule'));
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The `grid` type UI (engine plan §7.2; GM7g D5-D7): a tap selects a free cell, a palette tap places a symbol on it
+// (Clear is 0); the fill is the `answer` prop, which follows `onchange` here as the session's does; the report is the
+// reach edge's over that prop.
+
+/** 2 x 2 over 2 symbols, cell 0 given 1: its one fill is 1 2 / 2 1. */
+const G22 = { rows: 2, cols: 2, symbols: 2, given: [1, 0, 0, 0] };
+const G22_FILL = [1, 2, 2, 1];
+
+/** 2 rows x 3 columns over 3 symbols, cells 0, 1 and 5 given: not square, so a swap of rows and columns shows. */
+const G23 = { rows: 2, cols: 3, symbols: 3, given: [1, 2, 0, 0, 0, 1] };
+
+/**
+ * GridPuzzle with its `answer` following `onchange` (a `$state` props object, as the frame's); every call recorded
+ * with the prop it was made against.
+ */
+// The return type is inferred: it carries the render result's own query types.
+function filled(over: Partial<PuzzleUiProps> = {}) {
+  const changes: (readonly number[])[] = [];
+  const priors: (readonly number[])[] = [];
+  const reports: (readonly number[])[] = [];
+  const p: PuzzleUiProps = $state({
+    ...props({ params: G22, answer: [1, 0, 0, 0] }),
+    onchange: (a: readonly number[]) => {
+      priors.push([...p.answer]);
+      changes.push([...a]);
+      p.answer = a;
+    },
+    onreach: (c: readonly number[]) => {
+      reports.push([...c]);
+    },
+    ...over,
+  });
+  const view = render(GridPuzzle, p);
+  const button = (selector: string): HTMLButtonElement => {
+    const el = view.container.querySelector<HTMLButtonElement>(selector);
+    if (el === null) {
+      throw new Error(`invariant: ${selector} is rendered`);
+    }
+    return el;
+  };
+  const cell = (i: number): HTMLButtonElement => button(`button.cell[data-cue-part="${i}"]`);
+  const symbol = (v: number): HTMLButtonElement => button(`button.symbol[data-cue-index="${v}"]`);
+  return { p, view, changes, priors, reports, cell, symbol };
+}
+
+test('grid: a fill that reaches reports once', async () => {
+  const d = filled();
+  for (const [c, v] of [
+    [1, 2],
+    [2, 2],
+    [3, 1],
+  ] as const) {
+    await fireEvent.click(d.cell(c));
+    await fireEvent.click(d.symbol(v));
+  }
+  expect(d.changes).toEqual([[1, 2, 0, 0], [1, 2, 2, 0], G22_FILL]);
+  expect(d.reports).toEqual([G22_FILL]);
+  // A reached fill re-delivered reports nothing again: the report is the edge's, not the effect's re-run (an equal copy
+  // of the answer, as a frame replaced around it gives).
+  d.p.answer = [...G22_FILL];
+  flushSync();
+  expect(d.reports).toEqual([G22_FILL]);
+  // Cleared and filled again (cell 3 stays selected): one report per turn to reached.
+  await fireEvent.click(d.symbol(0));
+  await fireEvent.click(d.symbol(1));
+  expect(d.changes.slice(-2)).toEqual([[1, 2, 2, 0], G22_FILL]);
+  expect(d.reports).toEqual([G22_FILL, G22_FILL]);
+  // O-a: every handler is delegated to the mount root, so a kept element's click after unmount calls nothing.
+  const kept = [d.cell(1), d.symbol(2)];
+  d.view.unmount();
+  for (const el of kept) {
+    el.click();
+  }
+  flushSync();
+  expect([d.changes.length, d.reports.length]).toEqual([5, 2]);
+});
+
+test("grid: a cell's keyboard activation selects like a tap", () => {
+  for (const lang of LANGS) {
+    const d = filled({ answer: [1, 2, 0, 0], lang });
+    // Every cell is a button named by its row, its column and what it holds; a given one says so.
+    expect([0, 1, 2, 3].map((i) => d.cell(i).getAttribute('aria-label')), lang).toEqual([
+      mechT(lang, 'mech.grid_given', { r: 1, c: 1, n: 1 }),
+      mechT(lang, 'mech.grid_cell', { r: 1, c: 2, n: 2 }),
+      mechT(lang, 'mech.grid_empty', { r: 2, c: 1 }),
+      mechT(lang, 'mech.grid_empty', { r: 2, c: 2 }),
+    ]);
+    expect([0, 1, 2, 3].map((i) => shown(d.cell(i))), lang).toEqual(['1', '2', '', '']);
+    // The palette: Clear (its mark hidden), then each symbol by its numeral.
+    expect(d.view.getByRole('button', { name: mechT(lang, 'mech.grid_clear') }), lang).toBe(d.symbol(0));
+    expect(d.symbol(0).querySelector('[aria-hidden="true"]'), lang).not.toBeNull();
+    expect([1, 2].map((v) => d.view.getByRole('button', { name: String(v) })), lang).toEqual([d.symbol(1), d.symbol(2)]);
+    // The board is named by the rule line its aria-labelledby points at.
+    const board = d.view.container.querySelector('.board');
+    const label = board?.getAttribute('aria-labelledby') ?? '';
+    expect(d.view.container.querySelector(`[id="${label}"]`)?.textContent, lang).toBe(mechT(lang, 'mech.grid_rule'));
+    // A cell's own activation (a keyboard or an assistive press: a click with no pointer) selects; aria-pressed follows.
+    const pressed = (): string[] => [0, 1, 2, 3].map((i) => d.cell(i).getAttribute('aria-pressed') ?? '');
+    expect(pressed(), lang).toEqual(['false', 'false', 'false', 'false']);
+    d.cell(2).click();
+    flushSync();
+    expect(pressed(), lang).toEqual(['false', 'false', 'true', 'false']);
+    expect([0, 1, 2].map((v) => d.symbol(v).disabled), lang).toEqual([false, false, false]);
+    // A symbol's activation places it and the cell stays selected; a second activation of the cell deselects it.
+    d.symbol(1).click();
+    flushSync();
+    expect(d.changes, lang).toEqual([[1, 2, 1, 0]]);
+    expect(pressed(), lang).toEqual(['false', 'false', 'true', 'false']);
+    d.cell(2).click();
+    flushSync();
+    expect(pressed(), lang).toEqual(['false', 'false', 'false', 'false']);
+    expect([0, 1, 2].map((v) => d.symbol(v).disabled), lang).toEqual([true, true, true]);
+    // Another cell takes the selection over.
+    d.cell(3).click();
+    d.cell(1).click();
+    flushSync();
+    expect(pressed(), lang).toEqual(['false', 'true', 'false', 'false']);
+    d.view.unmount();
+  }
+  // Params that do not decode render nothing actionable (fewer symbols than a line holds).
+  const { queryAllByRole } = render(GridPuzzle, props({ params: { rows: 2, cols: 2, symbols: 1, given: [0, 0, 0, 0] }, answer: [] }));
+  expect(queryAllByRole('button')).toEqual([]);
+});
+
+test('grid: a tap that changes nothing calls no onchange', async () => {
+  const d = filled({ answer: [1, 2, 0, 0] });
+  // V2: a select, a deselect, a select again, the symbol the cell holds, and Clear on an empty cell call nothing.
+  await fireEvent.click(d.cell(1));
+  await fireEvent.click(d.cell(1));
+  await fireEvent.click(d.cell(1));
+  await fireEvent.click(d.symbol(2));
+  await fireEvent.click(d.cell(2));
+  await fireEvent.click(d.symbol(0));
+  expect(d.changes).toEqual([]);
+  // The control: a symbol that changes the cell calls onchange once.
+  await fireEvent.click(d.symbol(1));
+  expect(d.changes).toEqual([[1, 2, 1, 0]]);
+  // Every call left a fresh answer that differs from the prop it was made against.
+  expect(d.changes.every((a, i) => JSON.stringify(a) !== JSON.stringify(d.priors[i]))).toBe(true);
+});
+
+test('grid: input while busy changes nothing', async () => {
+  const d = filled({ answer: [1, 2, 0, 0] });
+  await fireEvent.click(d.cell(2));
+  // Busy (an attempt in flight): every cell and symbol is disabled and does nothing; the selection is kept.
+  d.p.busy = true;
+  flushSync();
+  const buttons = d.view.getAllByRole('button') as HTMLButtonElement[];
+  expect(buttons).toHaveLength(7);
+  expect(buttons.every((b) => b.disabled)).toBe(true);
+  for (const b of buttons) {
+    await fireEvent.click(b);
+  }
+  expect(d.changes).toEqual([]);
+  expect(d.cell(2).getAttribute('aria-pressed')).toBe('true');
+  // The control: no longer busy, the same symbol places.
+  d.p.busy = false;
+  flushSync();
+  await fireEvent.click(d.symbol(1));
+  expect(d.changes).toEqual([[1, 2, 1, 0]]);
+});
+
+test('grid: a given cell takes no input', async () => {
+  for (const lang of LANGS) {
+    const d = filled({ lang });
+    const given = d.cell(0);
+    // A disabled button named as given: a tap on it is refused silently and selects nothing.
+    expect(given.disabled, lang).toBe(true);
+    expect(given.getAttribute('aria-label'), lang).toBe(mechT(lang, 'mech.grid_given', { r: 1, c: 1, n: 1 }));
+    await fireEvent.click(given);
+    given.click();
+    flushSync();
+    expect(given.getAttribute('aria-pressed'), lang).toBe('false');
+    expect([0, 1, 2].map((v) => d.symbol(v).disabled), lang).toEqual([true, true, true]);
+    await fireEvent.click(d.symbol(2));
+    expect(d.changes, lang).toEqual([]);
+    // The control: a free cell selects, and the palette opens.
+    await fireEvent.click(d.cell(1));
+    expect([d.cell(1).getAttribute('aria-pressed'), d.symbol(2).disabled], lang).toEqual(['true', false]);
+    d.view.unmount();
+  }
+});
+
+test('grid: the board selects no text', () => {
+  // Stack F-1 by class (RULINGS 350, GM7p's stroke surface): a mouse's double click or drag over the cells or the
+  // palette would leave a text selection. happy-dom has no selection, so the pin reads the source; the one wrapper of
+  // the cells and the palette carries the class.
+  const board = declarationsFor(gridSource, 'board');
+  expect([board.get('-webkit-user-select'), board.get('user-select')]).toEqual(['none', 'none']);
+  const d = filled();
+  const wrappers = d.view.container.querySelectorAll('.board');
+  expect(wrappers).toHaveLength(1);
+  expect([wrappers[0]?.querySelectorAll('button.cell').length, wrappers[0]?.querySelectorAll('button.symbol').length]).toEqual([4, 3]);
+});
+
+test('grid: cells and symbols at least 48 px', () => {
+  // happy-dom computes no layout: the rules are read from the source, and every rendered button carries one of them.
+  const d = filled();
+  const kinds = d.view.getAllByRole('button').map((b) => (b.classList.contains('cell') ? 'cell' : b.classList.contains('symbol') ? 'symbol' : ''));
+  expect(kinds).toEqual(['cell', 'cell', 'cell', 'cell', 'symbol', 'symbol', 'symbol']);
+  for (const cls of ['cell', 'symbol']) {
+    const rule = declarationsFor(gridSource, cls);
+    expect(px(rule.get('min-width')), cls).toBeGreaterThanOrEqual(48);
+    expect(px(rule.get('min-height')), cls).toBeGreaterThanOrEqual(48);
+  }
+});
+
+test('grid: a mismatch reset keeps the selected cell', async () => {
+  const d = filled();
+  for (const [c, v] of [
+    [1, 2],
+    [2, 2],
+    [3, 1],
+  ] as const) {
+    await fireEvent.click(d.cell(c));
+    await fireEvent.click(d.symbol(v));
+  }
+  expect(d.reports).toEqual([G22_FILL]);
+  // The session's reset to the start answer after a mismatch (session.ts): the givens again, and cell 3 still selected.
+  d.p.answer = [1, 0, 0, 0];
+  flushSync();
+  expect(d.cell(3).getAttribute('aria-pressed')).toBe('true');
+  await fireEvent.click(d.symbol(1));
+  expect(d.changes.at(-1)).toEqual([1, 0, 0, 1]);
+});
+
+test('grid: a grid that is not square names and lays out its cells by row and column', () => {
+  // Gates F1 (fix1): every other grid test renders the square G22, where a swap of rows and columns cannot show. On
+  // 2 x 3 each cell is named by its own row and column (cell-major, `row * cols + col`), and the cells' track repeats
+  // the column count. One filled cell, two empty and three given, so each name key occurs.
+  for (const lang of LANGS) {
+    const d = filled({ params: G23, answer: [1, 2, 3, 0, 0, 1], lang });
+    expect([0, 1, 2, 3, 4, 5].map((i) => d.cell(i).getAttribute('aria-label')), lang).toEqual([
+      mechT(lang, 'mech.grid_given', { r: 1, c: 1, n: 1 }),
+      mechT(lang, 'mech.grid_given', { r: 1, c: 2, n: 2 }),
+      mechT(lang, 'mech.grid_cell', { r: 1, c: 3, n: 3 }),
+      mechT(lang, 'mech.grid_empty', { r: 2, c: 1 }),
+      mechT(lang, 'mech.grid_empty', { r: 2, c: 2 }),
+      mechT(lang, 'mech.grid_given', { r: 2, c: 3, n: 1 }),
+    ]);
+    const tracks = d.view.container.querySelectorAll<HTMLElement>('.cells');
+    expect(tracks, lang).toHaveLength(1);
+    expect(tracks[0]?.style.getPropertyValue('grid-template-columns'), lang).toBe('repeat(3, minmax(48px, 1fr))');
+    d.view.unmount();
+  }
+  // The control: the square G22's track repeats its own side, so a count written into the template fails one of the two.
+  const square = filled().view.container.querySelector<HTMLElement>('.cells');
+  expect(square?.style.getPropertyValue('grid-template-columns')).toBe('repeat(2, minmax(48px, 1fr))');
+});
+
+test("grid: each cell's cue index is its board index", () => {
+  // Gates F3 (fix1): a tap on a cell emits a `ui` cue whose index is the element's `data-cue-index` (cues/root.ts),
+  // so each cell's index is its board index, its part (cell-major), as rendered. The given cells count too: the stage
+  // keys a cue target by the element, whatever its state.
+  const d = filled({ params: G23, answer: [1, 2, 0, 0, 0, 1] });
+  const marks = [...d.view.container.querySelectorAll('button.cell')].map((b) => [b.getAttribute('data-cue'), b.getAttribute('data-cue-part'), b.getAttribute('data-cue-index')]);
+  expect(marks).toEqual([0, 1, 2, 3, 4, 5].map((i) => ['grid-cell', String(i), String(i)]));
 });

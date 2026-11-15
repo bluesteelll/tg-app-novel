@@ -51,7 +51,7 @@ const CHAPTER = 'ch1' as ChapterId;
 const pz = (s: string) => s as PuzzleLocalId;
 
 type RawPuzzle = {
-  type: 'code' | 'order';
+  type: PuzzleType;
   params: Record<string, unknown>;
   maxAttempts: number | null;
   giveUp: boolean;
@@ -387,6 +387,7 @@ const SAMPLE_PARAMS: { readonly [T in PuzzleType]: ParamsOf<T> } = {
   code: { dials: 4 },
   order: { pieces: ['sun', 'moon', 'star'] as ItemId[] }, // a fixture's ids, as decoded
   path: { cols: 3, rows: 2, ends: [0, 3], blocked: [] },
+  grid: { rows: 2, cols: 2, symbols: 2, given: [1, 0, 0, 0] },
 };
 
 test('session: an instance answers initial and shape for every type', () => {
@@ -511,6 +512,24 @@ test('session: a wrong reply to a reach post is a mismatch and counts no attempt
   // The server holds it solved: after a status, the ladder's tiers that are not unlocked read unavailable.
   await s.hints();
   expect(s.ladder().tiers.map((t) => t.state)).toEqual(['unavailable', 'unavailable', 'unavailable']);
+});
+
+test('session: a 25-cell answer posts', async () => {
+  // No client cap (engine plan §7.4): the session checks the instance's shape only, so a 5 x 5 grid's fill posts whole;
+  // the build's answer bound (the server's) is the one cap. The grid: the cyclic square with its diagonal blank.
+  const fill = Array.from({ length: 25 }, (_, c) => ((Math.floor(c / 5) + (c % 5)) % 5) + 1);
+  const given = fill.map((v, c) => (Math.floor(c / 5) === c % 5 ? 0 : v));
+  const puzzle: Partial<RawPuzzle> = { type: 'grid', params: { rows: 5, cols: 5, symbols: 5, given } };
+  // The control: a 24-entry answer is refused by the shape before any request, so the pre-check is live.
+  const short = rig({ puzzle });
+  short.s.setAnswer(fill.slice(0, 24));
+  expect(await short.s.attempt()).toEqual(err({ kind: 'invalid' }));
+  expect(short.api.postAttempt).not.toHaveBeenCalled();
+  const { s, api } = rig({ puzzle });
+  api.postAttempt.mockResolvedValueOnce(CORRECT);
+  s.setAnswer(fill);
+  expect(await s.attempt()).toEqual(ok({ kind: 'correct' }));
+  expect(api.postAttempt.mock.calls).toEqual([['ch1.gate', fill, { signal: expect.any(AbortSignal) }]]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------

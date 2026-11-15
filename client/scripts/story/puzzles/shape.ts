@@ -14,10 +14,9 @@ import type { PuzzleTypeLint } from './index.ts';
 
 /**
  * The longest answer the build emits; never above the server's MAX_ANSWER_LEN (server/src/puzzles/mod.rs, 64 since
- * GM6s1; the test `story: the build's answer bound never exceeds the server's MAX_ANSWER_LEN` reads it). GM7g raises
- * it to 64.
+ * GM6s1; the test `story: the build's answer bound never exceeds the server's MAX_ANSWER_LEN` reads it).
  */
-export const MAX_ANSWER_LEN = 16;
+export const MAX_ANSWER_LEN = 64;
 
 export const SHAPE_CODES = { 'world/answer-len': 'E' } as const satisfies Readonly<Record<string, Severity>>;
 
@@ -26,7 +25,8 @@ export type PuzzleLintRegistry = Readonly<Record<string, PuzzleTypeLint<unknown>
 
 /**
  * How many entries puzzle `p` posts: a commit type's answer shape (its data half), a reach type's solution (its lint
- * half's `solve`); null when a reach instance has no solution (that is the type's own lint) or its type is unknown.
+ * half's `solve`), or its answer shape when `solve` is absent or returns null (Solver F3: such an instance is still
+ * measured; its missing solution is the reach pass's finding); null when its type is unknown.
  */
 export function postedLength(p: SourcePuzzle, lints: PuzzleLintRegistry = PUZZLE_LINTS, types: PuzzleTypes = PUZZLE_TYPES): number | null {
   const data = types.find((d) => d.type === p.type);
@@ -37,7 +37,7 @@ export function postedLength(p: SourcePuzzle, lints: PuzzleLintRegistry = PUZZLE
     return data.answerShape(p.params).len;
   }
   const lint = Object.hasOwn(lints, p.type) ? lints[p.type] : undefined;
-  return lint?.solve?.(p.params)?.length ?? null;
+  return lint?.solve?.(p.params)?.length ?? data.answerShape(p.params).len;
 }
 
 /** Every puzzle of `w` whose posted answer is outside 1..MAX_ANSWER_LEN, at its `params`. */

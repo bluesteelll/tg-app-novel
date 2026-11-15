@@ -233,17 +233,18 @@ function fuseInput(params: unknown, type = 'path', types: PuzzleTypes = PUZZLE_T
   return { chapter, file: 'story/ch1/world.json', text, world: r.value, catalog: CATALOG, knots: null, yielded: null, declared: new Map(), line, moduleLines: new Map() };
 }
 
-test('story: a path whose solution visits 17 cells is refused', () => {
+test('story: a 49-cell path passes the answer bound', () => {
   // A wiring pin (12e:66-67): GM1d's answer bound reads a reach type's length from its lint half's `solve`, through the
-  // real registries, so a path over 17 open cells is refused until GM7g raises the bound.
-  const p17: PathParams = { cols: 6, rows: 3, ends: [0, 12], blocked: [17] };
-  const p16: PathParams = { cols: 4, rows: 4, ends: [0, 3], blocked: [] };
-  // The fixtures through the search proper, so a lint half without `solve` is red at the bound, not here.
-  expect([searchPaths(p17).paths[0]?.length, searchPaths(p16).paths[0]?.length]).toEqual([17, 16]);
-  expect(answerLenFindings(fuseInput(p17)).map((f) => [f.code, f.message])).toEqual([
-    ['world/answer-len', "puzzle 'fuse' posts 17 entries: 1..16 (the server refuses longer, §7.4)"],
+  // real registries; the largest decode-legal path (7 x 7, nothing blocked) posts 49 entries, within the bound of 64.
+  const p49: PathParams = { cols: 7, rows: 7, ends: [0, 48], blocked: [] };
+  // The fixture through the search proper, bounded: its snake is the first path found.
+  expect(searchPaths(p49).paths[0]?.length).toBe(49);
+  expect(answerLenFindings(fuseInput(p49))).toEqual([]);
+  // The positive control: the real registries with only `solve` overridden to post 65 entries are refused at the bound.
+  const long = { ...PUZZLE_LINTS, path: { ...PATH_LINT, solve: () => Array.from({ length: 65 }, () => 0) } };
+  expect(answerLenFindings(fuseInput(p49), long).map((f) => [f.code, f.message])).toEqual([
+    ['world/answer-len', "puzzle 'fuse' posts 65 entries: 1..64 (the server refuses longer, §7.4)"],
   ]);
-  expect(answerLenFindings(fuseInput(p16))).toEqual([]);
 });
 
 /** A fixture reach type that starts reached: one cell, lit at the start. */
