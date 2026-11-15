@@ -2424,3 +2424,72 @@ test('story: a lone flag clue is seen once its setter fires', () => {
     [clueLine(unset, 'gate', 0), `puzzle 'gate': clue {"flag":"f"} holds in no state of section manor reached before 'gate' is solved or failed (§7.3)`],
   ]);
 });
+
+test('story: a part atom in a gating condition is refused at its line, not a crash', () => {
+  // Fix1 item 4 (proof P1): a `part` atom is visual-only (`gating: false`), and in a gating site (a hotspot `when`, a
+  // `uses.when`, a recipe `when`) its read would reach the section key, which cannot encode it (`keyPlan`'s invariant).
+  // The soft-lock check and the clue lint skip such a section (`gatesVisualOnly`), so the gate refuses the world at the
+  // author's line instead of dying. The manor's `drawer` (a secret code puzzle on one lock, with a clue) makes the clue
+  // lint search `manor` in every case. A skipped section is unsearched (`states` null), so world.ts's unreachable pass
+  // sees no module gift in it: the use rule's coin and the recipe's amulet are reported W (critique W1, carried with
+  // Q-F2), as in a capped section.
+  const sites = (atom: Json): ReadonlyArray<readonly [path: string, put: (w: Json) => void]> => [
+    ['sections.manor.rooms.hall.hotspots.2.when', (w) => (spot(w, 'hall', 'inscription')['when'] = atom)],
+    ['sections.manor.rooms.hall.hotspots.2.uses.0.when', (w) => (obj(list(spot(w, 'hall', 'inscription')['uses'])[0])['when'] = atom)],
+    ['recipes.0.when', (w) => (obj(list(w['recipes'])[0])['when'] = atom)],
+  ];
+  const plain = (): Json => recipeBase(() => t('manor', 'Монета легла в оправу.'));
+  // The device: a view `desk` of the study, entered by the study's `to_desk`, whose device `dial` is a zero-slot lock on
+  // the secret code puzzle `dial` (a clue). No view type is registered before GM8a, so `world/device-type` refuses it.
+  const desk = (): Json => {
+    const w = plain();
+    at(w, 'puzzles')['dial'] = {
+      type: 'code',
+      title: t('dial', 'Замок стола'),
+      prompt: t('dial', 'Четыре диска.'),
+      closeup: null,
+      params: { dials: 4 },
+      maxAttempts: null,
+      giveUp: false,
+      solution: [1, 8, 4, 7],
+      hints: [t('dial', 'Год упоминается в письме.')],
+      clues: [{ doc: 'letter' }],
+    };
+    hotspots(w, 'study').push(demoExit('to_desk', [700, 1500, 300, 200], { room: 'desk' }));
+    const lock = { slots: [], puzzle: 'dial', locked: t('manor', 'Заперто.'), onOpen: [], onFail: [] };
+    const dial = { id: 'dial', kind: 'object', rect: [400, 800, 300, 300], label: t('manor', 'Замок'), lock, then: [], look: null, prop: null };
+    at(w, 'sections.manor.rooms')['desk'] = { bg: 'study', title: t('manor', 'Стол'), onEnter: [], view: { of: 'study' }, device: 'dial', hotspots: [dial] };
+    return w;
+  };
+  const deviceType = (w: Json): Finding[] => [
+    { code: 'world/device-type', severity: 'E', file: FILE, line: jsonLine(w, '"device": "dial"'), message: "sections.manor.rooms.desk.device: puzzle 'dial' is a code puzzle: a device's puzzle is of a view type (§7.5)" },
+  ];
+  const unreachable = (w: Json, item: string): Finding => ({ code: 'world/unreachable', severity: 'W', file: FILE, line: jsonLine(w, `"${item}": {`), message: `item '${item}': no reachable state holds it` });
+  const cases: ReadonlyArray<readonly [label: string, make: () => Json, puzzle: string, own: (w: Json) => Finding[]]> = [
+    ['no device', plain, 'drawer', () => []],
+    ['a device', desk, 'dial', deviceType],
+  ];
+  for (const [label, make, puzzle, own] of cases) {
+    // The control: searched (non-vacuity), and clean but for its own pinned findings.
+    const control = make();
+    const checked = run(control);
+    expect(checked.findings, `${label}: the control`).toEqual(own(control));
+    expect(checked.sections.map((s) => typeof s.states), `${label}: the control is searched`).toEqual(['number']);
+    const atom = { part: { puzzle, index: 0, is: 1 } };
+    for (const [path, put] of sites(atom)) {
+      const w = make();
+      put(w);
+      const r = run(w); // the story gate's own path, which must not throw
+      const refused: Finding = {
+        code: 'world/visual-only-atom',
+        severity: 'E',
+        file: FILE,
+        line: jsonLine(w, '"when"'),
+        message: `${path}: ${JSON.stringify(atom)} is a visual-only atom: a gating condition never reads it (§4)`,
+      };
+      const expected = [unreachable(w, 'coin'), unreachable(w, 'amulet'), refused, ...own(w)].sort((a, b) => a.line - b.line);
+      expect(r.findings, `${label}, ${path}`).toEqual(expected);
+      expect(r.sections.map((s) => s.states), `${label}, ${path}: unsearched`).toEqual([null]);
+    }
+  }
+});

@@ -6,15 +6,19 @@ import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
 import type { ExploreAction, Step } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import type { WorldState } from '../../src/explore/state.ts';
-import type { KernelWorld } from '../../src/mechanics/contract.ts';
+import type { KernelWorld, RulesRegistry } from '../../src/mechanics/contract.ts';
+import { MECHANIC_DATA } from '../../src/mechanics/data/index.ts';
+import type { DataRegistry } from '../../src/mechanics/data/index.ts';
 import { actions, reduce } from '../../src/mechanics/rules/core.ts';
+import { MECHANIC_RULES } from '../../src/mechanics/rules/index.ts';
 import { RESUME_WORK_PER_STATE, searchSection, sectionEntry } from '../../src/mechanics/rules/search.ts';
 import type { SearchStats, Walk } from '../../src/mechanics/rules/search.ts';
 import type { PuzzleLocalId, SectionId } from '../../src/story/staging.ts';
 import { LINT_CODES } from './lint.ts';
 import type { Finding, LintCode } from './lint.ts';
 
-/** One section's verdict; `states` is the count of distinct section states, null when the search hit the cap. */
+/** One section's verdict; `states` is the count of distinct section states, null when the search hit the cap or when
+ *  the section was not searched (`gatesVisualOnly`). */
 export type SectionCheck = { section: SectionId; states: number | null; findings: Finding[] };
 
 function finding(code: LintCode, file: string, message: string): Finding {
@@ -60,12 +64,28 @@ function describe(w: KernelWorld, from: WorldState, step: Step): string {
 }
 
 /**
+ * Whether a gating rule of section S reads a visual-only atom (a module atom its data declares `gating: false`): the
+ * facts the modules' `reads` hand the section key, which cannot encode one (`keyPlan`'s invariant, rules/search.ts).
+ * Each such read comes from a gating site the flags, use or combine lint passes to `condFindings`, so the world is
+ * refused at the author's line (`world/visual-only-atom`, E) and S is not searched. The atom test repeats
+ * scripts/story/mechanics/conditions.ts:94's (Q-F3: its export is the next holder's).
+ */
+export function gatesVisualOnly(w: KernelWorld, section: SectionId, rules: RulesRegistry = MECHANIC_RULES, data: DataRegistry = MECHANIC_DATA): boolean {
+  const visualOnly = (kind: string): boolean => data.some((d) => d.atoms !== undefined && Object.hasOwn(d.atoms, kind) && d.atoms[kind]?.gating === false);
+  return rules.some((m) => m.reads(w, section).some((a) => visualOnly(a.kind)));
+}
+
+/**
  * Proves section S of the proof world: the public body and its decoded `mods` (the build has no `version`; LW3 stamps
  * it on emit). `file` is the finding's file (`story/<ch>/world.json`). The `world/softlock` message carries the
  * shortest action path from the entry to the first stuck state in BFS order: per hop, the free moves that reach the
  * member of the place it was taken in (the search's walk), then its step, each described from the state before it.
  */
 export function checkSection(w: KernelWorld, section: SectionId, file: string): SectionCheck {
+  if (gatesVisualOnly(w, section)) {
+    // Not searched, so not proved: `states: null` keeps world.ts's second search off S, as at the cap.
+    return { section, states: null, findings: [] };
+  }
   const start = sectionEntry(w, EMPTY_WORLD_STATE, section);
   const states: WorldState[] = [start];
   const parent: Array<{ from: number; step: Step; walk: Walk } | undefined> = [undefined];
