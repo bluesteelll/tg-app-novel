@@ -5282,6 +5282,46 @@ test('yields: a sheet over a device view stops its demonstration until the demo 
   }
 });
 
+test("yields: a full sequence's reply under a sheet restarts it with no part cue", async () => {
+  // Places F4, Q-C1 (RULINGS 368, 369): a part cue plays on a painted ghost of its part above every sheet (§8.5 "Hit
+  // areas"), so none plays while a sheet covers the device. A full sequence's wrong or offline reply landing under the
+  // inventory starts the sequence over (the saved work follows) with the reply's own frame cue and no `puzzle:input`;
+  // a refused input plays no `puzzle:blocked` then. Once the sheet closes, a press plays its part again.
+  const r = deviceRig('rite', { parts: 2 });
+  const q = heldPosts(r);
+  await atDevice(r);
+  const replies: Array<[string, Result<AttemptResponse, ApiError>]> = [
+    ['wrong', POSTED_WRONG],
+    ['offline', NETWORK],
+  ];
+  for (const [line, reply] of replies) {
+    r.yields.host.onwork?.([1], false);
+    r.yields.host.onwork?.([1, 2], false);
+    r.yields.layer.oninventory();
+    await settle();
+    expect([line, r.posted.at(-1), r.puzzle.frame?.busy, overlaysOf(r)]).toEqual([line, [1, 2], true, ['inventory']]);
+    const mark = r.cues.length;
+    q.answer(reply);
+    await settle();
+    expect([line, r.puzzle.frame?.line, r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work, puzzleCuesOf(r, mark)]).toEqual([
+      line,
+      line,
+      [],
+      [],
+      [`${line}@null`],
+    ]);
+    r.yields.host.onblocked?.(0);
+    expect([line, puzzleCuesOf(r, mark)]).toEqual([line, [`${line}@null`]]);
+    r.screens.back();
+    await settle();
+  }
+  const mark = r.cues.length;
+  r.yields.host.onwork?.([2], false);
+  r.yields.host.onblocked?.(1);
+  expect([overlaysOf(r), puzzleCuesOf(r, mark)]).toEqual([[], ['input@0', 'blocked@1']]);
+  r.yields.dispose();
+});
+
 test('yields: a device whose chunk failed plays no demonstration', async () => {
   // Gates F3 (RULINGS 368): the demonstration starts only after a successful load; a failed type chunk or host chunk
   // shows its Retry and plays nothing.

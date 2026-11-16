@@ -283,6 +283,9 @@ type DropCue = Extract<PuzzleCue, 'solved' | 'failed' | 'closed'> | null;
 /** The hint ladder's own cues (engine plan §8.1 "The hint ladder"). */
 type LadderCue = Extract<PuzzleCue, 'ladder' | 'hint-shown' | 'hint-failed' | 'hint-renewing'>;
 
+/** The cues that play on a part (the `part` target of the stage's motion table): none plays under a covering sheet. */
+const PART_CUES: ReadonlySet<PuzzleCue> = new Set<PuzzleCue>(['input', 'blocked', 'demo']);
+
 let frameSeq = 0;
 
 /** A cue as the yields emit it: no pointer, no visual diff, no element (no control cue is theirs). */
@@ -945,9 +948,18 @@ export function createYields(h: YieldsHost): Yields {
   const shownFrame = (): boolean => puzzle.frame !== null && (puzzle.host !== null || puzzle.frame.loadFailed);
   /** The shown-frame test: a cue of `o`'s frame plays only while it is the open, appeared, unhidden frame on screen. */
   const showing = (o: Open): boolean => open === o && !o.hidden && o.appeared && puzzle.frame?.id === o.id;
-  /** A frame cue of `o` (no box: the stage finds its target in the frame), dropped while the frame is not shown. */
+  /**
+   * Whether a sheet covers `o`'s device (places F4, RULINGS 368): a view frame pushes no screen (`backScreen`), so any
+   * screen on the stack lies over its room: the inventory, a document, the lock panel, the hint ladder, a meta overlay.
+   */
+  const covered = (o: Open): boolean => o.present === 'view' && screens.view().overlays.length > 0;
+  /**
+   * A frame cue of `o` (no box: the stage finds its target in the frame), dropped while the frame is not shown, and a
+   * part cue also while a sheet covers the device: it plays on a painted ghost of its part above every sheet (§8.5 "Hit
+   * areas"), so a reply's restart under the inventory moves nothing on screen (Q-C1, RULINGS 369).
+   */
   const puzzleCue = (o: Open, name: PuzzleCue, index: number | null = null): void => {
-    if (showing(o)) {
+    if (showing(o) && !(PART_CUES.has(name) && covered(o))) {
       bus.emit(cueEvent({ kind: 'puzzle', puzzle: o.local, name, index }, null));
     }
   };
@@ -1091,12 +1103,6 @@ export function createYields(h: YieldsHost): Yields {
       o.demo = null;
     }
   };
-
-  /**
-   * Whether a sheet covers `o`'s device (places F4, RULINGS 368): a view frame pushes no screen (`backScreen`), so any
-   * screen on the stack lies over its room: the inventory, a document, the lock panel, the hint ladder, a meta overlay.
-   */
-  const covered = (o: Open): boolean => o.present === 'view' && screens.view().overlays.length > 0;
 
   /**
    * Plays `o`'s demonstration from its first step after `delay` ms (engine plan §7.5 "Demonstration"; Q15h): each part of
