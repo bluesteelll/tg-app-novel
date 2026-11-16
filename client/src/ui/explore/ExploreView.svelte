@@ -139,14 +139,10 @@
     {@const Host = puzzle.host}
     <!-- The hint ladder over a device: a sheet like the explore panels, its controls in this family. It is the room
          place's hints panel (GM8h2 D13(1)): `ladder`, `tier`, `alert` and the panel's open and close land on the sheet,
-         the first hints panel. A hint request's hold (`waiting` / `waited`) lands on the notice that wraps the card (the
-         stage takes a panel's notice first). That wrapper is live and the sheet's full height, so the player moves it
-         with no ghost: `breathe` scales the whole column about the sheet's centre (the card drifts ~8 px up at the
-         peak) and its ring falls outside the app's clip. In the frame place the same hold breathes the card itself. -->
+         the first hints panel. A hint request's hold (`waiting` / `waited`) breathes the card, as in the frame place:
+         a box-less hold takes the leaf hints panel, the card inside this sheet (RULINGS 382 C1). -->
     <div class="sheet" data-cue-panel="hints">
-      <div class="hold" data-cue-notice>
-        <Host place="ladder" {lang} {frame} ladder={puzzle.ladder} {...puzzleActions} />
-      </div>
+      <Host place="ladder" {lang} {frame} ladder={puzzle.ladder} {...puzzleActions} />
     </div>
   {/if}
 </div>
@@ -163,11 +159,6 @@
     position: absolute;
     inset: 0;
     background: rgba(0, 0, 0, 0.5);
-  }
-
-  /* The ladder card's wrapper: the sheet's full height, so the ladder place inside it pads and scrolls as before. */
-  .hold {
-    height: 100%;
   }
 
   /* A device whose host failed to load: its notice where the device's bar sits, at the room's top. */

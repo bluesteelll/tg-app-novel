@@ -1465,16 +1465,12 @@ test('explore: the ladder sheet over a device is the hints panel its cues land o
   await tick();
   const card = must(container.querySelector('section.ladder'), 'the ladder card');
   const sheet = must(card.closest('.sheet'), "the ladder's sheet");
-  const hold = sheet.querySelector(':scope > [data-cue-notice]');
   const named = new Map<Element, string>([
     [sheet, 'sheet'],
     [card, 'card'],
     [must(card.querySelector('[data-cue-tier="1"]'), 'tier 1'), 'tier 1'],
     [must(card.querySelector('[data-cue-alert]'), 'the alert'), 'alert'],
   ]);
-  if (hold !== null) {
-    named.set(hold, 'hold');
-  }
   const puzzle = 'dial' as PuzzleLocalId;
   const cues: ReadonlyArray<CueEvent['cue']> = [
     { kind: 'puzzle', puzzle, name: 'ladder', index: null },
@@ -1498,9 +1494,10 @@ test('explore: the ladder sheet over a device is the hints panel its cues land o
     ['ui-state:waiting', 'card'],
     ['ui-state:waited', 'card'],
   ]);
-  // The marker is the literal on the sheet, and the wrapper holds the ladder place, which scrolls in its full height.
-  expect([sheet.getAttribute('data-cue-panel'), hold?.firstElementChild?.matches('.ladder-place'), hold?.contains(card)]).toEqual(['hints', true, true]);
-  expect(declarationsFor(exploreViewSource, 'hold').get('height')).toBe('100%');
+  // The marker is the literal on the sheet, which holds the ladder place directly (GM8h fix1's padding and scroll) and
+  // carries no notice (RULINGS 382 C2).
+  const place = sheet.querySelector(':scope > .ladder-place');
+  expect([sheet.getAttribute('data-cue-panel'), place?.contains(card), sheet.querySelector('[data-cue-notice]')]).toEqual(['hints', true, null]);
   unmount();
 });
 
