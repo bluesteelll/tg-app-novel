@@ -195,6 +195,11 @@ export type ExecutorDeps<T> = {
   gen?(): number;
   /** A shot was built before the motion kit landed: the controller retries a failed kit's import (D1, 05a:102). */
   wantMotion?(): void;
+  /**
+   * Reduced motion (SH7, D2): a camera move and a held camera's return land at their end; cuts, dissolves and the faces'
+   * motion keep their time. Never through `instant`, which would end every transition.
+   */
+  reduced?: boolean;
 };
 type Rigs = ReadonlyMap<BgId, ShotRig> | null;
 
@@ -1163,7 +1168,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         return;
       }
       const move = find(b.cmds, 'cam');
-      const d = sec(move === undefined ? camMs : (move.ms ?? CAM_MS[move.cam.kind]));
+      const d = deps.reduced === true ? 0 : sec(move === undefined ? camMs : (move.ms ?? CAM_MS[move.cam.kind]));
       if (d === 0) {
         if (at === 0) {
           writeWorld(end);

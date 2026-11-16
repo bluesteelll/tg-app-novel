@@ -309,7 +309,8 @@ const quietLoop = (): RenderLoop => createRenderLoop({ ticker: { add: () => {}, 
  * `shots`: the executor's shot dep (absent: none). The registry cuts frames as stand-ins named `<file url>#<box>`; a
  * disposed frame joins `freed`, so a sprite drawn on it throws like one on a released texture. `seat`: the window
  * seat's two reports (shots §5.8; absent: none). `targets`: the stage's target members (recordingStage). The
- * executor's GPU generation is the harness's (`setGen`). `motion`: the motion kit's ask (SH7 D1; absent: none).
+ * executor's GPU generation is the harness's (`setGen`). `extra`: SH7's deps, the motion kit's ask (D1) and reduced
+ * motion (D2); absent: none.
  */
 function harness(
   size: Size = S390,
@@ -317,7 +318,7 @@ function harness(
   shots?: { rigs(): ReadonlyMap<BgId, ShotRig> | null; half(): boolean },
   seat?: Pick<ExecutorDeps<Tex>, 'swapped' | 'released'>,
   targets?: 'draw' | 'refuse',
-  motion?: Pick<ExecutorDeps<Tex>, 'wantMotion'>,
+  extra?: Pick<ExecutorDeps<Tex>, 'wantMotion' | 'reduced'>,
 ) {
   const freed = new Set<Tex>();
   const stage = recordingStage(size, freed, targets);
@@ -410,7 +411,7 @@ function harness(
     gen: () => gen,
     ...(shots === undefined ? {} : { shots }),
     ...seat,
-    ...motion,
+    ...extra,
   });
   return {
     ...stage,
@@ -3837,5 +3838,65 @@ test("executor: a talk before its speaker's group is built flaps the group built
   await flush();
   expect(faces).toHaveLength(6);
   expect(faces.slice(4).map((f) => f.talks)).toEqual([[], []]);
+  h.ex.destroy();
+});
+
+// Reduced motion (lane SH7, D2, D12): a camera move lands at its end; cuts, dissolves and the faces keep their time.
+
+test('executor: under reduced motion a camera move jumps to its end', async () => {
+  const h = harness(S390, quietLoop(), { rigs: () => LAMP_RIGS, half: () => false }, undefined, 'draw', { reduced: true });
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  const end = framed(PUSH);
+  // A push: the world at its end at once, and the batch has no time to run.
+  const push = track(h.ex.apply([camera(PUSH)], NOW));
+  await flush();
+  expectWorld(lastWorld(h.worlds), end);
+  expect([push.done, h.ex.stats().activeTimelines]).toEqual([true, 0]);
+  expect(h.ex.snapshot().cam).toEqual(PUSH);
+  // A pull: at rest at once.
+  const pull = track(h.ex.apply([camera({ kind: 'pull' })], NOW));
+  await flush();
+  expect([lastWorld(h.worlds), pull.done]).toEqual([REST, true]);
+  // A held camera's return on a take's crossfade: at rest at once, while the crossfade keeps its 500 ms.
+  await h.ex.apply([camera(PUSH)], { instant: true });
+  h.worlds.length = 0;
+  const take = track(h.ex.apply([bg('lamp', 'crossfade', 500), props(['key', KEY])], NOW));
+  await flush();
+  expect(h.worlds).toEqual([REST]);
+  advance(250);
+  await flush();
+  expect([take.done, h.worlds]).toEqual([false, [REST]]);
+  advance(300);
+  await flush();
+  expect(take.done).toBe(true);
+  h.ex.destroy();
+});
+
+test('executor: under reduced motion a dissolve still runs', async () => {
+  const d = drivenLoop();
+  const h = harness(S390, d.loop, MOTION, undefined, 'draw', { reduced: true });
+  const { kit, faces } = fakeKit();
+  h.ex.setMotion(kit);
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  // The exact dissolve: its target is made and fades over the crossfade's full time.
+  const dissolve = track(h.ex.apply([bg('lamp_cu', 'crossfade', 500)], NOW));
+  await flush();
+  const [flat] = h.flats();
+  expect(flat?.key).toBe('screen');
+  advance(250);
+  expect(flat?.p.alpha).toBeGreaterThan(0.4);
+  expect(flat?.p.alpha).toBeLessThan(0.6);
+  expect(dissolve.done).toBe(false);
+  advance(300);
+  await flush();
+  expect(dissolve.done).toBe(true);
+  expect(h.flats()).toEqual([]);
+  // The close-up's face still blinks: its source steps under reduced motion.
+  expect(faces).toHaveLength(3);
+  faceAt(faces, 2).state = { eyes: 'closed', accent: false, mouth: null };
+  const before = h.ex.blinks?.() ?? 0;
+  d.run(1_100);
+  expect(h.ex.blinks?.()).toBe(before + 1);
   h.ex.destroy();
 });

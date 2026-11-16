@@ -91,8 +91,14 @@ export type SceneStats = {
 };
 
 export interface SceneController {
-  /** The render resolution is decided here, from the device's pixel ratio and its class (layout.ts, lever F). */
-  mount(host: HTMLElement, o: { dpr: number; perfClass: PerfClass; fetchAsset: FetchAsset }): Promise<Result<void, SceneError>>;
+  /**
+   * The render resolution is decided here, from the device's pixel ratio and its class (layout.ts, lever F).
+   * `reducedMotion` (SH7, D2): a camera move lands at its end; `frozen` (D8): the faces start at rest. Read once.
+   */
+  mount(
+    host: HTMLElement,
+    o: { dpr: number; perfClass: PerfClass; fetchAsset: FetchAsset; reducedMotion?: boolean; frozen?: boolean },
+  ): Promise<Result<void, SceneError>>;
   /**
    * Releases every preload:* holder (the window's included) and every next:* holder except next:<m.chapterId> (F4, F5):
    * the entry tag, which the chapter's first window ends once it joined its files (shots §5.8 step 1c).
@@ -844,7 +850,9 @@ export function createSceneController(): SceneController {
         fps: AMBIENT_FPS[o.perfClass],
         input: document,
       });
-      // E6: a pause, a cover or an animation mode set before the mount holds this loop from its start.
+      // E6: a pause, a cover or an animation mode set before the mount holds this loop from its start; the mount's own
+      // modes join them (D2, D8).
+      holds.setAnimation({ reduced: o.reducedMotion === true, ...(o.frozen === undefined ? {} : { frozen: o.frozen }) });
       holds.attach(loop);
       const scheduler = createAssetScheduler({
         registry,
@@ -867,6 +875,7 @@ export function createSceneController(): SceneController {
         // The swap point wants the step's window; a release retries what the window was refused (shots §5.8).
         ...windowDeps(scheduler),
         wantMotion: () => loader.want(),
+        reduced: o.reducedMotion === true,
       });
       if (motion !== null) {
         executor.setMotion(motion);

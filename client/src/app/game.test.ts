@@ -188,7 +188,12 @@ function catalog(): ChapterCatalog {
       { id: CH2, paid: true, productId: 'chapter:ch2' as ProductId, next: null, title: title('Two') },
       { id: CH3, paid: false, productId: null, next: null, title: title('Three') },
     ],
-    cast: { ally: { char: 'ally', name: { ru: 'Элли', en: 'Ally' } } } as ChapterCatalog['cast'],
+    cast: {
+      ally: { char: 'ally', name: { ru: 'Элли', en: 'Ally' } },
+      // SH7's talk rows: a second face, and a speaker with none (B15).
+      stranger: { char: 'stranger', name: { ru: 'Незнакомец', en: 'Stranger' } },
+      radio: { char: null, name: { ru: 'Рация', en: 'Radio' } },
+    } as ChapterCatalog['cast'],
   };
 }
 
@@ -304,6 +309,8 @@ type FakeScene = SceneController & {
   readonly covers: Array<{ reason: string; on: boolean }>;
   readonly animations: Array<'live' | 'frozen'>;
   readonly cueSubs: unknown[];
+  /** Each mount's options (SH7: `reducedMotion`, `frozen`). */
+  readonly mounts: Array<Parameters<SceneController['mount']>[1]>;
 };
 
 function fakeScene(): FakeScene {
@@ -315,6 +322,7 @@ function fakeScene(): FakeScene {
   const covers: FakeScene['covers'] = [];
   const animations: FakeScene['animations'] = [];
   const cueSubs: unknown[] = [];
+  const mounts: FakeScene['mounts'] = [];
   let stage = EMPTY_STAGE;
   /** The tag setChapter kept, which the first window ends (the scheduler's step 1c). */
   let entry: string | null = null;
@@ -342,8 +350,10 @@ function fakeScene(): FakeScene {
     covers,
     animations,
     cueSubs,
-    mount: async () => {
+    mounts,
+    mount: async (_host, o) => {
       calls.push('mount');
+      mounts.push(o);
       return { ok: true, value: undefined };
     },
     setChapter(m) {
@@ -6402,5 +6412,144 @@ test("game: the first windowed step after an entry's puzzle loads the full tier"
     { op: 'apply', preview: false, keep: false },
   ]);
   expect(h.scene.windows.at(-1)?.window).toEqual(NO_WINDOW);
+  h.game.dispose();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// SH7 (D2, D8, D11): the game drives the scene's talk, the panel cover, the cue hand-over and the mount's modes.
+
+/** ch1 for the talk rows: two speakers, narration, a thought, a speaker with no face, then a choice set. */
+const TALK_CH1 = [
+  '-> arrival',
+  '=== arrival ===',
+  '# scene: hall',
+  '# show: ally neutral at=left',
+  'ally: Welcome. #id:ch1.arrival.l001',
+  'stranger: Who is there, out in the rain at this late hour, with the lamp out and the house asleep... #id:ch1.arrival.l002',
+  'It is late. #id:ch1.arrival.l003',
+  'ally: He is lying. #think #id:ch1.arrival.l004',
+  'radio: The keeper has not come down from the lamp room since the storm began two whole nights ago, and nobody has heard him. #id:ch1.arrival.l005',
+  '* [Stay. #id:ch1.arrival.c001]',
+  '    -> END',
+  '* [Leave. #id:ch1.arrival.c002]',
+  '    -> END',
+];
+const talkCh1 = (): LoadedChapter => chapter('ch1', TALK_CH1, { arrival: { assets: ['bg/hall', 'char/ally/neutral'], ending: true } });
+
+test("game: a line's speaker talks until lineShown", async () => {
+  const h = harness({ chapters: [talkCh1()] });
+  await startManor(h); // l001
+  expect(h.scene.talks).toEqual([{ char: 'ally', o: { think: false } }]);
+  h.game.lineShown();
+  expect(h.scene.talks.at(-1)).toEqual({ char: null, o: undefined });
+  // The next line moves the talker.
+  await h.game.advance(); // l002
+  expect(h.scene.talks.at(-1)).toEqual({ char: 'stranger', o: { think: false } });
+  h.game.lineShown();
+  h.scene.talks.length = 0;
+  // Narration stops the faces; a thought talks with `think`; a speaker with no face (B15) is heard, off-screen.
+  await h.game.advance(); // l003
+  await h.game.advance(); // l004
+  h.game.lineShown();
+  await h.game.advance(); // l005
+  // A choice set talks null.
+  await h.game.advance();
+  expect(h.vm.choices).not.toBeNull();
+  expect(h.scene.talks).toEqual([
+    { char: null, o: undefined },
+    { char: 'ally', o: { think: true } },
+    { char: null, o: undefined },
+    { char: null, o: { think: false, offstage: true } },
+    { char: null, o: undefined },
+  ]);
+  h.game.dispose();
+});
+
+test('game: an instant line talks for its nominal time', async () => {
+  const h = harness({ chapters: [talkCh1()] });
+  h.vm.speed = 'instant';
+  await startManor(h); // l001: 8 graphemes, under the floor
+  h.game.lineShown();
+  await h.game.advance(); // l002: 90 graphemes at normal speed (45 per second)
+  h.game.lineShown();
+  // Its reveal sends no stop: the timed talk ends itself.
+  expect(h.scene.talks).toEqual([
+    { char: 'ally', o: { think: false, forMs: 400 } },
+    { char: 'stranger', o: { think: false, forMs: 2_000 } },
+  ]);
+  // Arm: reduced motion at normal speed reveals at once too; the faceless speaker's long line is capped.
+  h.vm.speed = 'normal';
+  h.vm.reducedMotion = true;
+  h.scene.talks.length = 0;
+  await h.game.advance(); // l003
+  await h.game.advance(); // l004
+  h.game.lineShown();
+  await h.game.advance(); // l005: 117 graphemes
+  h.game.lineShown();
+  expect(h.scene.talks).toEqual([
+    { char: null, o: undefined },
+    { char: 'ally', o: { think: true, forMs: 400 } },
+    { char: null, o: { think: false, forMs: 2_500, offstage: true } },
+  ]);
+  h.game.dispose();
+});
+
+test('game: an opaque frame covers the stage once its entrance ends', async () => {
+  const h = harness();
+  await startManor(h);
+  const host = sessionHost();
+  host.frameShown?.({ id: 1 });
+  expect(h.scene.covers).toEqual([]);
+  h.clock.advance(299);
+  expect(h.scene.covers).toEqual([]);
+  h.clock.advance(1);
+  expect(h.scene.covers).toEqual([{ reason: 'panel', on: true }]);
+  host.frameShown?.(null);
+  expect(h.scene.covers).toEqual([
+    { reason: 'panel', on: true },
+    { reason: 'panel', on: false },
+  ]);
+  h.game.dispose();
+});
+
+test('game: a frame cleared inside its entrance never covers', async () => {
+  const h = harness();
+  await startManor(h);
+  const host = sessionHost();
+  host.frameShown?.({ id: 1 });
+  h.clock.advance(200);
+  host.frameShown?.(null);
+  h.clock.advance(1_000);
+  expect(h.scene.covers).toEqual([{ reason: 'panel', on: false }]);
+  h.game.dispose();
+});
+
+test('game: a disposed session leaves no pending cover', async () => {
+  const h = harness();
+  await startManor(h);
+  const p0 = h.clock.pending;
+  sessionHost().frameShown?.({ id: 1 });
+  expect(h.clock.pending).toBe(p0 + 1);
+  h.game.dispose();
+  expect(h.clock.pending).toBe(0);
+  h.clock.advance(1_000);
+  expect(h.scene.covers).toEqual([]);
+});
+
+test("game: reduced motion reaches the scene's mount", async () => {
+  const h = harness();
+  h.vm.reducedMotion = true;
+  await startManor(h);
+  // vitest's mode is not the e2e build's, so the faces run.
+  expect(h.scene.mounts).toHaveLength(1);
+  expect(h.scene.mounts[0]).toMatchObject({ reducedMotion: true, frozen: false });
+  h.game.dispose();
+});
+
+test("game: the scene receives the session's cue subscription", async () => {
+  const h = harness();
+  await startManor(h);
+  expect(h.scene.cueSubs).toHaveLength(1);
+  expect(typeof h.scene.cueSubs[0]).toBe('function');
   h.game.dispose();
 });

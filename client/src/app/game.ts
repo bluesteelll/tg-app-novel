@@ -10,6 +10,7 @@ import type { Endpoints } from '../api/endpoints.ts';
 import type { ProductDto, SaveListResponse, SaveSlot, SaveSummary } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
 import type { AudioManager } from '../audio/manager.ts';
+import { FRAME_OPEN_MS } from '../cues/types.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import { t } from '../i18n/index.ts';
 import type { Lang } from '../i18n/index.ts';
@@ -62,7 +63,7 @@ import { latched, metaHold, PURCHASE_OPEN, RELOAD_POLL_MS, RELOADED_FOR, withLat
 import { imageIds, knotAssets, lookOf, manifestIndex, roomWindowKey, splitBatch, windowFor, withRoomProps } from './stage-route.ts';
 import type { WorldAt } from './stage-route.ts';
 import { createYields, LAZY_CHUNKS } from './yields.ts';
-import type { LazyChunks, Yields, YieldsHost } from './yields.ts';
+import type { LazyChunks, ShownFrame, Yields, YieldsHost } from './yields.ts';
 
 /** What a session starts from: a chapter of the story from its start, or a save slot of the story. */
 export type StartFrom = { kind: 'new'; story: StoryId; chapter: ChapterId } | { kind: 'slot'; story: StoryId; slot: SaveSlot };
@@ -305,6 +306,12 @@ const IDLE: PurchaseState = Object.freeze({ kind: 'idle' });
 const RESUME_TOAST = 'resume';
 /** The dev banner of a dropped tag (D10); `__TG_MOCK__` builds only. */
 const TAG_ERROR_TOAST = '__novelDebug:tag-error';
+/**
+ * SH7 (D11, O4): an instantly revealed line talks for its graphemes at normal speed, within these bounds, as no reveal
+ * ends to stop the flaps.
+ */
+const TALK_MIN_MS = 400;
+const TALK_LINE_MAX_MS = 2500;
 
 const ok = <T>(value: T): Result<T, never> => ({ ok: true, value });
 const err = <E>(error: E): Result<never, E> => ({ ok: false, error });
@@ -399,6 +406,8 @@ type DebugHook = {
   /** No argument: `'restorable'` (perf e2e); `'hard'`: the loss nothing restores (memory e2e). */
   forceContextLoss(mode?: 'restorable' | 'hard'): void;
   propRects(): ReturnType<SceneController['debugPropRects']>;
+  /** SH7 (D8, A16): `'live'` runs the faces and ambient sources in a build whose default is `'frozen'` (e2e). */
+  setAnimation(mode: 'live' | 'frozen'): void;
 };
 
 export function createGame(deps: GameDeps): Game {
@@ -412,6 +421,12 @@ export function createGame(deps: GameDeps): Game {
   const loadPurchase = deps.loadPurchase ?? (() => import('../purchase/flow.ts'));
   const loadOverlayUi = deps.loadOverlayUi ?? (() => import('../ui/overlays/index.ts'));
   let mounted: Promise<Result<void, SceneError>> | null = null;
+  /** SH7 (D8): the faces and ambient sources run, or hold at rest (the e2e build's default, so its pins stay still). */
+  let animation: 'live' | 'frozen' = import.meta.env.MODE === 'e2e' ? 'frozen' : 'live';
+  /** SH7 (D11): the opaque frame's entrance timer, after which it covers the stage. */
+  let coverTimer: number | null = null;
+  /** SH7 (D11): the shown line talks for a set time (an instant reveal), so its reveal sends no stop. */
+  let talkTimed = false;
   let sound: AudioManager | null = null;
   let autoTimer: number | null = null;
   let skipTimer: number | null = null;
@@ -602,6 +617,45 @@ export function createGame(deps: GameDeps): Game {
   const dropConflict = (s: Session, slot: ManualSlot): void => {
     clearHold(slot);
     s.conflicts.delete(slot);
+  };
+  /**
+   * SH7 (D11, B15): the scene's talk for a shown step. A line's speaker flaps (its cast `char`) and the faces hear it; a
+   * named speaker with no face (`radio`, `voice`) flaps nothing and is heard; narration and every other step stop the
+   * faces. A line revealed at once (instant speed, reduced motion) talks for its nominal time at normal speed (O4).
+   */
+  const talkOf = (step: RunnerStep, think: boolean): Parameters<SceneController['talk']> => {
+    if (step.kind !== 'line' || step.speaker === null) {
+      return [null];
+    }
+    const char = Object.hasOwn(catalog.cast, step.speaker) ? (catalog.cast[step.speaker]?.char ?? null) : null;
+    const where = char === null ? { offstage: true } : {};
+    if (vm.speed !== 'instant' && !vm.reducedMotion) {
+      return [char, { think, ...where }];
+    }
+    const nominal = Math.round((graphemes(vm.line?.text ?? '').length * 1000) / GRAPHEMES_PER_SECOND.normal);
+    return [char, { think, forMs: Math.min(TALK_LINE_MAX_MS, Math.max(TALK_MIN_MS, nominal)), ...where }];
+  };
+  /**
+   * SH7 (D11): an opaque frame covers the stage once its entrance has ended (FRAME_OPEN_MS on the game's clock), so the
+   * faces and ambient sources under it hold; `null` uncovers at once, and a frame cleared inside its entrance never
+   * covers.
+   */
+  const panelCover = (f: ShownFrame | null): void => {
+    clearCover();
+    if (f === null) {
+      scene.setCovered('panel', false);
+      return;
+    }
+    coverTimer = clock.setTimeout(() => {
+      coverTimer = null;
+      scene.setCovered('panel', true);
+    }, FRAME_OPEN_MS);
+  };
+  const clearCover = (): void => {
+    if (coverTimer !== null) {
+      clock.clearTimeout(coverTimer);
+      coverTimer = null;
+    }
   };
   /** F2 auto: `1200 + 40 × graphemes` ms at normal speed, scaled by the text speed. */
   const autoDelay = (text: string): number => {
@@ -826,6 +880,10 @@ export function createGame(deps: GameDeps): Game {
         return _never;
       }
     }
+    // SH7 (D11): the step's talk, with its view set: the speaker's face flaps, the others hear it.
+    const talk = talkOf(step, batch.think);
+    talkTimed = talk[1]?.forMs !== undefined;
+    scene.talk(...talk);
     // LFL T1: only now, with the step's batch loaded and its view set, so nothing before it shares the link with the
     // meta controller's chunk (RULINGS 149).
     meta?.stepShown();
@@ -1585,6 +1643,9 @@ export function createGame(deps: GameDeps): Game {
       return run(fn);
     },
     queue: (fn) => after(fn),
+    // SH7 (D11): the session's cue subscription reaches the scene (SH10 subscribes 'scene' through it).
+    sceneCues: (subscribe) => scene.sceneCues?.(subscribe),
+    frameShown: (f) => panelCover(f),
   });
 
   const openSession = (story: StoryEntry): Session => {
@@ -1640,6 +1701,8 @@ export function createGame(deps: GameDeps): Game {
     clearAuto();
     clearSkip();
     clearHold();
+    // SH7 (D11, M-SH7g): a frame reported to the host and never cleared leaves no cover timer behind the session.
+    clearCover();
     s.abort.abort();
     s.yields.dispose();
     s.runner?.dispose();
@@ -1705,7 +1768,14 @@ export function createGame(deps: GameDeps): Game {
   const mountOnce = (): Promise<Result<void, SceneError>> => {
     mounted ??= (async () => {
       const el = host ?? (await new Promise<HTMLElement>((resolve) => hostWaiters.push(resolve)));
-      const r = await scene.mount(el, { dpr: deps.dpr(), perfClass: tg.perfClass ?? 'AVERAGE', fetchAsset: deps.fetchAsset });
+      const r = await scene.mount(el, {
+        dpr: deps.dpr(),
+        perfClass: tg.perfClass ?? 'AVERAGE',
+        fetchAsset: deps.fetchAsset,
+        // SH7 (D2, D8): read once per page.
+        reducedMotion: vm.reducedMotion,
+        frozen: animation === 'frozen',
+      });
       if (!r.ok) {
         mounted = null; // the controller is idle again after a failed init (scene/controller.ts)
       }
@@ -1997,6 +2067,10 @@ export function createGame(deps: GameDeps): Game {
       lineId: () => vm.line?.lineId ?? null,
       forceContextLoss: (mode) => scene.debugForceContextLoss(mode ?? 'restorable'),
       propRects: () => scene.debugPropRects(),
+      setAnimation: (mode) => {
+        animation = mode;
+        scene.setAnimation(mode);
+      },
     };
     (globalThis as typeof globalThis & { __novelDebug?: DebugHook }).__novelDebug = hook;
   }
@@ -2070,6 +2144,10 @@ export function createGame(deps: GameDeps): Game {
     },
     lineShown() {
       revealed = true;
+      // SH7 (D11): the reveal ends the talk, unless the line talks for a set time (an instant reveal).
+      if (session !== null && !talkTimed) {
+        scene.talk(null);
+      }
       scheduleAuto();
       session?.yields.lineShown();
       meta?.lineShown();
