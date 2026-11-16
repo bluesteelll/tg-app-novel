@@ -31,6 +31,7 @@ import { backScreen, coversStage, createPuzzleView, forwardHost } from '../puzzl
 import type { HintLadderUiView, PuzzleFrameView, PuzzleHostCallbacks, PuzzleHostProps } from '../puzzle-view.svelte.ts';
 import type { CueStageProps } from '../state.svelte.ts';
 import appSource from '../App.svelte?raw';
+import exploreViewSource from '../explore/ExploreView.svelte?raw';
 import HintLadder from './HintLadder.svelte';
 import PuzzleHost from './PuzzleHost.svelte';
 import puzzleHostSource from './PuzzleHost.svelte?raw';
@@ -91,6 +92,7 @@ function frameOf(over: Partial<PuzzleFrameView> = {}): PuzzleFrameView {
     ui: CodeLock,
     loadFailed: false,
     retrying: false,
+    presentation: 'overlay',
     ...over,
   };
 }
@@ -274,8 +276,8 @@ const EMITTER = ((anchor: Comment, props: PuzzleUiProps): void => {
 
 test('puzzle-host: a gesture step reaches the cue bus through oncue', () => {
   // Engine plan §8.3 (GM7r): a type UI's `oncue(name, index)` reaches the host's `oncue` as its control's `ui` cue, with
-  // the step's part cell as its element (the stage's `control` target) and no point. GestureCue has no member until
-  // GM7p's `path`, so the name is a fixture's (the cast).
+  // the step's part cell as its element (the stage's `control` target) and no point. The name is a fixture's (the
+  // cast), so the test stays off every type's control set (GestureCue has members since GM7p's `path`).
   const oncue = vi.fn();
   const { container } = render(PuzzleHost, hostProps({ oncue, frame: frameOf({ ui: EMITTER }) }));
   const cell = must(container.querySelector('[data-cue-part="1"]'), 'the part cell');
@@ -289,6 +291,48 @@ test("puzzle-host: a type UI's reach report reaches onreach", () => {
   render(PuzzleHost, hostProps({ onreach, frame: frameOf({ ui: EMITTER }) }));
   must(emitted.at(-1), 'the type UI props').onreach?.([3, 2, 1]);
   expect(onreach.mock.calls).toEqual([[[3, 2, 1]]]);
+});
+
+test("puzzle-host: a type UI's refused input reaches onblocked", () => {
+  // D7 (Q4's host half): a type UI that refuses an input reports its part; the host hands it on in either place.
+  for (const place of ['frame', 'room'] as const) {
+    const onblocked = vi.fn();
+    const { unmount } = render(PuzzleHost, { ...hostProps({ onblocked, frame: frameOf({ ui: EMITTER, mode: 'explore', presentation: place === 'room' ? 'view' : 'overlay' }) }), place });
+    must(emitted.at(-1), 'the type UI props').onblocked?.(1);
+    expect([place, onblocked.mock.calls]).toEqual([place, [[1]]]);
+    unmount();
+  }
+});
+
+test("puzzle-host: a type UI's onwork, oncommit and ondemo reach the host in either place", () => {
+  // Gates F1 (RULINGS 368): the room place hands its type UI every device callback, as the overlay place does (D7's
+  // test pins `onblocked` alone): a press with its wrong flag, the commit part, the demonstration control.
+  for (const place of ['frame', 'room'] as const) {
+    const onwork = vi.fn();
+    const oncommit = vi.fn();
+    const ondemo = vi.fn();
+    const frame = frameOf({ ui: EMITTER, mode: 'explore', presentation: place === 'room' ? 'view' : 'overlay' });
+    const { unmount } = render(PuzzleHost, { ...hostProps({ onwork, oncommit, ondemo, frame }), place });
+    const props = must(emitted.at(-1), 'the type UI props');
+    props.onwork?.([2, 1], true);
+    props.oncommit?.();
+    props.ondemo?.();
+    expect([place, onwork.mock.calls, oncommit.mock.calls.length, ondemo.mock.calls.length]).toEqual([place, [[[2, 1], true]], 1, 1]);
+    unmount();
+  }
+});
+
+test('puzzle-host: a room-place host holds its type UI busy during a countdown', async () => {
+  // D16: a device has no Try to hold, so in the room place its type UI is busy through a 429 countdown too; the overlay
+  // place keeps `frame.busy || ended` (its Try holds the countdown).
+  const counting = frameOf({ ui: EMITTER, mode: 'explore', presentation: 'view', line: 'rate-limited', retryAfter: 3 });
+  const room = render(PuzzleHost, { ...hostProps({ frame: counting }), place: 'room' });
+  expect(must(emitted.at(-1), 'the room UI props').busy).toBe(true);
+  await room.rerender({ frame: { ...counting, line: 'idle', retryAfter: null } });
+  expect(must(emitted.at(-1), 'the room UI props').busy).toBe(false);
+  room.unmount();
+  render(PuzzleHost, hostProps({ frame: { ...counting, presentation: 'overlay' } }));
+  expect(must(emitted.at(-1), 'the overlay UI props').busy).toBe(false);
 });
 
 test('puzzle-host: the status line is a cue target', () => {
@@ -400,6 +444,18 @@ function recordingHost(tag: string, calls: unknown[][]): PuzzleHostCallbacks {
     onreach: (c) => {
       calls.push([tag, 'onreach', c]);
     },
+    onwork: (w, wrong) => {
+      calls.push([tag, 'onwork', w, wrong]);
+    },
+    oncommit: () => {
+      calls.push([tag, 'oncommit']);
+    },
+    ondemo: () => {
+      calls.push([tag, 'ondemo']);
+    },
+    onblocked: (part) => {
+      calls.push([tag, 'onblocked', part]);
+    },
   };
 }
 
@@ -421,6 +477,10 @@ function callEveryCallback(c: PuzzleHostCallbacks): ReturnType<PuzzleHostCallbac
   c.ongetmore();
   c.oncue?.(TRY_CUE);
   c.onreach?.([3, 2, 1]);
+  c.onwork?.([0, 2], true);
+  c.oncommit?.();
+  c.ondemo?.();
+  c.onblocked?.(1);
   return named;
 }
 
@@ -436,6 +496,10 @@ const everyCallbackOn = (tag: string): unknown[][] => [
   [tag, 'ongetmore'],
   [tag, 'oncue', 'ui:puzzle-try'],
   [tag, 'onreach', [3, 2, 1]],
+  [tag, 'onwork', [0, 2], true],
+  [tag, 'oncommit'],
+  [tag, 'ondemo'],
+  [tag, 'onblocked', 1],
 ];
 
 test("puzzle-view: forwardHost reaches the current session's host and nothing after it ends", () => {
@@ -443,7 +507,22 @@ test("puzzle-view: forwardHost reaches the current session's host and nothing af
   let current: PuzzleHostCallbacks | undefined = recordingHost('a', calls);
   const forward = forwardHost(() => current);
   // One forwarder per callback, no more: a lane adding a callback edits the forwarder and this list.
-  expect(Object.keys(forward).sort()).toEqual(['item', 'onchange', 'oncue', 'ongetmore', 'ongiveup', 'onhint', 'onreach', 'onretry', 'ontry', 'onusehint']);
+  expect(Object.keys(forward).sort()).toEqual([
+    'item',
+    'onblocked',
+    'onchange',
+    'oncommit',
+    'oncue',
+    'ondemo',
+    'ongetmore',
+    'ongiveup',
+    'onhint',
+    'onreach',
+    'onretry',
+    'ontry',
+    'onusehint',
+    'onwork',
+  ]);
   expect(callEveryCallback(forward)).toEqual({ name: 'a medal', glyph: 'sun' });
   expect(calls).toEqual(everyCallbackOn('a'));
   // A later session: the same forwarders reach its host only (the getter runs at each call, never at creation).
@@ -462,10 +541,11 @@ test("puzzle-view: forwardHost reaches the current session's host and nothing af
   expect(calls).toEqual([]);
 });
 
-test('puzzle-view: coversStage is true for every frame today', () => {
+test('puzzle-view: coversStage is true for every overlay frame', () => {
   expect(coversStage(null)).toBe(false);
-  // A linear or an exploration puzzle, its type chunk loading or failed, an ended one: each covers the stage.
+  // A linear or an exploration overlay puzzle, its type chunk loading or failed, an ended one: each covers the stage.
   const frames = [frameOf(), frameOf({ mode: 'explore' }), frameOf({ ui: null }), frameOf({ ui: null, loadFailed: true }), frameOf({ line: 'solved' })];
+  expect(frames.map((f) => f.presentation)).toEqual(['overlay', 'overlay', 'overlay', 'overlay', 'overlay']);
   expect(frames.map((f) => coversStage(f))).toEqual([true, true, true, true, true]);
   // The store answers it for its frame at each read (App reads it there), following every write of the frame.
   const view = createPuzzleView();
@@ -474,6 +554,26 @@ test('puzzle-view: coversStage is true for every frame today', () => {
   expect(view.covers).toBe(true);
   view.frame = null;
   expect(view.covers).toBe(false);
+});
+
+test('puzzle-view: coversStage is false for a view frame', () => {
+  // Engine plan §7.5 "Host" (GM8h): a device is drawn inside its room, so the stage layer stays live under it and App's
+  // frame layer never renders it, whether its type chunk is in or failed; the store answers the same at each read.
+  const frames = [frameOf({ mode: 'explore', presentation: 'view' }), frameOf({ mode: 'explore', presentation: 'view', ui: null, loadFailed: true })];
+  expect(frames.map((f) => coversStage(f))).toEqual([false, false]);
+  const view = createPuzzleView();
+  view.frame = frameOf({ mode: 'explore', presentation: 'view' });
+  expect(view.covers).toBe(false);
+  view.frame = frameOf({ mode: 'explore' });
+  expect(view.covers).toBe(true);
+});
+
+test('puzzle-view: backScreen pushes no overlay for a view frame', () => {
+  // A device closes by leaving its view (the root back), never by a `puzzle` overlay: Back pops the stack's own
+  // overlays first (the ladder, the inventory) and then leaves the room. An overlay explore frame keeps its overlay.
+  expect(backScreen(frameOf({ mode: 'explore', presentation: 'view' }))).toBeNull();
+  expect(backScreen(frameOf({ mode: 'explore', presentation: 'overlay' }))).toEqual({ kind: 'puzzle' });
+  expect(backScreen(frameOf({ mode: 'linear', presentation: 'overlay' }))).toBeNull();
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -632,13 +732,15 @@ function declarationsOf(source: string, selector: string): Map<string, string> {
 }
 
 test('puzzle-host: Retry is disabled only while it reloads', () => {
-  // GM3w's two bindings, PuzzleHost's notice and App's failed-host block: `retrying`, never `busy` (00-decision-table W1).
-  for (const [name, source] of [
-    ['PuzzleHost', puzzleHostSource],
-    ['App', appSource],
+  // GM3w's two bindings, PuzzleHost's notice and App's failed-host block, and GM8h's: the room bar's Retry and the
+  // in-room failed-host Retry (ExploreView's, over its `puzzle.frame`): `retrying`, never `busy` (00-decision-table W1).
+  for (const [name, source, want] of [
+    ['PuzzleHost', puzzleHostSource, ['frame.retrying', 'frame.retrying']],
+    ['App', appSource, ['frame.retrying']],
+    ['ExploreView', exploreViewSource, ['frame.retrying']],
   ] as const) {
     const bindings = [...source.matchAll(/data-cue="puzzle-retry"[^\n]*/g)].map((m) => /\bdisabled=\{([^}]*)\}/.exec(m[0])?.[1] ?? null);
-    expect(bindings, name).toEqual(['frame.retrying']);
+    expect(bindings, name).toEqual(want);
   }
   // The frame's Retry: enabled over a failed load, during a values wait too (neither wait wins); disabled while it reloads.
   const cases: ReadonlyArray<readonly [string, Partial<PuzzleFrameView>, boolean]> = [
@@ -650,6 +752,49 @@ test('puzzle-host: Retry is disabled only while it reloads', () => {
     const { getByRole, unmount } = render(PuzzleHost, hostProps({ frame: frameOf({ ui: null, loadFailed: true, ...over }) }));
     expect((getByRole('button', { name: t('en', 'puzzle.retry') }) as HTMLButtonElement).disabled, name).toBe(disabled);
     unmount();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM8h: the room and ladder places (engine plan §7.5 "Host"): a device's compact bar and its parts layer inside the
+// room, the ladder as a room sheet
+
+/** A device's frame as yields writes it: an explore-mode view frame. */
+const deviceFrame = (over: Partial<PuzzleFrameView> = {}): PuzzleFrameView => frameOf({ mode: 'explore', giveUp: false, presentation: 'view', ...over });
+/** The host's props in `place`. */
+const placed = (place: 'room' | 'ladder', over: Partial<PuzzleHostProps> = {}): PuzzleHostProps => ({ ...hostProps({ frame: deviceFrame(), ...over }), place });
+
+test('puzzle-host: a room-place host offers no give-up', () => {
+  // A lock puzzle cannot be abandoned: the compact bar holds no give-up, even for a frame that allows it.
+  const { container } = render(PuzzleHost, placed('room', { frame: deviceFrame({ mode: 'linear', giveUp: true }) }));
+  expect(container.querySelector('.device > .bar')).not.toBeNull();
+  expect([container.querySelector('.give-up'), container.querySelector('[data-cue^="give-up"]')]).toEqual([null, null]);
+});
+
+test("puzzle-host: a room-place host's cue root stops emitting when its frame leaves", async () => {
+  // O10 / K1: in a room the host unmounts with its device (ExploreView drops it when the frame leaves), beside the
+  // frame-null branch it shares with the overlay; either way its root's listeners go with it (`r.destroy()`), so a
+  // control left in the detached root emits nothing.
+  for (const leave of ['the frame leaves', 'the host unmounts'] as const) {
+    const oncue = vi.fn();
+    const { container, rerender, unmount } = render(PuzzleHost, placed('room', { oncue }));
+    await tick();
+    const root = must(container.querySelector('.device[data-cue-root="frame"]'), 'the room-place root');
+    const hint = must(root.querySelector('[data-cue="puzzle-hint"]'), "the bar's Hint");
+    pointerClick(hint);
+    expect(oncue, leave).toHaveBeenCalledTimes(1);
+    oncue.mockClear();
+    if (leave === 'the frame leaves') {
+      await rerender({ frame: null });
+    } else {
+      unmount();
+    }
+    expect(root.isConnected, leave).toBe(false);
+    pointerClick(hint);
+    expect(oncue, leave).not.toHaveBeenCalled();
+    if (leave === 'the frame leaves') {
+      unmount();
+    }
   }
 });
 
@@ -1114,4 +1259,175 @@ test('puzzle ui: components do no I/O', () => {
     ['../../telegram/index.ts', false],
     ['../../i18n/index.ts', true],
   ]);
+});
+
+test('puzzle-host: a room-place host whose type chunk failed shows Retry in its bar', async () => {
+  // C-9: the bar's first row gains Retry while a chunk failed, and the load notice takes the status line's row.
+  const onretry = vi.fn();
+  const failed = deviceFrame({ ui: null, loadFailed: true });
+  const { container, rerender } = render(PuzzleHost, placed('room', { onretry, frame: failed }));
+  const retry = must(container.querySelector<HTMLButtonElement>('.bar > .row > button[data-cue="puzzle-retry"]'), 'the bar Retry');
+  expect([retry.textContent?.trim(), retry.disabled]).toEqual([t('en', 'puzzle.retry'), false]);
+  const notice = must(container.querySelector('.bar > [data-cue-notice]'), 'the bar notice');
+  expect([notice.getAttribute('role'), notice.textContent?.trim(), container.querySelector('.bar [data-cue-status]')]).toEqual([
+    'alert',
+    t('en', 'puzzle.load_failed'),
+    null,
+  ]);
+  retry.click();
+  expect(onretry).toHaveBeenCalledTimes(1);
+  await rerender({ frame: { ...failed, retrying: true } });
+  expect(retry.disabled).toBe(true);
+  // Loaded: no Retry, the status line back in its row.
+  await rerender({ frame: deviceFrame() });
+  expect([container.querySelector('[data-cue="puzzle-retry"]'), container.querySelector('.bar > [data-cue-status]') !== null]).toEqual([null, true]);
+});
+
+test('puzzle-host: the room-place bar is anchored to the top', () => {
+  // D10: happy-dom computes no layout, so the declarations are read from the source. The bar sits under the Telegram
+  // header; the device's root and parts layer take no tap (a tap beside the device reaches the room), the bar does
+  // (RULINGS 366 B6, W1; the parts' own `auto` is each type UI's).
+  expect(declarationsOf(puzzleHostSource, '.bar').get('top')).toBe('calc(var(--app-inset-top, 0px) + 8px)');
+  expect(['.device', '.parts', '.bar'].map((s) => declarationsOf(puzzleHostSource, s).get('pointer-events'))).toEqual(['none', 'none', 'auto']);
+  expect(['.device', '.parts'].map((s) => declarationsOf(puzzleHostSource, s).get('position'))).toEqual(['absolute', 'absolute']);
+});
+
+test('puzzle-host: the room-place bar keeps one button row and clamps its status to two lines', () => {
+  // D10: one button row that never wraps, 44 px controls, a status of at most two 18 px lines (the bar's 118 px).
+  expect(declarationsOf(puzzleHostSource, '.row').get('flex-wrap')).toBe('nowrap');
+  const buttons = declarationsOf(puzzleHostSource, '.bar button');
+  expect([buttons.get('min-height'), buttons.get('min-width')]).toEqual(['44px', '44px']);
+  for (const s of ['.bar .status', '.bar .attempts']) {
+    const d = declarationsOf(puzzleHostSource, s);
+    expect([s, d.get('font-size'), d.get('line-height')]).toEqual([s, '14px', '18px']);
+  }
+  const status = declarationsOf(puzzleHostSource, '.bar .status');
+  expect(['line-clamp', '-webkit-line-clamp', '-webkit-box-orient', 'display', 'overflow'].map((p) => status.get(p))).toEqual(['2', '2', 'vertical', '-webkit-box', 'hidden']);
+  expect([declarationsOf(puzzleHostSource, '.title').get('min-width'), declarationsOf(puzzleHostSource, '.title').get('text-overflow')]).toEqual(['0', 'ellipsis']);
+});
+
+test('puzzle-host: the ladder place pads past the safe area and scrolls', () => {
+  // Places F3 (RULINGS 368): the ladder place is its sheet's panel, so it pads itself past the safe area by
+  // `--app-inset-*` plus the sheets' 16 px and scrolls, as every explore sheet does (Inventory, LockPanel,
+  // DocumentReader); it draws no background, so the sheet's backdrop stays around the ladder's card.
+  const { container } = render(PuzzleHost, placed('ladder', { ladder: ladderOf(TIERS, { cost: 1, balance: 2 }) }));
+  expect(container.querySelector('.ladder-place > section.ladder')).not.toBeNull();
+  const d = declarationsOf(puzzleHostSource, '.ladder-place');
+  expect(['box-sizing', 'height', 'overflow-y', 'padding', 'background'].map((p) => d.get(p)?.replace(/\s+/g, ' '))).toEqual([
+    'border-box',
+    '100%',
+    'auto',
+    'calc(var(--app-inset-top, 0px) + 16px) calc(var(--app-inset-right, 0px) + 16px) calc(var(--app-inset-bottom, 0px) + 16px) calc(var(--app-inset-left, 0px) + 16px)',
+    undefined,
+  ]);
+});
+
+test('puzzle-host: a room-place host puts its bar before its parts', () => {
+  // Places F7(i) (RULINGS 368): a screen reader meets the device's title first, so the bar (its `h2` with it) comes
+  // before the parts layer. The layout stays (both absolute), and so do the paint and hit order: the device is its own
+  // stacking context (`isolation`), in which the bar's `z-index` keeps it over the parts, while the device as a whole
+  // keeps its place under the ribbon, the explore bar and every sheet.
+  const { container } = render(PuzzleHost, placed('room', { frame: deviceFrame({ ui: EMITTER }) }));
+  const device = must(container.querySelector('section.device'), 'the device');
+  const kinds = [...device.children].map((c) => (c.classList.contains('bar') ? 'bar' : c.classList.contains('parts') ? 'parts' : c.tagName));
+  const title = must(device.querySelector('h2'), 'the title');
+  const part = must(device.querySelector('[data-cue-part="1"]'), 'the part cell');
+  expect([kinds, (title.compareDocumentPosition(part) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0]).toEqual([['bar', 'parts'], true]);
+  expect([declarationsOf(puzzleHostSource, '.device').get('isolation'), declarationsOf(puzzleHostSource, '.bar').get('z-index')]).toEqual(['isolate', '1']);
+});
+
+test('puzzle-host: every puzzle cue target resolves in the room-place bar and the ladder place', async () => {
+  // §8.5 "Cue targets" for a device (GM8h): the room place's bar is the frame marker and the `puzzle` panel, the parts
+  // layer beside it holds the parts (L3: a `part` resolves inside the frame's family root), and the ladder place's
+  // sheet holds the ladder. Never a family root, never the stage centre's fallback for a marked target. A part here is
+  // an answer position (RULINGS 366 B2): `puzzle:input` index 1 and the `work` fact `p.1=2` both land on part 1.
+  stageRig();
+  const stage = document.createElement('div');
+  stage.setAttribute('data-cue-stage', '');
+  document.body.append(stage);
+  type State = 'capped' | 'failed';
+  const wallet = { cost: 1, balance: 2 };
+  const states: Record<State, readonly PuzzleHostProps[]> = {
+    capped: [placed('room', { frame: deviceFrame({ ui: EMITTER, attemptsLeft: 2 }) }), placed('ladder', { ladder: ladderOf(TIERS, wallet, { failed: true }) })],
+    failed: [placed('room', { frame: deviceFrame({ ui: null, loadFailed: true }) }), placed('ladder', { ladder: ladderOf(TIERS, wallet) })],
+  };
+  const MEANT: Readonly<Record<string, () => Element | null>> = {
+    frame: () => document.querySelector('.device > .bar'),
+    status: () => document.querySelector('.bar > .status[role="status"]'),
+    attempts: () => document.querySelector('.bar > .attempts'),
+    part: () => document.querySelector('.device > .parts [data-cue-part="1"]'),
+    tier: () => document.querySelectorAll('.ladder li')[1] ?? null,
+    ladder: () => document.querySelector('section.ladder'),
+    alert: () => document.querySelector('.ladder .failed'),
+    notice: () => document.querySelector('.bar > [data-cue-notice]'),
+  };
+  const centre = (): Box => landing(stage, 'centre');
+  type Row = readonly [state: State, cue: Cue, target: CueTarget, want: () => Element | Box | null];
+  const rows: Row[] = [];
+  for (const [key, spec] of Object.entries(CUE_MOTIONS)) {
+    const targets = [spec.target, ...(spec.with ?? []).map((w) => w.target)];
+    if (key.startsWith('puzzle:')) {
+      for (const tg of targets.filter((x) => x in CUE_TARGET_ATTRS)) {
+        const cue = puzzleCue(key.slice('puzzle:'.length) as PuzzleCue, tg === 'part' ? 1 : tg === 'tier' ? 2 : null);
+        rows.push([tg === 'notice' ? 'failed' : 'capped', cue, tg, MEANT[tg] ?? (() => null)]);
+      }
+    } else if (key.startsWith('ui-state:') && (spec.target === 'panel' || spec.target === 'box')) {
+      const name = key.slice('ui-state:'.length) as UiStateCue;
+      rows.push(['capped', panelCue(name, 'hints'), spec.target, MEANT['ladder'] ?? (() => null)]);
+      rows.push(['capped', panelCue(name, 'puzzle'), spec.target, spec.target === 'box' ? centre : (MEANT['frame'] ?? (() => null))]);
+      if (spec.target === 'box') {
+        rows.push(['failed', panelCue(name, 'puzzle'), spec.target, MEANT['notice'] ?? (() => null)]);
+      }
+    }
+  }
+  // A device's `work` fact (its move) lands on the part its id names.
+  const work: Cue = { kind: 'fact', fact: { kind: 'work', id: 'p.1=2' }, change: 'added', cause: { verb: 'device', at: null, item: null, via: null } };
+  rows.push(['capped', work, 'part', MEANT['part'] ?? (() => null)]);
+  const got: unknown[] = [];
+  const want: unknown[] = [];
+  for (const state of ['capped', 'failed'] as const) {
+    const mounted = states[state].map((p) => render(PuzzleHost, p));
+    await tick();
+    for (const [, cue, tg, pick] of rows.filter((r) => r[0] === state)) {
+      const found = foundOf(resolveTarget(tg, cueEventOf(cue), stage));
+      const meant = pick();
+      const label = `${cueKey(cue)}${cue.kind === 'ui-state' ? `@${cue.panel ?? ''}` : ''} ${tg} (${state})`;
+      const same = found instanceof Element || meant instanceof Element ? found === meant : JSON.stringify(found) === JSON.stringify(meant);
+      got.push([label, same, found instanceof Element ? found.matches('[data-cue-root]') : null, meant === null]);
+      want.push([label, true, meant instanceof Element ? false : null, false]);
+    }
+    // The tap layer: the parts layer is the hit area, never the bar.
+    expect([state, document.querySelector('.device > [data-cue-hit]')?.classList.contains('parts'), document.querySelector('.bar[data-cue-hit], .bar [data-cue-hit]')]).toEqual([state, true, null]);
+    for (const m of mounted) {
+      m.unmount();
+    }
+  }
+  expect(got).toEqual(want);
+  expect(new Set(rows.map((r) => r[2]))).toEqual(new Set(['frame', 'status', 'attempts', 'part', 'tier', 'ladder', 'alert', 'notice', 'panel', 'box']));
+});
+
+test('puzzle-host: a room-place bar shows Try only while a reached answer awaits after an offline reply', async () => {
+  // A device posts by itself (its commit part, its full sequence, its reach); the one case it posts by hand is a reached
+  // answer whose post went offline (§7.5 "Posting per reply kind"): Try then sits in the bar's first row.
+  const ontry = vi.fn();
+  const offline = deviceFrame({ ui: EMITTER, awaiting: true, line: 'offline' });
+  const { container, rerender } = render(PuzzleHost, placed('room', { ontry, frame: offline }));
+  const tryButton = must(container.querySelector<HTMLButtonElement>('.bar > .row > button[data-cue="puzzle-try"]'), 'the bar Try');
+  expect([tryButton.textContent?.trim(), tryButton.disabled]).toEqual([t('en', 'puzzle.try'), false]);
+  tryButton.click();
+  expect(ontry).toHaveBeenCalledTimes(1);
+  // Posting again: yields' re-post writes `busy` with the `checking` line (gates F4), so Try leaves the bar.
+  await rerender({ frame: { ...offline, line: 'checking', busy: true } });
+  expect(container.querySelector('[data-cue="puzzle-try"]')).toBeNull();
+  // Every other state: no Try in the bar.
+  for (const over of [
+    { awaiting: true, line: 'checking' },
+    { awaiting: true, line: 'idle' },
+    { awaiting: false, line: 'offline' },
+    { awaiting: null, line: 'offline' },
+    { awaiting: true, line: 'rate-limited', retryAfter: 2 },
+  ] as const) {
+    await rerender({ frame: { ...offline, ...over } });
+    expect([over, container.querySelector('[data-cue="puzzle-try"]')]).toEqual([over, null]);
+  }
 });

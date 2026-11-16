@@ -181,7 +181,8 @@ test('controls: the gate refuses an undeclared handler, a foreign trigger and an
 });
 
 test('puzzles: every gesture surface disables touch panning', () => {
-  // The gesture rule over every family's lazy components (none draws a stroke yet; GM7p's path surface will).
+  // The gesture rule over every family's lazy components (GM7p's path surface, `path-stroke`, is the one that draws a
+  // stroke; GM7g's grid takes clicks only).
   const files = [...byName(EXPLORE_SOURCES), ...byName(PUZZLE_SOURCES)];
   const families = ['ui/explore/', 'ui/puzzles/', 'puzzles/ui/'];
   expect(files.map(([name]) => name).sort((a, b) => a.localeCompare(b))).toEqual(

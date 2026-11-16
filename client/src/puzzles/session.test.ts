@@ -514,6 +514,54 @@ test('session: a wrong reply to a reach post is a mismatch and counts no attempt
   expect(s.ladder().tiers.map((t) => t.state)).toEqual(['unavailable', 'unavailable', 'unavailable']);
 });
 
+/**
+ * A fixture view type outside PUZZLE_TYPES (engine plan §7.5; no registered type is a view before GM8a): three knobs of
+ * 0..2, all 0 at the start, a wrong input its device sees itself, and a saved work that fits while it holds three knobs
+ * in range.
+ */
+const KNOBS: PuzzleTypeData<'knobs', { readonly knobs: number }> = {
+  type: 'knobs',
+  check: 'commit',
+  goal: 'secret',
+  presentation: 'view',
+  wrong: 'local',
+  commit: 'control',
+  decodeParams: () => ({ ok: true, value: { knobs: 3 } }),
+  answerShape: () => ({ len: 3, max: 2 }),
+  initial: () => [0, 0, 0],
+  startShown: () => [0, 0, 0],
+  workFits: (_p, work) => work.length === 3 && work.every((v) => Number.isInteger(v) && v >= 0 && v <= 2),
+};
+const VIEW_TYPES: PuzzleTypes = [...PUZZLE_TYPES, KNOBS];
+
+/** The code world with its gate re-typed as the knobs device (the cast: as the TUMBLER re-type above). */
+function knobsWorld(maxAttempts: number | null = null): WorldPublic {
+  const base = worldWith({ maxAttempts });
+  return { ...base, puzzles: { gate: { ...base.puzzles[pz('gate')], type: 'knobs', params: { knobs: 3 } } } } as unknown as WorldPublic;
+}
+
+test("session: a session's instance is its type's, from the types it was given", () => {
+  // D1 (RULINGS 363): the session exposes the one instance it was built with, from its deps' `types`, so a frame's
+  // presentation, commit, shape and demonstration can never disagree with the start and the check the session uses.
+  const { s } = rig({ world: knobsWorld(), types: VIEW_TYPES });
+  const { type, shape, check, goal, presentation, wrong, commit } = s.instance;
+  expect({ type, shape, check, goal, presentation, wrong, commit, initial: s.instance.initial(), demo: s.instance.demo() }).toEqual({
+    type: 'knobs',
+    shape: { len: 3, max: 2 },
+    check: 'commit',
+    goal: 'secret',
+    presentation: 'view',
+    wrong: 'local',
+    commit: 'control',
+    initial: [0, 0, 0],
+    demo: null,
+  });
+  expect(s.check).toBe(s.instance.check);
+  // Without the fixture in `types` the same world opens no session; a code puzzle's session holds the code instance.
+  expect(puzzleInstance({ type: 'knobs', params: { knobs: 3 } })).toBeNull();
+  expect([rig().s.instance.type, rig().s.instance.presentation]).toEqual(['code', 'overlay']);
+});
+
 test('session: a 25-cell answer posts', async () => {
   // No client cap (engine plan §7.4): the session checks the instance's shape only, so a 5 x 5 grid's fill posts whole;
   // the build's answer bound (the server's) is the one cap. The grid: the cyclic square with its diagonal blank.
@@ -699,4 +747,47 @@ test('hints: unavailable refreshes the ladder from the server', async () => {
   expect(api.getPuzzle).toHaveBeenCalledTimes(2);
   expect(s.ladder().tiers.map((t) => t.state)).toEqual(['unavailable', 'unavailable', 'unavailable']);
   expect(api.getPuzzle.mock.calls[1]).toEqual(['ch1.gate', 'ru', { signal: expect.any(AbortSignal) }]);
+});
+
+test('session: a local wrong input counts one attempt and the limit ends the session failed', async () => {
+  // GM8h (engine plan §7.5 "Attempts"): a `wrong: 'local'` device's wrong press counts as a posted wrong does, with no
+  // POST: one attempt and `attempt-failed`; the saved run's attempts count toward the limit, which ends it `failed`.
+  const { s, api, dispatch, ends } = rig({ world: knobsWorld(3), types: VIEW_TYPES, run: { attempts: 1 } });
+  expect(s.failLocal()).toEqual(ok({ kind: 'wrong', attemptsLeft: 1 }));
+  expect([dispatch.mock.calls, api.postAttempt.mock.calls.length, ends]).toEqual([[[FAILED_ATTEMPT]], 0, []]);
+  expect(s.failLocal()).toEqual(ok({ kind: 'failed' }));
+  expect([dispatch.mock.calls.length, ends]).toEqual([2, [{ outcome: 'failed', hintsOpened: 0 }]]);
+  // Over: closed, and nothing more is counted.
+  expect(s.failLocal()).toEqual(err({ kind: 'closed' }));
+  expect(dispatch).toHaveBeenCalledTimes(2);
+  // With an attempt in flight: busy (its reply counts); a type whose wrong is posted: invalid, nothing counted.
+  const b = rig({ world: knobsWorld(), types: VIEW_TYPES });
+  const answer = deferred<Result<AttemptResponse, ApiError>>();
+  b.api.postAttempt.mockReturnValueOnce(answer.promise);
+  const first = b.s.attempt();
+  expect(b.s.failLocal()).toEqual(err({ kind: 'busy' }));
+  answer.resolve(WRONG);
+  expect(await first).toEqual(ok({ kind: 'wrong', attemptsLeft: null }));
+  expect(b.dispatch).toHaveBeenCalledTimes(1);
+  const c = rig();
+  expect(c.s.failLocal()).toEqual(err({ kind: 'invalid' }));
+  expect(c.dispatch).not.toHaveBeenCalled();
+});
+
+test('session: a view session starts from its saved work when it fits', () => {
+  // §7.5 "Working state" (GM8h): a device's session starts from its run's `work` while its type's `workFits` holds.
+  const { s } = rig({ world: knobsWorld(), types: VIEW_TYPES, run: { work: [2, 1, 0] } });
+  expect([s.answer(), Object.isFrozen(s.answer())]).toEqual([[2, 1, 0], true]);
+  // A type with no `workFits` saves no work: the code gate starts from its initial answer whatever the run holds.
+  const c = rig({ run: { work: [1, 2, 3, 4] } });
+  expect(c.s.answer()).toEqual(c.s.instance.initial());
+  expect(c.s.answer()).not.toEqual([1, 2, 3, 4]);
+});
+
+test('session: a view session ignores a saved work that does not fit', () => {
+  // A work the type refuses (a value out of range, a wrong length) starts the device from `initial()`.
+  for (const work of [[3, 0, 0], [1, 1], [0, 0, 0, 0]]) {
+    const { s } = rig({ world: knobsWorld(), types: VIEW_TYPES, run: { work } });
+    expect([work, s.answer()]).toEqual([work, [0, 0, 0]]);
+  }
 });

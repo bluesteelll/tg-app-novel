@@ -83,6 +83,15 @@ export type PuzzleInstance = {
 /** The instance of one puzzle from its type's data half: the one runtime place that builds an instance. */
 export function instanceOf(data: PuzzleTypeData<string, unknown>, params: unknown): PuzzleInstance {
   const initial = (): readonly number[] => data.initial(params);
+  // A `workFits` that throws is a misfit (saved-work F2, RULINGS 368): a saved work its type cannot read never fails
+  // the open. No log: this module is pure (GM8a makes every `workFits` total).
+  const fits = (work: readonly number[]): boolean => {
+    try {
+      return data.workFits?.(params, work) === true;
+    } catch {
+      return false;
+    }
+  };
   return Object.freeze({
     // A type outside PuzzleType is a test's fixture, passed as `types` (engine plan §7.1 round 5).
     type: data.type as PuzzleType,
@@ -93,8 +102,9 @@ export function instanceOf(data: PuzzleTypeData<string, unknown>, params: unknow
     wrong: data.wrong,
     commit: data.commit,
     initial,
-    // Every type starts from `initial()`: no type saves a working configuration yet (round 5 m1; GM8h adds `run.work`).
-    start: initial,
+    // A device continues from its saved work (engine plan §7.5 "Working state"; GM8h) while its type says it fits; any
+    // other run, and a type with no `workFits` (it saves no work), starts from `initial()`.
+    start: (run) => (run.work !== undefined && fits(run.work) ? Object.freeze([...run.work]) : initial()),
     demo: () => data.demo?.(params) ?? null,
   });
 }

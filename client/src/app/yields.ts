@@ -16,7 +16,7 @@ import type { CueBus } from '../cues/bus.ts';
 import type { Cue, CueEvent, MoveHow, PuzzleCue, VisualDiff } from '../cues/types.ts';
 import type { ExploreController, createExploreController } from '../explore/controller.ts';
 import { project } from '../explore/project.ts';
-import { own, runReduce, worldIndex } from '../explore/reduce.ts';
+import { hotspotKey, own, runReduce, worldIndex } from '../explore/reduce.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { PuzzleOutcome, PuzzleRun, WorldState } from '../explore/state.ts';
@@ -54,6 +54,10 @@ export const TAKE_FADE_MS = 300;
 export const CLOSEUP_FADE_MS = 300;
 /** PZ F9: a `dirty` effect autosaves after this quiet time; a newer one restarts it. */
 export const DIRTY_DEBOUNCE_MS = 2000;
+/** Engine plan §7.5 "Demonstration" (owner Q15h): one step of a device's demonstration, then the next after this long. */
+export const DEMO_STEP_MS = 600;
+/** The pause after a wrong press before the demonstration plays again (Q15h). */
+export const DEMO_PAUSE_MS = 800;
 /** A section's music fades in over this long when a room batch starts it. */
 const SECTION_BGM_FADE_MS = 1000;
 
@@ -257,9 +261,20 @@ type Open = {
   asked: ReturnType<PuzzleSession['hints']> | null;
   /**
    * A reach frame's reached canonical answer awaiting a decisive reply (engine plan §7.5, "Posting per reply kind"):
-   * set by the type UI's report, posted by `postReach`; null for a commit frame, and cleared by a move away.
+   * set by the type UI's report, posted by `postReach`; null for a commit frame, and cleared by a move away or a
+   * mismatch (`attempted`).
    */
   reach: readonly number[] | null;
+  /**
+   * Where the frame shows (engine plan §7.5 "Lifecycle"; D2): `view` for a view type's explore-mode open of the shown
+   * room's device, drawn inside that room; `overlay` for every other open. Fixed for the open, as the frame's
+   * `presentation` is.
+   */
+  present: 'overlay' | 'view';
+  /** A view frame's room, the room shown when its open ran (D3); null for an overlay frame. */
+  room: RoomId | null;
+  /** The demonstration's next step while one runs (§7.5 "Demonstration"; D8): its timer, else null. */
+  demo: number | null;
 };
 
 /** The end cue of a dropped frame (`dropPuzzle`): the session's end, `closed` for a no-outcome drop, null at `dispose`. */
@@ -267,6 +282,9 @@ type DropCue = Extract<PuzzleCue, 'solved' | 'failed' | 'closed'> | null;
 
 /** The hint ladder's own cues (engine plan §8.1 "The hint ladder"). */
 type LadderCue = Extract<PuzzleCue, 'ladder' | 'hint-shown' | 'hint-failed' | 'hint-renewing'>;
+
+/** The cues that play on a part (the `part` target of the stage's motion table): none plays under a covering sheet. */
+const PART_CUES: ReadonlySet<PuzzleCue> = new Set<PuzzleCue>(['input', 'blocked', 'demo']);
 
 let frameSeq = 0;
 
@@ -338,7 +356,9 @@ const causeOf = (a: SectionAction, w: WorldPublic | null): Cause =>
         ? cause('use', a.target, a.item)
         : a.kind === 'combine'
           ? cause('combine', null, a.a)
-          : cause(
+          : a.kind === 'device-moved'
+            ? cause('device', w === null ? null : (worldIndex(w).puzzleLock.get(a.puzzle) ?? null)) // D11: the device's own verb
+            : cause(
             a.kind === 'puzzle-ended' && a.outcome === 'solved' ? 'solve' : 'fail',
             'puzzle' in a && w !== null ? (worldIndex(w).puzzleLock.get(a.puzzle) ?? null) : null,
           );
@@ -565,9 +585,11 @@ export function createYields(h: YieldsHost): Yields {
     screens.close('lock');
   };
 
-  /** Leaves the rooms for the story: the layer hides with the ribbon's selection, the root-back clears (X12), the knot
-   *  runs after the drain. */
+  /** Leaves the rooms for the story: the open puzzle drops (D4: a late answer never lands after the knot started; a
+   *  hidden frame plays no second end cue), the layer hides with the ribbon's selection, the root-back clears (X12),
+   *  the knot runs after the drain. */
   const toStory = (knot: KnotName): void => {
+    dropPuzzle('closed');
     closePanel();
     explore.selected = null;
     explore.layer = null;
@@ -596,6 +618,19 @@ export function createYields(h: YieldsHost): Yields {
         // says so itself (§6.3: core's `moveHow`, `leave-view` included); any other move is the entry's kind. A zoom-out
         // by no exit (`leave-view`: the leave control or Back) lands on the parent's first shown exit into the view just
         // left, the zoom-in's box read backwards (W1, RULINGS 298); `settle` wrote the parent's hotspots before this.
+        // D3 (RULINGS 363 A8; engine plan §7.5 "Lifecycle"): a move out of a shown device's room closes the device: the
+        // frame goes at once, before the move plays, and the session at its end (an attempt in flight still answers),
+        // with no outcome. A `room` effect into the device's own room (core's same-section entry) keeps it.
+        // L1 (RULINGS 368): a move back into a hidden device's room drops that session here, at the re-arrival's dispatch:
+        // its POST is aborted, so a reply landing before the arrival's open job runs (after the zoom's batch) is dropped,
+        // and the job opens a new session at the saved work (A8). Its `puzzle:closed` played at its hide.
+        const o = open;
+        if (o !== null && o.present === 'view' && !o.hidden && e.room !== o.room) {
+          hideFrame(o);
+          o.session.close();
+        } else if (o !== null && o.present === 'view' && o.hidden && e.room === o.room) {
+          dropPuzzle(null);
+        }
         const how: MoveHow = e.how === 'zoom-in' || e.how === 'zoom-out' ? e.how : scope.how;
         const box = e.how === 'zoom-out' && e.via === null && w !== null ? exitBoxInto(w, e.from) : scope.box;
         const move = cueEvent({ kind: 'move', from: shown, to: e.room, via: scope.cause.at, how }, box);
@@ -623,7 +658,7 @@ export function createYields(h: YieldsHost): Yields {
         screens.push({ kind: 'lock' }); // its `panel-open` is the screens diff's, here in this push (never held with a move)
         return;
       case 'puzzle':
-        jobs.push(() => openPuzzle(e.puzzle, 'explore', null));
+        jobs.push(() => openPuzzle(e.puzzle, 'explore', null, e.hotspot));
         return;
       case 'story':
         toStory(e.knot); // its fact cue is the writer's
@@ -645,7 +680,12 @@ export function createYields(h: YieldsHost): Yields {
         send(coreCue('reset', null, null));
         return;
       case 'cue':
-        // The writer's record (engine plan §8.1 plan (2)): each fact and module cue of the entry, on its box.
+        // The writer's record (engine plan §8.1 plan (2)): each fact and module cue of the entry, on its box. D5 (A7): a
+        // device move's `work` facts play none: its one press per moved part is `moveWork`'s `puzzle:input`, while the
+        // writer diffs against no saved work on a first move (an `added` for every part).
+        if (e.cue.kind === 'fact' && e.cue.fact.kind === 'work' && scope.cause.verb === 'device') {
+          return;
+        }
         send(e.cue);
         return;
       case 'dirty':
@@ -908,9 +948,18 @@ export function createYields(h: YieldsHost): Yields {
   const shownFrame = (): boolean => puzzle.frame !== null && (puzzle.host !== null || puzzle.frame.loadFailed);
   /** The shown-frame test: a cue of `o`'s frame plays only while it is the open, appeared, unhidden frame on screen. */
   const showing = (o: Open): boolean => open === o && !o.hidden && o.appeared && puzzle.frame?.id === o.id;
-  /** A frame cue of `o` (no box: the stage finds its target in the frame), dropped while the frame is not shown. */
+  /**
+   * Whether a sheet covers `o`'s device (places F4, RULINGS 368): a view frame pushes no screen (`backScreen`), so any
+   * screen on the stack lies over its room: the inventory, a document, the lock panel, the hint ladder, a meta overlay.
+   */
+  const covered = (o: Open): boolean => o.present === 'view' && screens.view().overlays.length > 0;
+  /**
+   * A frame cue of `o` (no box: the stage finds its target in the frame), dropped while the frame is not shown, and a
+   * part cue also while a sheet covers the device: it plays on a painted ghost of its part above every sheet (§8.5 "Hit
+   * areas"), so a reply's restart under the inventory moves nothing on screen (Q-C1, RULINGS 369).
+   */
   const puzzleCue = (o: Open, name: PuzzleCue, index: number | null = null): void => {
-    if (showing(o)) {
+    if (showing(o) && !(PART_CUES.has(name) && covered(o))) {
       bus.emit(cueEvent({ kind: 'puzzle', puzzle: o.local, name, index }, null));
     }
   };
@@ -997,6 +1046,7 @@ export function createYields(h: YieldsHost): Yields {
       clearRetry();
       return;
     }
+    stopDemo(o);
     if (cue !== null) {
       endFrame(o, cue);
     }
@@ -1015,6 +1065,7 @@ export function createYields(h: YieldsHost): Yields {
    * session stays open until its end, so an attempt in flight still reaches the world when it answers.
    */
   const hideFrame = (o: Open): void => {
+    stopDemo(o); // D8: a hidden device demonstrates nothing, though its session may wait for a POST
     endFrame(o, 'closed');
     setLadder(o, null);
     screens.close('hints');
@@ -1040,6 +1091,47 @@ export function createYields(h: YieldsHost): Yields {
     holdLoad(o, false);
     appear(o);
     puzzleCue(o, loaded ? 'opened' : 'load-failed');
+    if (loaded) {
+      startDemo(o, DEMO_STEP_MS); // a shown-goal device plays its order once, after its frame appeared
+    }
+  };
+
+  /** Stops `o`'s demonstration: its pending step never plays. */
+  const stopDemo = (o: Open): void => {
+    if (o.demo !== null) {
+      h.clock.clearTimeout(o.demo);
+      o.demo = null;
+    }
+  };
+
+  /**
+   * Plays `o`'s demonstration from its first step after `delay` ms (engine plan §7.5 "Demonstration"; Q15h): each part of
+   * its type's order as one `puzzle:demo` on that part, `DEMO_STEP_MS` apart; a new start replaces a running one. A
+   * type with no order plays none; a step plays only while `o` is the open, shown frame. A hidden device (lifecycle M2)
+   * or one a sheet covers (places F4) starts none: a covering sheet's opening stops it, and its close restarts nothing.
+   */
+  const startDemo = (o: Open, delay: number): void => {
+    stopDemo(o);
+    const order = o.session.instance.demo();
+    if (order === null || dead || o.hidden || covered(o)) {
+      return;
+    }
+    const step = (i: number): void => {
+      o.demo = null;
+      const part = order[i];
+      if (open !== o || o.hidden || part === undefined) {
+        return;
+      }
+      puzzleCue(o, 'demo', part);
+      if (i + 1 < order.length) {
+        o.demo = h.clock.setTimeout(() => step(i + 1), DEMO_STEP_MS);
+      }
+    };
+    if (delay > 0) {
+      o.demo = h.clock.setTimeout(() => step(0), delay);
+    } else {
+      step(0);
+    }
   };
 
   /** The end of a run (PZ F6 steps 5-6, F7 step 7): the report, the close-up cleared, the outcome into the world. */
@@ -1080,7 +1172,21 @@ export function createYields(h: YieldsHost): Yields {
     void h.queue(() => ended(o.local, outcome, o.mode, o.then, o.closeup && !o.hidden)); // the outcome is on screen
   };
 
-  const openPuzzle = async (local: PuzzleLocalId, mode: PuzzleMode, then: KnotName | null): Promise<void> => {
+  /**
+   * D2 (RULINGS 363): how a new frame shows, read when its open runs. In its room (`view`) only for a view type's
+   * explore-mode open of the shown room's device (`hotspot`, the open's own); every other open of a view type is an
+   * overlay (a site the story gate refuses, `world/view-type-site`), so a view instance never renders nowhere.
+   */
+  const presentOf = (s: PuzzleSession, mode: PuzzleMode, hotspot: HotspotKey | null, w: WorldPublic): Open['present'] => {
+    const room = world.room;
+    if (s.instance.presentation !== 'view' || mode !== 'explore' || hotspot === null || room === null) {
+      return 'overlay';
+    }
+    const device = own(w.mods.devices.device, room);
+    return device !== undefined && hotspot === hotspotKey(room, device) ? 'view' : 'overlay';
+  };
+
+  const openPuzzle = async (local: PuzzleLocalId, mode: PuzzleMode, then: KnotName | null, hotspot: HotspotKey | null): Promise<void> => {
     const ch = h.chapter();
     const w = ch?.world ?? null;
     const p = w !== null && Object.hasOwn(w.puzzles, local) ? w.puzzles[local] : undefined;
@@ -1101,9 +1207,31 @@ export function createYields(h: YieldsHost): Yields {
       h.storyError({ kind: 'load', message: `puzzle ${made.error.puzzle} has no session` });
       return;
     }
-    const o: Open = { session: made.value, port, local, mode, then, closeup: p.closeup !== null, id: ++frameSeq, hidden: false, appeared: false, loading: false, asked: null, reach: null };
+    const present = presentOf(made.value, mode, hotspot, w);
+    const o: Open = {
+      session: made.value,
+      port,
+      local,
+      mode,
+      then,
+      closeup: p.closeup !== null,
+      id: ++frameSeq,
+      hidden: false,
+      appeared: false,
+      loading: false,
+      asked: null,
+      reach: null,
+      present,
+      room: present === 'view' ? world.room : null,
+      demo: null,
+    };
     open = o;
     o.session.onEnd((e) => onEnd(o, e));
+    if (o.session.instance.commit === 'full' && o.session.answer().length === o.session.instance.shape.len) {
+      // A full sequence saved whole (its reply never came: a zoom-out, a reload) is no answer to post: it starts over,
+      // before any frame shows it, so with no cue and no post.
+      restartWork(o);
+    }
     if (p.closeup !== null) {
       await held([{ kind: 'cg', cg: p.closeup, t: 'fade', ms: CLOSEUP_FADE_MS }], [], { box: null });
       if (open !== o) {
@@ -1128,6 +1256,7 @@ export function createYields(h: YieldsHost): Yields {
       ui: null,
       loadFailed: false,
       retrying: false,
+      presentation: o.present,
     };
     puzzle.frame = frame;
     appear(o); // shown at its write when the host chunk is in
@@ -1141,9 +1270,10 @@ export function createYields(h: YieldsHost): Yields {
 
   /**
    * The countdown's zero hook (engine plan §7.5 round 6): posts what is ready to post and says whether it posted - a
-   * reach frame's reached answer (`postReach`); a `commit: 'control'` frame posts nothing (Try opens as built).
+   * full-commit device's whole sequence (`postFull`), a reach frame's reached answer (`postReach`); a
+   * `commit: 'control'` frame posts nothing (Try opens as built).
    */
-  const ready = (o: Open): boolean => postReach(o);
+  const ready = (o: Open): boolean => postFull(o) || postReach(o);
 
   /**
    * A 429's countdown (GameSession owns it): one cue per second, its index the seconds left. At zero exactly one cue:
@@ -1184,6 +1314,7 @@ export function createYields(h: YieldsHost): Yields {
         case 'wrong':
           setFrame(o, { busy: false, line: 'wrong', attemptsLeft: r.value.attemptsLeft });
           puzzleCue(o, 'wrong');
+          restartFull(o);
           h.autosave(); // F9: the attempts count survives a reload
           return;
         case 'mismatch':
@@ -1193,6 +1324,8 @@ export function createYields(h: YieldsHost): Yields {
           o.reach = null;
           setFrame(o, { busy: false, line: 'idle', answer: o.session.answer(), awaiting: false });
           puzzleCue(o, 'reset');
+          // A device's saved work follows its reset (D15): the frame is at `initial()` already, so no part moves on screen.
+          restartWork(o);
           console.error('yields: reach-mismatch', o.local);
           vm.showToast({ kind: 'note', key: 'mech.content_updated', message: mechT(vm.lang, 'mech.content_updated'), sticky: true });
           return;
@@ -1210,6 +1343,7 @@ export function createYields(h: YieldsHost): Yields {
       case 'not-entitled':
         setFrame(o, { busy: false, line: 'offline' });
         puzzleCue(o, 'offline');
+        restartFull(o);
         return;
       case 'busy':
         return; // another attempt is in flight: its own reply settles the frame
@@ -1242,6 +1376,29 @@ export function createYields(h: YieldsHost): Yields {
   };
 
   /**
+   * A full-commit device's post (engine plan §7.5 "Full commit"; GM8h): its sequence posts, through `post(o)` (so it
+   * refuses as `post` does), once it holds every position; false before that. Every full type is a view type.
+   */
+  const postFull = (o: Open): boolean =>
+    o.session.instance.commit === 'full' && o.session.answer().length === o.session.instance.shape.len && post(o);
+
+  /**
+   * A device starts over (§7.5 "Full commit", D15): its type's `initial()` through the one write path, so each moved
+   * position plays its light `puzzle:input` (never `puzzle:reset`: the reply's own cue said why) and the saved work
+   * follows.
+   */
+  const restartWork = (o: Open): void => {
+    moveWork(o, o.session.instance.initial());
+  };
+
+  /** A full sequence that did not solve (a wrong or an offline reply) starts over; any other frame keeps its answer. */
+  const restartFull = (o: Open): void => {
+    if (o.session.instance.commit === 'full') {
+      restartWork(o);
+    }
+  };
+
+  /**
    * A reach frame's post (engine plan §7.5 "Posting per reply kind"): the reached canonical answer becomes the session's
    * answer and goes through `post(o)`, so it refuses as `post` does (busy, a countdown, a frame not shown); false while
    * nothing is reached. The answer is set even when `post` refuses: a reach frame posts only through here, which sets it
@@ -1255,6 +1412,46 @@ export function createYields(h: YieldsHost): Yields {
     return post(o);
   };
 
+  /**
+   * The one write path of a working answer (engine plan §7.5 "One write path"; GM8h): the session's answer, the move
+   * away from a reached answer, the frame, then one `puzzle:input` per moved part in index order. A type UI's
+   * `onchange` and a device's `onwork` both come through here.
+   */
+  const moveWork = (o: Open, a: readonly number[]): void => {
+    // The frame's answer is the drawn one; after a reach post the session holds the canonical form (Q6).
+    const was = frameOf()?.answer ?? o.session.answer();
+    o.session.setAnswer(a);
+    const now = o.session.answer();
+    const changed: number[] = [];
+    for (let i = 0; i < Math.max(was.length, now.length); i += 1) {
+      if (was[i] !== now[i]) {
+        changed.push(i);
+      }
+    }
+    // A move away from a reached answer: its pending post is cancelled and Try is off until it is reached again.
+    const away = o.reach !== null && changed.length > 0;
+    if (away) {
+      o.reach = null;
+    }
+    setFrame(o, away ? { answer: now, awaiting: false } : { answer: now });
+    // One cue per changed part, in index order.
+    for (const i of changed) {
+      puzzleCue(o, 'input', i);
+    }
+    if (o.present === 'view') {
+      // A device's working answer is its saved work (§7.5 "Working state"; Q-a): written inside the press, so `run.work`
+      // equals the session's answer when the press returns; its state batch drains queued, never as a tap.
+      act({ kind: 'device-moved', puzzle: o.local, work: o.session.answer() });
+      void h.queue(drain);
+    }
+  };
+
+  /**
+   * Try, or a device's commit part (saved-work F3b, RULINGS 368): a reach frame posts its reached answer (`postReach`:
+   * nothing reached, nothing posts), any other frame its answer (`post`).
+   */
+  const commitTry = (o: Open): boolean => (o.session.check === 'reach' ? postReach(o) : post(o));
+
   const puzzleHost: PuzzleHostCallbacks = {
     item: (id) => {
       const w = h.chapter()?.world ?? null;
@@ -1264,36 +1461,50 @@ export function createYields(h: YieldsHost): Yields {
     onchange: (a) => {
       const o = open;
       if (o !== null) {
-        // The frame's answer is the drawn one; after a reach post the session holds the canonical form (Q6).
-        const was = frameOf()?.answer ?? o.session.answer();
-        o.session.setAnswer(a);
-        const now = o.session.answer();
-        const changed: number[] = [];
-        for (let i = 0; i < Math.max(was.length, now.length); i += 1) {
-          if (was[i] !== now[i]) {
-            changed.push(i);
-          }
+        moveWork(o, a);
+      }
+    },
+    onwork: (work, wrong) => {
+      const o = open;
+      if (o === null) {
+        return;
+      }
+      stopDemo(o); // the player's own press ends the demonstration
+      moveWork(o, work);
+      if (wrong && o.session.instance.wrong === 'local') {
+        // A `wrong: 'local'` device's wrong press (§7.5 "Attempts"): counted as a posted wrong is, through `attempted`;
+        // while the session stays open, the demonstration plays again after a pause. Any other type's flag is ignored
+        // (saved-work F3a, RULINGS 368): its press goes on, so a full sequence's completing press posts.
+        attempted(o, o.session.failLocal());
+        if (open === o) {
+          startDemo(o, DEMO_PAUSE_MS);
         }
-        // A move away from a reached answer: its pending post is cancelled and Try is off until it is reached again.
-        const away = o.reach !== null && changed.length > 0;
-        if (away) {
-          o.reach = null;
-        }
-        setFrame(o, away ? { answer: now, awaiting: false } : { answer: now });
-        // One cue per changed part, in index order.
-        for (const i of changed) {
-          puzzleCue(o, 'input', i);
-        }
+        return;
+      }
+      postFull(o); // a full-commit device posts the press that completes its sequence
+    },
+    oncommit: () => {
+      const o = open;
+      if (o !== null) {
+        commitTry(o); // a device's commit part is its Try (§7.5 "Commit"): the same routing, refusals and reply path
+      }
+    },
+    ondemo: () => {
+      const o = open;
+      if (o !== null) {
+        startDemo(o, 0); // the device's demonstration control: its first step at once
+      }
+    },
+    onblocked: (part) => {
+      const o = open;
+      if (o !== null) {
+        puzzleCue(o, 'blocked', part); // D7: a refused input, on its part (the UI changed nothing)
       }
     },
     ontry: () => {
       const o = open;
       if (o !== null) {
-        if (o.session.check === 'reach') {
-          postReach(o); // nothing reached, nothing posts
-        } else {
-          post(o);
-        }
+        commitTry(o);
       }
     },
     ongiveup: () => {
@@ -1329,8 +1540,9 @@ export function createYields(h: YieldsHost): Yields {
       const o = open;
       const f = frameOf();
       if (o !== null && f !== null && f.loadFailed && !f.retrying) {
-        if (puzzle.host === null) {
-          // App's failed-host Retry lies outside every cue root, so its control cue is emitted here (found by its name).
+        if (puzzle.host === null && o.present === 'overlay') {
+          // App's failed-host Retry lies outside every cue root, so its control cue is emitted here (found by its name);
+          // a device's (C-18) is ExploreView's in-room notice, inside the explore root, which emits its own.
           bus.emit(cueEvent({ kind: 'ui', control: 'puzzle-retry', item: null, index: null }, null));
         }
         // The notice stays, its Retry disabled, until the reload answers (engine plan §8.1 "The frame's flags").
@@ -1385,6 +1597,7 @@ export function createYields(h: YieldsHost): Yields {
       if (o === null || o.session.check !== 'reach') {
         return; // a commit frame posts from Try only
       }
+      stopDemo(o); // a reached answer ends the demonstration
       if (o.reach === null) {
         setFrame(o, { awaiting: true });
         puzzleCue(o, 'reached');
@@ -1490,7 +1703,7 @@ export function createYields(h: YieldsHost): Yields {
         return;
       }
       if (y.kind === 'puzzle') {
-        await openPuzzle(y.puzzle, 'linear', y.then);
+        await openPuzzle(y.puzzle, 'linear', y.then, null);
       } else {
         await openSection(y.section);
       }
@@ -1547,12 +1760,16 @@ export function createYields(h: YieldsHost): Yields {
           explore.panel = p.kind === 'doc' && kinds.has('inventory') ? { kind: 'inventory' } : null;
         }
       }
-      if (open !== null && open.mode === 'explore' && puzzle.frame?.id === open.id && !kinds.has('puzzle')) {
+      if (open !== null && open.mode === 'explore' && open.present === 'overlay' && puzzle.frame?.id === open.id && !kinds.has('puzzle')) {
         // X8: Back closes an exploration puzzle with no outcome: the frame goes at once, the session at its end (deferred
-        // while an attempt runs, whose answer still reaches the world).
+        // while an attempt runs, whose answer still reaches the world). An overlay frame only: a device pushes no
+        // `puzzle` overlay, so a sheet over it is no Back; its view's zoom-out closes it (D3, the `room` effect).
         const o = open;
         hideFrame(o);
         o.session.close();
+      }
+      if (open !== null && covered(open)) {
+        stopDemo(open); // places F4: a sheet over a device view stops its demonstration
       }
       const ladder = puzzle.ladder;
       if (ladder !== null && !kinds.has('hints')) {

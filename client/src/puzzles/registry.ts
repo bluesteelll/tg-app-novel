@@ -28,6 +28,18 @@ export type PuzzleUiProps = {
   onreach?: (canonical: readonly number[]) => void;
   /** A gesture surface's step (engine plan §8.3; GM7r): its control's cue, `index` the step's part. */
   oncue?: (name: GestureCue, index: number) => void;
+  /**
+   * A device's part press (engine plan §7.5 "One write path"; GM8h): the whole working answer after it, and whether a
+   * `wrong: 'local'` type knows the press was wrong (it then counts one attempt). A device reports through it in place
+   * of `onchange`.
+   */
+  onwork?: (work: readonly number[], wrong: boolean) => void;
+  /** A device's commit part (`commit: 'control'`, §7.5 "Commit"): posts the working answer, as Try does. */
+  oncommit?: () => void;
+  /** A device's demonstration control (§7.5 "Demonstration"): plays its order again. */
+  ondemo?: () => void;
+  /** A refused input on part `part` (§8.3; Q4): the UI changed nothing, and its part plays `puzzle:blocked`. */
+  onblocked?: (part: number) => void;
 };
 
 /** A type UI's chunk did not load (offline, a replaced deploy); a later call runs `import()` again. */

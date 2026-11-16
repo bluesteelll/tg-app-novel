@@ -83,6 +83,18 @@ function itemOf(c: Cue): string | null {
 const elOf = (el: Element | null): Resolved => (el === null ? null : { el });
 
 /**
+ * The part a cue names (§8.5 "Cue targets"; GM8h L3): a `puzzle` cue's index, or a `work` fact's, read from its id
+ * (`<puzzle>.<index>=<value>`, the writer's); else null. A part is an answer position (RULINGS 366 B2).
+ */
+function partIndex(c: Cue): number | null {
+  if (c.kind === 'puzzle') {
+    return c.index;
+  }
+  const m = c.kind === 'fact' && c.fact.kind === 'work' ? /\.(\d+)=\d+$/.exec(c.fact.id) : null;
+  return m === null ? null : Number(m[1]);
+}
+
+/**
  * The live target now (§8.5 "Cue targets"; every fallback the table names, the rest null: the player plays a null at
  * the stage centre and counts it). `e`'s box and point are in the layer's px already (D5).
  */
@@ -147,8 +159,13 @@ export function resolveTarget(t: CueTarget, e: CueEvent, layer: Element): Resolv
       const f = frame();
       return elOf(f === null ? null : live(sel('attempts'), f));
     }
-    case 'part':
-      return c.kind === 'puzzle' && c.index !== null ? inside(frame(), sel('part', c.index)) : elOf(frame());
+    case 'part': {
+      // Inside the frame's family root, whatever its value: a device's parts layer lies beside its bar (the frame
+      // marker), not in it. No index, or no such part: the frame, never the root (RULINGS 135 (b)).
+      const f = frame();
+      const i = partIndex(c);
+      return i === null ? elOf(f) : elOf(f === null ? null : (live(sel('part', i), f.closest('[data-cue-root]') ?? f) ?? f));
+    }
     case 'tier':
       // `index` null: every row, which the ladder carries.
       return c.kind === 'puzzle' && c.index !== null ? inside(ladder(), sel('tier', c.index)) : elOf(ladder());
