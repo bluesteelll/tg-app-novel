@@ -782,6 +782,42 @@ test("toast: App passes the view model's reduced motion to the stack", () => {
   expect(attrs).toEqual(expect.arrayContaining(['toasts={vm.toasts}', 'reduced={vm.reducedMotion}']));
 });
 
+test('screens: App mounts no QuickBar while a device view is shown', () => {
+  // Places F1 (RULINGS 368): in a device view the QuickBar would paint over the device's bar and take the taps aimed at
+  // Hint, Try and Retry, so a device view is treated as the overlay puzzle already is: App renders the QuickBar only
+  // while the shown frame is no view, read from `ui.puzzle`'s frame (no new import into the entry), and again once the
+  // frame leaves. The hit-test row is GM8d's first device-world e2e.
+  const ast = parse(appSource, { modern: true });
+  // acorn gives every expression node its source span; estree's `Expression` type does not declare it.
+  const text = (e: AST.IfBlock['test']): string => {
+    const span = e as unknown as { start: number; end: number };
+    return appSource.slice(span.start, span.end);
+  };
+  /** The tests of the `{#if}` blocks around each `ui.QuickBar`: a consequent's as written, an alternate's negated. */
+  const under: string[][] = [];
+  const walk = (n: unknown, tests: readonly string[]): void => {
+    if (typeof n !== 'object' || n === null) {
+      return;
+    }
+    if ((n as { type?: unknown }).type === 'IfBlock') {
+      const b = n as AST.IfBlock;
+      walk(b.consequent, [...tests, text(b.test)]);
+      walk(b.alternate, [...tests, `!(${text(b.test)})`]);
+      return;
+    }
+    if ((n as { type?: unknown }).type === 'Component' && (n as AST.Component).name === 'ui.QuickBar') {
+      under.push([...tests]);
+    }
+    for (const v of Object.values(n)) {
+      walk(v, tests);
+    }
+  };
+  walk(ast.fragment, []);
+  expect(under).toHaveLength(1);
+  expect(under[0]).toContain("frame?.presentation !== 'view'");
+  expect(appSource).toContain('const frame = $derived(ui?.puzzle.frame ?? null);');
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // Home's frame and the stage host (C5)
 

@@ -93,13 +93,15 @@
             />
           {/if}
           <ui.Choices set={vm.choices} lang={vm.lang} onchoose={(i) => void game?.choose(i)} />
-          <ui.QuickBar
-            mode={vm.mode}
-            lang={vm.lang}
-            onmode={(m) => game?.setMode(m)}
-            onbacklog={() => game?.openBacklog()}
-            onmenu={() => game?.openMenu()}
-          />
+          {#if frame?.presentation !== 'view'}
+            <ui.QuickBar
+              mode={vm.mode}
+              lang={vm.lang}
+              onmode={(m) => game?.setMode(m)}
+              onbacklog={() => game?.openBacklog()}
+              onmenu={() => game?.openMenu()}
+            />
+          {/if}
         {/if}
       </div>
       {#if root === 'game' && frame !== null && ui.puzzle.covers}
