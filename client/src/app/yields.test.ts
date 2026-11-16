@@ -13,7 +13,7 @@ import { createExploreController } from '../explore/controller.ts';
 import type { ExploreController } from '../explore/controller.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
-import type { WorldState } from '../explore/state.ts';
+import type { PuzzleRun, WorldState } from '../explore/state.ts';
 import { ROOM_SOURCE, cover, toStage } from '../geom/cover.ts';
 import { mechT } from '../i18n/mechanics.ts';
 import type { ChunkError, PuzzleUiProps } from '../puzzles/registry.ts';
@@ -4276,4 +4276,162 @@ test("yields: a frame is a view only for the shown room's device of a view type"
   await x.yields.onYield({ kind: 'puzzle', puzzle: DEV, then: AFTER });
   expect([x.puzzle.frame?.mode, x.puzzle.frame?.title, x.puzzle.frame?.presentation]).toEqual(['linear', 'device', 'overlay']);
   x.yields.dispose();
+});
+
+/** The kinds on the screens stack, bottom first. */
+const overlaysOf = (r: Rig): string[] => r.vm.screens.overlays.map((v) => v.kind);
+
+/** The shown frame's id, which the test then holds the frame to. */
+function frameId(r: Rig): number {
+  const f = r.puzzle.frame;
+  if (f === null) {
+    throw new Error('expected a shown frame');
+  }
+  return f.id;
+}
+
+test('yields: hints opened in a device view keep the session and show the ladder', async () => {
+  // D3 (RULINGS 363): X8 closes an overlay frame whose `puzzle` overlay left the stack; a device pushes none, so the
+  // hints sheet over it is no Back and the frame stays with its session.
+  const r = deviceRig('dials');
+  await atDevice(r);
+  const id = frameId(r);
+  r.yields.host.onhint();
+  await settle();
+  expect(overlaysOf(r)).toEqual(['hints']);
+  expect([r.puzzle.frame?.id, r.puzzle.frame?.presentation]).toEqual([id, 'view']);
+  expect(r.puzzle.ladder).not.toBeNull();
+  r.yields.dispose();
+});
+
+test('yields: closing hints leaves the device open', async () => {
+  const r = deviceRig('dials');
+  await atDevice(r);
+  const id = frameId(r);
+  r.yields.host.onhint();
+  await settle();
+  r.screens.back(); // Back closes the sheet, never the device under it
+  await settle();
+  expect(overlaysOf(r)).toEqual([]);
+  expect([roomOf(r), r.puzzle.frame?.id, r.puzzle.ladder]).toEqual(['panel', id, null]);
+  // The session is still open: Try posts.
+  r.yields.host.ontry();
+  await settle();
+  expect(r.calls.attempts).toBe(1);
+  r.yields.dispose();
+});
+
+test('yields: the inventory over a device keeps the session', async () => {
+  const r = deviceRig('dials');
+  await atDevice(r);
+  const id = frameId(r);
+  r.yields.layer.oninventory();
+  await settle();
+  expect([overlaysOf(r), r.explore.panel, r.puzzle.frame?.id]).toEqual([['inventory'], { kind: 'inventory' }, id]);
+  r.screens.back();
+  await settle();
+  expect([overlaysOf(r), r.explore.panel, roomOf(r), r.puzzle.frame?.id]).toEqual([[], null, 'panel', id]);
+  r.yields.dispose();
+});
+
+test('yields: an overlay puzzle still closes when its overlay leaves the stack', async () => {
+  // X8 as built, for an overlay frame in the same world as a device: Back pops its `puzzle` overlay and closes it with
+  // no outcome.
+  const r = deviceRig('dials');
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  expect([r.puzzle.frame?.presentation, overlaysOf(r)]).toEqual(['overlay', ['puzzle']]);
+  const mark = r.cues.length;
+  r.screens.back();
+  await settle();
+  expect([r.puzzle.frame, overlaysOf(r), roomOf(r)]).toEqual([null, [], 'hall']);
+  expect(keysOf(r, mark).filter((k) => k.startsWith('puzzle:'))).toEqual(['puzzle:closed']);
+  r.yields.host.ontry(); // no session answers
+  await settle();
+  expect([r.calls.attempts, r.events]).toEqual([0, []]);
+  r.yields.dispose();
+});
+
+/** A device's run with a saved work (GM8i's part moves), seeded so a leave that lost it would show. */
+const SEEDED_RUN: PuzzleRun = { outcome: null, attempts: 1, hintsOpened: 0, work: [1, 0, 2] };
+
+test('yields: leaving a device view closes its session with no outcome and keeps its work', async () => {
+  // D3 (RULINGS 363): a zoom-out from the device's room hides the frame and closes its session (§7.5 "Lifecycle"); the
+  // close records no outcome and writes nothing, so the run keeps its work.
+  const r = deviceRig('dials');
+  await inHall(r);
+  r.yields.restore({ ...r.yields.world(), puzzles: { [DEV]: SEEDED_RUN } }, null, { kind: 'explore', section: MANOR });
+  await r.yields.onYield({ kind: 'explore', section: MANOR });
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([roomOf(r), r.puzzle.frame?.presentation, r.yields.world().puzzles[DEV]]).toEqual(['panel', 'view', SEEDED_RUN]);
+  const mark = r.cues.length;
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.explore.inView, r.puzzle.frame]).toEqual(['hall', false, null]);
+  // The zoom-out's own room effect hides it: the frame is gone at the move's cue, and its end cue comes before it.
+  const move = r.cues.findIndex((e, i) => i >= mark && e.cue.kind === 'move');
+  expect([move > mark, r.views[move]?.frame]).toEqual([true, null]);
+  expect(keysOf(r, mark).filter((k) => k.startsWith('puzzle:') || k.startsWith('move:'))).toEqual(['puzzle:closed', 'move:zoom-out']);
+  expect([r.events, r.yields.world().puzzles[DEV]]).toEqual([[], SEEDED_RUN]);
+  r.yields.host.ontry(); // the session is closed: no attempt
+  await settle();
+  expect(r.calls.attempts).toBe(0);
+  r.yields.dispose();
+});
+
+test('yields: Back from a device view leaves it in one press', async () => {
+  // The device pushes no overlay (`backScreen`), so the first Back is the view's own: one level up, the device closed.
+  const r = deviceRig('dials');
+  await atDevice(r);
+  expect([overlaysOf(r), r.vm.screens.backVisible]).toEqual([[], true]);
+  r.screens.back();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, overlaysOf(r)]).toEqual(['hall', null, []]);
+  r.yields.dispose();
+});
+
+test('yields: a zoom-out during a device POST hides the device at once and still applies a correct answer', async () => {
+  // D3: the zoom-out hides the frame at once (`hideFrame`: its one `puzzle:closed`) and the close waits for the POST,
+  // whose correct answer still reaches the world (X8's deferred close): the device's lock opens, with no cue of the
+  // hidden frame at the answer.
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const r = deviceRig('dials', { attemptGate: gate, attempts: [{ ok: true, value: { correct: true, solved: true, attemptsLeft: null, spent: false } }] });
+  await atDevice(r);
+  r.yields.host.ontry();
+  await settle();
+  expect([r.calls.attempts, r.puzzle.frame?.busy]).toEqual([1, true]);
+  const mark = r.cues.length;
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame]).toEqual(['hall', null]);
+  expect(keysOf(r, mark).filter((k) => k.startsWith('puzzle:') || k.startsWith('move:'))).toEqual(['puzzle:closed', 'move:zoom-out']);
+  const answered = r.cues.length;
+  release();
+  await settle();
+  expect(keysOf(r, answered).filter((k) => k.startsWith('puzzle:'))).toEqual([]);
+  expect([r.yields.world().puzzles[DEV]?.outcome, r.yields.world().open.includes(key('panel.dial'))]).toEqual(['solved', true]);
+  expect(r.events.map((e) => (e.kind === 'puzzle_ended' ? e.outcome : e.kind))).toEqual(['solved']);
+  r.yields.dispose();
+});
+
+test("yields: a room effect into a device's own room does not zoom it out", async () => {
+  // D3 (A8): the zoom-out keys on a `room` effect into another room. Driven through core's same-section entry, which
+  // pushes `room` into the room already shown and then its arrival: at that entry's `move` cue the device's frame is
+  // still the one shown; the arrival's own `puzzle` job then reopens the device after the move.
+  const r = deviceRig('dials');
+  await atDevice(r);
+  const id = frameId(r);
+  const mark = r.cues.length;
+  await r.yields.onYield({ kind: 'explore', section: MANOR });
+  await settle();
+  const at = r.cues.findIndex((e, i) => i >= mark && e.cue.kind === 'move');
+  expect(at).toBeGreaterThanOrEqual(0);
+  expect(r.views[at]?.frame?.id).toBe(id);
+  expect([roomOf(r), r.puzzle.frame?.presentation]).toEqual(['panel', 'view']);
+  r.yields.dispose();
 });

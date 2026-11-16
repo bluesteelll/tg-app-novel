@@ -604,6 +604,14 @@ export function createYields(h: YieldsHost): Yields {
         // says so itself (§6.3: core's `moveHow`, `leave-view` included); any other move is the entry's kind. A zoom-out
         // by no exit (`leave-view`: the leave control or Back) lands on the parent's first shown exit into the view just
         // left, the zoom-in's box read backwards (W1, RULINGS 298); `settle` wrote the parent's hotspots before this.
+        // D3 (RULINGS 363 A8; engine plan §7.5 "Lifecycle"): a move out of a shown device's room closes the device: the
+        // frame goes at once, before the move plays, and the session at its end (an attempt in flight still answers),
+        // with no outcome. A `room` effect into the device's own room (core's same-section entry) keeps it.
+        const o = open;
+        if (o !== null && o.present === 'view' && !o.hidden && e.room !== o.room) {
+          hideFrame(o);
+          o.session.close();
+        }
         const how: MoveHow = e.how === 'zoom-in' || e.how === 'zoom-out' ? e.how : scope.how;
         const box = e.how === 'zoom-out' && e.via === null && w !== null ? exitBoxInto(w, e.from) : scope.box;
         const move = cueEvent({ kind: 'move', from: shown, to: e.room, via: scope.cause.at, how }, box);
@@ -1586,9 +1594,10 @@ export function createYields(h: YieldsHost): Yields {
           explore.panel = p.kind === 'doc' && kinds.has('inventory') ? { kind: 'inventory' } : null;
         }
       }
-      if (open !== null && open.mode === 'explore' && puzzle.frame?.id === open.id && !kinds.has('puzzle')) {
+      if (open !== null && open.mode === 'explore' && open.present === 'overlay' && puzzle.frame?.id === open.id && !kinds.has('puzzle')) {
         // X8: Back closes an exploration puzzle with no outcome: the frame goes at once, the session at its end (deferred
-        // while an attempt runs, whose answer still reaches the world).
+        // while an attempt runs, whose answer still reaches the world). An overlay frame only: a device pushes no
+        // `puzzle` overlay, so a sheet over it is no Back; its view's zoom-out closes it (D3, the `room` effect).
         const o = open;
         hideFrame(o);
         o.session.close();
