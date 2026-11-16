@@ -771,10 +771,14 @@ So a `path` or `grid` puzzle has no "wrong" Try and no `maxAttempts` (`world/att
 re-posts a reached answer while one awaits ([PuzzleHost.svelte:42-43](../client/src/ui/puzzles/PuzzleHost.svelte#L42)).
 If the player's tab holds an older version of the world, the server refuses the post. When the update kept the
 puzzle's answer shape, the puzzle returns to its start and the sticky update toast asks the player to reopen the game
-([yields.ts:1189-1197](../client/src/app/yields.ts#L1189)). When it changed the shape (a `path` gains or loses a
-blocked cell, a `grid` changes `rows` or `cols` or lowers `symbols`), the server answers 400 and the frame shows
-"offline" with no toast, and Try re-posts into the same 400 ([yields.ts:1209-1212](../client/src/app/yields.ts#L1209));
-the fix is GM8d's (`carry.md` "GM7p carries", N1).
+([yields.ts:1189-1197](../client/src/app/yields.ts#L1189)). The shape is all the server checks: the answer's length
+and its largest value ([server/src/puzzles/mod.rs:78-85](../server/src/puzzles/mod.rs#L78)); a `path` posts
+`cols x rows - blocked` cells, each below `cols x rows`, a `grid` `rows x cols` symbols, each at most `symbols`. When
+the update changed the shape so that the stale answer no longer fits (for example, a row or column added to or taken
+from either type, a `path` cell blocked or unblocked, a `grid`'s `symbols` lowered), the server answers 400 and the
+frame shows "offline" with no toast, and Try re-posts into the same 400
+([yields.ts:1209-1212](../client/src/app/yields.ts#L1209)); the fix is GM8d's (`carry.md` "GM7p carries", N1). A swap
+of `rows` and `cols` keeps both numbers, so it gets the toast.
 The rules, checked at build time by each type's lint half
 ([puzzles/path.ts](../client/scripts/story/puzzles/path.ts), [puzzles/grid.ts](../client/scripts/story/puzzles/grid.ts)):
 
