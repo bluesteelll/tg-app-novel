@@ -94,6 +94,15 @@ loader assigns `false` after construction (`client/src/scene/loader.ts:56-59`).
 | **Steady total** | **138.6 = 145.3 MB** (headroom 4.45) |
 | **Crossfade transient at the 48 MiB hard cap** (2 x 48 + 12 + 45.8 + 13.7 + 2.6 + 0.5) | **170.6 = 178.9 MB, over 150 MB** while a transition runs (PP:2131 accepts it) |
 
+Changed by RULINGS 365, 367, 371, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A): **as built (SH6, `b0ef547`), the shot dissolve and the face patch reserve their snapshot targets
+first.** Every snapshot or patch target is a reservation against the hard cap and the transient band: the steady cap is
+`STEADY_CAP_BYTES` (32 MiB), the hard cap `HARD_CAP_BYTES` (48 MiB) and the band between them `TRANSIENT_CAP_BYTES` (16 MiB,
+`client/src/scene/registry.ts:18`, `:20`, `:22`); `reserve` refuses a target whose bytes would push the reservations over the
+band or the live bytes plus the reservations over the hard cap (`registry.ts:1011-1027`), and a refused target falls back to
+the plain crossfade. A granted target is tracked by the GPU ledger (`createGpuLedger`, `client/src/scene/flatten.ts:79`) and
+is dropped at the batch's end, or at once when the batch's build fails (`dropFlat`, `client/src/scene/executor.ts:549-559`; the
+dissolve's catch, `:1247-1250`). The table row above is the model's worst case at the hard cap, as before.
+
 Textures + their CPU copies are 64 of 138.6 MiB (46 %); each MiB of texture saved today saves 2 MiB of the total.
 
 **Known gaps found while reading** (repo facts):

@@ -162,11 +162,13 @@ export interface PuzzleTypeLint<P> {
 
 - **Type-level guarantee:** `reach` implies `goal: 'shown'`; a `shown` type's UI draws its goal from the params, so the
   public JSON holds only what the screen shows. A registry test pins `check === 'reach' <=> goal === 'shown'` per type.
-- **`ritual` (the clue-matched order):** each press animates the pressed part (cue `fact:work:added`), says nothing
+- **`ritual` (the clue-matched order):** each press animates the pressed part (a light `puzzle:input` cue; Changed by RULINGS 366, 368, 372 (as of `172e47e`; docs lane `docs-errata-21`, group A): not `fact:work:added`: as merged (GM8h `4471fbf`), no `fact:work:*` cue plays on a device's move or
+  restart, because yields filters the `work` facts of a device's own move before the stage (`yields.ts` :682-690) and plays one light `puzzle:input` per moved position
+  through `moveWork` (:1420-1447); the index is the answer position, RULINGS 366 W2), says nothing
   about right or wrong, and at `length` presses yields posts the sequence as one attempt (`commit: 'full'`, round 4 m8;
   as a `code` submit: the window 20 / 600 s and `maxAttempts` apply as built). Correct: the device opens. Wrong:
   `puzzle:wrong` (jam motion), and yields restarts the working sequence from `[]` (`restartWork`, §7.5), so the decor's
-  lit bells go dark with `fact:work:removed` cues. **Cost stated:** no per-press feedback; brute force over `parts^length` (4 bells x 5
+  lit bells go dark (the restart writes `initial()` through `moveWork`, `yields.ts` :1385-1392: one light `puzzle:input` per moved position and the saved `work`, which the decor follows; no `fact:work:removed` cue plays). **Cost stated:** no per-press feedback; brute force over `parts^length` (4 bells x 5
   presses = 1,024 sequences) takes 1,024 / 20 x 600 s = 30,720 s ≈ 8.5 h at the window (ARITHMETIC).
 - **Lints:** `world/clue-declared` (every `secret` puzzle declares >= 1 clue atom, `clues: Cond[]` source-only and
   stripped from the public world), `world/reach-has-clue` (a `shown` type may declare none), `world/clue-reachable`
@@ -229,7 +231,7 @@ export interface PuzzleTypeLint<P> {
   shows a sticky toast `mech.content_updated` (round 4: in `i18n/mechanics.ts`, not the entry's tables; "The game was updated: close it and open it
   again", owner wording Q15e). Changed by RULINGS 154, 341 (as of `f6487fc`; docs lane `docs-errata-19`, group A): the copy is the owner-adopted Q15e text
   (RULINGS 154), as merged in GM7r `9516951`: en "The game was updated. Close it and open it again."
-  (`i18n/mechanics.ts:23`), ru :13; the mismatch branch is `yields.ts:1189-1197` (console `yields: reach-mismatch`). A lock puzzle cannot be abandoned (`reduce.ts:483-486`), so that device **stays shut in
+  (`i18n/mechanics.ts:23`), ru :13; the mismatch branch is `yields.ts:1320-1331` (console `yields: reach-mismatch`). A lock puzzle cannot be abandoned (`reduce.ts:483-486`), so that device **stays shut in
   this tab**; reopening loads the new bundle, whose `reached` agrees. The statement "never a stuck lock" is withdrawn.
 - `levers` (m8): `solve` runs a BFS over configurations from `initial`, one edge per throw (the part and its couples
   advance by one, mod `positions`); <= 4^8 = 65,536 states (ARITHMETIC on the decode limits). An unreachable target
@@ -320,7 +322,7 @@ export interface PuzzleTypeLint<P> {
     (`enterSection`, `:97-98`) and the event return (`eventReturned`, `:121-122`). The plan's `reduce.ts:322` / `:332` /
     `:354` are these sites, its `reduce.ts:370` / `:373` is `lockTap` (`core.ts:139-146`, the `puzzle` effect `:142`, the
     `lock` effect `:144`), its `reduce.ts:572-577` / `:598-618` are `actions` (`core.ts:447-479`, the tap list `:466`)
-    and `successors` (`client/src/mechanics/rules/search.ts:38-61`), its `yields.ts:540` / `:555` are `yields.ts:986` /
+    and `successors` (`client/src/mechanics/rules/search.ts:38-61`), its `yields.ts:540` / `:555` are `yields.ts:986` / 
     `:1062`, and its `graph.ts:601-606` is `client/scripts/story/graph.ts:682-686` (GM8i cut 1.1, re-located on
     `b0b1b41`);
   - `device-moved` (`applyDevices`, `rules/devices.ts:82-93`): a no-op outside a section's room, while a knot is
@@ -345,13 +347,35 @@ export interface PuzzleTypeLint<P> {
     `world/device-parts-frame` is registered with **no check** (RULINGS 353 Q1 (c)): the part rects need a source no
     file in GM8i's lock had (D6), so the check, T11 / T18 and the `HOTSPOT_MIN_SOURCE_PX` static pin go to GM8a, whose
     lock gains `client/scripts/story/mechanics/devices.ts` and `client/src/mechanics/devices.test.ts`.
+- **Ruled since: RULINGS 363, 366, 368, 372** (as of `172e47e`; docs lane `docs-errata-21`, group A) — **GM8h is merged** (`4471fbf`): the host half of this section is built too
+  ([12e GM8h](12e-lanes-gm7-gm9.md#gm8h-mech-device-host-new)). **Still no world holds a device, and no registered type is `presentation: 'view'`** (`PUZZLE_TYPES`,
+  `rules/index.ts:52`, is `code`, `order`, `path`, `grid`, all overlay): GM8a adds the first view type and GM8d the first device world, so every view branch runs on
+  fixture types through `types` and is invisible to the e2e. As built:
+  - `PuzzleFrameView.presentation` (`ui/puzzle-view.svelte.ts:61`) is `'overlay'` or `'view'`, fixed for the frame; yields reads it once, at the open (`presentOf`,
+    `yields.ts:1180-1187`: a view only for a view type's explore-mode open of the shown room's device). `coversStage` is true for overlay frames only (`:167-169`) and
+    `backScreen` pushes no `puzzle` overlay for a view frame (`:176-178`), so a view frame never enters App's frame layer;
+  - ExploreView draws the device inside its room: the host's `room` place (the compact bar first, anchored to the top, then the parts layer) and the hint ladder as a
+    `.sheet` (the `ladder` place, which pads past the safe area and scrolls) (`ui/explore/ExploreView.svelte:97-109`, `:138-144`); App mounts no QuickBar while a view
+    frame is shown (`ui/App.svelte:96`, fix1, RULINGS 368);
+  - a move back into a hidden device's room drops that session at the re-arrival's dispatch (L1, option (B), `yields.ts:631-633`); a sheet over a device view stops its
+    demonstration (`yields.ts:1771-1773`), and no part cue plays under a covering sheet (`PART_CUES` :287, `puzzleCue` :961; Q-C1, RULINGS 369);
+  - **the plan cites of the host, lifecycle and posting text above are re-located on `172e47e`** (GM8h's cut 1.2, re-cited; old -> new): `App.svelte` `:103-115` -> `:107-121`,
+    `:294-297` -> `:363-366`, `:24-26` / `:34` -> `:30-32` / `:40`, `:65` -> `:75`, `:103` -> `:107`, `:42` / `:108-113` -> `:48` / `:112-119`; `ExploreView.svelte` `:67-81`
+    -> `:73-144`, `:38` / `:42` -> `:38-40` / `:73`, `:136-146` -> `:113-121`; `PuzzleHost.svelte` `:71-73` -> `:195-201`, `:24` -> `:59`, `:77` -> `:174` / `:206`;
+    `puzzle-view.svelte.ts:84-86` -> `:176-178`; `ru.ts` / `en.ts` `:134` -> `:139`, `ru.ts:129` -> `:134`; `viewport.ts:14-21` -> `:16-25`; `yields.ts` `:852-854` -> `:1763-1770`,
+    `:704` -> `:1518`, `:735-737` -> `:1571-1587`, `:284-286` -> `:616-643`, `:482-487` -> `:921-926`, `:577` -> `:1203`, `:261-266` -> `:591-598`, `:497-509` -> `:1043-1061`,
+    `:600` -> `:1248`, `:571` -> `:1197`, `:687-695` -> `:1504-1509`, `:1233-1242` -> `:1367-1376`, `:619-630` / `:1152-1167` -> `:1282-1298`, `:1250-1256` -> `:1407-1413`,
+    `:524-561` -> `:1138-1173`, `:632-653` -> `:1300-1361`, `:572-576` -> `:1197-1202`, `:1189-1197` -> `:1320-1331`, `:540` / `:555` (GM8i's `:986` / `:1062`) -> `:1035` /
+    `:1154`; `session.ts` `:85-86` / `:227-231` -> `:422-435` / `:233-238`, `:223-225` -> `:230-232`, `:193` -> `:199`, `:194` -> `:200`, `:245-251` -> `:242-259` (`#countWrong`
+    `:275-284`), `:208-233` -> `:214-240`; `reduce.ts` `:322` / `:332` / `:354` -> `core.ts:87` / `:98` / `:122`, `:370` -> `core.ts:139-146`, `:493-497` -> `core.ts:314`. The cites
+    inside the sketches' code blocks stay as written (a mark inside a code block would read as code).
 - **Open (m10, round 3; round 4 m9, W3).** A view room with `device: <hotspot>` whose hotspot carries a zero-slot lock
   with `puzzle`. The device hotspot is drawn by the device, never as a hotspot button: the controller's hotspot views omit
   it (GM8i). **Where arrival runs (round 4, m9):** nothing dispatches it. The devices module's `arrived(w, s, room, out)`
   hook (§3.2, the hook from GM1b) runs inside the reducer, once per `room` effect into the device room: a zoom-in
-  (`arrive`, `reduce.ts:322`), a resume into it (`:332`) and an event knot's return into it (`:354`), each after the
+  (`arrive`, `mechanics/rules/core.ts:87`), a resume into it (`:98`) and an event knot's return into it (`:122`), each after the
   room's `onEnter` and only with no event knot pending. It never rides `roomShown()`, which yields also calls after every
-  puzzle end (`yields.ts:540`, `:555`), and a puzzle end pushes no `room` effect, so a device's own `solved` / `failed`
+  puzzle end (`yields.ts:1035`, `:1154`), and a puzzle end pushes no `room` effect, so a device's own `solved` / `failed`
   never re-plays `done` / `jammed`. The hook writes no state (`ArrivalOut`):
   - **Placement lints (round 4, W3; GM8i):** `world/view-type-site`: a puzzle whose type is `presentation: 'view'` is
     the puzzle of exactly one lock, and that lock is the zero-slot lock of a view room's `device` hotspot (a `view` type
@@ -369,10 +393,10 @@ export interface PuzzleTypeLint<P> {
     content lint, not a silent runtime skip, so the author learns at `npm run story`. Seen red in GM8i on a fixture
     `view` type with `"closeup": "cabinet"` (`story: a device puzzle with a close-up is refused`); GM8d's six puzzles
     pass it.
-  - run outcome null and the hotspot not open: the `puzzle` effect, under `lockTap`'s own condition (`reduce.ts:370`;
+  - run outcome null and the hotspot not open: the `puzzle` effect, under `lockTap`'s own condition (`mechanics/rules/core.ts:139-146`;
     every slot of an empty slot list is filled), so the session opens in `mode: 'explore'`. The proof reaches the same
-    edges through the `tap` on the device hotspot that `actions` lists (`reduce.ts:572-577`), which `successors`
-    expands as any lock puzzle (`reduce.ts:598-618`);
+    edges through the `tap` on the device hotspot that `actions` lists (`mechanics/rules/core.ts:447-479`), which `successors`
+    expands as any lock puzzle (`mechanics/rules/search.ts:38-61`);
   - `solved`: no session; module cue `module:devices:done` (§8.4); the view shows the parts at their saved `work` and
     the decor's `{ solved: p }` states;
   - `failed`: no session; module cue `module:devices:jammed`; the decor's `{ failed: p }` state shows the jam. Lint
@@ -380,27 +404,27 @@ export interface PuzzleTypeLint<P> {
     so a jammed device never looks live. A tap on its area is bare art (`ui:bare-art`). No LockPanel ever opens for a
     device (today's `lock` effect would open an empty one, `reduce.ts:368-375`, `yields.ts:299-302`).
 - **Host: the device renders inside the room (W1, round 3).** App's frame layer is a full-bleed `.layer` after the stage
-  layer (`App.svelte:103-115`, `:294-297`), inert only under OWN / META overlays (`:24-26`, `:34`), and the explore sheets
-  are children of ExploreView inside the stage layer (`ExploreView.svelte:67-81`). A view frame in that layer would take
+  layer (`App.svelte:107-121`, `:363-366`), inert only under OWN / META overlays (`:30-32`, `:40`), and the explore sheets
+  are children of ExploreView inside the stage layer (`ExploreView.svelte:73-144`). A view frame in that layer would take
   every tap and paint over the sheets, whatever its root's `pointer-events`. So a `presentation: 'view'` frame **never
   enters App's frame layer**:
   - `coversStage(f)` (`ui/puzzle-view.svelte.ts`; GM3w adds it as `f !== null`, GM8h narrows it to `f !== null &&
-    f.presentation === 'overlay'`) decides both App sites: the stage layer's `inert` (`App.svelte:65`) and the frame
-    layer's `{#if}` (`:103`). From GM3w on App reads only `coversStage`, so no later lane edits `App.svelte`.
+    f.presentation === 'overlay'`) decides both App sites: the stage layer's `inert` (`App.svelte:75`) and the frame
+    layer's `{#if}` (`:107`). From GM3w on App reads only `coversStage`, so no later lane edits `App.svelte`.
   - The room layer receives the puzzle store and actions (`puzzle: PuzzleView`, `puzzleActions: PuzzleHostCallbacks`,
     passed by App from GM3w on, unread until GM8h). For a view frame with its host loaded, ExploreView renders
     `<puzzle.host place="room" ...>` inside `.room`, after the hotspot buttons and before the bar, the ribbon and the
-    leave control. `.room`'s `inert={covered}` (`ExploreView.svelte:38`, `:42`) then covers the device whenever an
+    leave control. `.room`'s `inert={covered}` (`ExploreView.svelte:38-40`, `:73`) then covers the device whenever an
     inventory, document or lock sheet is up, and the sheets, later siblings of `.room`, paint over it.
-  - `place: 'room'` (`PuzzleHostProps.place: 'frame' | 'room' | 'ladder'`, GM8h): the compact bar (title, status line,
+  - `place: 'room'` (`PuzzleHostProps.place?: HostPlace`, `'frame' | 'room' | 'ladder'`, GM8h; Changed by RULINGS 363 (as of `172e47e`; docs lane `docs-errata-21`, group A): `place` is optional with the default `'frame'`, because App mounts the host with no `place` and `App.svelte` is barred from the host's wiring (`ui/puzzle-view.svelte.ts` :125-131); the new `PuzzleHostCallbacks` members `onwork`, `oncommit`, `ondemo` and `onblocked` (:90-93) and the same members of `PuzzleUiProps` (`puzzles/registry.ts` :36-42) are optional too): the compact bar (title, status line,
     attempts left when capped, Hint when `hintTiers > 0`, and **Retry (`ui:puzzle-retry`) while `frame.loadFailed`**, the
-    type-chunk failure that `PuzzleHost.svelte:71-73` shows in an overlay frame's body; round 4 m10; **no give-up**: a
+    type-chunk failure that `PuzzleHost.svelte:195-201` shows in an overlay frame's body; round 4 m10; **no give-up**: a
     lock puzzle cannot be abandoned, `reduce.ts:483-484`, and PuzzleHost offers it only in linear mode,
-    `PuzzleHost.svelte:24`) and the type UI's full-bleed root with the part hit areas. The host root and the type UI root
+    `PuzzleHost.svelte:59`) and the type UI's full-bleed root with the part hit areas. The host root and the type UI root
     are `pointer-events: none`; the bar and each part are `pointer-events: auto`. A tap outside them reaches the view's
     other hotspots, the bare-art catcher, the ribbon, the bar's Inventory and the leave control. **The compact bar is
     anchored to the top edge** (`top: calc(var(--app-inset-top, 0px) + 8px)`, round 4 m10), so the explore bar, which
-    sits at the bottom (`ExploreView.svelte:136-146`) and paints later in DOM order, never covers Hint or Retry.
+    sits at the bottom (`ExploreView.svelte:113-121`) and paints later in DOM order, never covers Hint or Retry.
     **Round 5 (W3): the bar's Try** (`ui:puzzle-try`, the existing control, label `puzzle.try`) shows while
     `frame.awaiting === true && frame.line === 'offline'`: a reach device whose reached answer got a `network` /
     `not-entitled` reply re-posts it from here (§"Posting per reply kind" below). A `commit: 'control'` device re-posts
@@ -419,8 +443,8 @@ export interface PuzzleTypeLint<P> {
     title (`min-width: 0`, one line, ellipsis; <= 18 graphemes by `world/title-long`, `client/scripts/story/world.ts:46`),
     then Hint and Try or Retry, each >= 44 x 44 px; row 2: the status line, 14 px type on an 18 px line, at most two
     lines (`line-clamp: 2`; the longest status, `puzzle.offline`, is 41 characters in both languages,
-    `client/src/i18n/ru.ts:134`, `client/src/i18n/en.ts:134`, and wraps at 320 px); row 3, when the puzzle is capped:
-    the attempts line, one 18 px line (`puzzle.attempts_left`, `ru.ts:129`). So `DEVICE_BAR_CSS_H` = 6 + 44 + 4 +
+    `client/src/i18n/ru.ts:139`, `client/src/i18n/en.ts:139`, and wraps at 320 px); row 3, when the puzzle is capped:
+    the attempts line, one 18 px line (`puzzle.attempts_left`, `ru.ts:134`). So `DEVICE_BAR_CSS_H` = 6 + 44 + 4 +
     2 x 18 + 4 + 18 + 6 = 118, rounded up to **120** CSS px (LIMIT new; round 5's 56 held one button row only, which the
     strings above cannot fit at 320 px), and with `DEVICE_TOP_INSET_CSS` = 0 the band is
     `DEVICE_BAND_Y = 64 + ceil((8 + DEVICE_BAR_CSS_H + DEVICE_TOP_INSET_CSS) x 1080 / 320)` = 64 + 432 = **496**
@@ -428,7 +452,7 @@ export interface PuzzleTypeLint<P> {
     3.375. Wider 9:16 screens have a larger scale, so the band in CSS px only grows: at 360 x 640 the band sits at
     496 x 0.3333 - 21.33 = 144 CSS px against the bar's bottom at 128.
     A 9:19.5 screen is height-bound (offsetY 0, scale >= 0.3385 at 320 px), so its band is lower: 9:16 is the worst
-    case. `DEVICE_TOP_INSET_CSS` is the largest `--app-inset-top` (`client/src/telegram/viewport.ts:14-21`, the safe
+    case. `DEVICE_TOP_INSET_CSS` is the largest `--app-inset-top` (`client/src/telegram/viewport.ts:16-25`, the safe
     area plus Telegram's content safe area, which is its header **in fullscreen**): `requestFullscreen` appears nowhere
     in `client/src` (Grep), so 0 is today's value; verify at GM8h's cut against core.telegram.org/bots/webapps
     (`safeAreaInset`, `contentSafeAreaInset`) whether any launch path enters fullscreen, and if one does, set the
@@ -449,30 +473,30 @@ export interface PuzzleTypeLint<P> {
     `puzzle.ladder !== null` and the frame is a view; `covered` gains that case. Back closes it (the `hints` screen) and
     the device stays (Lifecycle below).
   - A failed host chunk in a view: ExploreView shows today's `puzzle.load_failed` text and Retry (`ui:puzzle-retry`,
-    `puzzleActions.onretry`) in the room bar; App's `hostFailed` block (`App.svelte:42`, `:108-113`) serves overlay
+    `puzzleActions.onretry`) in the room bar; App's `hostFailed` block (`App.svelte:48`, `:112-119`) serves overlay
     frames only.
-  - `backScreen` (`ui/puzzle-view.svelte.ts:84-86`) returns null for a view frame, so no `puzzle` overlay is pushed.
+  - `backScreen` (`ui/puzzle-view.svelte.ts:176-178`) returns null for a view frame, so no `puzzle` overlay is pushed.
   - The cue roots nest here (the host's root inside ExploreView's): `cueRoot` emits a control from its innermost root
     only (§8.3, M-I5j).
 - **Lifecycle (W2; m9, round 3).** yields' `Open` gains `present: 'overlay' | 'view'` and `room: RoomId | null` (the
-  device's view room). The X8 close in `screensChanged` (`yields.ts:852-854`) gains `open.present === 'overlay'`, so
-  pushing `hints` (`yields.ts:704`), the inventory or a document over a device no longer closes it, and a `useHint` in
-  flight finds its `Open` alive (`yields.ts:735-737`). A view session closes, with no outcome:
-  - on a `room` effect to another room (in `effect`, `yields.ts:284-286`) through **`session.close()`**, the X8 path,
-    deferred while an attempt is in flight (`puzzles/session.ts:85-86`, `:227-231`): a decisive answer that lands after
+  device's view room). The X8 close in `screensChanged` (`yields.ts:1763-1770`) gains `open.present === 'overlay'`, so
+  pushing `hints` (`yields.ts:1518`), the inventory or a document over a device no longer closes it, and a `useHint` in
+  flight finds its `Open` alive (`yields.ts:1571-1587`). A view session closes, with no outcome:
+  - on a `room` effect to another room (in `effect`, `yields.ts:616-643`) through **`session.close()`**, the X8 path,
+    deferred while an attempt is in flight (`puzzles/session.ts:422-435`, `:233-238`): a decisive answer that lands after
     the move still ends the session, and its `onEnd` applies the outcome in the section the player is in (a `room`
     effect never leaves the section, `world/view-section`), so a zoom-out never drops a server-recorded solve (m9).
     **Round 4 (m1):** the same `room` effect clears `puzzle.frame` and `puzzle.ladder` at once (`open` stays until
     `onEnd`), so the compact bar and the part hit areas leave with the view and never sit over the parent room during a
-    deferred close; `attempted`'s `setFrame` (`yields.ts:482-487`) is then a no-op for that `Open`, while `onEnd` ->
+    deferred close; `attempted`'s `setFrame` (`yields.ts:921-926`) is then a no-op for that `Open`, while `onEnd` ->
     `dropPuzzle` -> `ended` applies a late correct answer as before. Re-entering the view while that POST is still in
-    flight opens a new session (`openPuzzle` -> `dropPuzzle`, `yields.ts:577`), which drops the late answer; the solve
+    flight opens a new session (`openPuzzle` -> `dropPuzzle`, `yields.ts:1203`), which drops the late answer; the solve
     stays a server fact, and (round 5, W3) the new session, seeded at the saved `work`, re-posts it at open for a reach
     device (its UI reports the reached start through `reachEdge`; the reply is `correct`) and restarts it for a
     `commit: 'full'` device (no re-post, below);
-  - on a `leave` / `story` effect (`toStory`, `yields.ts:261-266`), `chapterChanged`, `restore` and `dispose`, through
-    `dropPuzzle` (`yields.ts:497-509`), which disposes: the world is being replaced, a late answer is dropped
-    (`session.ts:223-225`) and stays a server fact, and a re-solve posts the same answer and is `correct`.
+  - on a `leave` / `story` effect (`toStory`, `yields.ts:591-598`), `chapterChanged`, `restore` and `dispose`, through
+    `dropPuzzle` (`yields.ts:1043-1061`), which disposes: the world is being replaced, a late answer is dropped
+    (`session.ts:230-232`) and stays a server fact, and a re-solve posts the same answer and is `correct`.
 - **Back:** the root back leaves the view (§6.3); the move closes the session with no outcome by the rule above. An open
   `hints` overlay, inventory or document is on top of the screens stack, so the first Back closes it and the device
   stays (Telegram's BackButton pops the stack before the root-back).
@@ -497,9 +521,9 @@ export interface PuzzleTypeLint<P> {
   1. **Seed.** `PuzzleInstance.start(run)` (§7.1; the member lands in GM1c returning `initial()`, its `work` branch in
      GM8h, round 5 m1) returns `run.work` for a `view` type whose `workFits(p, work)` holds, else `initial(p)`; the
      session's constructor calls it where it calls `initialAnswer(puzzle)` today
-     (`session.ts:193`), so the frame's `answer` (`yields.ts:600`) and therefore the type UI's `answer` prop
-     (`PuzzleHost.svelte:77`) start at the saved configuration on every open: re-entry after Back, a reload (the saved
-     world's run, `yields.ts:571`), an event knot's return. A `work` that no longer fits was already dropped at resume
+     (`session.ts:199`), so the frame's `answer` (`yields.ts:1248`) and therefore the type UI's `answer` prop
+     (`PuzzleHost.svelte:174`, `:206`) start at the saved configuration on every open: re-entry after Back, a reload (the saved
+     world's run, `yields.ts:1197`), an event knot's return. A `work` that no longer fits was already dropped at resume
      (the devices `normalize`, §5.2); the seed's `workFits` check makes the session safe on its own.
   2. **One write path.** A view type never calls `onchange`. Its UI computes the next configuration from the `answer`
      prop through its play half (`press`) and calls `onwork(work, wrong)`. yields' one handler (GM8h): `session.setAnswer
@@ -526,10 +550,10 @@ export interface PuzzleTypeLint<P> {
   zoom-out and a reload`.
 - **Full commit (round 4, m8; `ritual`).** After `onwork`, when `commit === 'full'` and `session.answer().length ===
   shape.len`, yields posts through `post(o)` (round 8: GM3p's one attempt starter, out of `ontry`'s body,
-  `yields.ts:687-695`; :1233-1242 (as of `f6487fc`; docs lane `docs-errata-19`, group A): `busy`, `checking`, `puzzle:checking`, `attempt()`; per-player R-E28). While `busy`
+  `ontry` `yields.ts:1504-1509` through `commitTry` :1453; `post` :1367-1376 (re-located on `172e47e`; were `:687-695`, :1233-1242): `busy`, `checking`, `puzzle:checking`, `attempt()`; per-player R-E28). While `busy`
   or `retryAfter !== null` it does not post and the type UI ignores presses (its `busy` prop; a press on a full-length
   sequence is refused by the play half with `puzzle:blocked`, motion `shake`); **when the 429 countdown reaches zero**
-  (`countdown`, `yields.ts:619-630`; :1152-1167 (as of `f6487fc`; docs lane `docs-errata-19`, group A)) yields posts the still-full answer once. One rule covers the rest: **a
+  (`countdown`, `yields.ts:1282-1298`, re-located on `172e47e`; were `:619-630`, :1152-1167) yields posts the still-full answer once. One rule covers the rest: **a
   full-length unposted answer posts when the session can post** (after the last press and at the countdown's end; a
   full-length `work` seeded at open, which only a reload during a POST or a countdown leaves in a save, restarts
   through `restartWork` instead of posting, because the save cannot tell whether that POST reached the server and a
@@ -565,12 +589,12 @@ export interface PuzzleTypeLint<P> {
   GM3p's one starter sets `busy` / `checking`, emits `puzzle:checking` and calls `session.attempt()`, whose reply goes
   through `attempted` as today; GM6c2 adds `trying` inside it). The countdown's zero calls one hook, `ready(o)`,
   which posts `o.reach` for a reach type, the full answer for `commit: 'full'` and nothing for `commit: 'control'`
-  (Try re-enables as built, `yields.ts:619-630`). **Round 6 (critique_engine_r5 W3):** `ready(o)` returns whether it
+  (Try re-enables as built, `yields.ts:1282-1298`). **Round 6 (critique_engine_r5 W3):** `ready(o)` returns whether it
   posted (round 8: `post(o)`'s own boolean); a post emits `puzzle:checking` (the frame turns `checking`), no post emits **`puzzle:ready`** as the frame
   returns to `idle` and Try lights, so the end of every wait has exactly one cue (`commit: 'control'` always; a reach
   frame whose `o.reach` a move away cleared during the countdown; never two cues at one zero). PuzzleHost's `canTry` for a reach frame adds `frame.awaiting === true`
   (an unreached path never posts from Try), and `ontry` on a reach frame calls `postReach`. Changed by RULINGS 335,
-  337, 339, 341 (as of `f6487fc`; docs lane `docs-errata-19`, group A), as merged (GM7r `9516951`): `postReach` (`yields.ts:1250-1256`) sets the session answer
+  337, 339, 341 (as of `f6487fc`; docs lane `docs-errata-19`, group A), as merged (GM7r `9516951`): `postReach` (`yields.ts:1407-1413`) sets the session answer
   to `o.reach` whenever `o.reach !== null`, also when `post(o)` then refuses (busy, a countdown, a frame not shown):
   a reach frame posts only through `postReach`, which sets it again, and `onchange` diffs against the frame's answer,
   not the session's (O3); `ready(o)` is `postReach(o)` (:1146; the full answer of `commit: 'full'` is GM8h's);
@@ -620,19 +644,19 @@ export interface PuzzleTypeLint<P> {
   stops the demonstration and a wrong one replays it`, `yields: a dropped device leaves no demo timer` (the fake clock
   holds no pending timer); GM8b: `sequence: the device demonstrates its order` (a real `sequence`).
 - **Attempts (m6; W2, round 3).** The limit lives in the session: `#settle` counts a wrong posted answer, dispatches
-  `attempt-failed` and ends the session `failed` at `maxAttempts` (`puzzles/session.ts:245-251`), reached only from
-  `attempt()` after `postAttempt` (`:208-233`); `#attempts` is copied from the run once (`:194`); the reducer's
+  `attempt-failed` and ends the session `failed` at `maxAttempts` (`puzzles/session.ts:242-259`, `#countWrong` :275-284), reached only from
+  `attempt()` after `postAttempt` (`:214-240`); `#attempts` is copied from the run once (`:200`); the reducer's
   `attempt-failed` only bumps `run.attempts` (`reduce.ts:510-515`). Each type declares its wrong state
   (`PuzzleTypeData.wrong`, §7.1):
   - `'none'` (`path`, `grid`, `levers`): no wrong state; `maxAttempts` refused (`world/attempts-without-wrong`, GM7p);
   - `'posted'` (`code`, `order`, `setting`, `ritual`): as built;
   - `'local'` (`sequence`): the device sees the wrong press itself. `session.failLocal()` (GM8h) runs the same count as
     `#settle`'s wrong branch, factored into one private `#countWrong()`: `#attempts + 1`, `attempt-failed`, and at
-    `maxAttempts` `#end('failed')`. `onEnd` -> `ended(..., 'failed')` (`yields.ts:524-561`) -> `puzzle-ended` -> the
-    lock's `onFail` (`reduce.ts:493-497`) then runs at the third wrong ring, exactly as after a posted answer. yields
+    `maxAttempts` `#end('failed')`. `onEnd` -> `ended(..., 'failed')` (`yields.ts:1138-1173`) -> `puzzle-ended` -> the
+    lock's `onFail` (`mechanics/rules/core.ts:314`) then runs at the third wrong ring, exactly as after a posted answer. yields
     calls it from `onwork(work, true)` after dispatching `device-moved` and routes the result through `attempted`
-    (`yields.ts:632-653`), so the attempts line moves on every wrong ring. No POST: the limit is client state as built
-    (D18, `yields.ts:572-576`).
+    (`yields.ts:1300-1361`), so the attempts line moves on every wrong ring. No POST: the limit is client state as built
+    (D18, `yields.ts:1197-1202`).
   ```ts
   // client/src/puzzles/session.ts (PuzzleSession, GM8h)
   /** A wrong input the device itself detected: counts one attempt as a wrong posted answer does (attempt-failed; at

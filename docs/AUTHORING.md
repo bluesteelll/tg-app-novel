@@ -218,7 +218,13 @@ catalog (`catalog/assets`).
 Tags stage the scene: `scene`, `bg`, `show`, `hide`, `cg`, `bgm`, `sfx`, `wait`, the shot kinds `face`, `cam`,
 `think`, `anim`, `fx` (DSL v3: a face change, a camera framing, a thought line, a character's one-shot motion, a
 screen effect; all five parsed and checked today; on today's sprite stage a `face` crossfades the character's
-expression, and the other four are drawn by later shots lanes), plus the two yield tags `puzzle` and `explore`.
+expression, and on a shot chapter a timed `face` is a patch over the old drawing), plus the two yield tags `puzzle` and `explore`.
+Changed by RULINGS 365, 367, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A): `cam` is drawn since SH6 (`b0ef547`), and so is the exact dissolve of a
+`bg: <shot> t=crossfade` between two shots of a shot chapter; `think` is SH7's and `anim` and `fx` are SH8's, so those three
+are still parsed and checked only. A `cam: push` ignores reduced motion until SH7 (OPEN-QUESTIONS Q71). A worked example of the
+three SH6 tags together is [STAGING-DSL §14.5](STAGING-DSL.md#145-worked-example-the-lamp-knot-of-ch4-sh6): the lamp knot of
+`story/ch4/main.ink` takes a wide shot, a close shot with a `cam: push to=keeper`, an insert plate, and a crossfade back to the
+close shot with a `face: keeper smile`. Its art is paid content of ch4, served only after an entitlement check.
 The parser's list is `TAG_KINDS` ([tags.ts:29](../client/src/story/tags.ts#L29)); the syntax, options,
 defaults and conflicts of each are in [STAGING-DSL §6](STAGING-DSL.md#6-tags) and
 [§7](STAGING-DSL.md#7-batches-and-execution-order). The habits that keep a chapter green and cheap:
@@ -835,6 +841,13 @@ E story/ch1/world.json:19 world/title-long puzzle 'desk': the title is 30 graphe
 ```
 
 A puzzle id may not end in `_hints` (`world/id-reserved`): `pz_<id>_hints` is a projection name.
+
+**A device puzzle in a view room** (Changed by RULINGS 363, 366, 368, 372 (as of `172e47e`; docs lane `docs-errata-21`, group A); GM8h, `4471fbf`). A puzzle of a view type that
+sits behind the `device` key of a view room (the `devices` module, [STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces))
+is drawn inside the room, in the room's place, and not as a sheet over the story. Its bar is anchored to the top of that place and
+carries Try, Retry and Hint (and an offline Try); the hint ladder opens as a sheet; and the QuickBar is hidden while the view is up.
+You write nothing for this beyond the `device` key and the puzzle's own data. No registered puzzle type is a view type yet: GM8a
+registers the first, and GM8d the first world that holds a device, so no chapter can author one today.
 
 ### The yield block
 

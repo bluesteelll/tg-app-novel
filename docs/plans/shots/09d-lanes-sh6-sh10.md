@@ -7,7 +7,7 @@
 - (rev. 3, W7) tide's ch4 `lamp` knot restaged into a wide + a keeper CU + an insert, with a push and a dissolve
   (round 2 named ch3's lighthouse, which EN's GM8d holds).
 
-**Lock (13):**
+**Lock (14; Changed by RULINGS 365 (as of `172e47e`; docs lane `docs-errata-21`, group A): the 13 below plus `client/src/scene/controller.test.ts`, pre-admitted, disjoint from GM8h's lock):**
 - `client/src/scene/{flatten,flatten.test}.ts` (new)
 - `client/src/scene/{executor,executor.test,registry,registry.test,controller,shot-view,shot-view.test}.ts`
 - `client/src/arch.test.ts`
@@ -48,7 +48,10 @@
      `scene/motion/**` only from inside it; `scene/controller.ts` by `import()`; `import type` anywhere). Red fixture
      `['scene/executor.ts', "import { createCharAnim } from './motion/animator.ts';"]`; allow fixtures: the
      controller's `import('./motion/index.ts')`, a type-only import from `executor.ts`. The directory is created by
-     SH7; the rule is seen red on its fixture here.
+     SH7; the rule is seen red on its fixture here. Changed by RULINGS 367, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A): as built, `arch.test.ts` generates its fixture
+     tests per rule: `arch: ${rule} red on fixture` (`client/src/arch.test.ts:2380`) and `arch: ${rule} allows fixtures` (`:2593`),
+     so the arch names above are the intent, and the names in the file are generated (`scene-lazy`: the rule `:388`, its red
+     fixture `:2371`, its allow fixtures `:2582`).
 7. The tide content commit.
 8. e2e:
    - `shots: a dissolve leaves no target alive` (`stats().scene.targets === 0`);
@@ -77,6 +80,8 @@
 - After SH5b (`scene/*`) and GM1a (`arch.test.ts`).
 - `arch.test.ts`: never beside GM1c / GM3m / GM3s / GM3u / GM7p / GM7g / GM8a / GM8b (EN [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts), [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)).
 - S-D read at the cut.
+
+**Ruled since: RULINGS 365, 367, 370, 371, 374** (as of `172e47e`; docs lane `docs-errata-21`, group A) — **merged `b0ef547`** (lane `sh6-shot-cuts`, lane C; trunk sync `031ec9d`; RULINGS 374). The lock was **14** (the 13 above plus `scene/controller.test.ts`, RULINGS 365); the E term was ruled **E_engine 1.6** (in place of 1.4) with entry +0.1 KB (RULINGS 367), and measured **engine +2,396 B (sample 1.498)**, entry +23, first line +2,419, all JS +2,443; the new budget row is `image bg/lamp_lens_insert` (113 rows, 112 PASS, 1 PENDING). Its lenses (paid, gpu, legacy, gates; RULINGS 371) found no defect that held the merge; the minors are in the carry list ("SH6 carries"), among them a throwing render that leaks its target (review r1 M2, no reachable throw on Pixi 8.22). Open as built: the camera push ignores reduced motion until SH7 (OPEN-QUESTIONS Q71). The rows and the R are in [engine §11.1](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13).
 
 ### 9.8 SH7 `shot-idle` (client, runtime)
 
@@ -146,7 +151,7 @@
 - M-SH7a: the cap ignored (red: `render-loop: continuous sources draw at most AMBIENT_FPS`);
 - M-SH7b: `heard()` never sent (red: commit 3's first test);
 - M-SH7c: the animator's remover not called at a cut (red: `executor: a face's animator leaves with its shot`);
-- M-SH7d (rev. 2): `controller.ts` imports `./motion/index.ts` statically (red: SH6's `arch: scene/motion is reached
+- M-SH7d (rev. 2; Changed by RULINGS 367, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A): the rule is SH6's `scene-lazy`, merged `b0ef547`, and the generated test names are not the ones planned below. A static import of `scene/motion/**` in a real file is red on `arch: lazy ui only by dynamic import` (`client/src/arch.test.ts:1273`, its filter `:1298`), and the rule's fixture is red on `arch: scene-lazy red on fixture` (`:2380`, the fixture entry `:2371`); the tree half has no subject until SH7 creates `scene/motion/`): `controller.ts` imports `./motion/index.ts` statically (red: SH6's `arch: scene/motion is reached
   by import() only` and SH3b's `scene-motion chunk (br)` row FAILs "inside the engine closure");
 - M-SH7e (rev. 3, W8): covered holds every source whatever its layer (CH §6.3 as written; red: `render-loop: a cg
   cover holds the stage's sources and runs the cover's own`).
