@@ -12,7 +12,8 @@
   // ribbon sits over the rooms while no panel covers them; a hotspot tapped while an item is selected uses that item.
   // Under the hotspots, the bare-art catcher (§8.3 "The catcher") answers a tap on the art itself: its cue ripples at the
   // finger, and it puts a selected item back. GM4u (§6.3): in a view the bar's first control leaves it, the exit arrow
-  // turned down (owner Q15f), and calls the root back's own press.
+  // turned down (owner Q15f), and calls the root back's own press. GM8h (§7.5 "Host"): a device's frame (`presentation`
+  // `view`) renders here through the puzzle host's `room` place, and its hint ladder as a sheet through `ladder`.
   import { cueRoot, SHEET_PANELS } from '../../cues/root.ts';
   import { t } from '../../i18n/index.ts';
   import type { ExploreLayerProps } from '../explore-view.svelte.ts';
@@ -22,7 +23,7 @@
   import LockPanel from './LockPanel.svelte';
   import Ribbon from './Ribbon.svelte';
 
-  let { lang, view, actions }: ExploreLayerProps = $props();
+  let { lang, view, actions, puzzle, puzzleActions }: ExploreLayerProps = $props();
 
   /** The document the reader shows; null when the panel names no document the inventory holds. */
   const reading = $derived.by(() => {
@@ -30,8 +31,13 @@
     return p?.kind === 'doc' ? (view.docs.find((d) => d.id === p.doc) ?? null) : null;
   });
   const inventoryOpen = $derived(view.panel?.kind === 'inventory' || view.panel?.kind === 'doc');
-  /** A panel covers the rooms: their buttons leave the tab order and the accessibility tree. */
-  const covered = $derived(inventoryOpen || (view.panel?.kind === 'lock' && view.lock !== null));
+  const frame = $derived(puzzle.frame);
+  /** A device's frame shows here, inside its room, not in App's frame layer (engine plan §7.5 "Host"; GM8h). */
+  const viewing = $derived(frame?.presentation === 'view');
+  /** A panel covers the rooms: their buttons leave the tab order and the accessibility tree. The ladder over a device is one. */
+  const covered = $derived(
+    inventoryOpen || (view.panel?.kind === 'lock' && view.lock !== null) || (viewing && puzzle.ladder !== null),
+  );
 
   /** A tap on the bare art puts a selected item back (§6.1 UI); with none selected it is only its cue. */
   const onbare = (): void => {
@@ -88,6 +94,19 @@
         {/if}
       </button>
     {/each}
+    <!-- A device in its room (GM8h): above the hotspots and under the ribbon and the bar. With its host chunk failed,
+         the room shows the load notice and Retry in its place (App's frame layer renders no view frame). -->
+    {#if viewing && frame !== null}
+      {#if puzzle.host !== null}
+        {@const Host = puzzle.host}
+        <Host place="room" {lang} {frame} ladder={puzzle.ladder} {...puzzleActions} />
+      {:else if frame.loadFailed}
+        <section class="device-failed" role="alert" data-cue-notice data-cue-panel="puzzle">
+          <p>{t(lang, 'puzzle.load_failed')}</p>
+          <button type="button" class="bar-button" data-cue="puzzle-retry" disabled={frame.retrying} onclick={() => puzzleActions.onretry()}>{t(lang, 'puzzle.retry')}</button>
+        </section>
+      {/if}
+    {/if}
     {#if !covered}
       <Ribbon {lang} items={view.items} selected={view.selected ?? null} onselect={actions.onselect} ondeselect={actions.ondeselect} oncombine={actions.oncombine} />
     {/if}
@@ -116,6 +135,13 @@
       <LockPanel {lang} lock={view.lock} items={view.items} oninsert={actions.oninsert} />
     </div>
   {/if}
+  {#if viewing && puzzle.ladder !== null && puzzle.host !== null}
+    {@const Host = puzzle.host}
+    <!-- The hint ladder over a device: a sheet like the explore panels, its controls in this family. -->
+    <div class="sheet">
+      <Host place="ladder" {lang} {frame} ladder={puzzle.ladder} {...puzzleActions} />
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -130,6 +156,25 @@
     position: absolute;
     inset: 0;
     background: rgba(0, 0, 0, 0.5);
+  }
+
+  /* A device whose host failed to load: its notice where the device's bar sits, at the room's top. */
+  .device-failed {
+    position: absolute;
+    top: calc(var(--app-inset-top, 0px) + 8px);
+    right: 0;
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    background: var(--tg-theme-bg-color, #17171c);
+    color: var(--tg-theme-destructive-text-color, #ff6b6b);
+  }
+
+  .device-failed p {
+    margin: 0;
   }
 
   /* The bare-art catcher: the whole room, painting nothing; the hotspots and the ribbon lie above it. */

@@ -31,6 +31,7 @@ import { backScreen, coversStage, createPuzzleView, forwardHost } from '../puzzl
 import type { HintLadderUiView, PuzzleFrameView, PuzzleHostCallbacks, PuzzleHostProps } from '../puzzle-view.svelte.ts';
 import type { CueStageProps } from '../state.svelte.ts';
 import appSource from '../App.svelte?raw';
+import exploreViewSource from '../explore/ExploreView.svelte?raw';
 import HintLadder from './HintLadder.svelte';
 import PuzzleHost from './PuzzleHost.svelte';
 import puzzleHostSource from './PuzzleHost.svelte?raw';
@@ -654,13 +655,15 @@ function declarationsOf(source: string, selector: string): Map<string, string> {
 }
 
 test('puzzle-host: Retry is disabled only while it reloads', () => {
-  // GM3w's two bindings, PuzzleHost's notice and App's failed-host block: `retrying`, never `busy` (00-decision-table W1).
-  for (const [name, source] of [
-    ['PuzzleHost', puzzleHostSource],
-    ['App', appSource],
+  // GM3w's two bindings, PuzzleHost's notice and App's failed-host block, and GM8h's in-room failed-host Retry
+  // (ExploreView's, over its `puzzle.frame`): `retrying`, never `busy` (00-decision-table W1).
+  for (const [name, source, want] of [
+    ['PuzzleHost', puzzleHostSource, ['frame.retrying']],
+    ['App', appSource, ['frame.retrying']],
+    ['ExploreView', exploreViewSource, ['frame.retrying']],
   ] as const) {
     const bindings = [...source.matchAll(/data-cue="puzzle-retry"[^\n]*/g)].map((m) => /\bdisabled=\{([^}]*)\}/.exec(m[0])?.[1] ?? null);
-    expect(bindings, name).toEqual(['frame.retrying']);
+    expect(bindings, name).toEqual(want);
   }
   // The frame's Retry: enabled over a failed load, during a values wait too (neither wait wins); disabled while it reloads.
   const cases: ReadonlyArray<readonly [string, Partial<PuzzleFrameView>, boolean]> = [
@@ -672,6 +675,49 @@ test('puzzle-host: Retry is disabled only while it reloads', () => {
     const { getByRole, unmount } = render(PuzzleHost, hostProps({ frame: frameOf({ ui: null, loadFailed: true, ...over }) }));
     expect((getByRole('button', { name: t('en', 'puzzle.retry') }) as HTMLButtonElement).disabled, name).toBe(disabled);
     unmount();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM8h: the room and ladder places (engine plan §7.5 "Host"): a device's compact bar and its parts layer inside the
+// room, the ladder as a room sheet
+
+/** A device's frame as yields writes it: an explore-mode view frame. */
+const deviceFrame = (over: Partial<PuzzleFrameView> = {}): PuzzleFrameView => frameOf({ mode: 'explore', giveUp: false, presentation: 'view', ...over });
+/** The host's props in `place`. */
+const placed = (place: 'room' | 'ladder', over: Partial<PuzzleHostProps> = {}): PuzzleHostProps => ({ ...hostProps({ frame: deviceFrame(), ...over }), place });
+
+test('puzzle-host: a room-place host offers no give-up', () => {
+  // A lock puzzle cannot be abandoned: the compact bar holds no give-up, even for a frame that allows it.
+  const { container } = render(PuzzleHost, placed('room', { frame: deviceFrame({ mode: 'linear', giveUp: true }) }));
+  expect(container.querySelector('.device > .bar')).not.toBeNull();
+  expect([container.querySelector('.give-up'), container.querySelector('[data-cue^="give-up"]')]).toEqual([null, null]);
+});
+
+test("puzzle-host: a room-place host's cue root stops emitting when its frame leaves", async () => {
+  // O10 / K1: in a room the host unmounts with its device (ExploreView drops it when the frame leaves), beside the
+  // frame-null branch it shares with the overlay; either way its root's listeners go with it (`r.destroy()`), so a
+  // control left in the detached root emits nothing.
+  for (const leave of ['the frame leaves', 'the host unmounts'] as const) {
+    const oncue = vi.fn();
+    const { container, rerender, unmount } = render(PuzzleHost, placed('room', { oncue }));
+    await tick();
+    const root = must(container.querySelector('.device[data-cue-root="frame"]'), 'the room-place root');
+    const hint = must(root.querySelector('[data-cue="puzzle-hint"]'), "the bar's Hint");
+    pointerClick(hint);
+    expect(oncue, leave).toHaveBeenCalledTimes(1);
+    oncue.mockClear();
+    if (leave === 'the frame leaves') {
+      await rerender({ frame: null });
+    } else {
+      unmount();
+    }
+    expect(root.isConnected, leave).toBe(false);
+    pointerClick(hint);
+    expect(oncue, leave).not.toHaveBeenCalled();
+    if (leave === 'the frame leaves') {
+      unmount();
+    }
   }
 });
 

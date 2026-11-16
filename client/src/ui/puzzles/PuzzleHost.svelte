@@ -11,6 +11,12 @@
   // its cue, and the notice, the status and the attempts lines carry their target markers. The root is attached in an
   // effect, as the explore layer's is (RULINGS 201 E1: no `use:` action): its controls emit to `oncue`, the session's
   // bus through yields, which moves each point from the root's px to the stage host's.
+  // GM8h (engine plan §7.5 "Host"): `place` picks where it renders. `frame` (the default, App's frame layer) is the
+  // overlay above. `room` is a device inside its room (ExploreView's `.room`): a full-bleed root that takes no tap, the
+  // parts layer with the type UI, and the compact bar anchored to the top (title, Hint, the status line, the attempts;
+  // no give-up: a lock puzzle cannot be abandoned); the root is the frame family's and the bar its frame marker.
+  // `ladder` is the hint ladder alone, in a room sheet over a device, with no root: its controls emit through the
+  // innermost root around it, ExploreView's.
   import { cueRoot } from '../../cues/root.ts';
   import type { GestureCue } from '../../cues/types.ts';
   import { t } from '../../i18n/index.ts';
@@ -31,6 +37,7 @@
     ongetmore,
     oncue,
     onreach,
+    place = 'frame',
   }: PuzzleHostProps = $props();
 
   const uid = $props.id();
@@ -120,21 +127,16 @@
   }
 </script>
 
-{#if frame !== null}
+{#if place === 'ladder'}
+  {#if ladder !== null}
+    <HintLadder {lang} {ladder} onuse={(tier) => onusehint(tier)} ongetmore={() => ongetmore()} />
+  {/if}
+{:else if frame !== null}
   {#key frame.id}
-    <section class="frame" bind:this={root} data-cue-root="frame" aria-labelledby="{uid}-title">
-      <div class="wrap" data-cue-frame data-cue-panel="puzzle">
-        <h2 id="{uid}-title">{frame.title}</h2>
-        <p class="prompt">{frame.prompt}</p>
-        <div class="body">
-          {#if frame.loadFailed}
-            <div class="notice" data-cue-notice>
-              <p class="failed" role="alert">{t(lang, 'puzzle.load_failed')}</p>
-              <button type="button" data-cue="puzzle-retry" disabled={frame.retrying} onclick={() => onretry()}
-                >{t(lang, 'puzzle.retry')}</button
-              >
-            </div>
-          {:else if frame.ui !== null}
+    {#if place === 'room'}
+      <section class="device" bind:this={root} data-cue-root="frame" aria-labelledby="{uid}-title">
+        <div class="parts" data-cue-hit>
+          {#if frame.ui !== null}
             {@const Ui = frame.ui}
             <Ui
               params={frame.params}
@@ -148,40 +150,81 @@
             />
           {/if}
         </div>
-        <p class="status" role="status" data-cue-status>{status}</p>
-        {#if frame.attemptsLeft !== null}
-          <p class="attempts" data-cue-attempts>{t(lang, 'puzzle.attempts_left', { n: frame.attemptsLeft })}</p>
-        {/if}
-        <div class="actions">
-          <button type="button" class="primary" data-cue="puzzle-try" disabled={!canTry} onclick={() => ontry()}
-            >{t(lang, 'puzzle.try')}</button
-          >
-          {#if frame.hintTiers > 0}
-            <button type="button" data-cue="puzzle-hint" onclick={() => onhint()}>{t(lang, 'puzzle.hint')}</button>
-          {/if}
-        </div>
-        {#if canGiveUp}
-          <div class="give-up">
-            {#if asking}
-              <div class="actions">
-                <p class="ask">{t(lang, 'puzzle.give_up_confirm')}</p>
-                <button type="button" data-cue="give-up-no" onclick={() => (askingFor = null)}>{t(lang, 'saves.no')}</button>
-              </div>
-              <div class="actions">
-                <button type="button" class="danger" data-cue="give-up-yes" onclick={giveUp}>{t(lang, 'puzzle.give_up_yes')}</button>
-              </div>
-            {:else}
-              <div class="actions">
-                <button type="button" data-cue="give-up-ask" onclick={ask}>{t(lang, 'puzzle.give_up')}</button>
-              </div>
+        <div class="bar" data-cue-frame data-cue-panel="puzzle">
+          <div class="row">
+            <h2 id="{uid}-title" class="title">{frame.title}</h2>
+            {#if frame.hintTiers > 0}
+              <button type="button" data-cue="puzzle-hint" onclick={() => onhint()}>{t(lang, 'puzzle.hint')}</button>
             {/if}
           </div>
-        {/if}
-        {#if ladder !== null}
-          <HintLadder {lang} {ladder} onuse={(tier) => onusehint(tier)} ongetmore={() => ongetmore()} />
-        {/if}
-      </div>
-    </section>
+          <p class="status" role="status" data-cue-status>{status}</p>
+          {#if frame.attemptsLeft !== null}
+            <p class="attempts" data-cue-attempts>{t(lang, 'puzzle.attempts_left', { n: frame.attemptsLeft })}</p>
+          {/if}
+        </div>
+      </section>
+    {:else}
+      <section class="frame" bind:this={root} data-cue-root="frame" aria-labelledby="{uid}-title">
+        <div class="wrap" data-cue-frame data-cue-panel="puzzle">
+          <h2 id="{uid}-title">{frame.title}</h2>
+          <p class="prompt">{frame.prompt}</p>
+          <div class="body">
+            {#if frame.loadFailed}
+              <div class="notice" data-cue-notice>
+                <p class="failed" role="alert">{t(lang, 'puzzle.load_failed')}</p>
+                <button type="button" data-cue="puzzle-retry" disabled={frame.retrying} onclick={() => onretry()}
+                  >{t(lang, 'puzzle.retry')}</button
+                >
+              </div>
+            {:else if frame.ui !== null}
+              {@const Ui = frame.ui}
+              <Ui
+                params={frame.params}
+                answer={frame.answer}
+                busy={frame.busy || ended}
+                {lang}
+                {onchange}
+                {item}
+                {onreach}
+                oncue={gesture}
+              />
+            {/if}
+          </div>
+          <p class="status" role="status" data-cue-status>{status}</p>
+          {#if frame.attemptsLeft !== null}
+            <p class="attempts" data-cue-attempts>{t(lang, 'puzzle.attempts_left', { n: frame.attemptsLeft })}</p>
+          {/if}
+          <div class="actions">
+            <button type="button" class="primary" data-cue="puzzle-try" disabled={!canTry} onclick={() => ontry()}
+              >{t(lang, 'puzzle.try')}</button
+            >
+            {#if frame.hintTiers > 0}
+              <button type="button" data-cue="puzzle-hint" onclick={() => onhint()}>{t(lang, 'puzzle.hint')}</button>
+            {/if}
+          </div>
+          {#if canGiveUp}
+            <div class="give-up">
+              {#if asking}
+                <div class="actions">
+                  <p class="ask">{t(lang, 'puzzle.give_up_confirm')}</p>
+                  <button type="button" data-cue="give-up-no" onclick={() => (askingFor = null)}>{t(lang, 'saves.no')}</button>
+                </div>
+                <div class="actions">
+                  <button type="button" class="danger" data-cue="give-up-yes" onclick={giveUp}>{t(lang, 'puzzle.give_up_yes')}</button>
+                </div>
+              {:else}
+                <div class="actions">
+                  <button type="button" data-cue="give-up-ask" onclick={ask}>{t(lang, 'puzzle.give_up')}</button>
+                </div>
+              {/if}
+            </div>
+          {/if}
+          {#if ladder !== null}
+            <HintLadder {lang} {ladder} onuse={(tier) => onusehint(tier)} ongetmore={() => ongetmore()} />
+          {/if}
+        </div>
+      </section>
+    {/if}
   {/key}
 {/if}
 
@@ -192,6 +235,32 @@
     height: 100%;
     /* App's frame layer passes taps through; the frame takes them back. */
     pointer-events: auto;
+  }
+
+  /*
+   * A device's root and parts layer cover the room yet take no tap, so a tap beside the device reaches the room under
+   * it (engine plan §7.5 "Host"); the bar takes its taps back here, each part in its type UI (`auto` on its own hit).
+   */
+  .device,
+  .parts {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  .bar {
+    position: absolute;
+    right: 0;
+    left: 0;
+    pointer-events: auto;
+    background: var(--tg-theme-bg-color, #17171c);
+    color: var(--tg-theme-text-color, #fff);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
   .wrap {

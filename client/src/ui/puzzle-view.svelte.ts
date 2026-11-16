@@ -108,8 +108,18 @@ export function forwardHost(get: () => PuzzleHostCallbacks | undefined): PuzzleH
   };
 }
 
-/** The props of the puzzle-host chunk's component (`ui/puzzles/PuzzleHost.svelte`). */
-export type PuzzleHostProps = { lang: Lang; frame: PuzzleFrameView | null; ladder: HintLadderUiView | null } & PuzzleHostCallbacks;
+/**
+ * Where the host renders (engine plan §7.5 "Host"; GM8h): `frame`, the overlay frame in App's frame layer; `room`, a
+ * device's compact bar and its parts layer inside its room (ExploreView); `ladder`, the hint ladder alone, in a room
+ * sheet over a device.
+ */
+export type HostPlace = 'frame' | 'room' | 'ladder';
+
+/**
+ * The props of the puzzle-host chunk's component (`ui/puzzles/PuzzleHost.svelte`). `place` is optional, `frame` when
+ * absent: App mounts the host without it (L4, RULINGS 363 A11).
+ */
+export type PuzzleHostProps = { lang: Lang; frame: PuzzleFrameView | null; ladder: HintLadderUiView | null; place?: HostPlace } & PuzzleHostCallbacks;
 
 /** The store; App.svelte renders `host` with `frame` and `ladder` while both `host` and `frame` are set. */
 export interface PuzzleView {
