@@ -385,6 +385,8 @@ type MotionGroup<T> = {
 };
 /** A group is built only with its eyes and brows (C3); the joint pair and the mouths are drawn when live. */
 const REQUIRED: ReadonlySet<MotionPlan['role']> = new Set(['accent', 'blink.half', 'blink.closed']);
+/** A planned motion member whose own slot's record is live, with its frame. */
+type LiveMember<T> = { readonly p: MotionPlan; readonly slot: string; readonly h: TextureHandle<T>; readonly frame: T };
 /** A bg or a CG in its own anchor (a crossfade holds two); a shot's bg is its root, with its parts by key. */
 type BackdropView<T> = View<T> & { readonly node: AnchorRef; readonly shot?: { readonly rig: ShotRig; readonly parts: Map<string, Part<T>> } };
 /** The slot's live handle for a shot part, or undefined (its record is not live: the part is not drawn). */
@@ -757,15 +759,14 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     return hid;
   };
   /**
-   * `char`'s group on the shot root, from the records its own slots hold (D3): a rest member from its `motion:<file>`
+   * The members of `char`'s set at `x` whose records its own slots hold (D3): a rest member from its `motion:<file>`
    * slot, a member of another expression from the face file's `face:<c>`, a mouth from `talk:<c>`; never from another
-   * live record of the same file. Not built without the eyes and brows (C3). Built hidden, asking for no frame (A15).
+   * live record of the same file. Null without the eyes and brows (C3).
    */
-  const buildMotion = (root: BackdropView<T>, shot: NonNullable<BackdropView<T>['shot']>, char: CharId, k: MotionKit): void => {
-    const x = motionExpr(shot, char);
+  const liveMotion = (shot: NonNullable<BackdropView<T>['shot']>, char: CharId, x: ExprId): LiveMember<T>[] | null => {
     const face = shot.rig.cast.find((m) => m.char === char)?.face ?? null;
-    if (x === null || face === null) {
-      return;
+    if (face === null) {
+      return null;
     }
     const want = slots(logical, logicalRigs);
     const held = (slot: string): TextureHandle<T> | undefined => {
@@ -773,7 +774,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       const h = id === undefined ? undefined : holds.get(holderOf(slot))?.get(id)?.bound;
       return h === null || h === undefined || ended(h) ? undefined : h;
     };
-    const drawn: Array<{ p: MotionPlan; slot: string; h: TextureHandle<T>; frame: T }> = [];
+    const drawn: LiveMember<T>[] = [];
     for (const p of faceMotion(shot.rig, char, x)) {
       const slot = p.role === 'talk' ? `talk:${char}` : x === face.rest ? `motion:${p.file}` : `face:${char}`;
       const h = held(slot);
@@ -782,8 +783,20 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       if (h !== undefined && frame !== undefined) {
         drawn.push({ p, slot, h, frame });
       } else if (REQUIRED.has(p.role)) {
-        return;
+        return null;
       }
+    }
+    return drawn;
+  };
+  /**
+   * `char`'s group on the shot root, from its live members (`liveMotion`). Not built without the eyes and brows (C3).
+   * Built hidden, asking for no frame (A15).
+   */
+  const buildMotion = (root: BackdropView<T>, shot: NonNullable<BackdropView<T>['shot']>, char: CharId, k: MotionKit): void => {
+    const x = motionExpr(shot, char);
+    const drawn = x === null ? null : liveMotion(shot, char, x);
+    if (x === null || drawn === null) {
+      return;
     }
     const node = adapter.node(root.node.content, `motion:${char}`);
     const members: MotionMember<T>[] = [];
@@ -825,8 +838,17 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     g.off = loop.addAmbient(source);
   };
   /**
-   * The groups to the shot on stage (D5): a group whose root, expression or records no longer hold leaves, and each face
-   * without one gains it. Only at a point with no unfinished batch (W5): `finish` runs it after the last one.
+   * Whether a slot `g`'s expression plans has a live record and no member in `g` (review r1 I1): a mouth whose talk file
+   * landed after the group. A take that failed is not live, so its group stays as it is.
+   */
+  const lacksLive = (shot: NonNullable<BackdropView<T>['shot']>, g: MotionGroup<T>): boolean => {
+    const have = new Set(g.members.map((m) => m.view.slot));
+    return (liveMotion(shot, g.char, g.expr) ?? []).some((d) => !have.has(d.slot));
+  };
+  /**
+   * The groups to the shot on stage (D5): a group whose root, expression or records no longer hold, or that lacks a
+   * member whose record is now live, leaves, and each face without one gains it. Only at a point with no unfinished
+   * batch (W5): `finish` runs it after the last one.
    */
   const syncMotion = (): void => {
     const k = kit;
@@ -835,10 +857,22 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     }
     const root = bg;
     const shot = root?.shot;
+    let shown = false;
     for (const g of [...groups.values()]) {
-      if (g.root !== root || shot === undefined || motionExpr(shot, g.char) !== g.expr || g.members.some((m) => ended(m.view.handle))) {
+      if (
+        g.root !== root ||
+        shot === undefined ||
+        motionExpr(shot, g.char) !== g.expr ||
+        g.members.some((m) => ended(m.view.handle)) ||
+        lacksLive(shot, g)
+      ) {
+        shown ||= g.members.some((m) => m.shown);
         dropMotion(g);
       }
+    }
+    if (shown) {
+      // A member that showed leaves the canvas with its group: one frame draws the rest (none when nothing showed).
+      loop.requestRender();
     }
     if (root === null || shot === undefined) {
       return;

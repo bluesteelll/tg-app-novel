@@ -3841,6 +3841,117 @@ test("executor: a talk before its speaker's group is built flaps the group built
   h.ex.destroy();
 });
 
+// Review r1 I1 (triage r1): a group built while its talk file is in flight gains its mouths when the talk take (or a
+// re-take) lands; a whole group is never rebuilt, and a take that failed leaves the group mouthless with no retry.
+test("executor: a face's mouths join its group when its talk file lands after the group", async () => {
+  const framesOf = (h: ReturnType<typeof harness>, c: string): string[] => membersOf(h, c).map((m) => m.frame);
+  const counts = (faces: readonly FakeFace[]): number[] => faces.map((f) => f.set.talk.length);
+  const SMILE = ['face_lamp_ally_smile.avif#2,0,1,1', 'face_lamp_ally_smile.avif#0,0,1,1', 'face_lamp_ally_smile.avif#1,0,1,1'];
+  // (a) Shot entry: the batch builds ally's group from the sheet while the talk file it took is in flight; the landing
+  // rebuilds it with the mouth, hidden (A15), and leaves the stranger's whole group alone.
+  {
+    const d = drivenLoop();
+    const h = harness(S390, d.loop, MOTION);
+    const { kit, faces } = fakeKit();
+    h.ex.setMotion(kit);
+    const go = h.deferLoad('talk/lamp/ally/neutral');
+    await h.ex.apply([scene('lamp', 'cut')], NOW);
+    await flush();
+    expect([framesOf(h, 'ally'), counts(faces)]).toEqual([ALLY_REST.slice(0, 3), [0, 1]]);
+    // A member showing as its group leaves is drawn away: one frame, though the new group shows nothing yet.
+    faceAt(faces, 0).state = { eyes: 'closed', accent: false, mouth: null };
+    d.run(1_100);
+    expect(shownOf(h, 'ally')).toEqual(['sheet_lamp.avif#300,30,80,30']);
+    go();
+    await flush();
+    const drawn = d.loop.stats().frames;
+    d.run(50);
+    expect.soft(membersOf(h, 'ally').map((m) => [m.frame, m.alpha]), '(a) the mouth after the landing').toEqual(ALLY_REST.map((f) => [f, 0]));
+    expect.soft(counts(faces), '(a) a new face for ally, the stranger kept').toEqual([0, 1, 1]);
+    expect.soft(d.loop.stats().frames - drawn, '(a) the dropped member drawn away').toBe(1);
+    expect(d.loop.stats().ambientSources).toBe(2);
+    // A whole group is not rebuilt by a later sync.
+    h.ex.relayout();
+    await flush();
+    expect.soft(faces, '(a) no rebuild of a whole group').toHaveLength(3);
+    h.ex.destroy();
+  }
+  // (W1) A talk issued while the speaker's group has no mouth flaps the group the landing rebuilds, for what is left.
+  {
+    const d = drivenLoop();
+    const h = harness(S390, d.loop, MOTION);
+    const { kit, faces } = fakeKit();
+    h.ex.setMotion(kit);
+    const go = h.deferLoad('talk/lamp/ally/neutral');
+    await h.ex.apply([scene('lamp', 'cut')], NOW);
+    await flush();
+    h.ex.talk('ally' as CharId, { forMs: 3_000 });
+    d.run(500);
+    go();
+    await flush();
+    expect.soft(counts(faces), '(W1) a new face for ally').toEqual([0, 1, 1]);
+    expect.soft(faces[2]?.talks, '(W1) the rebuilt group flaps').toEqual([{ on: true, forMs: 2_500, think: false }]);
+    h.ex.destroy();
+  }
+  // (c) The kit lands on a stage whose talk file is still in flight: the landing after it gives the mouth.
+  {
+    const h = harness(S390, drivenLoop().loop, MOTION);
+    const { kit, faces } = fakeKit();
+    const go = h.deferLoad('talk/lamp/ally/neutral');
+    await h.ex.apply([scene('lamp', 'cut')], NOW);
+    await flush();
+    h.ex.setMotion(kit);
+    await flush();
+    expect(counts(faces)).toEqual([0, 1]);
+    go();
+    await flush();
+    expect.soft(framesOf(h, 'ally'), '(c) the mouth after the kit').toEqual(ALLY_REST);
+    h.ex.destroy();
+  }
+  // (e) A restore onto a face off rest: the awaited face file builds the group at once, the talk file lands after it.
+  {
+    const h = harness(S390, drivenLoop().loop, MOTION);
+    const { kit, faces } = fakeKit();
+    h.ex.setMotion(kit);
+    const go = h.deferLoad('talk/lamp/ally/smile');
+    await h.ex.restore({ bg: 'lamp' as BgId, cg: null, chars: [{ char: 'ally' as CharId, expr: 'smile' as ExprId, at: 'center' }], props: [] });
+    await flush();
+    expect([framesOf(h, 'ally'), counts(faces)]).toEqual([SMILE, [0, 1]]);
+    go();
+    await flush();
+    expect.soft(framesOf(h, 'ally'), '(e) the smile mouth after the restore').toEqual([...SMILE, 'talk_lamp_ally_smile.avif#0,0,40,20']);
+    h.ex.destroy();
+  }
+  // (b) A context restore where only the talk record fails its revive: the reacquire rebuilds the group without it at
+  // once, and the re-take's landing gives the mouth back, on the new record.
+  {
+    const h = harness(S390, drivenLoop().loop, MOTION);
+    const { kit, faces } = fakeKit();
+    h.ex.setMotion(kit);
+    await h.ex.apply([scene('lamp', 'cut')], NOW);
+    await flush();
+    expect(framesOf(h, 'ally')).toEqual(ALLY_REST);
+    await failOnRevive(h, 'talk/lamp/ally/neutral');
+    h.ex.reacquire();
+    await flush();
+    expect(h.loadsOf('talk/lamp/ally/neutral')).toBe(2);
+    expect.soft(framesOf(h, 'ally'), '(b) the mouth after the re-take').toEqual(ALLY_REST);
+    expect(membersOf(h, 'ally').filter((m) => m.node.tex !== null && h.freed.has(m.node.tex))).toEqual([]);
+    // (b') A re-take that fails leaves the group mouthless, and no sync retries it.
+    h.failLoad('talk/lamp/ally/neutral');
+    h.setGen(3);
+    expect(await h.registry.revive(3, noAbort()).visible).toBe('done');
+    expect(h.registry.current(asId('talk/lamp/ally/neutral'))).toBe(null);
+    h.ex.reacquire();
+    await flush();
+    const made = faces.length;
+    h.ex.relayout();
+    await flush();
+    expect([framesOf(h, 'ally'), h.loadsOf('talk/lamp/ally/neutral'), faces.length]).toEqual([ALLY_REST.slice(0, 3), 3, made]);
+    h.ex.destroy();
+  }
+});
+
 // Reduced motion (lane SH7, D2, D12): a camera move lands at its end; cuts, dissolves and the faces keep their time.
 
 test('executor: under reduced motion a camera move jumps to its end', async () => {
