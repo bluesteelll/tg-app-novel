@@ -2578,6 +2578,14 @@ test("yields: every frame's appearance plays one panel-open", async () => {
   expect(x.puzzle.frame?.mode).toBe('explore');
   expect(opens(x, mark)).toBe(1);
   x.yields.dispose();
+  // GM8h (C-16): a device's arrival in its room, one too (its bar is a panel), from the chunk write that shows it.
+  const d = deviceRig('dials');
+  await inHall(d);
+  const arriving = d.cues.length;
+  d.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([d.puzzle.frame?.presentation, opens(d, arriving)]).toEqual(['view', 1]);
+  d.yields.dispose();
 });
 
 test('yields: an X8 Back hides the frame at once and a late correct answer still opens the lock', async () => {
@@ -2651,8 +2659,22 @@ test("yields: a frame's appearance is emitted by the write that shows it", async
   expect(frameKeys(failed)).toEqual(['ui-state:waiting@puzzle', 'ui-state:waited@puzzle', 'ui-state:panel-open@puzzle', 'puzzle:load-failed']);
   expect([failed.puzzle.host, failed.puzzle.frame?.loadFailed]).toEqual([null, true]);
   failed.yields.dispose();
-  // Every frame cue of the four opens was emitted with its frame on screen.
-  for (const x of [r, w, failed]) {
+  // GM8h: the session's first device, at its room's arrival: its write shows nothing (no host), the chunk write shows its
+  // bar.
+  const deviceHost = deferredHost();
+  const v = deviceRig('dials', { loaders: { puzzleHost: deviceHost.loader } });
+  await inHall(v);
+  mark = v.cues.length;
+  v.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([v.puzzle.frame?.presentation, frameKeys(v, mark)]).toEqual(['view', ['ui-state:waiting@puzzle']]);
+  mark = v.cues.length;
+  deviceHost.land();
+  await settle();
+  expect(frameKeys(v, mark)).toEqual(['ui-state:waited@puzzle', 'ui-state:panel-open@puzzle', 'puzzle:opened']);
+  v.yields.dispose();
+  // Every frame cue of the five opens was emitted with its frame on screen.
+  for (const x of [r, w, failed, v]) {
     const unshown = x.cues.flatMap((e, i) => {
       const v = x.views[i];
       const frameCue = e.cue.kind === 'puzzle' || (e.cue.kind === 'ui-state' && e.cue.panel === 'puzzle' && e.cue.name === 'panel-open');
@@ -3846,6 +3868,28 @@ test('yields: every visible change of the puzzle view plays a cue', async () => 
     }
   }
 
+  // GM8h: a device in its room (the full sequence `rite`), its chunks in: its arrival, a part move, Hint over it and
+  // Back closing the hints, the press that completes the sequence and posts it, the wrong reply with its restart, and
+  // the zoom-out that hides it. A part here is an answer position (RULINGS 366 B2): GM8h2's widened Q5 moves the "a part
+  // move" step (and the restart's) for a sequence answer.
+  {
+    const r = deviceRig('rite', { parts: 2 });
+    const q = heldRequests(r);
+    r.puzzle.host = HOST;
+    await inHall(r);
+    await gate(r, log, [
+      ['the device view with its chunks in', () => r.yields.layer.ontap(key('hall.to_panel'))],
+      ['a part move', () => r.yields.host.onwork?.([1], false)],
+      ['Hint over the device', () => r.yields.host.onhint()],
+      ['Back closes the hints', () => r.screens.back()],
+      ["the full sequence's last press posts", () => r.yields.host.onwork?.([1, 0], false)],
+      ['answered wrong, the restart', () => q.attempt(WRONG)],
+      ['the zoom-out hides the device', () => r.yields.layer.onleaveview()],
+    ]);
+    expect([r.puzzle.frame, r.yields.world().puzzles[DEV]?.attempts, r.yields.world().puzzles[DEV]?.work]).toEqual([null, 1, []]);
+    r.yields.dispose();
+  }
+
   expect(log.problems).toEqual([]);
   // Non-vacuous: the views the gate met hold exactly the tables' fields, and every field with covering keys moved.
   const frameFields = Object.keys(FRAME_FIELD_CUES) as (keyof PuzzleFrameView)[];
@@ -3857,7 +3901,7 @@ test('yields: every visible change of the puzzle view plays a cue', async () => 
     ...ladderFields.filter((f) => 'keys' in LADDER_FIELD_CUES[f]).map((f) => `ladder.${f}`),
   ].sort();
   expect([...log.moved].sort()).toEqual(covered);
-  expect(log.steps).toBe(110);
+  expect(log.steps).toBe(117);
 });
 
 test('yields: a screens change closes a panel before it opens the next', async () => {
@@ -4949,5 +4993,21 @@ test('yields: a device hidden at a zoom-out leaves no demo timer', async () => {
   r.yields.layer.onleaveview();
   await settle();
   expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted), r.clock.pending(DEMO_STEP_MS)]).toEqual(['hall', null, [false], 0]);
+  r.yields.dispose();
+});
+
+test("yields: a view frame's host Retry plays no yields control cue", async () => {
+  // C-18: a device whose host chunk failed shows its Retry in the room (ExploreView's notice, inside the explore root),
+  // and that root emits the control's cue; yields emits App's failed-host Retry cue for an overlay frame only.
+  const r = deviceRig('dials', { loaders: { puzzleHost: async () => CHUNK_OFFLINE } });
+  await atDevice(r);
+  expect([r.puzzle.host, r.puzzle.frame?.presentation, r.puzzle.frame?.loadFailed]).toEqual([null, 'view', true]);
+  const mark = r.cues.length;
+  // The in-room Retry's tap: the explore root emits its cue, then the control calls onretry.
+  r.explore.oncue?.({ cue: { kind: 'ui', control: 'puzzle-retry', item: null, index: null }, box: null, point: null, diff: [], el: null });
+  r.yields.host.onretry();
+  expect(r.puzzle.frame?.retrying, 'the reload runs').toBe(true);
+  await settle();
+  expect(r.cues.slice(mark).filter((e) => e.cue.kind === 'ui' && e.cue.control === 'puzzle-retry')).toHaveLength(1);
   r.yields.dispose();
 });

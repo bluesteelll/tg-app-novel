@@ -714,10 +714,10 @@ function declarationsOf(source: string, selector: string): Map<string, string> {
 }
 
 test('puzzle-host: Retry is disabled only while it reloads', () => {
-  // GM3w's two bindings, PuzzleHost's notice and App's failed-host block, and GM8h's in-room failed-host Retry
-  // (ExploreView's, over its `puzzle.frame`): `retrying`, never `busy` (00-decision-table W1).
+  // GM3w's two bindings, PuzzleHost's notice and App's failed-host block, and GM8h's: the room bar's Retry and the
+  // in-room failed-host Retry (ExploreView's, over its `puzzle.frame`): `retrying`, never `busy` (00-decision-table W1).
   for (const [name, source, want] of [
-    ['PuzzleHost', puzzleHostSource, ['frame.retrying']],
+    ['PuzzleHost', puzzleHostSource, ['frame.retrying', 'frame.retrying']],
     ['App', appSource, ['frame.retrying']],
     ['ExploreView', exploreViewSource, ['frame.retrying']],
   ] as const) {
@@ -1241,4 +1241,119 @@ test('puzzle ui: components do no I/O', () => {
     ['../../telegram/index.ts', false],
     ['../../i18n/index.ts', true],
   ]);
+});
+
+test('puzzle-host: a room-place host whose type chunk failed shows Retry in its bar', async () => {
+  // C-9: the bar's first row gains Retry while a chunk failed, and the load notice takes the status line's row.
+  const onretry = vi.fn();
+  const failed = deviceFrame({ ui: null, loadFailed: true });
+  const { container, rerender } = render(PuzzleHost, placed('room', { onretry, frame: failed }));
+  const retry = must(container.querySelector<HTMLButtonElement>('.bar > .row > button[data-cue="puzzle-retry"]'), 'the bar Retry');
+  expect([retry.textContent?.trim(), retry.disabled]).toEqual([t('en', 'puzzle.retry'), false]);
+  const notice = must(container.querySelector('.bar > [data-cue-notice]'), 'the bar notice');
+  expect([notice.getAttribute('role'), notice.textContent?.trim(), container.querySelector('.bar [data-cue-status]')]).toEqual([
+    'alert',
+    t('en', 'puzzle.load_failed'),
+    null,
+  ]);
+  retry.click();
+  expect(onretry).toHaveBeenCalledTimes(1);
+  await rerender({ frame: { ...failed, retrying: true } });
+  expect(retry.disabled).toBe(true);
+  // Loaded: no Retry, the status line back in its row.
+  await rerender({ frame: deviceFrame() });
+  expect([container.querySelector('[data-cue="puzzle-retry"]'), container.querySelector('.bar > [data-cue-status]') !== null]).toEqual([null, true]);
+});
+
+test('puzzle-host: the room-place bar is anchored to the top', () => {
+  // D10: happy-dom computes no layout, so the declarations are read from the source. The bar sits under the Telegram
+  // header; the device's root and parts layer take no tap (a tap beside the device reaches the room), the bar does
+  // (RULINGS 366 B6, W1; the parts' own `auto` is each type UI's).
+  expect(declarationsOf(puzzleHostSource, '.bar').get('top')).toBe('calc(var(--app-inset-top, 0px) + 8px)');
+  expect(['.device', '.parts', '.bar'].map((s) => declarationsOf(puzzleHostSource, s).get('pointer-events'))).toEqual(['none', 'none', 'auto']);
+  expect(['.device', '.parts'].map((s) => declarationsOf(puzzleHostSource, s).get('position'))).toEqual(['absolute', 'absolute']);
+});
+
+test('puzzle-host: the room-place bar keeps one button row and clamps its status to two lines', () => {
+  // D10: one button row that never wraps, 44 px controls, a status of at most two 18 px lines (the bar's 118 px).
+  expect(declarationsOf(puzzleHostSource, '.row').get('flex-wrap')).toBe('nowrap');
+  const buttons = declarationsOf(puzzleHostSource, '.bar button');
+  expect([buttons.get('min-height'), buttons.get('min-width')]).toEqual(['44px', '44px']);
+  for (const s of ['.bar .status', '.bar .attempts']) {
+    const d = declarationsOf(puzzleHostSource, s);
+    expect([s, d.get('font-size'), d.get('line-height')]).toEqual([s, '14px', '18px']);
+  }
+  const status = declarationsOf(puzzleHostSource, '.bar .status');
+  expect(['line-clamp', '-webkit-line-clamp', '-webkit-box-orient', 'display', 'overflow'].map((p) => status.get(p))).toEqual(['2', '2', 'vertical', '-webkit-box', 'hidden']);
+  expect([declarationsOf(puzzleHostSource, '.title').get('min-width'), declarationsOf(puzzleHostSource, '.title').get('text-overflow')]).toEqual(['0', 'ellipsis']);
+});
+
+test('puzzle-host: every puzzle cue target resolves in the room-place bar and the ladder place', async () => {
+  // §8.5 "Cue targets" for a device (GM8h): the room place's bar is the frame marker and the `puzzle` panel, the parts
+  // layer beside it holds the parts (L3: a `part` resolves inside the frame's family root), and the ladder place's
+  // sheet holds the ladder. Never a family root, never the stage centre's fallback for a marked target. A part here is
+  // an answer position (RULINGS 366 B2): `puzzle:input` index 1 and the `work` fact `p.1=2` both land on part 1.
+  stageRig();
+  const stage = document.createElement('div');
+  stage.setAttribute('data-cue-stage', '');
+  document.body.append(stage);
+  type State = 'capped' | 'failed';
+  const wallet = { cost: 1, balance: 2 };
+  const states: Record<State, readonly PuzzleHostProps[]> = {
+    capped: [placed('room', { frame: deviceFrame({ ui: EMITTER, attemptsLeft: 2 }) }), placed('ladder', { ladder: ladderOf(TIERS, wallet, { failed: true }) })],
+    failed: [placed('room', { frame: deviceFrame({ ui: null, loadFailed: true }) }), placed('ladder', { ladder: ladderOf(TIERS, wallet) })],
+  };
+  const MEANT: Readonly<Record<string, () => Element | null>> = {
+    frame: () => document.querySelector('.device > .bar'),
+    status: () => document.querySelector('.bar > .status[role="status"]'),
+    attempts: () => document.querySelector('.bar > .attempts'),
+    part: () => document.querySelector('.device > .parts [data-cue-part="1"]'),
+    tier: () => document.querySelectorAll('.ladder li')[1] ?? null,
+    ladder: () => document.querySelector('section.ladder'),
+    alert: () => document.querySelector('.ladder .failed'),
+    notice: () => document.querySelector('.bar > [data-cue-notice]'),
+  };
+  const centre = (): Box => landing(stage, 'centre');
+  type Row = readonly [state: State, cue: Cue, target: CueTarget, want: () => Element | Box | null];
+  const rows: Row[] = [];
+  for (const [key, spec] of Object.entries(CUE_MOTIONS)) {
+    const targets = [spec.target, ...(spec.with ?? []).map((w) => w.target)];
+    if (key.startsWith('puzzle:')) {
+      for (const tg of targets.filter((x) => x in CUE_TARGET_ATTRS)) {
+        const cue = puzzleCue(key.slice('puzzle:'.length) as PuzzleCue, tg === 'part' ? 1 : tg === 'tier' ? 2 : null);
+        rows.push([tg === 'notice' ? 'failed' : 'capped', cue, tg, MEANT[tg] ?? (() => null)]);
+      }
+    } else if (key.startsWith('ui-state:') && (spec.target === 'panel' || spec.target === 'box')) {
+      const name = key.slice('ui-state:'.length) as UiStateCue;
+      rows.push(['capped', panelCue(name, 'hints'), spec.target, MEANT['ladder'] ?? (() => null)]);
+      rows.push(['capped', panelCue(name, 'puzzle'), spec.target, spec.target === 'box' ? centre : (MEANT['frame'] ?? (() => null))]);
+      if (spec.target === 'box') {
+        rows.push(['failed', panelCue(name, 'puzzle'), spec.target, MEANT['notice'] ?? (() => null)]);
+      }
+    }
+  }
+  // A device's `work` fact (its move) lands on the part its id names.
+  const work: Cue = { kind: 'fact', fact: { kind: 'work', id: 'p.1=2' }, change: 'added', cause: { verb: 'device', at: null, item: null, via: null } };
+  rows.push(['capped', work, 'part', MEANT['part'] ?? (() => null)]);
+  const got: unknown[] = [];
+  const want: unknown[] = [];
+  for (const state of ['capped', 'failed'] as const) {
+    const mounted = states[state].map((p) => render(PuzzleHost, p));
+    await tick();
+    for (const [, cue, tg, pick] of rows.filter((r) => r[0] === state)) {
+      const found = foundOf(resolveTarget(tg, cueEventOf(cue), stage));
+      const meant = pick();
+      const label = `${cueKey(cue)}${cue.kind === 'ui-state' ? `@${cue.panel ?? ''}` : ''} ${tg} (${state})`;
+      const same = found instanceof Element || meant instanceof Element ? found === meant : JSON.stringify(found) === JSON.stringify(meant);
+      got.push([label, same, found instanceof Element ? found.matches('[data-cue-root]') : null, meant === null]);
+      want.push([label, true, meant instanceof Element ? false : null, false]);
+    }
+    // The tap layer: the parts layer is the hit area, never the bar.
+    expect([state, document.querySelector('.device > [data-cue-hit]')?.classList.contains('parts'), document.querySelector('.bar[data-cue-hit], .bar [data-cue-hit]')]).toEqual([state, true, null]);
+    for (const m of mounted) {
+      m.unmount();
+    }
+  }
+  expect(got).toEqual(want);
+  expect(new Set(rows.map((r) => r[2]))).toEqual(new Set(['frame', 'status', 'attempts', 'part', 'tier', 'ladder', 'alert', 'notice', 'panel', 'box']));
 });

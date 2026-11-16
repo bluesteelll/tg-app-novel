@@ -13,9 +13,10 @@
   // bus through yields, which moves each point from the root's px to the stage host's.
   // GM8h (engine plan §7.5 "Host"): `place` picks where it renders. `frame` (the default, App's frame layer) is the
   // overlay above. `room` is a device inside its room (ExploreView's `.room`): a full-bleed root that takes no tap, the
-  // parts layer with the type UI, and the compact bar anchored to the top (title, Hint, the status line, the attempts;
-  // no give-up: a lock puzzle cannot be abandoned); the root is the frame family's and the bar its frame marker. Its type
-  // UI is busy through a 429 countdown too: a device has no Try to hold, so its parts take no press then.
+  // parts layer with the type UI, and the compact bar anchored to the top in three rows (the title with Hint and, while
+  // a chunk failed, Retry; the status line, or the load notice in its place; the attempts), no give-up (a lock puzzle
+  // cannot be abandoned); the root is the frame family's and the bar its frame marker. Its type UI is busy through a 429
+  // countdown too: a device has no Try to hold, so its parts take no press then.
   // `ladder` is the hint ladder alone, in a room sheet over a device, with no root: its controls emit through the
   // innermost root around it, ExploreView's.
   import { cueRoot } from '../../cues/root.ts';
@@ -165,8 +166,15 @@
             {#if frame.hintTiers > 0}
               <button type="button" data-cue="puzzle-hint" onclick={() => onhint()}>{t(lang, 'puzzle.hint')}</button>
             {/if}
+            {#if frame.loadFailed}
+              <button type="button" data-cue="puzzle-retry" disabled={frame.retrying} onclick={() => onretry()}>{t(lang, 'puzzle.retry')}</button>
+            {/if}
           </div>
-          <p class="status" role="status" data-cue-status>{status}</p>
+          {#if frame.loadFailed}
+            <p class="status failed" role="alert" data-cue-notice>{t(lang, 'puzzle.load_failed')}</p>
+          {:else}
+            <p class="status" role="status" data-cue-status>{status}</p>
+          {/if}
           {#if frame.attemptsLeft !== null}
             <p class="attempts" data-cue-attempts>{t(lang, 'puzzle.attempts_left', { n: frame.attemptsLeft })}</p>
           {/if}
@@ -261,10 +269,19 @@
     pointer-events: none;
   }
 
+  /*
+   * The bar sits under the Telegram header, in three rows of a fixed height (6 + 44 + 4 + 36 + 4 + 18 + 6 = 118 px), so
+   * the art under it is the same for every device: one button row that never wraps, a status of at most two lines.
+   */
   .bar {
     position: absolute;
+    top: calc(var(--app-inset-top, 0px) + 8px);
     right: 0;
     left: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px calc(var(--app-inset-right, 0px) + 6px) 6px calc(var(--app-inset-left, 0px) + 6px);
     pointer-events: auto;
     background: var(--tg-theme-bg-color, #17171c);
     color: var(--tg-theme-text-color, #fff);
@@ -272,8 +289,38 @@
 
   .row {
     display: flex;
+    flex-wrap: nowrap;
     align-items: center;
     gap: 8px;
+  }
+
+  .title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 16px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .bar button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 8px 12px;
+  }
+
+  .bar .status,
+  .bar .attempts {
+    font-size: 14px;
+    line-height: 18px;
+  }
+
+  .bar .status {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
   }
 
   .wrap {

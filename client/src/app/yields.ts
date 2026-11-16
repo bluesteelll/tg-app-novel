@@ -1516,8 +1516,9 @@ export function createYields(h: YieldsHost): Yields {
       const o = open;
       const f = frameOf();
       if (o !== null && f !== null && f.loadFailed && !f.retrying) {
-        if (puzzle.host === null) {
-          // App's failed-host Retry lies outside every cue root, so its control cue is emitted here (found by its name).
+        if (puzzle.host === null && o.present === 'overlay') {
+          // App's failed-host Retry lies outside every cue root, so its control cue is emitted here (found by its name);
+          // a device's (C-18) is ExploreView's in-room notice, inside the explore root, which emits its own.
           bus.emit(cueEvent({ kind: 'ui', control: 'puzzle-retry', item: null, index: null }, null));
         }
         // The notice stays, its Retry disabled, until the reload answers (engine plan §8.1 "The frame's flags").
