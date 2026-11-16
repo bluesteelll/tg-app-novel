@@ -9,14 +9,15 @@ import { ROOM_SOURCE } from '../geom/cover.ts';
 import type { Box, Size } from '../geom/cover.ts';
 import type { ImageEntry, Result } from '../story/catalog.ts';
 import type { Box as Box4, ShotRig } from '../story/shots.ts';
-import type { AssetId, BgId, CharId, ExprId, PropId, PropPlacement, PropsCommand, Rect, Slot, StagingCommand, StagingSnapshot } from '../story/staging.ts';
+import type { AssetId, BgId, CamState, CharId, ExprId, PropId, PropPlacement, PropsCommand, Rect, Slot, StagingCommand, StagingSnapshot } from '../story/staging.ts';
 import { patchPlan, snapshotPlan } from './flatten.ts';
 import type { FlatPlan } from './flatten.ts';
 import { backdropPlacement, charPlacement, propPlacement } from './layout.ts';
 import type { StageWindow } from './preload.ts';
 import type { AssetError, AssetRegistry, ReservationId, TextureHandle } from './registry.ts';
 import type { RenderLoop, Ticker } from './render-loop.ts';
-import { faceLayers, facesOf, restFraming, shotSlots } from './shot-view.ts';
+import { CAM_MS, camFraming, faceLayers, facesOf, restFraming, shotSlots, worldOf } from './shot-view.ts';
+import type { WorldDelta } from './shot-view.ts';
 
 /** GSAP's ticker for the render loop: one clock for tweens and frames (K6); tweens update before the frame draws. */
 export const gsapTicker: Ticker = {
@@ -87,7 +88,10 @@ export interface StageAdapter<T> {
   set(target: SpriteRef | GroupRef, p: Placement): void;
   /** The alpha of the full-stage black rect (fade through black). */
   fx(alpha: number): void;
-  /** The camera's delta on the world container (stage px; identity at rest). */
+  /**
+   * The camera's delta on the world container (stage px; identity at rest): written only when it changes, and never
+   * while it stays at rest (a legacy chapter writes nothing).
+   */
   world?(p: { x: number; y: number; scale: number }): void;
   /**
    * One render of the world into a new target (flatten.ts plan), shown at `place`; null when refused (no target left).
@@ -206,6 +210,11 @@ function slotsOf(s: SceneSnapshot, rigs: Rigs): Map<string, AssetId> {
   }
   return out;
 }
+
+/** The world at rest: no camera move. */
+const REST_WORLD: WorldDelta = Object.freeze({ x: 0, y: 0, scale: 1 });
+const REST_CAM: CamState = Object.freeze({ kind: 'rest' });
+const sameWorld = (a: WorldDelta, b: WorldDelta): boolean => a.x === b.x && a.y === b.y && a.scale === b.scale;
 
 /** The smallest box holding both (plate px). */
 function unionBox(a: Box4, b: Box4): Box4 {
@@ -384,6 +393,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   let flatRefused = 0;
   /** B2 (W1): the face slots taken again since the shot on stage was entered; each at most once per entry. */
   const retaken = new Set<string>();
+  /** The drawn camera (S20): the world's delta as last written, and the move the last built batch framed. */
+  let world: WorldDelta = REST_WORLD;
+  let drawnCam: CamState = REST_CAM;
 
   /** The record behind `h` has ended (failed its revive): the registry no longer names this handle (identity rule). */
   const ended = (h: TextureHandle<T>): boolean => registry.current(h.id) !== h;
@@ -608,6 +620,21 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     adapter.set(v.node.anchor, { x: c.offsetX, y: c.offsetY });
     adapter.set(v.sprite, { w: ROOM_SOURCE.w * c.scale, h: ROOM_SOURCE.h * c.scale });
   };
+  /** The world to `p` (shots §5.4): written only when it changes. */
+  const writeWorld = (p: WorldDelta): void => {
+    if (!sameWorld(world, p)) {
+      world = { x: p.x, y: p.y, scale: p.scale };
+      adapter.world?.(world);
+    }
+  };
+  /** The world's delta that frames `cam` on `rig` at the stage's size (rest for no rig: a legacy bg, or none). */
+  const framingOf = (rig: ShotRig | undefined, cam: CamState): WorldDelta => {
+    if (rig === undefined) {
+      return REST_WORLD;
+    }
+    const half = deps.shots?.half() ?? false;
+    return worldOf(restFraming(rig, adapter.size(), resolution, half), camFraming(rig, adapter.size(), resolution, half, cam));
+  };
   /**
    * One part of a shot root (shots §5.1): `char`'s figure plane (`expr` null), or its expression group at `expr` (the
    * layer, then the member's hair locks: `faceLayers`, so only that expression's own set, RULINGS 273 O2), on top of the
@@ -828,6 +855,10 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     let flat: Flat | null = null;
     /** The face changes the batch patches (S15): listed by a batch whose props change at once, patched at the end. */
     let swaps: FaceSwap<T>[] | null = null;
+    /** Q7: when a scene or a bg puts the camera back to rest (s: 0, or at black for a dip); null: the drawn one holds. */
+    let camCut: number | null = null;
+    /** S1: a take's crossfade onto the shot on stage returns the camera to the target's framing over its time (ms). */
+    let camMs = 0;
     /**
      * The batch's handle for a slot only while its record is live, read in the same step as the sprite it makes,
      * also at a fade's midpoint (identity rule item 1). Else the slot is built as a skipped visual.
@@ -866,6 +897,45 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
      * face whose patch is refused (no target member, no room in the band, past the cap, a closed render gate) takes
      * K7, counted in `flatRefused`; one with no time changes at once.
      */
+    /**
+     * The drawn camera to the target's (S20, shots §5.4, Q7): a scene or a bg puts it back to rest at the cut point (at
+     * once, or at black for a dip); then the batch's move tweens from there to the target's framing over its time
+     * (power1.inOut, on the batch's timeline, so a tap completes it); a take's crossfade onto the shot on stage returns
+     * it over the crossfade's time (S1); any other change (a restore, an instant batch) is set at once. A stage at rest
+     * that stays at rest (every legacy chapter) writes nothing.
+     */
+    const camera = (): void => {
+      const rig = target.bg === null ? undefined : b.rigs?.get(target.bg);
+      drawnCam = target.cam ?? REST_CAM;
+      const end = framingOf(rig, drawnCam);
+      const at = camCut ?? 0;
+      const from = camCut === null ? world : REST_WORLD;
+      if (camCut !== null && !sameWorld(world, REST_WORLD)) {
+        if (at === 0) {
+          writeWorld(REST_WORLD);
+        } else {
+          tl.call(() => writeWorld(REST_WORLD), undefined, at);
+        }
+      }
+      if (sameWorld(from, end)) {
+        return;
+      }
+      const move = find(b.cmds, 'cam');
+      const d = sec(move === undefined ? camMs : (move.ms ?? CAM_MS[move.cam.kind]));
+      if (d === 0) {
+        if (at === 0) {
+          writeWorld(end);
+        } else {
+          tl.call(() => writeWorld(end), undefined, at);
+        }
+        return;
+      }
+      // The eased ratio, not the delta: GSAP rounds a tweened value to 1e-6, and the held framing must be exact.
+      const p = { t: 0 };
+      const lerp = (t: number): WorldDelta =>
+        t >= 1 ? end : { x: from.x + (end.x - from.x) * t, y: from.y + (end.y - from.y) * t, scale: from.scale + (end.scale - from.scale) * t };
+      tl.to(p, { t: 1, duration: d, ease: 'power1.inOut', onUpdate: () => writeWorld(lerp(p.t)) }, at);
+    };
     const patchFaces = (swaps: readonly FaceSwap<T>[]): void => {
       const root = bg;
       const rig = root?.shot?.rig;
@@ -882,7 +952,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         }
         return;
       }
-      const at = restFraming(rig, adapter.size(), resolution, deps.shots?.half() ?? false);
+      // Plate px to stage px through the root's rest framing and the world's delta (review O2: the one written last).
+      const rest = restFraming(rig, adapter.size(), resolution, deps.shots?.half() ?? false);
+      const at = { x: world.x + world.scale * rest.x, y: world.y + world.scale * rest.y, k: world.scale * rest.k };
       for (const s of swaps) {
         show(s.old, 0);
         show(s.next, 1);
@@ -1104,6 +1176,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
 
     const scene = find(b.cmds, 'scene');
     if (scene !== undefined) {
+      camCut = sec(scene.t === 'cut' ? 0 : scene.ms) / 2;
       // §7 step 2: while black, hide every character, remove the CG and the props, set the bg, apply the shows.
       dip(scene.t === 'cut' ? 0 : scene.ms, () => {
         for (const cv of [...chars.values()]) {
@@ -1143,6 +1216,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       // §7 step 3: bg, show, hide, cg (and props) start together.
       const bgCmd = find(b.cmds, 'bg');
       if (bgCmd !== undefined && bgCmd.t === 'fade') {
+        camCut = sec(bgCmd.ms) / 2;
         dip(bgCmd.ms, () => {
           swapBg();
           syncFaces(true);
@@ -1154,6 +1228,12 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         const id = want.get('bg') ?? null;
         const h = handleFor('bg');
         const old = bg;
+        // Another root (or a kept one, its plate failed) is a cut at t = 0; the shot on stage is a take (S1).
+        if ((old?.handle.id ?? null) !== id) {
+          camCut = 0;
+        } else {
+          camMs = bgCmd.ms;
+        }
         if ((old?.handle.id ?? null) !== id && h !== undefined) {
           // D2: another shot of a shot chapter over a root on stage, in time, is the exact dissolve (shots §5.5): the
           // target holds the old stage's pixels, so the old root goes now and the new one is built opaque under it.
@@ -1189,6 +1269,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         syncFaces(flat !== null);
         syncProps(flat === null ? bgCmd.ms : 0);
       } else {
+        if (bgCmd !== undefined) {
+          camCut = 0;
+        }
         swapBg();
         // A face change fades no props here: its patch renders once the batch's instant changes are written (S15).
         swaps = [];
@@ -1251,9 +1334,12 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
           fade(cg.node.anchor, 0, 1, ms, old === null ? undefined : retire([old], old.node.anchor));
         }
       }
-      if (swaps !== null) {
-        patchFaces(swaps);
-      }
+    }
+
+    // The camera first, so a patch renders under the world it shows from t = 0.
+    camera();
+    if (swaps !== null) {
+      patchFaces(swaps);
     }
 
     if (flat !== null) {
@@ -1431,6 +1517,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       for (const a of anchors.values()) {
         placeAnchor(a);
       }
+      // D4: the held move framed again for the new size, re-clamped inside the plate (never the old stage's delta).
+      writeWorld(framingOf(bg?.shot?.rig, drawnCam));
       loop.requestRender();
     },
     rebind(a) {
@@ -1440,6 +1528,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       complete();
       adapter = a;
       fxAlpha = 0;
+      // The new stage's world is at identity.
+      world = REST_WORLD;
       // After complete() every visual is at its end state: opaque, at its slot. A view whose record ended is not
       // re-created (identity rule item 1); reacquire() takes its slot again.
       const again = <V extends View<T>>(v: V, layer: Layer, group?: GroupRef): V => {
@@ -1503,6 +1593,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         adapter.set(node.anchor, { alpha: 1 });
       }
       orderProps();
+      // D4: the held move on the new stage, framed for its size.
+      writeWorld(framingOf(bg?.shot?.rig, drawnCam));
       loop.requestRender();
     },
     reacquire() {

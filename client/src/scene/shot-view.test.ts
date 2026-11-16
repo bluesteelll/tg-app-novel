@@ -8,7 +8,8 @@ import type { Box, CastRig, Member, MotionSet, ShotRig } from '../story/shots.ts
 import type { AssetId, BgId, ChapterId, CharId, ExprId } from '../story/staging.ts';
 import type { SceneSnapshot } from './executor.ts';
 import { backdropPlacement } from './layout.ts';
-import { chapterRigs, faceLayers, overscan, restFraming, shotSlots, slack, zoomRange } from './shot-view.ts';
+import { camFraming, chapterRigs, faceLayers, overscan, restFraming, shotSlots, slack, zoomRange } from './shot-view.ts';
+import type { StageXform } from './shot-view.ts';
 
 // Fixture rigs as the manifest decoder types them; the brands are earned by the decoder in production.
 const id = (s: string): AssetId => s as AssetId;
@@ -233,4 +234,102 @@ test('shot-view: a chapter whose shots have no cast has no rigs', () => {
   expect(chapterRigs(bad)).toBe(null);
   expect(errors).toHaveBeenCalledTimes(1);
   errors.mockRestore();
+});
+
+// The camera's framings (§5.4, lane SH6 S20): a push inside the zoom range, a pan inside the slack, both inside the plate.
+
+/** Device px per source px of a framing (x 2 on the half tier, whose texture has half the px). */
+const devPerSrc = (f: StageXform, r: number, half: boolean): number => f.k * r * (half ? 2 : 1);
+/** The plate at `f` covers the stage on both axes: no edge shows. */
+function expectInside(f: StageXform, stage: Size, at: string): void {
+  expect(f.x, at).toBeLessThanOrEqual(1e-9);
+  expect(f.y, at).toBeLessThanOrEqual(1e-9);
+  expect(f.x + 1080 * f.k, at).toBeGreaterThanOrEqual(stage.w - 1e-9);
+  expect(f.y + 2048 * f.k, at).toBeGreaterThanOrEqual(stage.h - 1e-9);
+}
+
+test('shot-view: a push never exceeds one device px per source px', () => {
+  // The zoom is clamp(z / 100, zoomRange) over cover(), and the range ends at 1 / k_dev: a push never draws a source px
+  // over more than one device px (the desktop row, already past it at rest, holds z0: no push).
+  for (const { stage, r, half } of TABLE) {
+    const rest = restFraming(CU, stage, r, half);
+    for (const z of [105, 110, 120, 130]) {
+      for (const to of ['ally', 'center'] as const) {
+        const at = `${stage.w} x ${stage.h} at ${r}, ${to} ${z}`;
+        const f = camFraming(CU, stage, r, half, { kind: 'push', to: to === 'ally' ? (to as CharId) : to, z });
+        expect(devPerSrc(f, r, half), at).toBeLessThanOrEqual(Math.max(1, devPerSrc(rest, r, half)) + 1e-12);
+        expect(f.k, at).toBeGreaterThanOrEqual(rest.k);
+        expectInside(f, stage, at);
+      }
+    }
+  }
+  // The iPhone at r 2: 120 % is inside its range (to 1.21); 130 % stops at one device px per source px.
+  const phone = { w: 390, h: 844 };
+  const ally = (z: number) => ({ kind: 'push', to: 'ally' as CharId, z }) as const;
+  expect(camFraming(CU, phone, 2, false, ally(120)).k).toBeCloseTo((844 / 2048) * 1.2, 12);
+  expect(devPerSrc(camFraming(CU, phone, 2, false, ally(130)), 2, false)).toBeCloseTo(1, 12);
+  // Telegram Desktop 405 x 720 at DPR 1: the whole 1.30.
+  expect(camFraming(CU, { w: 405, h: 720 }, 1, false, ally(130)).k).toBeCloseTo((405 / 1080) * 1.3, 12);
+  // The push centres its member's head (CU: x 560, y 620) where the plate lets it: across, yes; down, the plate's top
+  // edge stops it.
+  const f = camFraming(CU, phone, 2, false, ally(110));
+  expect(f.x + 560 * f.k).toBeCloseTo(195, 9);
+  expect(f.y).toBe(0);
+});
+
+test('shot-view: a pan stays inside the plate', () => {
+  const pan = (to: string) => ({ kind: 'pan', to: to === 'left' || to === 'right' ? to : (to as CharId) }) as const;
+  for (const { stage, r, half } of TABLE) {
+    const rest = restFraming(TWO, stage, r, half);
+    const edge = stage.w - 1080 * rest.k;
+    for (const to of ['left', 'right', 'ally', 'stranger']) {
+      const at = `${stage.w} x ${stage.h} at ${r}, ${to}`;
+      const f = camFraming(TWO, stage, r, half, pan(to));
+      // z0 and the height kept; x across the slack only.
+      expect([f.k, f.y], at).toEqual([rest.k, rest.y]);
+      expect(f.x, at).toBeLessThanOrEqual(0);
+      expect(f.x, at).toBeGreaterThanOrEqual(edge - 1e-9);
+      expectInside(f, stage, at);
+    }
+    // Left and right are the slack's edges.
+    expect(camFraming(TWO, stage, r, half, pan('left')).x).toBe(0);
+    expect(camFraming(TWO, stage, r, half, pan('right')).x).toBeCloseTo(edge, 12);
+  }
+  // On the iPhone the two-shot's heads (x 280, 780) lie past the slack: each pan stops at an edge; the close-up's
+  // (x 560) is inside it, so its pan centres it.
+  const phone = { w: 390, h: 844 };
+  const two = restFraming(TWO, phone, 2, false);
+  expect(camFraming(TWO, phone, 2, false, pan('ally')).x).toBe(0);
+  expect(camFraming(TWO, phone, 2, false, pan('stranger')).x).toBeCloseTo(390 - 1080 * two.k, 12);
+  const cu = camFraming(CU, phone, 2, false, pan('ally'));
+  expect(cu.x + 560 * cu.k).toBeCloseTo(195, 9);
+  expect(cu.x).toBeLessThan(restFraming(CU, phone, 2, false).x);
+  // A member not in the cast holds rest; a room holds cover() (I-6).
+  expect(camFraming(TWO, phone, 2, false, pan('nobody'))).toEqual(two);
+  const room = rig('room');
+  expect(camFraming(room, phone, 2, false, pan('left'))).toEqual(restFraming(room, phone, 2, false));
+  expect(camFraming(room, phone, 2, false, { kind: 'push', to: 'center', z: 130 })).toEqual(restFraming(room, phone, 2, false));
+});
+
+test('shot-view: a push with no zoom range pans to its target inside the slack', () => {
+  // 500 x 1100 at r 2: cover by height (0.537), k_dev 1.074, so z0 = 1 and the range is empty. The push holds z0 and
+  // moves the stranger's head (x 780) toward the centre until the plate's right edge meets the stage's.
+  const stage = { w: 500, h: 1100 };
+  expect(zoomRange(TWO, stage, 2, false)).toEqual({ min: 1, max: 1 });
+  const rest = restFraming(TWO, stage, 2, false);
+  const f = camFraming(TWO, stage, 2, false, { kind: 'push', to: 'stranger' as CharId, z: 120 });
+  expect(f.k).toBe(rest.k);
+  expect(f.x).toBeCloseTo(500 - 1080 * rest.k, 12);
+  expect(f.x).toBeLessThan(rest.x - 1);
+  expect(f.y).toBeCloseTo(rest.y, 12);
+  expectInside(f, stage, '500 x 1100');
+  // The desktop row (787 x 1400 at 1.5) has no slack across: the push moves it down only, to the plate's top edge.
+  const desk = { w: 787, h: 1400 };
+  const d0 = restFraming(TWO, desk, 1.5, false);
+  const d = camFraming(TWO, desk, 1.5, false, { kind: 'push', to: 'stranger' as CharId, z: 120 });
+  expect(d.k).toBe(d0.k);
+  expect(d.x).toBeCloseTo(d0.x, 9);
+  expect(d.y).toBe(0);
+  expect(d0.y).toBeLessThan(-1);
+  expectInside(d, desk, '787 x 1400');
 });

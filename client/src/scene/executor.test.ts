@@ -6,9 +6,10 @@ import type { Size } from '../geom/cover.ts';
 import type { AnchorKey } from '../mechanics/contract.ts';
 import type { ImageEntry, Result } from '../story/catalog.ts';
 import type { Box as Box4, CastRig, Member, ShotRig } from '../story/shots.ts';
-import type { AssetId, BgId, CgId, CharId, ExprId, PropId, Rect, Slot } from '../story/staging.ts';
+import type { AssetId, BgId, CamState, CgId, CharId, ExprId, PropId, Rect, Slot } from '../story/staging.ts';
 import { createExecutor } from './executor.ts';
 import type { ExecutorDeps, Layer, Placement, StageAdapter, VisualCommand } from './executor.ts';
+import { patchPlan } from './flatten.ts';
 import type { FlatPlan } from './flatten.ts';
 import { backdropPlacement, propPlacement } from './layout.ts';
 import type { StageWindow } from './preload.ts';
@@ -17,7 +18,8 @@ import type { AssetError, Decoded, FrameCut, LoadError, LoadImage } from './regi
 import { createRenderLoop } from './render-loop.ts';
 import type { RenderLoop, Ticker } from './render-loop.ts';
 import { createReviveFlow } from './revive-flow.ts';
-import { restFraming } from './shot-view.ts';
+import { camFraming, restFraming, worldOf } from './shot-view.ts';
+import type { WorldDelta } from './shot-view.ts';
 
 // GSAP reads the clock through `Date.now`, captured when its module loads: fake timers installed before every import
 // (vi.hoisted runs first) make its ticker deterministic. advance() moves the fake clock and runs one manual tick (V6).
@@ -73,7 +75,8 @@ const S390: Size = { w: 390, h: 844 };
 /**
  * `freed`: the textures whose Decoded.release() ran (by identity: every load decodes a new texture object). `targets`
  * (opt-in): the stage draws transition targets (`draw`), or answers every `flatten` with null (`refuse`: a closed
- * render gate); absent, it has no target member, as every stage before lane SH6.
+ * render gate), and draws the camera (each world delta written, in `worlds`); absent, it has neither member, as every
+ * stage before lane SH6.
  */
 function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set(), targets?: 'draw' | 'refuse') {
   let n = 0;
@@ -85,6 +88,8 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set(), targets
   const kids = new Map<number | StageLayer, number[]>();
   /** Every `flatten` call's plan, in order (a refused one included). */
   const plans: FlatPlan[] = [];
+  /** Every world delta written, in order. */
+  const worlds: WorldDelta[] = [];
   const stage = { size };
   const node = (k: number): Node => {
     const x = nodes.get(k);
@@ -170,6 +175,9 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set(), targets
     },
   };
   if (targets !== undefined) {
+    adapter.world = (p) => {
+      worlds.push({ ...p });
+    };
     adapter.flatten = (plan, place) => {
       plans.push(plan);
       if (targets === 'refuse') {
@@ -233,7 +241,7 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set(), targets
     }
     return c;
   };
-  return { adapter, log, alphas, live, flats, plans, inGroup, liveNodes, anchors, rolesAbove, worldAlpha, worldBox, drawOrder, contentOf, stage };
+  return { adapter, log, alphas, live, flats, plans, worlds, inGroup, liveNodes, anchors, rolesAbove, worldAlpha, worldBox, drawOrder, contentOf, stage };
 }
 
 /** The one node of a list (a test reads a single anchor or sprite). */
@@ -1672,7 +1680,7 @@ test('executor: a cam move persists in the snapshot until the next cut', async (
   const push = { kind: 'push', to: 'ally' as CharId, z: 120 } as const;
   await h.ex.apply([camera(push)], NOW);
   expect(h.ex.snapshot().cam).toEqual(push);
-  // A show, a CG and a wait keep the framing; nothing draws it yet (the shots plan's SH6).
+  // A show, a CG and a wait keep the framing; the legacy harness draws no camera (no rig).
   await h.ex.apply([show('stranger', 'serious', 'right', 'cut')], NOW);
   await h.ex.apply([cg('letter', 'cut')], NOW);
   await h.ex.apply([wait(100)], { instant: true });
@@ -3038,4 +3046,182 @@ test('executor: a legacy bg take that failed is not taken again on the next line
   expect(h.skipped.map((e) => `${e.kind}:${e.id}`)).toEqual(['decode:bg/cafe']);
   h.ex.destroy();
   expect(h.registry.stats().live).toBe(0);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The camera (docs/plans/shots §5.4, S20; lane SH6 Q7, D4, S1): a move tweens the world container's delta from the drawn
+// framing to the target's, on the batch's timeline; a scene or a bg puts it back to rest at the cut point; a restore or
+// an instant batch sets it at once; a relayout or a rebind frames the held move again for the stage it now has.
+
+const PUSH = { kind: 'push', to: 'ally' as CharId, z: 120 } as const;
+/** The world delta `cam` frames on the lamp shot (r 2, the full tier) at `size`. */
+const framed = (cam: CamState, size: Size = S390): WorldDelta => worldOf(restFraming(LAMP_RIG, size, 2, false), camFraming(LAMP_RIG, size, 2, false, cam));
+const REST: WorldDelta = { x: 0, y: 0, scale: 1 };
+/** The last world delta a stage drew. */
+const lastWorld = (worlds: readonly WorldDelta[]): WorldDelta | undefined => worlds[worlds.length - 1];
+function expectWorld(got: WorldDelta | undefined, want: WorldDelta, at = ''): void {
+  expect(got, at).toBeDefined();
+  expect(got?.x, at).toBeCloseTo(want.x, 9);
+  expect(got?.y, at).toBeCloseTo(want.y, 9);
+  expect(got?.scale, at).toBeCloseTo(want.scale, 12);
+}
+
+test('executor: a cam move tweens the world and a tap completes it', async () => {
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  // At rest nothing is written.
+  expect(h.worlds).toEqual([]);
+  const end = framed(PUSH);
+  expect(end.scale).toBeGreaterThan(1);
+  const m = track(h.ex.apply([camera(PUSH)], NOW));
+  await flush();
+  // The push's 2400 ms, power1.inOut: half way at its midpoint.
+  advance(1200);
+  const mid = lastWorld(h.worlds);
+  expect(mid?.scale).toBeCloseTo(1 + (end.scale - 1) / 2, 6);
+  expect(mid?.x).toBeCloseTo(end.x / 2, 6);
+  expect(m.done).toBe(false);
+  expect(h.ex.stats().activeTimelines).toBe(1);
+  h.ex.complete();
+  await flush();
+  expect(m.done).toBe(true);
+  expectWorld(lastWorld(h.worlds), end);
+  expect(h.ex.snapshot().cam).toEqual(PUSH);
+  // Held: a line that moves no camera writes no world; a pull returns to rest over its 1200 ms.
+  const n = h.worlds.length;
+  await h.ex.apply([face('ally', 'worried')], { instant: true });
+  expect(h.worlds).toHaveLength(n);
+  // A face patch under the held push renders the pushed rect (review O2: through the delta the executor wrote).
+  const rest = restFraming(LAMP_RIG, S390, 2, false);
+  const pushed = { x: end.x + end.scale * rest.x, y: end.y + end.scale * rest.y, k: end.scale * rest.k };
+  const patched = track(h.ex.apply([face('ally', 'smile')], NOW));
+  await flush();
+  expect(h.plans).toEqual([patchPlan([200, 460, 200, 260], pushed, 2)?.plan]);
+  h.ex.complete();
+  await flush();
+  expect(patched.done).toBe(true);
+  expect(h.worlds).toHaveLength(n);
+  const pull = track(h.ex.apply([camera({ kind: 'pull' })], NOW));
+  await flush();
+  advance(600);
+  expect(lastWorld(h.worlds)?.scale).toBeCloseTo(end.scale - (end.scale - 1) / 2, 6);
+  advance(700);
+  await flush();
+  expect(pull.done).toBe(true);
+  expect(lastWorld(h.worlds)).toEqual(REST);
+  h.ex.destroy();
+});
+
+test('executor: a cut resets the camera', async () => {
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  await h.ex.apply([camera(PUSH)], { instant: true });
+  expectWorld(lastWorld(h.worlds), framed(PUSH));
+  // A cut: at rest at once, at the cut point.
+  h.worlds.length = 0;
+  await h.ex.apply([bg('lamp_cu', 'cut')], NOW);
+  expect(h.worlds).toEqual([REST]);
+  expect('cam' in h.ex.snapshot()).toBe(false);
+  // A dip: at rest at black, not before.
+  await h.ex.apply([camera(PUSH)], { instant: true });
+  h.worlds.length = 0;
+  const dip = track(h.ex.apply([bg('lamp', 'fade', 400)], NOW));
+  await flush();
+  advance(150);
+  expect(h.worlds).toEqual([]);
+  advance(100);
+  expect(h.worlds).toEqual([REST]);
+  advance(250);
+  await flush();
+  expect(dip.done).toBe(true);
+  // A dissolve: the snapshot keeps the pushed frame, then the world is at rest under it; a move in the same batch
+  // starts from rest at the cut point.
+  await h.ex.apply([camera(PUSH)], { instant: true });
+  h.worlds.length = 0;
+  const d = track(h.ex.apply([bg('lamp_cu', 'crossfade', 500), camera({ kind: 'push', to: 'center', z: 110 })], NOW));
+  await flush();
+  expect(h.log.filter((x) => x.startsWith('flatten:'))).toContain('flatten:screen:780x1688');
+  expect(h.worlds).toEqual([REST]);
+  h.ex.complete();
+  await flush();
+  expect(d.done).toBe(true);
+  const cu = LAMP_RIGS.get('lamp_cu' as BgId);
+  if (cu === undefined) {
+    throw new Error('invariant: the fixture has the close-up');
+  }
+  expectWorld(lastWorld(h.worlds), worldOf(restFraming(cu, S390, 2, false), camFraming(cu, S390, 2, false, { kind: 'push', to: 'center', z: 110 })));
+  h.ex.destroy();
+});
+
+test('executor: restore applies the camera end state', async () => {
+  const h = flatHarness();
+  await h.ex.restore({ bg: 'lamp' as BgId, cg: null, chars: [{ char: 'ally' as CharId, expr: 'smile' as ExprId, at: 'center' }], props: [], cam: PUSH });
+  // At once, one write, no timeline.
+  expect(h.worlds).toHaveLength(1);
+  expectWorld(h.worlds[0], framed(PUSH));
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  // A restore without a move: back to rest at once.
+  await h.ex.restore({ bg: 'lamp' as BgId, cg: null, chars: [], props: [] });
+  expect(lastWorld(h.worlds)).toEqual(REST);
+  h.ex.destroy();
+});
+
+test('executor: a relayout re-frames a held push for the new stage', async () => {
+  // D4: the push to the stranger on the phone is held by the plate's right and top edges (the clamp); on the larger
+  // stage the clamp is another, so the held delta is framed again, never kept.
+  const toStranger = { kind: 'push', to: 'stranger' as CharId, z: 120 } as const;
+  const S412: Size = { w: 412, h: 915 };
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  await h.ex.apply([camera(toStranger)], { instant: true });
+  const small = camFraming(LAMP_RIG, S390, 2, false, toStranger);
+  expect(small.x).toBeCloseTo(390 - 1080 * small.k, 9);
+  expect(small.y).toBe(0);
+  const before = lastWorld(h.worlds);
+  expectWorld(before, framed(toStranger));
+  h.stage.size = S412;
+  h.ex.relayout();
+  const large = camFraming(LAMP_RIG, S412, 2, false, toStranger);
+  expect(large.x).toBeCloseTo(412 - 1080 * large.k, 9);
+  expect(large.y).toBe(0);
+  expectWorld(lastWorld(h.worlds), framed(toStranger, S412));
+  expect(Math.abs((lastWorld(h.worlds)?.x ?? 0) - (before?.x ?? 0))).toBeGreaterThan(1);
+  h.ex.destroy();
+});
+
+test('executor: a rebind re-frames a held push on the new adapter', async () => {
+  // D4: the rebuilt stage's world starts at identity; the held push is drawn on it, framed for its size.
+  const S412: Size = { w: 412, h: 915 };
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  await h.ex.apply([camera(PUSH)], { instant: true });
+  const fresh = recordingStage(S412, h.freed, 'draw');
+  h.ex.rebind(fresh.adapter);
+  expect(fresh.worlds).toHaveLength(1);
+  expectWorld(fresh.worlds[0], framed(PUSH, S412));
+  // The held move stays the snapshot's.
+  expect(h.ex.snapshot().cam).toEqual(PUSH);
+  h.ex.destroy();
+});
+
+test('executor: a crossfade onto the shot on stage returns a held camera to rest over its time', async () => {
+  // S1: SH1's rule is kept: any bg resets the camera, the take's crossfade onto the shot on stage included; the drawn
+  // world returns to rest over the crossfade's time, not at once.
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  await h.ex.apply([camera(PUSH)], { instant: true });
+  const end = framed(PUSH);
+  h.worlds.length = 0;
+  const take = track(h.ex.apply([bg('lamp', 'crossfade', 500), props(['key', KEY])], NOW));
+  await flush();
+  expect(h.worlds).toEqual([]);
+  advance(250);
+  expect(lastWorld(h.worlds)?.scale).toBeCloseTo(end.scale - (end.scale - 1) / 2, 6);
+  advance(300);
+  await flush();
+  expect(take.done).toBe(true);
+  expect(lastWorld(h.worlds)).toEqual(REST);
+  expect('cam' in h.ex.snapshot()).toBe(false);
+  expect(h.log.filter((x) => x.startsWith('flatten:'))).toEqual([]);
+  h.ex.destroy();
 });

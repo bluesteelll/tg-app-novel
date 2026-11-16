@@ -6,7 +6,7 @@ import type { Size } from '../geom/cover.ts';
 import type { AssetManifest } from '../story/catalog.ts';
 import { decodeShotRigs } from '../story/shots.ts';
 import type { Box, FaceRig, ShotRig } from '../story/shots.ts';
-import type { AssetId, BgId, CharId, ExprId } from '../story/staging.ts';
+import type { AssetId, BgId, CamState, CamTarget, CharId, ExprId } from '../story/staging.ts';
 import type { SceneSnapshot } from './executor.ts';
 
 /** Plate px to stage px: stage = plate × k + (x, y). */
@@ -61,6 +61,62 @@ export function restFraming(rig: ShotRig, stage: Size, resolution: number, half:
   // The focus moves toward the stage centre, as far as the slack lets it.
   const toward = (centre: number, focus: number, at: number, s: number): number => at + Math.min(s, Math.max(-s, centre - (focus * k + at)));
   return { x: toward(stage.w / 2, rig.focus[0], centred.x, sx), y: toward(stage.h / 2, rig.focus[1], centred.y, sy), k };
+}
+
+/** §5.4, Q7: a move's time when its command names none (ms). */
+export const CAM_MS = { push: 2400, pull: 1200, pan: 1800 } as const;
+
+/** The world container's delta (stage px; identity at rest): it scales by `scale` about the stage origin, then moves. */
+export type WorldDelta = { readonly x: number; readonly y: number; readonly scale: number };
+
+/**
+ * The framing of `cam` on this stage (§5.4, S20): rest is restFraming. A push zooms clamp(z / 100, zoomRange) over
+ * cover() with its target at the stage centre (a cast member's head box, or `center`: the plate point the rest framing
+ * shows there), then is clamped inside the plate; on a stage whose range is empty it pans there instead, at z0, as far
+ * as the slack lets it. A pan keeps z0 and moves x to its member's head or to the slack's edge. A `room` frame holds
+ * cover() (I-6), and a member not in the cast (or with no head) holds rest.
+ */
+export function camFraming(rig: ShotRig, stage: Size, resolution: number, half: boolean, cam: CamState): StageXform {
+  const rest = restFraming(rig, stage, resolution, half);
+  if (cam.kind === 'rest' || rig.frame === 'room') {
+    return rest;
+  }
+  /** The plate point a target names: a member's head centre, or the plate point at the stage centre at rest. */
+  const aim = (to: CamTarget): readonly [number, number] | null => {
+    if (to === 'center') {
+      return [(stage.w / 2 - rest.x) / rest.k, (stage.h / 2 - rest.y) / rest.k];
+    }
+    const head = rig.cast.find((m) => m.char === to)?.face?.head;
+    return head === undefined ? null : [head[0] + head[2] / 2, head[1] + head[3] / 2];
+  };
+  const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
+  /** The plate at `k` with `p` at the stage centre on the axes asked for, clamped so it still covers the stage. */
+  const inside = (k: number, p: readonly [number, number] | null, axes: 'x' | 'xy'): StageXform => ({
+    x: p === null ? rest.x : clamp(stage.w / 2 - p[0] * k, stage.w - rig.w * k, 0),
+    y: p === null || axes === 'x' ? rest.y : clamp(stage.h / 2 - p[1] * k, stage.h - rig.h * k, 0),
+    k,
+  });
+  if (cam.kind === 'pan') {
+    if (cam.to === 'left' || cam.to === 'right') {
+      return { ...rest, x: cam.to === 'left' ? 0 : stage.w - rig.w * rest.k };
+    }
+    return inside(rest.k, aim(cam.to), 'x');
+  }
+  const p = aim(cam.to);
+  if (p === null) {
+    return rest;
+  }
+  const range = zoomRange(rig, stage, resolution, half);
+  if (range.max <= range.min) {
+    return inside(rest.k, p, 'xy');
+  }
+  return inside(cover(stage, rig).scale * clamp(cam.z / 100, range.min, range.max), p, 'xy');
+}
+
+/** The world's delta that turns the rest framing into `framed`: identity when they are equal. */
+export function worldOf(rest: StageXform, framed: StageXform): WorldDelta {
+  const scale = framed.k / rest.k;
+  return { x: framed.x - scale * rest.x, y: framed.y - scale * rest.y, scale };
 }
 
 /** A face member's expression on `faces`: its entry when the rig has it, else its rest (drawn at rest, no slot). */
