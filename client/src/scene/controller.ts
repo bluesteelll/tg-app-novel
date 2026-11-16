@@ -19,6 +19,7 @@ import type { GpuLedger } from './flatten.ts';
 import { halfFits, renderResolution, stageBound, tierFor } from './layout.ts';
 import type { PerfClass } from './layout.ts';
 import { createImageLoader, probeAvif } from './loader.ts';
+import type { MotionKit } from './motion/animator.ts';
 import { SKIP_PIXI_ENV } from './pixi-env.ts';
 import { ENSURE_HOLDER, createAssetScheduler, windowDeps } from './preload.ts';
 import type { AssetScheduler, StageWindow, WindowStats } from './preload.ts';
@@ -76,6 +77,16 @@ export type SceneStats = {
   reservedBytes?: number;
   /** Dissolves and patches that fell back to the container-alpha crossfade (cumulative, CH D15). */
   flatRefused?: number;
+  // The faces in motion (lane SH7): optional in the type only, as above; the controller always reports them.
+  /** The motion kit's chunk: not loaded yet, loaded, or its last import failed (faces stay at rest). */
+  motion?: MotionState;
+  /** The render loop's frames since mount, and those that drew a stepped ambient source (D7). */
+  frames?: number;
+  ambientFrames?: number;
+  /** Ambient sources registered on the loop, held ones included (A13 (a)). */
+  ambientSources?: number;
+  /** Blink members shown on a live texture since mount (D8's counter). */
+  blinks?: number;
 };
 
 export interface SceneController {
@@ -403,6 +414,88 @@ export function restoreStep<T>(c: StageParts<T>, s: SceneSnapshot, o?: { preview
   return done;
 }
 
+/** The motion kit's chunk (SH7, D1): `stats().scene.motion`. */
+export type MotionState = 'pending' | 'ready' | 'failed';
+/** The kit's one import and its retries (D1, 05a:102); pure, so a test drives it with a fake `load`. */
+export type MotionLoader = {
+  /** A step settled: the first call starts the import; any later one does nothing. */
+  applied(): void;
+  /** A shot was built with no kit: a failed import is tried again, at most MOTION_RETRIES times per chapter. */
+  want(): void;
+  /** A new chapter: its retries count from zero. */
+  chapter(): void;
+  state(): MotionState;
+};
+const MOTION_RETRIES = 3;
+
+/** The scene's only `import()` (arch rule `scene-lazy`): the motion kit, after the first applied step. */
+async function loadMotionKit(): Promise<MotionKit> {
+  const m = await import('./motion/index.ts');
+  return m.motionKit;
+}
+
+/**
+ * The motion kit's loader: one import in flight at most; a success installs the kit once; a failure is logged and
+ * leaves the faces at rest. A failed `import()` also reaches boot's chunk recovery (`vite:preloadError`, Q60), like
+ * every lazy chunk (A10).
+ */
+export function createMotionLoader(o: { load(): Promise<MotionKit>; install(kit: MotionKit): void }): MotionLoader {
+  let state: MotionState = 'pending';
+  let started = false;
+  let retries = 0;
+  const start = (): void => {
+    // 'pending' while the import flies: `want` starts nothing then.
+    state = 'pending';
+    // Nothing waits on the kit: its outcome is the loader's state.
+    void o.load().then(
+      (kit) => {
+        state = 'ready';
+        o.install(kit);
+      },
+      (e: unknown) => {
+        state = 'failed';
+        console.warn('scene: the motion kit did not load; the faces stay at rest', e);
+      },
+    );
+  };
+  return {
+    applied() {
+      if (!started) {
+        started = true;
+        start();
+      }
+    },
+    want() {
+      if (state === 'failed' && retries < MOTION_RETRIES) {
+        retries += 1;
+        start();
+      }
+    },
+    chapter() {
+      retries = 0;
+    },
+    state: () => state,
+  };
+}
+
+/**
+ * The controller's `apply` and `restore` over the mounted parts (D1, B11): each runs its step, and the loader hears
+ * `applied()` once the step has settled, so the kit's import starts after the session's first batch (a restore-first
+ * session's restore included) and never joins the path to the first line; `mount` starts nothing.
+ */
+export function sceneSteps<T>(parts: () => StageParts<T> | null, loader: Pick<MotionLoader, 'applied'>): Pick<SceneController, 'apply' | 'restore'> {
+  return {
+    apply(batch, o) {
+      const c = parts();
+      return c === null ? Promise.resolve() : applyStep(c, batch, o).then(() => loader.applied());
+    },
+    restore(s, o) {
+      const c = parts();
+      return c === null ? Promise.resolve() : restoreStep(c, s, o).then(() => loader.applied());
+    },
+  };
+}
+
 /**
  * `SceneController.setChapter` over the mounted parts (carry S5): the running batch completes first, so its window is
  * reported into the chapter it was planned in; then the scheduler takes the new chapter. A batch still awaiting its
@@ -431,6 +524,16 @@ export function createSceneController(): SceneController {
   let doneGen = 1;
   let staleFrames = 0;
   let visibleReviveMs: number | null = null;
+  /** The motion kit once it landed (D1): handed to the executor then, or at a later mount. */
+  let motion: MotionKit | null = null;
+  const loader = createMotionLoader({
+    load: loadMotionKit,
+    install: (kit) => {
+      motion = kit;
+      core?.executor.setMotion(kit);
+    },
+  });
+  const steps = sceneSteps(() => core, loader);
 
   const onResize = (): void => {
     const c = core;
@@ -663,7 +766,11 @@ export function createSceneController(): SceneController {
         shots: { rigs: () => rigs, half: () => core?.tier === 'half' },
         // The swap point wants the step's window; a release retries what the window was refused (shots §5.8).
         ...windowDeps(scheduler),
+        wantMotion: () => loader.want(),
       });
+      if (motion !== null) {
+        executor.setMotion(motion);
+      }
       const flow = createReviveFlow({
         revive: reviveWith(registry),
         reacquire: () => executor.reacquire(),
@@ -685,6 +792,7 @@ export function createSceneController(): SceneController {
     setChapter(m) {
       if (state !== 'destroyed') {
         rigs = chapterRigs(m);
+        loader.chapter();
       }
       if (core !== null) {
         chapterStep(core, m);
@@ -692,15 +800,11 @@ export function createSceneController(): SceneController {
         pendingManifest = m;
       }
     },
-    apply(batch, o) {
-      return core === null ? Promise.resolve() : applyStep(core, batch, o);
-    },
+    apply: steps.apply,
     complete() {
       core?.executor.complete();
     },
-    restore(s, o) {
-      return core === null ? Promise.resolve() : restoreStep(core, s, o);
-    },
+    restore: steps.restore,
     snapshot() {
       return core === null ? { ...EMPTY, chars: [], props: [] } : core.executor.snapshot();
     },
@@ -748,10 +852,12 @@ export function createSceneController(): SceneController {
         const none = { liveTextures: 0, liveBytes: 0, pendingLoads: 0, activeTimelines: 0, overCap: 0 };
         const windows = { window: { pending: 0, ids: [] }, rooms: [], warm: 0, warmBytes: 0, previews: 0 };
         const flats = { targets: 0, targetBytes: 0, targetsCreated: 0, targetsDestroyed: 0, reservations: 0, reservedBytes: 0, flatRefused: 0 };
-        return { ...none, openBitmaps: 0, stale: 0, reviveFailed: 0, reviving: false, ...counters, ...windows, ...flats };
+        const faces = { motion: loader.state(), frames: 0, ambientFrames: 0, ambientSources: 0, blinks: 0 };
+        return { ...none, openBitmaps: 0, stale: 0, reviveFailed: 0, reviving: false, ...counters, ...windows, ...flats, ...faces };
       }
       const r = core.registry.stats();
       const ex = core.executor.stats();
+      const l = core.loop.stats();
       return {
         liveTextures: r.live,
         // What the caps count minus the kept files (MEMORY-PLAN M2): texture bytes plus the loads and the upgrade in
@@ -771,6 +877,11 @@ export function createSceneController(): SceneController {
         ...core.ledger.stats(),
         ...core.registry.reserveStats(),
         flatRefused: ex.flatRefused,
+        motion: loader.state(),
+        frames: l.frames,
+        ambientFrames: l.ambientFrames,
+        ambientSources: l.ambientSources,
+        blinks: core.executor.blinks?.() ?? 0,
       };
     },
     debugForceContextLoss(mode) {

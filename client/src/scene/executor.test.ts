@@ -7,6 +7,7 @@ import type { AnchorKey } from '../mechanics/contract.ts';
 import type { ImageEntry, Result } from '../story/catalog.ts';
 import type { Box as Box4, CastRig, Member, ShotRig } from '../story/shots.ts';
 import type { AssetId, BgId, CamState, CgId, CharId, ExprId, PropId, Rect, Slot } from '../story/staging.ts';
+import { createMotionLoader } from './controller.ts';
 import { createExecutor } from './executor.ts';
 import type { ExecutorDeps, Layer, Placement, StageAdapter, VisualCommand } from './executor.ts';
 import { patchPlan } from './flatten.ts';
@@ -308,7 +309,7 @@ const quietLoop = (): RenderLoop => createRenderLoop({ ticker: { add: () => {}, 
  * `shots`: the executor's shot dep (absent: none). The registry cuts frames as stand-ins named `<file url>#<box>`; a
  * disposed frame joins `freed`, so a sprite drawn on it throws like one on a released texture. `seat`: the window
  * seat's two reports (shots §5.8; absent: none). `targets`: the stage's target members (recordingStage). The
- * executor's GPU generation is the harness's (`setGen`).
+ * executor's GPU generation is the harness's (`setGen`). `motion`: the motion kit's ask (SH7 D1; absent: none).
  */
 function harness(
   size: Size = S390,
@@ -316,6 +317,7 @@ function harness(
   shots?: { rigs(): ReadonlyMap<BgId, ShotRig> | null; half(): boolean },
   seat?: Pick<ExecutorDeps<Tex>, 'swapped' | 'released'>,
   targets?: 'draw' | 'refuse',
+  motion?: Pick<ExecutorDeps<Tex>, 'wantMotion'>,
 ) {
   const freed = new Set<Tex>();
   const stage = recordingStage(size, freed, targets);
@@ -408,6 +410,7 @@ function harness(
     gen: () => gen,
     ...(shots === undefined ? {} : { shots }),
     ...seat,
+    ...motion,
   });
   return {
     ...stage,
@@ -3653,5 +3656,50 @@ test("executor: frozen holds a face's motion and leaves a camera move, a cut and
   }
   d.run(1_100);
   expect(shownOf(h, 'ally')).toEqual(['sheet_lamp.avif#300,30,80,30']);
+  h.ex.destroy();
+});
+
+test('executor: a failed kit is retried at the next shot build, at most 3 times per chapter', async () => {
+  const d = drivenLoop();
+  let imports = 0;
+  let fail = true;
+  let target: ReturnType<typeof harness> | null = null;
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const loader = createMotionLoader({
+    load: () => {
+      imports += 1;
+      return fail ? Promise.reject(new Error('chunk offline')) : Promise.resolve(fakeKit().kit);
+    },
+    install: (kit) => target?.ex.setMotion(kit),
+  });
+  const h = harness(S390, d.loop, MOTION, undefined, undefined, { wantMotion: () => loader.want() });
+  target = h;
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  // The controller's step settled (sceneSteps): the first import, which fails; the faces stay at rest.
+  loader.applied();
+  await flush();
+  expect([imports, loader.state()]).toEqual([1, 'failed']);
+  // Each later shot build with no kit retries once, 3 times in this chapter; a build never waits on one.
+  for (const bg of ['lamp_cu', 'lamp', 'lamp_cu', 'lamp', 'lamp_cu']) {
+    await h.ex.apply([scene(bg, 'cut')], NOW);
+    await flush();
+  }
+  expect([imports, loader.state()]).toEqual([4, 'failed']);
+  expect(motionNodes(h)).toEqual([]);
+  expect(d.loop.stats().ambientSources).toBe(0);
+  // A new chapter counts again: its first shot build retries, the kit lands and the shot on stage gains its group.
+  loader.chapter();
+  fail = false;
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  expect([imports, loader.state()]).toEqual([5, 'ready']);
+  expect(motionNodes(h).map((x) => x.key)).toEqual(['motion:ally', 'motion:stranger']);
+  expect(d.loop.stats().ambientSources).toBe(2);
+  // With the kit, a shot build asks for nothing more.
+  await h.ex.apply([scene('lamp_cu', 'cut')], NOW);
+  await flush();
+  expect(imports).toBe(5);
+  expect(warn).toHaveBeenCalledTimes(4);
+  warn.mockRestore();
   h.ex.destroy();
 });

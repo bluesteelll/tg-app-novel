@@ -185,6 +185,8 @@ export type ExecutorDeps<T> = {
   released?(): void;
   /** The GPU generation (controller.ts): a target rendered under an older one lost its pixels in a context change. */
   gen?(): number;
+  /** A shot was built before the motion kit landed: the controller retries a failed kit's import (D1, 05a:102). */
+  wantMotion?(): void;
 };
 type Rigs = ReadonlyMap<BgId, ShotRig> | null;
 
@@ -971,6 +973,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     alpha: number,
     shot?: { rig: ShotRig; faces: ReadonlyMap<CharId, ExprId>; handleOf: HandleOf<T> },
   ): BackdropView<T> => {
+    if (shot !== undefined && kit === null) {
+      deps.wantMotion?.();
+    }
     const node = adapter.anchor(layer, h.id);
     let sprite: SpriteRef;
     try {

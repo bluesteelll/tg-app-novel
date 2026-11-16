@@ -6,11 +6,11 @@
 // a renderer that records each render (no WebGL in node).
 import { Container, Rectangle, Sprite } from 'pixi.js';
 import type { Texture } from 'pixi.js';
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 
 import type { HalfFile, ImageEntry, Result } from '../story/catalog.ts';
 import type { AssetId, BgId, CgId, ChapterId, CharId, ExprId, PropId } from '../story/staging.ts';
-import { applyStep, chapterStep, createLayers, pixiAdapter, restoreStep, targetKit } from './controller.ts';
+import { applyStep, chapterStep, createLayers, createMotionLoader, pixiAdapter, restoreStep, sceneSteps, targetKit } from './controller.ts';
 import { createExecutor } from './executor.ts';
 import type { Executor, GroupRef, SceneSnapshot, StageAdapter, VisualCommand } from './executor.ts';
 import { createGpuLedger, snapshotPlan } from './flatten.ts';
@@ -555,4 +555,116 @@ test('controller: a patch renders its rect of the world in device px at its plat
   }
   expect(content?.children).toEqual([]);
   expect(ledger.stats()).toMatchObject({ targets: 0, targetsDestroyed: 1 });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The motion kit's loader (lane SH7, D1, B11): the scene's one import(), started once a step has settled (an apply or a
+// restore-first session's restore), never at mount and never on the path to the first line; a failed import leaves
+// the faces at rest, and a shot built with no kit retries it (bounded per chapter).
+
+/** A kit the loader hands over; these rows never animate a face. */
+const LOADED_KIT = {
+  face: (): never => {
+    throw new Error('invariant: no face is made here');
+  },
+  talkMaxMs: 20_000,
+};
+const settled = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+/** Step parts whose apply waits until the test lets it settle; restore settles at once. */
+function heldParts() {
+  let release = (): void => {};
+  const parts = {
+    registry: { previewing: <R>(run: () => R): R => run(), releaseHolder: (): void => {} },
+    executor: {
+      apply: (): Promise<void> =>
+        new Promise<void>((r) => {
+          release = r;
+        }),
+      restore: (): Promise<void> => Promise.resolve(),
+    },
+  };
+  return { parts, release: () => release() };
+}
+
+test("controller: the motion kit's import starts after the first apply, not at mount", async () => {
+  const imports: string[] = [];
+  const installed: unknown[] = [];
+  const loader = createMotionLoader({
+    load: () => {
+      imports.push('motion');
+      return Promise.resolve(LOADED_KIT);
+    },
+    install: (k) => installed.push(k),
+  });
+  const held = heldParts();
+  let mounted = false;
+  const steps = sceneSteps(() => (mounted ? held.parts : null), loader);
+  // Not mounted: a step is a no-op and starts nothing.
+  await steps.apply([], { instant: true });
+  await steps.restore({ bg: null, cg: null, chars: [], props: [] });
+  await settled();
+  expect([imports, loader.state()]).toEqual([[], 'pending']);
+  // Mounted: the first batch runs, and the import waits for it to settle.
+  mounted = true;
+  const first = steps.apply([CUT], { instant: false });
+  await settled();
+  expect(imports).toEqual([]);
+  held.release();
+  await first;
+  await settled();
+  expect([imports, loader.state(), installed]).toEqual([['motion'], 'ready', [LOADED_KIT]]);
+  // Every later step imports nothing more.
+  const second = steps.apply([CUT], { instant: true });
+  held.release();
+  await second;
+  await steps.restore({ bg: 'x' as BgId, cg: null, chars: [], props: [] });
+  await settled();
+  expect([imports, installed.length]).toEqual([['motion'], 1]);
+  // Arm (B11 (b)): a restore-first session's restore starts the import as its first settled step.
+  const restoreFirst: string[] = [];
+  const other = createMotionLoader({
+    load: () => {
+      restoreFirst.push('motion');
+      return Promise.resolve(LOADED_KIT);
+    },
+    install: () => {},
+  });
+  await sceneSteps(() => heldParts().parts, other).restore({ bg: 'x' as BgId, cg: null, chars: [], props: [] });
+  await settled();
+  expect([restoreFirst, other.state()]).toEqual([['motion'], 'ready']);
+});
+
+test('controller: a failed kit import reports failed and a retry imports again', async () => {
+  let imports = 0;
+  const installed: unknown[] = [];
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const loader = createMotionLoader({
+    load: () => {
+      imports += 1;
+      return imports === 1 ? Promise.reject(new Error('chunk offline')) : Promise.resolve(LOADED_KIT);
+    },
+    install: (k) => installed.push(k),
+  });
+  // A shot built before the first import asks for nothing: only a failed import is retried.
+  loader.want();
+  expect([imports, loader.state()]).toEqual([0, 'pending']);
+  loader.applied();
+  await settled();
+  expect([imports, loader.state(), installed]).toEqual([1, 'failed', []]);
+  expect(warn).toHaveBeenCalledTimes(1);
+  // A later step does not retry; a shot built with no kit does, once while its import flies.
+  loader.applied();
+  expect(imports).toBe(1);
+  loader.want();
+  loader.want();
+  expect([imports, loader.state()]).toEqual([2, 'pending']);
+  await settled();
+  expect([imports, loader.state(), installed]).toEqual([2, 'ready', [LOADED_KIT]]);
+  // Loaded: nothing imports again.
+  loader.want();
+  loader.chapter();
+  loader.want();
+  await settled();
+  expect([imports, installed.length]).toEqual([2, 1]);
+  warn.mockRestore();
 });
