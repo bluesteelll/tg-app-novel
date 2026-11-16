@@ -231,6 +231,8 @@
     /* A stroke leaves no text selection: a stroke going down inside one would become the browser's drag and cancel. */
     -webkit-user-select: none;
     user-select: none;
+    /* M7: no iOS callout on a long-press over the cells (every pointer lands here): a held stroke keeps its pointer. */
+    -webkit-touch-callout: none;
   }
 
   /* No pointer event targets a cell: every hit, a tap's click included, is the surface's on every engine (CQ-c). */
