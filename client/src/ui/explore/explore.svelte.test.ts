@@ -19,6 +19,7 @@ import type { Box } from '../../geom/cover.ts';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import type { Cause, FactKind, MechanicId } from '../../mechanics/contract.ts';
+import type { PuzzleLocalId } from '../../story/staging.ts';
 import type { DocId, HotspotKey, ItemId } from '../../world/types.ts';
 import { createExploreView, forwardLayer } from '../explore-view.svelte.ts';
 import type {
@@ -1426,6 +1427,59 @@ test('explore: every explore cue target resolves', async () => {
   expect(got).toEqual(want);
   // Non-vacuous: every row names a target that exists (a marker lost on both sides would otherwise compare equal).
   expect(want.filter((w) => Array.isArray(w) && w[2] === null)).toEqual([]);
+});
+
+test('explore: the ladder sheet over a device is the hints panel its cues land on', async () => {
+  // GM8h2 D13(1), RULINGS 380 B8: the device's ladder sheet is the room place's hints panel, the first in document
+  // order (the card's ancestor). `ladder`, `tier`, `alert` and the panel's open and close land on the sheet; the hold
+  // of a hint request (`waiting` / `waited`, box-less) stays on the card through the notice that wraps it inside the
+  // sheet, as it breathes the card in the frame place. Each element by identity (an equal node is not the node).
+  stageRig(); // the stage layer's box, and `unstage` clears the body
+  const stage = document.createElement('div');
+  stage.setAttribute('data-cue-stage', '');
+  document.body.append(stage);
+  const props = layerProps({ puzzle: { host: PuzzleHost, frame: deviceFrame(), ladder: { ...DEVICE_LADDER, failed: true } } });
+  const { container, unmount } = render(ExploreView, props);
+  await tick();
+  const card = must(container.querySelector('section.ladder'), 'the ladder card');
+  const sheet = must(card.closest('.sheet'), "the ladder's sheet");
+  const hold = sheet.querySelector(':scope > [data-cue-notice]');
+  const named = new Map<Element, string>([
+    [sheet, 'sheet'],
+    [card, 'card'],
+    [must(card.querySelector('[data-cue-tier="1"]'), 'tier 1'), 'tier 1'],
+    [must(card.querySelector('[data-cue-alert]'), 'the alert'), 'alert'],
+  ]);
+  if (hold !== null) {
+    named.set(hold, 'hold');
+  }
+  const puzzle = 'dial' as PuzzleLocalId;
+  const cues: ReadonlyArray<CueEvent['cue']> = [
+    { kind: 'puzzle', puzzle, name: 'ladder', index: null },
+    { kind: 'ui-state', name: 'panel-open', panel: 'hints', item: null },
+    { kind: 'ui-state', name: 'panel-close', panel: 'hints', item: null },
+    { kind: 'puzzle', puzzle, name: 'hint-shown', index: 1 },
+    { kind: 'puzzle', puzzle, name: 'hint-failed', index: null },
+    { kind: 'ui-state', name: 'waiting', panel: 'hints', item: null },
+    { kind: 'ui-state', name: 'waited', panel: 'hints', item: null },
+  ];
+  const landed = cues.map((cue) => {
+    const r = foundOf(resolveTarget(motionOf(cue).target, { cue, box: null, point: null, diff: [], el: null }, stage));
+    return [cueKey(cue), r instanceof Element ? (named.get(r) ?? r.outerHTML.slice(0, 60)) : r];
+  });
+  expect(landed).toEqual([
+    ['puzzle:ladder', 'sheet'],
+    ['ui-state:panel-open', 'sheet'],
+    ['ui-state:panel-close', 'sheet'],
+    ['puzzle:hint-shown', 'tier 1'],
+    ['puzzle:hint-failed', 'alert'],
+    ['ui-state:waiting', 'hold'],
+    ['ui-state:waited', 'hold'],
+  ]);
+  // The marker is the literal on the sheet, and the wrapper holds the ladder place, which scrolls in its full height.
+  expect([sheet.getAttribute('data-cue-panel'), hold?.firstElementChild?.matches('.ladder-place'), hold?.contains(card)]).toEqual(['hints', true, true]);
+  expect(declarationsFor(exploreViewSource, 'hold').get('height')).toBe('100%');
+  unmount();
 });
 
 /**

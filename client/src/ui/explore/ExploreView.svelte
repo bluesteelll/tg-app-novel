@@ -137,9 +137,14 @@
   {/if}
   {#if viewing && puzzle.ladder !== null && puzzle.host !== null}
     {@const Host = puzzle.host}
-    <!-- The hint ladder over a device: a sheet like the explore panels, its controls in this family. -->
-    <div class="sheet">
-      <Host place="ladder" {lang} {frame} ladder={puzzle.ladder} {...puzzleActions} />
+    <!-- The hint ladder over a device: a sheet like the explore panels, its controls in this family. It is the room
+         place's hints panel (GM8h2 D13(1)): `ladder`, `tier`, `alert` and the panel's open and close land on the sheet,
+         the first hints panel; a hint request's hold stays on the card, through the notice that wraps it (the stage
+         takes a panel's notice first), as in the frame place. -->
+    <div class="sheet" data-cue-panel="hints">
+      <div class="hold" data-cue-notice>
+        <Host place="ladder" {lang} {frame} ladder={puzzle.ladder} {...puzzleActions} />
+      </div>
     </div>
   {/if}
 </div>
@@ -156,6 +161,11 @@
     position: absolute;
     inset: 0;
     background: rgba(0, 0, 0, 0.5);
+  }
+
+  /* The ladder card's wrapper: the sheet's full height, so the ladder place inside it pads and scrolls as before. */
+  .hold {
+    height: 100%;
   }
 
   /* A device whose host failed to load: its notice where the device's bar sits, at the room's top. */
