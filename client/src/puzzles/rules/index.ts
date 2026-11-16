@@ -93,8 +93,9 @@ export function instanceOf(data: PuzzleTypeData<string, unknown>, params: unknow
     wrong: data.wrong,
     commit: data.commit,
     initial,
-    // Every type starts from `initial()`: no type saves a working configuration yet (round 5 m1; GM8h adds `run.work`).
-    start: initial,
+    // A device continues from its saved work (engine plan §7.5 "Working state"; GM8h) while its type says it fits; any
+    // other run, and a type with no `workFits` (it saves no work), starts from `initial()`.
+    start: (run) => (run.work !== undefined && data.workFits?.(params, run.work) === true ? Object.freeze([...run.work]) : initial()),
     demo: () => data.demo?.(params) ?? null,
   });
 }

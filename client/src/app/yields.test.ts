@@ -4603,3 +4603,106 @@ test("yields: a type UI's refused input plays puzzle blocked on its part", async
   expect([r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]]).toEqual([[0, 0, 0], undefined]);
   r.yields.dispose();
 });
+
+test('yields: re-entering a device view continues from its saved work', async () => {
+  // §7.5 "Working state": each press is the run's work, and a new session of the device starts from it (`start`,
+  // while the type says it fits): a leave and a return lose nothing.
+  const r = deviceRig('dials');
+  await atDevice(r);
+  r.yields.host.onwork?.([1, 0, 0], false);
+  r.yields.host.onwork?.([1, 2, 0], false);
+  await settle();
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame]).toEqual(['hall', null]);
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([roomOf(r), r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work]).toEqual(['panel', [1, 2, 0], [1, 2, 0]]);
+  r.yields.dispose();
+});
+
+test("yields: a device's saved work always equals its session's answer", async () => {
+  // Q-a: the one write path dispatches inside the press, so `run.work` equals the session's answer when the press
+  // returns (never one press behind), whichever callback carried it.
+  const r = deviceRig('dials');
+  await atDevice(r);
+  const saved = (): unknown => r.yields.world().puzzles[DEV]?.work;
+  r.yields.host.onwork?.([1, 0, 0], false);
+  expect([saved(), r.puzzle.frame?.answer]).toEqual([[1, 0, 0], [1, 0, 0]]);
+  r.yields.host.onwork?.([1, 2, 0], false);
+  expect([saved(), r.puzzle.frame?.answer]).toEqual([[1, 2, 0], [1, 2, 0]]);
+  r.yields.host.onchange([0, 2, 0]);
+  expect([saved(), r.puzzle.frame?.answer]).toEqual([[0, 2, 0], [0, 2, 0]]);
+  await settle();
+  expect(saved()).toEqual([0, 2, 0]);
+  r.yields.dispose();
+});
+
+/**
+ * The part-target cues after `mark` (L3's `part` target): each `puzzle:input` with its index and each `work` fact with
+ * its id (`<puzzle>.<index>=<value>`). A part here is an answer position (RULINGS 366 B2): one per configuration index.
+ */
+const partCuesOf = (r: Rig, mark: number): string[] =>
+  r.cues.slice(mark).flatMap((e) => {
+    const c = e.cue;
+    if (c.kind === 'puzzle' && c.name === 'input') {
+      return [`puzzle:input@${String(c.index)}`];
+    }
+    return c.kind === 'fact' && c.fact.kind === 'work' ? [`fact:work:${c.change}@${c.fact.id}`] : [];
+  });
+
+test("yields: a device's first move of one part plays one press on that part", async () => {
+  // D5 (A7, Q6 option (b)): a device move's `work` facts play no cue (the writer diffs a first move against no saved
+  // work, an `added` for every position); its one press per moved part is `puzzle:input`. A part is an answer position
+  // (a configuration answer's index; RULINGS 366 B2): GM8h2's widened Q5 moves these rows for a sequence answer.
+  const r = deviceRig('dials');
+  await atDevice(r);
+  // Case 1: the first move of position 1, with no saved work.
+  let mark = r.cues.length;
+  r.yields.host.onwork?.([0, 1, 0], false);
+  await settle();
+  expect(partCuesOf(r, mark)).toEqual(['puzzle:input@1']);
+  // Case 2: a second move, of position 2, from the saved work.
+  mark = r.cues.length;
+  r.yields.host.onwork?.([0, 1, 2], false);
+  await settle();
+  expect(partCuesOf(r, mark)).toEqual(['puzzle:input@2']);
+  expect(r.yields.world().puzzles[DEV]?.work).toEqual([0, 1, 2]);
+  r.yields.dispose();
+});
+
+test('yields: an equal answer is no move away on a reach frame', async () => {
+  // V2 (D12): `moveWork`'s move away needs a moved part: the answer the frame already shows keeps the reached answer
+  // awaiting, and Try re-posts it.
+  const r = await reachedAndPosted([NETWORK, NETWORK]);
+  await settle();
+  expect([r.puzzle.frame?.line, r.puzzle.frame?.awaiting]).toEqual(['offline', true]);
+  r.yields.host.onchange([...DRAWN]);
+  expect(r.puzzle.frame?.awaiting).toBe(true);
+  r.yields.host.ontry();
+  await settle();
+  expect(r.posted).toEqual([CANONICAL, CANONICAL]);
+  r.yields.dispose();
+});
+
+test('yields: zooming back into a device during its POST opens a new session at the saved work', async () => {
+  // H3 race 1 (RULINGS 366 B9): the zoom-out hides the device with its POST in flight; the zoom back in re-arrives, and
+  // its open drops the hidden session (the POST aborted, its late answer dropped) and opens a new one at the saved work.
+  const r = deviceRig('dials');
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.onwork?.([1, 0, 2], false);
+  r.yields.host.oncommit?.();
+  await settle();
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted)]).toEqual(['hall', null, [false]]);
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([roomOf(r), r.puzzle.frame?.answer, r.puzzle.frame?.busy]).toEqual(['panel', [1, 0, 2], false]);
+  expect(q.signals.map((s) => s.aborted)).toEqual([true]);
+  q.answer(SOLVED);
+  await settle();
+  expect([r.yields.world().puzzles[DEV]?.outcome, r.puzzle.frame?.answer, r.puzzle.frame?.line]).toEqual([null, [1, 0, 2], 'idle']);
+  r.yields.dispose();
+});

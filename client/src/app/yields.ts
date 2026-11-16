@@ -346,7 +346,9 @@ const causeOf = (a: SectionAction, w: WorldPublic | null): Cause =>
         ? cause('use', a.target, a.item)
         : a.kind === 'combine'
           ? cause('combine', null, a.a)
-          : cause(
+          : a.kind === 'device-moved'
+            ? cause('device', w === null ? null : (worldIndex(w).puzzleLock.get(a.puzzle) ?? null)) // D11: the device's own verb
+            : cause(
             a.kind === 'puzzle-ended' && a.outcome === 'solved' ? 'solve' : 'fail',
             'puzzle' in a && w !== null ? (worldIndex(w).puzzleLock.get(a.puzzle) ?? null) : null,
           );
@@ -663,7 +665,12 @@ export function createYields(h: YieldsHost): Yields {
         send(coreCue('reset', null, null));
         return;
       case 'cue':
-        // The writer's record (engine plan §8.1 plan (2)): each fact and module cue of the entry, on its box.
+        // The writer's record (engine plan §8.1 plan (2)): each fact and module cue of the entry, on its box. D5 (A7): a
+        // device move's `work` facts play none: its one press per moved part is `moveWork`'s `puzzle:input`, while the
+        // writer diffs against no saved work on a first move (an `added` for every part).
+        if (e.cue.kind === 'fact' && e.cue.fact.kind === 'work' && scope.cause.verb === 'device') {
+          return;
+        }
         send(e.cue);
         return;
       case 'dirty':
@@ -1329,6 +1336,12 @@ export function createYields(h: YieldsHost): Yields {
     // One cue per changed part, in index order.
     for (const i of changed) {
       puzzleCue(o, 'input', i);
+    }
+    if (o.present === 'view') {
+      // A device's working answer is its saved work (§7.5 "Working state"; Q-a): written inside the press, so `run.work`
+      // equals the session's answer when the press returns; its state batch drains queued, never as a tap.
+      act({ kind: 'device-moved', puzzle: o.local, work: o.session.answer() });
+      void h.queue(drain);
     }
   };
 

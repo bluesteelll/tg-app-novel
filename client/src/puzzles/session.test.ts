@@ -773,3 +773,21 @@ test('session: a local wrong input counts one attempt and the limit ends the ses
   expect(c.s.failLocal()).toEqual(err({ kind: 'invalid' }));
   expect(c.dispatch).not.toHaveBeenCalled();
 });
+
+test('session: a view session starts from its saved work when it fits', () => {
+  // §7.5 "Working state" (GM8h): a device's session starts from its run's `work` while its type's `workFits` holds.
+  const { s } = rig({ world: knobsWorld(), types: VIEW_TYPES, run: { work: [2, 1, 0] } });
+  expect([s.answer(), Object.isFrozen(s.answer())]).toEqual([[2, 1, 0], true]);
+  // A type with no `workFits` saves no work: the code gate starts from its initial answer whatever the run holds.
+  const c = rig({ run: { work: [1, 2, 3, 4] } });
+  expect(c.s.answer()).toEqual(c.s.instance.initial());
+  expect(c.s.answer()).not.toEqual([1, 2, 3, 4]);
+});
+
+test('session: a view session ignores a saved work that does not fit', () => {
+  // A work the type refuses (a value out of range, a wrong length) starts the device from `initial()`.
+  for (const work of [[3, 0, 0], [1, 1], [0, 0, 0, 0]]) {
+    const { s } = rig({ world: knobsWorld(), types: VIEW_TYPES, run: { work } });
+    expect([work, s.answer()]).toEqual([work, [0, 0, 0]]);
+  }
+});
