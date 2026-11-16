@@ -3967,6 +3967,25 @@ test("executor: a build that throws on one face's part still takes another chang
   h.ex.destroy();
 });
 
+// Triage r2 S3: in a context restore a record ends inside the revive's visible pass (its re-decode fails), and the flow
+// reacquires only when the whole pass settles (revive-flow.ts); a batch end or a take's landing in that window syncs on
+// its own, so the sync itself drops a group with a member over the ended record.
+test('executor: a batch end between a failed revive and its reacquire drops the group over the ended record', async () => {
+  const loop = quietLoop();
+  const h = harness(S390, loop, MOTION);
+  h.ex.setMotion(fakeKit().kit);
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  expect([motionNodes(h).map((x) => x.key), loop.stats().ambientSources]).toEqual([['motion:ally', 'motion:stranger'], 2]);
+  await failOnRevive(h, 'sheet/lamp');
+  // No reacquire yet: the pass has not settled.
+  await h.ex.apply([face('stranger', 'neutral')], { instant: true });
+  await flush();
+  expect(h.live('bg').filter((x) => x.tex !== null && h.freed.has(x.tex)).map((x) => x.key)).toEqual([]);
+  expect([motionNodes(h).map((x) => x.key), loop.stats().ambientSources]).toEqual([[], 0]);
+  h.ex.destroy();
+});
+
 // Reduced motion (lane SH7, D2, D12): a camera move lands at its end; cuts, dissolves and the faces keep their time.
 
 test('executor: under reduced motion a camera move jumps to its end', async () => {
