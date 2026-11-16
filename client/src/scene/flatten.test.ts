@@ -92,9 +92,25 @@ test('flatten: the ledger drops a target only on its destroy event', () => {
   expect(ledger.stats()).toEqual({ targets: 0, targetBytes: 0, targetsCreated: 2, targetsDestroyed: 2 });
 });
 
+// Every form that loads a module: `... from '<spec>'` (import, import type, export ... from), a bare side-effect
+// `import '<spec>'` (it evaluates the module), and a dynamic `import('<spec>')` (a runtime path to its values). A type
+// query `import('<spec>').X` matches the last form too: erased, but caught conservatively.
+const MODULE_FORMS = [
+  /^\s*(?:import|export)\b[^'"]*?from\s+['"]([^'"]+)['"]/gm,
+  /^\s*import\s*['"]([^'"]+)['"]/gm,
+  /\bimport\s*\(\s*['"`]([^'"`]+)['"`]/g,
+] as const;
+
+function moduleSpecifiers(text: string): (string | undefined)[] {
+  return MODULE_FORMS.flatMap((re) => [...text.matchAll(re)].map((m) => m[1]));
+}
+
 test('flatten: the module imports neither pixi.js nor gsap', () => {
   // Pure by its imports (CH §5.3, review O6): its vitests run in node, and only controller.ts makes a Pixi target.
-  const specifiers = [...source.matchAll(/^\s*(?:import|export)\b[^'"]*?from\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
+  // The collector sees each form; a `from`-only pin stayed green on a bare and a dynamic import (triage r1 F1).
+  expect(moduleSpecifiers("import 'pixi.js';\nexport const f = () => import('pixi.js');\nimport type { A } from 'gsap';"))
+    .toEqual(['gsap', 'pixi.js', 'pixi.js']);
+  const specifiers = moduleSpecifiers(source);
   expect(specifiers.length).toBeGreaterThan(0);
-  expect(specifiers.filter((s) => s === undefined || /^(?:pixi\.js|gsap)(?:\/|$)/.test(s))).toEqual([]);
+  expect(specifiers.filter((s) => s === undefined || /^(?:pixi\.js|@pixi|gsap)(?:\/|$)/.test(s))).toEqual([]);
 });
