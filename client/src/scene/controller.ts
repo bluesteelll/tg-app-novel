@@ -8,10 +8,11 @@
 import { Application, Container, Graphics, Matrix, Rectangle, RenderTexture, Sprite, Texture } from 'pixi.js';
 import type { ApplicationOptions, ImageSource } from 'pixi.js';
 
+import type { CueBus } from '../cues/bus.ts';
 import type { Size } from '../geom/cover.ts';
 import type { AssetManifest, FetchAsset, Result, SizeTier } from '../story/catalog.ts';
 import type { ShotRig } from '../story/shots.ts';
-import type { AssetId, BgId, PropId } from '../story/staging.ts';
+import type { AssetId, BgId, CharId, PropId } from '../story/staging.ts';
 import { createExecutor, gsapTicker, pauseAll, resumeAll } from './executor.ts';
 import type { Executor, GroupRef, Layer, SceneSnapshot, SpriteRef, StageAdapter, VisualCommand } from './executor.ts';
 import { createGpuLedger } from './flatten.ts';
@@ -26,7 +27,7 @@ import type { AssetScheduler, StageWindow, WindowStats } from './preload.ts';
 import { createAssetRegistry, pixiFrames } from './registry.ts';
 import type { AssetError, AssetRegistry, ReviveEnd, SceneError } from './registry.ts';
 import { AMBIENT_FPS, createRenderLoop } from './render-loop.ts';
-import type { RenderLoop } from './render-loop.ts';
+import type { CoverReason, RenderLoop } from './render-loop.ts';
 import { createReviveFlow } from './revive-flow.ts';
 import type { ReviveFlow } from './revive-flow.ts';
 import { chapterRigs } from './shot-view.ts';
@@ -115,8 +116,20 @@ export interface SceneController {
   ensure(ids: readonly AssetId[], signal: AbortSignal, o?: { preview?: boolean }): Promise<Result<void, SceneError>>;
   /** Context-loss check + rebuild. */
   onActivated(): Promise<void>;
+  /** `deactivated` / `activated`; a pause before the mount is kept and holds the mounted loop (E6). */
   pause(): void;
   resume(): void;
+  /**
+   * A line's talk (SH7, D5): the speaker's face flaps, the others hear it (`Executor.talk`); `null` stops every face.
+   * Nothing before the mount: a step talks only after its batch.
+   */
+  talk(char: CharId | null, o?: { forMs?: number; think?: boolean; offstage?: boolean }): void;
+  /** A cover over the stage (`'panel'`: an opaque frame; `'cg'`: SH8): its sources hold. Kept before the mount (E6). */
+  setCovered(reason: CoverReason, on: boolean): void;
+  /** `'frozen'` holds every face and ambient source at rest (D8, the e2e default); `'live'` runs them. Kept before the mount. */
+  setAnimation(mode: 'live' | 'frozen'): void;
+  /** The session's cue subscription (D11): handed over once per session; SH10 subscribes `'scene'` through it. */
+  sceneCues?(subscribe: CueBus['subscribe']): void;
   stats(): SceneStats;
   /**
    * Wired to __novelDebug only under __TG_MOCK__ (perf and memory e2e). `'restorable'`: Pixi's forced loss, which Pixi
@@ -414,6 +427,90 @@ export function restoreStep<T>(c: StageParts<T>, s: SceneSnapshot, o?: { preview
   return done;
 }
 
+/** The loop calls the holds reach. */
+type HeldLoop = Pick<RenderLoop, 'pause' | 'resume' | 'setCovered' | 'setAnimation'>;
+/**
+ * What the controller holds for its loop (SH7, D10, E6): the pause, the covers and the animation. Set before a mount
+ * they are kept, and the loop `attach` hands over takes them at once; set after, they reach the attached loop.
+ */
+export type SceneHolds = {
+  /** True when the held pause changed. */
+  pause(): boolean;
+  /** True when the held pause changed. */
+  resume(): boolean;
+  paused(): boolean;
+  setCovered(reason: CoverReason, on: boolean): void;
+  setAnimation(a: { readonly frozen?: boolean; readonly reduced?: boolean }): void;
+  attach(loop: HeldLoop): void;
+  detach(): void;
+};
+export function createSceneHolds(): SceneHolds {
+  let paused = false;
+  const covers = new Set<CoverReason>();
+  let frozen = false;
+  let reduced = false;
+  let loop: HeldLoop | null = null;
+  return {
+    pause() {
+      if (paused) {
+        return false;
+      }
+      paused = true;
+      loop?.pause();
+      return true;
+    },
+    resume() {
+      if (!paused) {
+        return false;
+      }
+      paused = false;
+      loop?.resume();
+      return true;
+    },
+    paused: () => paused,
+    setCovered(reason, on) {
+      if (on) {
+        covers.add(reason);
+      } else {
+        covers.delete(reason);
+      }
+      loop?.setCovered(reason, on);
+    },
+    setAnimation(a) {
+      frozen = a.frozen ?? frozen;
+      reduced = a.reduced ?? reduced;
+      loop?.setAnimation(a);
+    },
+    attach(l) {
+      loop = l;
+      l.setAnimation({ frozen, reduced });
+      for (const r of covers) {
+        l.setCovered(r, true);
+      }
+      if (paused) {
+        l.pause();
+      }
+    },
+    detach() {
+      loop = null;
+    },
+  };
+}
+
+/**
+ * E5: a rebuilt Application's canvas takes the old canvas's place in the host (a later sibling stays after it), and its
+ * renderer takes the host's box as it is now (`appOptions` read it before the init's await), before the executor lays
+ * the stage out on it.
+ */
+export function swapCanvas<C>(
+  host: { replaceChild(next: C, old: C): unknown; readonly clientWidth: number; readonly clientHeight: number },
+  old: C,
+  app: { readonly canvas: C; readonly renderer: { resize(w: number, h: number): void } },
+): void {
+  host.replaceChild(app.canvas, old);
+  app.renderer.resize(host.clientWidth, host.clientHeight);
+}
+
 /** The motion kit's chunk (SH7, D1): `stats().scene.motion`. */
 export type MotionState = 'pending' | 'ready' | 'failed';
 /** The kit's one import and its retries (D1, 05a:102); pure, so a test drives it with a fake `load`. */
@@ -512,7 +609,8 @@ export function createSceneController(): SceneController {
   let pendingManifest: AssetManifest | null = null;
   /** The current chapter's shot rigs (shot-view.ts); null on a legacy chapter. */
   let rigs: ReadonlyMap<BgId, ShotRig> | null = null;
-  let paused = false;
+  /** The pause, the covers and the animation, kept across the mount (E6). */
+  const holds = createSceneHolds();
   /** The canvas reported webglcontextlost and no webglcontextrestored since. */
   let lost = false;
   let activating: Promise<void> | null = null;
@@ -564,7 +662,7 @@ export function createSceneController(): SceneController {
     if (c === null) {
       return;
     }
-    if (paused) {
+    if (holds.paused()) {
       c.flow.lost();
     } else {
       c.flow.start(gen);
@@ -625,7 +723,7 @@ export function createSceneController(): SceneController {
    * stale texture) starts again under the current generation; while deactivated, nothing (the next `activated` does).
    */
   const live = (c: Mounted): void => {
-    if (!paused && (c.flow.suspended() || c.registry.stats().stale > 0)) {
+    if (!holds.paused() && (c.flow.suspended() || c.registry.stats().stale > 0)) {
       c.flow.start(gen);
     } else {
       c.loop.requestRender();
@@ -663,7 +761,7 @@ export function createSceneController(): SceneController {
     const old = c.app;
     c.flow.lost();
     unwatch(old.canvas);
-    c.host.appendChild(app.canvas);
+    swapCanvas(c.host, old.canvas, app);
     c.executor.rebind(pixiAdapter(app, createLayers(app), kitOf(app, c.ledger)));
     c.app = app;
     lost = false;
@@ -671,7 +769,7 @@ export function createSceneController(): SceneController {
     gen += 1;
     rebuilds += 1;
     // A rebuild the grace reaches while deactivated builds at once and defers only the revive (RULINGS 78).
-    if (paused) {
+    if (holds.paused()) {
       c.flow.lost();
     } else {
       c.flow.start(gen);
@@ -746,6 +844,8 @@ export function createSceneController(): SceneController {
         fps: AMBIENT_FPS[o.perfClass],
         input: document,
       });
+      // E6: a pause, a cover or an animation mode set before the mount holds this loop from its start.
+      holds.attach(loop);
       const scheduler = createAssetScheduler({
         registry,
         onError: report,
@@ -829,22 +929,31 @@ export function createSceneController(): SceneController {
       return activating;
     },
     pause() {
-      if (core === null || paused) {
+      if (state === 'destroyed' || !holds.pause()) {
         return;
       }
-      paused = true;
       pauseAll();
-      core.loop.pause();
       // A hidden WebView throttles timers: the revive stops here, records stay stale, frames stay as they are.
-      core.flow.abort();
+      core?.flow.abort();
     },
     resume() {
-      if (core === null || !paused) {
+      if (state === 'destroyed' || !holds.resume()) {
         return;
       }
-      paused = false;
       resumeAll();
-      core.loop.resume();
+    },
+    talk(char, o) {
+      core?.executor.talk(char, o);
+    },
+    setCovered(reason, on) {
+      if (state !== 'destroyed') {
+        holds.setCovered(reason, on);
+      }
+    },
+    setAnimation(mode) {
+      if (state !== 'destroyed') {
+        holds.setAnimation({ frozen: mode === 'frozen' });
+      }
     },
     stats() {
       const counters = { rebuilds, gen, staleFrames, visibleReviveMs };
@@ -926,8 +1035,8 @@ export function createSceneController(): SceneController {
       pendingManifest = null;
       const c = core;
       core = null;
-      if (paused) {
-        paused = false;
+      holds.detach();
+      if (holds.resume()) {
         resumeAll();
       }
       if (grace !== null) {

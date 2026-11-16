@@ -299,6 +299,11 @@ type FakeScene = SceneController & {
    * apply's window is the keep window.
    */
   readonly previews: Array<{ op: 'ensure' | 'apply' | 'restore'; preview: boolean; keep: boolean }>;
+  /** SH7: each talk, cover and animation call, and each cue subscription handed over, kept out of `calls`. */
+  readonly talks: Array<{ char: string | null; o: Parameters<SceneController['talk']>[1] }>;
+  readonly covers: Array<{ reason: string; on: boolean }>;
+  readonly animations: Array<'live' | 'frozen'>;
+  readonly cueSubs: unknown[];
 };
 
 function fakeScene(): FakeScene {
@@ -306,6 +311,10 @@ function fakeScene(): FakeScene {
   const calls: string[] = [];
   const windows: Array<{ batch: string; window: StageWindow }> = [];
   const previews: FakeScene['previews'] = [];
+  const talks: FakeScene['talks'] = [];
+  const covers: FakeScene['covers'] = [];
+  const animations: FakeScene['animations'] = [];
+  const cueSubs: unknown[] = [];
   let stage = EMPTY_STAGE;
   /** The tag setChapter kept, which the first window ends (the scheduler's step 1c). */
   let entry: string | null = null;
@@ -329,6 +338,10 @@ function fakeScene(): FakeScene {
     calls,
     windows,
     previews,
+    talks,
+    covers,
+    animations,
+    cueSubs,
     mount: async () => {
       calls.push('mount');
       return { ok: true, value: undefined };
@@ -393,6 +406,18 @@ function fakeScene(): FakeScene {
     },
     resume() {
       calls.push('resume');
+    },
+    talk(char, o) {
+      talks.push({ char, o });
+    },
+    setCovered(reason, on) {
+      covers.push({ reason, on });
+    },
+    setAnimation(mode) {
+      animations.push(mode);
+    },
+    sceneCues(subscribe) {
+      cueSubs.push(subscribe);
     },
     stats: () => ({
       liveTextures: holders.size,

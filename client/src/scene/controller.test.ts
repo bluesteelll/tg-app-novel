@@ -10,7 +10,7 @@ import { expect, test, vi } from 'vitest';
 
 import type { HalfFile, ImageEntry, Result } from '../story/catalog.ts';
 import type { AssetId, BgId, CgId, ChapterId, CharId, ExprId, PropId } from '../story/staging.ts';
-import { applyStep, chapterStep, createLayers, createMotionLoader, pixiAdapter, restoreStep, sceneSteps, targetKit } from './controller.ts';
+import { applyStep, chapterStep, createLayers, createMotionLoader, createSceneHolds, pixiAdapter, restoreStep, sceneSteps, swapCanvas, targetKit } from './controller.ts';
 import { createExecutor } from './executor.ts';
 import type { Executor, GroupRef, SceneSnapshot, StageAdapter, VisualCommand } from './executor.ts';
 import { createGpuLedger, snapshotPlan } from './flatten.ts';
@@ -667,4 +667,107 @@ test('controller: a failed kit import reports failed and a retry imports again',
   await settled();
   expect([imports, installed.length]).toEqual([2, 1]);
   warn.mockRestore();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The controller's holds and the rebuilt canvas (lane SH7, D10): a pause, a cover or an animation mode set before the
+// mount holds the loop the mount makes (E6); a rebuilt canvas takes the old one's place and the host's box (E5).
+
+test('controller: a pause and a cover set before mount hold the loop at mount', () => {
+  const holds = createSceneHolds();
+  // Before the mount: `deactivated`, an opaque frame, and the e2e build's frozen default.
+  expect([holds.pause(), holds.pause()]).toEqual([true, false]);
+  holds.setCovered('panel', true);
+  holds.setAnimation({ frozen: true });
+  // The mount's loop, with a continuous source on its stage layer.
+  let clock = 0;
+  const ticks = new Set<() => void>();
+  const loop = createRenderLoop({
+    ticker: {
+      add: (fn) => {
+        ticks.add(fn);
+      },
+      remove: (fn) => {
+        ticks.delete(fn);
+      },
+    },
+    render: () => true,
+    now: () => clock,
+    timer: { set: () => 0, clear: () => {} },
+  });
+  holds.attach(loop);
+  const modes: Array<{ frozen: boolean; covered: boolean }> = [];
+  let steps = 0;
+  loop.addAmbient({
+    layer: 'stage',
+    continuous: () => true,
+    step: () => {
+      steps += 1;
+    },
+    nextChangeMs: () => null,
+    setMode: (m) => {
+      modes.push({ frozen: m.frozen, covered: m.covered });
+      return false;
+    },
+  });
+  const frame = (): void => {
+    clock += 50;
+    for (const fn of [...ticks]) {
+      fn();
+    }
+  };
+  // The mount's first frame request: paused, the loop does not listen.
+  loop.requestRender();
+  frame();
+  expect([loop.stats().listening, loop.stats().frames, steps]).toEqual([false, 0, 0]);
+  expect(modes.at(-1)).toEqual({ frozen: true, covered: true });
+  // `activated`: the frame draws, the source stays held by the cover and the mode.
+  expect(holds.resume()).toBe(true);
+  frame();
+  expect([loop.stats().frames, steps]).toEqual([1, 0]);
+  holds.setAnimation({ frozen: false });
+  holds.setCovered('panel', false);
+  frame();
+  expect(steps).toBeGreaterThan(0);
+  expect(modes.at(-1)).toEqual({ frozen: false, covered: false });
+  // After the mount a pause reaches the attached loop at once; a detached loop hears nothing more.
+  holds.pause();
+  expect(loop.stats().listening).toBe(false);
+  holds.detach();
+  holds.resume();
+  expect(loop.stats().listening).toBe(false);
+  loop.destroy();
+});
+
+test("controller: a rebuilt canvas takes the old canvas's place and the host's box", () => {
+  type El = { readonly name: string };
+  const old: El = { name: 'old canvas' };
+  const later: El = { name: 'the frame layer' };
+  const next: El = { name: 'new canvas' };
+  const children: El[] = [old, later];
+  const host = {
+    children,
+    // The host's box when the rebuild's init resolves: not the one appOptions read before the await.
+    clientWidth: 412,
+    clientHeight: 915,
+    replaceChild(n: El, o: El): El {
+      children.splice(children.indexOf(o), 1, n);
+      return o;
+    },
+    appendChild(n: El): El {
+      children.push(n);
+      return n;
+    },
+  };
+  const sizes: Array<[number, number]> = [];
+  swapCanvas(host, old, {
+    canvas: next,
+    renderer: {
+      resize: (w, h) => {
+        sizes.push([w, h]);
+      },
+    },
+  });
+  expect(children.map((c) => c.name)).toEqual(['new canvas', 'the frame layer']);
+  expect(sizes).toEqual([[412, 915]]);
 });
