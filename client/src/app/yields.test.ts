@@ -4258,6 +4258,8 @@ const LATCH = viewType('latch', { check: 'reach', goal: 'shown', wrong: 'none' }
 /** A shown-goal reach device that demonstrates its goal (the parts 2, 0, 1) and knows a wrong press itself. */
 const CHIMES = viewType('chimes', { check: 'reach', goal: 'shown', wrong: 'local', demo: () => [2, 0, 1] });
 const DEVICE_TYPES: PuzzleTypes = [...PUZZLE_TYPES, DIALS, BELLS, RITE, LATCH, CHIMES];
+/** The device world's knobs: its device's parts, attempt limit and hint tiers, and the type registry it decodes with. */
+type DeviceWorldOptions = { parts?: number; maxAttempts?: number | null; hintTiers?: number; types?: PuzzleTypes };
 const DEV = 'dev' as PuzzleLocalId;
 
 /**
@@ -4265,9 +4267,9 @@ const DEV = 'dev' as PuzzleLocalId;
  * `type` (its onFail gives the coin, so a failed run fires `fail:panel.dial`). The hall holds the code lock `chest` (the
  * puzzle `gate`) and an exit to the knot `after`; the panel holds `safe`, a lock of the view-type puzzle `loose` that is
  * not the room's device (a site the story gate refuses, `world/view-type-site`: here only to prove the runtime's own
- * narrowing), and an exit to the knot `after`.
+ * narrowing), and an exit to the knot `after`. `types` decodes it (default `DEVICE_TYPES`).
  */
-function deviceWorld(type: string, o: { parts?: number; maxAttempts?: number | null; hintTiers?: number } = {}): WorldPublic {
+function deviceWorld(type: string, o: DeviceWorldOptions = {}): WorldPublic {
   const parts = o.parts ?? 3;
   const puzzle = (t: string, title: string, maxAttempts: number | null): Json => ({
     type: t,
@@ -4304,16 +4306,16 @@ function deviceWorld(type: string, o: { parts?: number; maxAttempts?: number | n
       },
     },
   };
-  const r = decodeWorldSource(raw, { types: DEVICE_TYPES });
+  const r = decodeWorldSource(raw, { types: o.types ?? DEVICE_TYPES });
   if (!r.ok) {
     throw new Error(`invariant: the device fixture world decodes: ${JSON.stringify(r.error)}`);
   }
   return { ...toPublic(r.value), mods: r.value.mods, version: '8888888888888888' };
 }
 
-/** A rig over the device world of `type`, its sessions given `DEVICE_TYPES`. */
-const deviceRig = (type: string, o: RigOptions & { parts?: number; maxAttempts?: number | null; hintTiers?: number } = {}): Rig =>
-  rig({ ...o, world: deviceWorld(type, o), puzzleTypes: DEVICE_TYPES });
+/** A rig over the device world of `type`, its sessions given `types` (default `DEVICE_TYPES`). */
+const deviceRig = (type: string, o: RigOptions & DeviceWorldOptions = {}): Rig =>
+  rig({ ...o, world: deviceWorld(type, o), puzzleTypes: o.types ?? DEVICE_TYPES });
 
 /** In the hall, then into the panel: the arrival opens the device. */
 async function atDevice(r: Rig): Promise<void> {
@@ -5106,6 +5108,34 @@ test('yields: a full-length work seeded at open restarts without a post', async 
   await settle();
   expect([roomOf(r), r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work, r.posted]).toEqual(['panel', [], [], []]);
   expect(partCuesOf(r, mark)).toEqual([]);
+  r.yields.dispose();
+});
+
+test('yields: a device whose workFits throws on its saved work opens at initial', async () => {
+  // Saved-work F2 (RULINGS 368): `instanceOf.start` treats a type's `workFits` that throws as a misfit, so a saved work
+  // the type cannot read opens the device at `initial()`, with no unhandled rejection and no story error (GM8a makes
+  // every `workFits` total; a throw here never fails the open).
+  const BOOM = viewType('boom', {
+    workFits: (p, work) => {
+      if (work.length !== p.parts) {
+        throw new Error('boom: misfit');
+      }
+      return true;
+    },
+  });
+  const r = deviceRig('boom', { types: [...DEVICE_TYPES, BOOM] });
+  await inHall(r);
+  r.yields.restore({ ...r.yields.world(), puzzles: { [DEV]: { outcome: null, attempts: 0, hintsOpened: 0, work: [1, 2] } } }, null, { kind: 'explore', section: MANOR });
+  await r.yields.onYield({ kind: 'explore', section: MANOR });
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([roomOf(r), r.puzzle.frame?.type, r.puzzle.frame?.presentation, r.puzzle.frame?.answer, r.log.filter((l) => l.startsWith('storyError'))]).toEqual([
+    'panel',
+    'boom',
+    'view',
+    [0, 0, 0],
+    [],
+  ]);
   r.yields.dispose();
 });
 
