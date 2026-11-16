@@ -4435,3 +4435,110 @@ test("yields: a room effect into a device's own room does not zoom it out", asyn
   expect([roomOf(r), r.puzzle.frame?.presentation]).toEqual(['panel', 'view']);
   r.yields.dispose();
 });
+
+/** An attempt's decisive answers. */
+const SOLVED: Result<AttemptResponse, ApiError> = { ok: true, value: { correct: true, solved: true, attemptsLeft: null, spent: false } };
+const POSTED_WRONG: Result<AttemptResponse, ApiError> = { ok: true, value: { correct: false, solved: false, attemptsLeft: null, spent: true } };
+
+/**
+ * The attempts held, each with the signal its POST was given (RULINGS 366 B9): a dropped session aborts its POST, so a
+ * test reads the abort itself, not only the answer's fate.
+ */
+function heldPosts(r: Rig): { signals: AbortSignal[]; answer: (v: Result<AttemptResponse, ApiError>) => void } {
+  const signals: AbortSignal[] = [];
+  const held: Array<(v: Result<AttemptResponse, ApiError>) => void> = [];
+  r.host.api.postAttempt = (_id, answer, o) => {
+    r.posted.push([...answer]);
+    if (o?.signal !== undefined) {
+      signals.push(o.signal);
+    }
+    return new Promise((resolve) => held.push(resolve));
+  };
+  return { signals, answer: (v) => held.shift()?.(v) };
+}
+
+test("yields: a correct answer landing after a zoom-out opens the device's lock", async () => {
+  // D3 defers the close (X8's): the zoom-out hides the device and its POST still answers; a correct answer reaches the
+  // world, the device's lock opens, and back in the room the device is done (its arrival opens no session).
+  const r = deviceRig('dials');
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.ontry();
+  await settle();
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted)]).toEqual(['hall', null, [false]]);
+  q.answer(SOLVED);
+  await settle();
+  expect([r.yields.world().puzzles[DEV]?.outcome, r.yields.world().open.includes(key('panel.dial'))]).toEqual(['solved', true]);
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([roomOf(r), r.puzzle.frame]).toEqual(['panel', null]);
+  expect(keysOf(r, mark)).toContain('module:devices:done');
+  r.yields.dispose();
+});
+
+test('yields: a story effect during a device POST drops the answer', async () => {
+  // D4 (C-2): `toStory` drops the open session first, so the knot never meets a late answer: the device's frame ends
+  // with its one `puzzle:closed`, its POST is aborted, and the correct answer changes nothing.
+  const r = deviceRig('dials');
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.ontry();
+  await settle();
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('panel.leave'));
+  await settle();
+  expect([r.entered.map((e) => e.knot), r.puzzle.frame, q.signals.map((s) => s.aborted)]).toEqual([['after'], null, [true]]);
+  q.answer(SOLVED);
+  await settle();
+  expect(keysOf(r, mark).filter((k) => k.startsWith('puzzle:'))).toEqual(['puzzle:closed']);
+  expect([r.events, r.yields.world().puzzles[DEV], r.yields.world().open.includes(key('panel.dial'))]).toEqual([[], undefined, false]);
+  r.yields.dispose();
+});
+
+test("yields: a story effect drops a hidden overlay puzzle's late answer", async () => {
+  // D4 for every frame: an X8 Back hides an overlay frame with its POST in flight (its session stays open), then a story
+  // exit runs the knot; the drop aborts the POST, so the late answer never lands after the knot started.
+  const r = deviceRig('dials');
+  const q = heldPosts(r);
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  r.yields.host.ontry();
+  await settle();
+  r.screens.back(); // X8: the overlay frame hides, its session waits for the POST
+  await settle();
+  expect([r.puzzle.frame, q.signals.map((s) => s.aborted)]).toEqual([null, [false]]);
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.out'));
+  await settle();
+  expect([r.entered.map((e) => e.knot), q.signals.map((s) => s.aborted)]).toEqual([['after'], [true]]);
+  q.answer(SOLVED);
+  await settle();
+  // A hidden frame's drop plays no second end cue (its `puzzle:closed` played at the Back).
+  expect(keysOf(r, mark).filter((k) => k.startsWith('puzzle:'))).toEqual([]);
+  expect([r.events, r.yields.world().puzzles['gate' as PuzzleLocalId]]).toEqual([[], undefined]);
+  r.yields.dispose();
+});
+
+test("yields: opening another puzzle during a hidden device's POST drops the device's late answer", async () => {
+  // H3 race 2: the zoom-out hides the device with its POST in flight; the chest's code lock opened in the parent room
+  // drops it (`openPuzzle`'s `dropPuzzle`): the POST is aborted and its late wrong answer counts no attempt.
+  const r = deviceRig('dials');
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.ontry();
+  await settle();
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted)]).toEqual(['hall', null, [false]]);
+  r.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  expect([r.puzzle.frame?.title, q.signals.map((s) => s.aborted)]).toEqual(['code', [true]]);
+  q.answer(POSTED_WRONG);
+  await settle();
+  expect([r.yields.world().puzzles[DEV], r.events]).toEqual([undefined, []]);
+  r.yields.dispose();
+});

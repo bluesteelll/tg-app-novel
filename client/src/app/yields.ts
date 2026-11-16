@@ -573,9 +573,11 @@ export function createYields(h: YieldsHost): Yields {
     screens.close('lock');
   };
 
-  /** Leaves the rooms for the story: the layer hides with the ribbon's selection, the root-back clears (X12), the knot
-   *  runs after the drain. */
+  /** Leaves the rooms for the story: the open puzzle drops (D4: a late answer never lands after the knot started; a
+   *  hidden frame plays no second end cue), the layer hides with the ribbon's selection, the root-back clears (X12),
+   *  the knot runs after the drain. */
   const toStory = (knot: KnotName): void => {
+    dropPuzzle('closed');
     closePanel();
     explore.selected = null;
     explore.layer = null;
