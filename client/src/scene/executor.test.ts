@@ -4029,6 +4029,35 @@ test('executor: the kit landing and a talk landing ask for no frame when no memb
   }
 });
 
+// Triage r3 F1: a member that showed and leaves with ANY group the sync drops, not only the last one, asks for the one
+// frame. Frames-live window: after a context restore's visible pass settles, frames resume and the background pass
+// (registry.ts) revives the rest; a shared sheet record whose revive fails or is late there ends at once, under groups
+// built over it, and the next landing (the speaker's talk file) drops every face's group in one sync, with no batch end
+// to draw. Here the shown group (ally) drops first and the hidden one (stranger) last.
+test('executor: a landing sync that drops a shown group and a hidden one asks for the frame', async () => {
+  const d = drivenLoop();
+  const h = harness(S390, d.loop, MOTION);
+  const { kit, faces } = fakeKit();
+  h.ex.setMotion(kit);
+  const go = h.deferLoad('talk/lamp/ally/neutral');
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  faceAt(faces, 0).state = { eyes: 'closed', accent: false, mouth: null };
+  d.run(1_100);
+  expect(motionNodes(h).map((x) => x.key)).toEqual(['motion:ally', 'motion:stranger']);
+  expect([shownOf(h, 'ally'), shownOf(h, 'stranger')]).toEqual([['sheet_lamp.avif#300,30,80,30'], []]);
+  await failOnRevive(h, 'sheet/lamp');
+  d.run(100);
+  const before = d.loop.stats().frames;
+  go();
+  await flush();
+  d.run(100);
+  expect(h.live('bg').filter((x) => x.tex !== null && h.freed.has(x.tex)).map((x) => x.key)).toEqual([]);
+  expect([motionNodes(h).map((x) => x.key), d.loop.stats().ambientSources]).toEqual([[], 0]);
+  expect(d.loop.stats().frames - before, 'the shown member leaving with the hidden group dropped last').toBe(1);
+  h.ex.destroy();
+});
+
 // Reduced motion (lane SH7, D2, D12): a camera move lands at its end; cuts, dissolves and the faces keep their time.
 
 test('executor: under reduced motion a camera move jumps to its end', async () => {
