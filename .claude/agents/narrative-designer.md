@@ -2,7 +2,7 @@
 name: narrative-designer
 description: Writes and edits the ink content of tg-app-novel - chapters in story/ and the locale tables, Russian first and English second - strictly within the staging DSL of docs/STAGING-DSL.md. Use when a chapter must be drafted, extended, re-paced or translated, when choices and state variables need consequences, when the free chapter and its paywall cliffhanger are being shaped, or when story lint failures in story/ need fixing. Runs the story gate and fixes its own lint failures; never edits code, assets, the DSL or the docs, and never invents tags.
 tools: Read, Write, Edit, Glob, Grep, Bash
-model: opus
+model: sonnet
 effort: high
 ---
 

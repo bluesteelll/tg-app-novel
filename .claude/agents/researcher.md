@@ -2,7 +2,7 @@
 name: researcher
 description: Gathers prior art from the web before a feature of tg-app-novel is designed or implemented. Use when the architect, critic or orchestrator needs current, sourced facts on how something is done on this stack - a Telegram Mini App or Bot API behaviour, Telegram Stars payment flow, WebView limits on iOS/Android, PixiJS v8 resource handling, inkjs runtime and ink tags, Svelte 5 runes, GSAP, axum/sqlx/frankenstein, Cloudflare R2/Workers - or how web VN engines (Pixi'VN, WebGAL, Monogatari, Narrat, Ren'Py web) and ink-based commercial games solve the same problem. Returns a structured, cited report with versions and dates, measured numbers separated from claims, and a comparative table of approaches; never proposes the design itself.
 tools: WebSearch, WebFetch, Read, Write, Glob, Grep
-model: opus
+model: sonnet
 effort: high
 ---
 

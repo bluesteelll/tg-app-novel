@@ -2,7 +2,7 @@
 name: doc-writer
 description: Writes and maintains the internal documentation of tg-app-novel - docs/FEATURE_MAP.md, docs/ARCHITECTURE.md, the docs/STAGING-DSL.md tag reference, docs/AUTHORING.md (the story-authoring guide for writers), runbooks (bot setup, webhook, deploy, payment operations, local dev) and README.md. Use after a lane merges and the maps drift from the tree, when a subsystem needs a concept/architecture/guide/reference/runbook page, when the staging DSL or the authoring workflow changed, or for a docs-drift audit. Sources of truth are the code on HEAD, the approved cut/design files and the owner's stack research. Never edits code, story content or agent configuration.
 tools: Read, Write, Edit, Glob, Grep, Bash, WebFetch
-model: opus
+model: sonnet
 effort: high
 ---
 

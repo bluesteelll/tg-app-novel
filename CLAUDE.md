@@ -110,11 +110,16 @@ The main Claude in the chat is the **orchestrator**: it picks agents per task an
 Agent files are registered at session start: in a session that created or changed them, launch lanes with
 `inlineRoles: true` (the agent reads its role file instead of `agentType`).
 
-**Model routing:** every role runs on **Opus**; one exception — the `tester` runs on Sonnet through the lane
-script's per-call `model`. **Effort:** `xhigh` for architect / critic / developer / code-reviewer /
-results-analyst / project-analyst, `high` for tester / researcher / doc-writer / narrative-designer (frontmatter +
-the lane script's `EFFORT` map); nothing below `high`. Never downgrade a role because it looks "mechanical";
-optimise effort, batch size and redundant arms instead. (rationale: docs/WORKFLOW.md#model-routing)
+**Model routing** (owner, 2026-11-16: less Opus, more Sonnet). Every thinking and checking role runs on **Opus**:
+architect, architecture-critic, developer, code-reviewer (triage included), results-analyst, project-analyst
+(audits, lenses), every verifier and refuter, and the spec drafter. The gathering and writing roles run on
+**Sonnet**: tester, the scouts (the lane's context pack, the launch-pack scouts), researcher, doc-writer,
+narrative-designer, and the spec fixer. The lane script passes the model per call (its `MODEL` map,
+`testerModel`, `scoutModel`), since an `inlineRoles` run never reads the frontmatter. **Effort:** `xhigh` for
+architect / critic / developer / code-reviewer / results-analyst / project-analyst, `high` for tester / researcher /
+doc-writer / narrative-designer (frontmatter + the lane script's `EFFORT` map); nothing below `high`. Never move a
+role to a cheaper model or effort without the owner because it looks "mechanical"; optimise batch size and
+redundant arms instead. (rationale: docs/WORKFLOW.md#model-routing)
 
 ## Orchestration discipline
 
