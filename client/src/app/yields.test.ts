@@ -4658,6 +4658,72 @@ test("yields: a device's commit part posts through Try", async () => {
   r.yields.dispose();
 });
 
+test('yields: a wrong flag counts only for a local-wrong device', async () => {
+  // Saved-work F3a (RULINGS 368): `onwork`'s wrong flag is a `wrong: 'local'` device's own verdict (§7.5 "Attempts").
+  // (i) Such a device's wrong press counts one; one pressed while its reach POST is in flight counts nothing (the
+  // session is busy). (ii) A posted-wrong device's flag is ignored: the press is a move and nothing more. (iii) A full
+  // sequence's flag is ignored too, so its completing press still posts.
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const r = deviceRig('chimes', { maxAttempts: 3, attempts: [SOLVED], attemptGate: gate });
+  await atDevice(r);
+  const att = (x: Rig): number | undefined => x.yields.world().puzzles[DEV]?.attempts;
+  r.yields.host.onwork?.([1, 0, 0], true);
+  expect(['(i)', att(r), r.puzzle.frame?.attemptsLeft]).toEqual(['(i)', 1, 2]);
+  r.yields.host.onwork?.([2, 0, 1], false);
+  r.yields.host.onreach?.([2, 0, 1]);
+  r.yields.host.onwork?.([2, 2, 1], true); // a wrong press while the POST is in flight
+  expect(['(i)', r.posted, att(r), r.puzzle.frame?.attemptsLeft, r.yields.world().puzzles[DEV]?.work]).toEqual(['(i)', [[2, 0, 1]], 1, 2, [2, 2, 1]]);
+  release();
+  await settle();
+  expect(['(i)', att(r), r.yields.world().puzzles[DEV]?.outcome]).toEqual(['(i)', 1, 'solved']);
+  r.yields.dispose();
+  const d = deviceRig('dials', { maxAttempts: 3 });
+  await atDevice(d);
+  let mark = d.cues.length;
+  d.yields.host.onwork?.([1, 0, 0], true);
+  await settle();
+  expect(['(ii)', att(d), d.puzzle.frame?.line, d.puzzle.frame?.attemptsLeft, d.posted, puzzleCuesOf(d, mark)]).toEqual(['(ii)', 0, 'idle', 3, [], ['input@0']]);
+  d.yields.dispose();
+  const f = deviceRig('rite', { parts: 2, maxAttempts: 3, attempts: [SOLVED] });
+  await atDevice(f);
+  f.yields.host.onwork?.([1], false);
+  mark = f.cues.length;
+  f.yields.host.onwork?.([1, 0], true);
+  expect(['(iii)', att(f), f.posted, f.puzzle.frame?.line, puzzleCuesOf(f, mark)]).toEqual(['(iii)', 0, [[1, 0]], 'checking', ['input@1', 'checking@null']]);
+  await settle();
+  expect(['(iii)', f.puzzle.frame, f.yields.world().puzzles[DEV]?.outcome]).toEqual(['(iii)', null, 'solved']);
+  f.yields.dispose();
+});
+
+test("yields: a reach device's commit part posts only its reached work", async () => {
+  // Saved-work F3b (RULINGS 368): a device's commit part is its Try (§7.5 "Commit"), so it routes as Try does: a reach
+  // device posts its reached answer (`postReach`) and nothing while none is reached; a drawn, unreached work never
+  // posts (its wrong reply would be a mismatch that wipes the saved work).
+  const r = deviceRig('latch', { attempts: [NETWORK, SOLVED] });
+  await atDevice(r);
+  r.yields.host.onwork?.([1, 2, 0], false);
+  r.yields.host.oncommit?.();
+  await settle();
+  expect([r.posted, r.yields.world().puzzles[DEV]?.work, r.puzzle.frame?.line, r.vm.toasts]).toEqual([[], [1, 2, 0], 'idle', []]);
+  r.yields.host.onreach?.([1, 2, 0]);
+  await settle();
+  expect([r.posted, r.puzzle.frame?.line, r.puzzle.frame?.awaiting]).toEqual([[[1, 2, 0]], 'offline', true]);
+  r.yields.host.oncommit?.(); // the reached work, posted again
+  await settle();
+  expect([r.posted, r.puzzle.frame, r.yields.world().puzzles[DEV]?.outcome]).toEqual([
+    [
+      [1, 2, 0],
+      [1, 2, 0],
+    ],
+    null,
+    'solved',
+  ]);
+  r.yields.dispose();
+});
+
 test("yields: a type UI's refused input plays puzzle blocked on its part", async () => {
   // D7 (Q4): a refused input changes nothing and plays `puzzle:blocked` on its part, through the host's `onblocked`.
   const r = deviceRig('dials');

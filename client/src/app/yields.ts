@@ -1446,6 +1446,12 @@ export function createYields(h: YieldsHost): Yields {
     }
   };
 
+  /**
+   * Try, or a device's commit part (saved-work F3b, RULINGS 368): a reach frame posts its reached answer (`postReach`:
+   * nothing reached, nothing posts), any other frame its answer (`post`).
+   */
+  const commitTry = (o: Open): boolean => (o.session.check === 'reach' ? postReach(o) : post(o));
+
   const puzzleHost: PuzzleHostCallbacks = {
     item: (id) => {
       const w = h.chapter()?.world ?? null;
@@ -1465,9 +1471,10 @@ export function createYields(h: YieldsHost): Yields {
       }
       stopDemo(o); // the player's own press ends the demonstration
       moveWork(o, work);
-      if (wrong) {
+      if (wrong && o.session.instance.wrong === 'local') {
         // A `wrong: 'local'` device's wrong press (§7.5 "Attempts"): counted as a posted wrong is, through `attempted`;
-        // while the session stays open, the demonstration plays again after a pause.
+        // while the session stays open, the demonstration plays again after a pause. Any other type's flag is ignored
+        // (saved-work F3a, RULINGS 368): its press goes on, so a full sequence's completing press posts.
         attempted(o, o.session.failLocal());
         if (open === o) {
           startDemo(o, DEMO_PAUSE_MS);
@@ -1479,7 +1486,7 @@ export function createYields(h: YieldsHost): Yields {
     oncommit: () => {
       const o = open;
       if (o !== null) {
-        post(o); // a device's commit part is its Try (§7.5 "Commit"): the same refusals, the same reply path
+        commitTry(o); // a device's commit part is its Try (§7.5 "Commit"): the same routing, refusals and reply path
       }
     },
     ondemo: () => {
@@ -1497,11 +1504,7 @@ export function createYields(h: YieldsHost): Yields {
     ontry: () => {
       const o = open;
       if (o !== null) {
-        if (o.session.check === 'reach') {
-          postReach(o); // nothing reached, nothing posts
-        } else {
-          post(o);
-        }
+        commitTry(o);
       }
     },
     ongiveup: () => {
