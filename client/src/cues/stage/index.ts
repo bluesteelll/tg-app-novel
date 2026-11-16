@@ -121,9 +121,12 @@ export function resolveTarget(t: CueTarget, e: CueEvent, layer: Element): Resolv
       if (c.panel === null) {
         return { box: landing(layer, 'centre') };
       }
-      // A box-less hold of a panel: the notice it shows (the panel itself when it carries both markers), else the
-      // panel; a `puzzle` hold with no notice breathes at `centre`, never on the wrapper `checking` moves.
-      const panels = [...document.querySelectorAll(sel('panel', c.panel))].filter((p) => p.closest('[data-cue-stage]') === null);
+      // A box-less hold of a panel: only the leaf panels of its name count, the live ones that contain no other (a
+      // device's ladder sheet holds the card, both `hints`: the card breathes, as in the frame place; RULINGS 382 C1).
+      // Then the notice a leaf shows (the leaf itself when it carries both markers), else a `puzzle` hold breathes at
+      // `centre`, never on the wrapper `checking` moves, else the first leaf.
+      const named = [...document.querySelectorAll(sel('panel', c.panel))].filter((p) => p.closest('[data-cue-stage]') === null);
+      const panels = named.filter((p) => !named.some((q) => q !== p && p.contains(q)));
       for (const p of panels) {
         const notice = p.matches(sel('notice')) ? p : p.querySelector(sel('notice'));
         if (notice !== null) {

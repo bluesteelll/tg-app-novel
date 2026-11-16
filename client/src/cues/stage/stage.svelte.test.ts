@@ -707,6 +707,42 @@ test('stage: a wait hold over a panel with a notice plays on the notice', async 
   expect(s.played()).toEqual(['ui-state:waiting@puzzle', 'ui-state:waited@puzzle', 'ui-state:waiting@puzzle']);
 });
 
+test('stage: a box-less hold of a panel that nests its name lands on the inner panel', async () => {
+  // RULINGS 382 C1 (GM8h2): a box-less hold of a panel takes only the leaf panels of its name, those that contain no
+  // other: a device's ladder sheet (`hints`) around the card (`hints`) breathes the card, as in the frame place. A
+  // notice of the outer panel's own, before the inner panel in document order, is not the leaf's; the inner panel's
+  // notice is. Each element by identity, named (an equal node is not the node).
+  const s = mounted();
+  const sheet = element('div', { 'data-cue-panel': 'hints' }, ROOT);
+  const wrap = element('div', { 'data-cue-notice': '' }, ROOT, sheet);
+  const card = element('section', { 'data-cue-panel': 'hints' }, HOTSPOT, wrap);
+  const names = new Map<Element | Box | null | undefined, string>([
+    [sheet, 'sheet'],
+    [wrap, 'wrap'],
+    [card, 'card'],
+  ]);
+  const name = (el: Element | Box | null | undefined): string => names.get(el) ?? JSON.stringify(el);
+  s.bus.emit(event(uiState('waiting', 'hints')));
+  await settle();
+  vi.advanceTimersByTime(WAIT_DELAY_MS);
+  s.bus.emit(event(uiState('waited', 'hints')));
+  await settle();
+  // The live card breathes and settles (no ghost); nothing falls back.
+  expect(cueMotions().map((r) => [name(r.el), r.kf])).toEqual([
+    ['card', PRESETS.breathe],
+    ['card', PRESETS.settle],
+  ]);
+  expect(s.fallbacks()).toBe(0);
+  // The inner panel's own notice; then, with no notice anywhere, the inner panel itself.
+  const hold = (): string => name(found(resolveTarget('box', event(uiState('waiting', 'hints')), s.layer)));
+  const inner = element('p', { 'data-cue-notice': '' }, HOTSPOT, card);
+  names.set(inner, 'inner');
+  expect(hold()).toBe('inner');
+  inner.remove();
+  wrap.removeAttribute('data-cue-notice');
+  expect(hold()).toBe('card');
+});
+
 /** ExploreView's props over a new view store, as GameSession mounts the layer. */
 function layerProps(): ExploreLayerProps {
   const view = createExploreView();
