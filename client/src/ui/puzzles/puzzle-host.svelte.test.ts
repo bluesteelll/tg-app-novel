@@ -304,6 +304,24 @@ test("puzzle-host: a type UI's refused input reaches onblocked", () => {
   }
 });
 
+test("puzzle-host: a type UI's onwork, oncommit and ondemo reach the host in either place", () => {
+  // Gates F1 (RULINGS 368): the room place hands its type UI every device callback, as the overlay place does (D7's
+  // test pins `onblocked` alone): a press with its wrong flag, the commit part, the demonstration control.
+  for (const place of ['frame', 'room'] as const) {
+    const onwork = vi.fn();
+    const oncommit = vi.fn();
+    const ondemo = vi.fn();
+    const frame = frameOf({ ui: EMITTER, mode: 'explore', presentation: place === 'room' ? 'view' : 'overlay' });
+    const { unmount } = render(PuzzleHost, { ...hostProps({ onwork, oncommit, ondemo, frame }), place });
+    const props = must(emitted.at(-1), 'the type UI props');
+    props.onwork?.([2, 1], true);
+    props.oncommit?.();
+    props.ondemo?.();
+    expect([place, onwork.mock.calls, oncommit.mock.calls.length, ondemo.mock.calls.length]).toEqual([place, [[[2, 1], true]], 1, 1]);
+    unmount();
+  }
+});
+
 test('puzzle-host: a room-place host holds its type UI busy during a countdown', async () => {
   // D16: a device has no Try to hold, so in the room place its type UI is busy through a 429 countdown too; the overlay
   // place keeps `frame.busy || ended` (its Try holds the countdown).
@@ -1398,9 +1416,9 @@ test('puzzle-host: a room-place bar shows Try only while a reached answer awaits
   expect([tryButton.textContent?.trim(), tryButton.disabled]).toEqual([t('en', 'puzzle.try'), false]);
   tryButton.click();
   expect(ontry).toHaveBeenCalledTimes(1);
-  // Posting again: Try stays, off while the post is in flight.
-  await rerender({ frame: { ...offline, busy: true } });
-  expect(container.querySelector<HTMLButtonElement>('[data-cue="puzzle-try"]')?.disabled).toBe(true);
+  // Posting again: yields' re-post writes `busy` with the `checking` line (gates F4), so Try leaves the bar.
+  await rerender({ frame: { ...offline, line: 'checking', busy: true } });
+  expect(container.querySelector('[data-cue="puzzle-try"]')).toBeNull();
   // Every other state: no Try in the bar.
   for (const over of [
     { awaiting: true, line: 'checking' },
