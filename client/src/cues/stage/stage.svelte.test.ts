@@ -1283,3 +1283,35 @@ test('stage: a fact cue at the shown device counts no fallback', async () => {
     vi.unstubAllGlobals();
   }
 });
+
+test('stage: a late answer for a lock in a room left plays nothing', async () => {
+  // GM8h2 Q65's proof (spec item 7; RULINGS 377 A2): an X8 Back hides the drawer's frame with its POST in flight, the
+  // player walks to the cellar (its coin plays first), then the correct answer lands. The chest's lock opens off
+  // screen: no motion, no haptic and no counted fallback (on the parent its `solved` and `open` played at the stage
+  // centre, each counted, with their success haptics).
+  const r = stageRig();
+  try {
+    const s = await inRooms(r);
+    r.yields.layer.ontap(at('hall.chest'));
+    await settle();
+    r.yields.host.ontry();
+    await settle();
+    r.screens.back();
+    await settle();
+    r.yields.layer.ontap(at('hall.to_cellar'));
+    await settle();
+    vi.advanceTimersByTime(WAIT_DELAY_MS);
+    expect([r.yields.world().room, r.vm.screens.overlays.length]).toEqual(['cellar', 0]);
+    expect(s.played()).toContain('fact:held:added');
+    const before = { played: s.played(), haptics: [...r.haptics], fallbacks: s.fallbacks(), motions: cueMotions().length };
+    r.answer({ ok: true, value: { correct: true, solved: true, attemptsLeft: null, spent: false } });
+    await settle();
+    vi.advanceTimersByTime(WAIT_DELAY_MS);
+    const w = r.yields.world();
+    expect([w.puzzles['drawer' as PuzzleLocalId]?.outcome, w.open.includes(at('hall.chest'))]).toEqual(['solved', true]);
+    expect({ played: s.played(), haptics: r.haptics, fallbacks: s.fallbacks(), motions: cueMotions().length }).toEqual(before);
+  } finally {
+    r.yields.dispose();
+    vi.unstubAllGlobals();
+  }
+});

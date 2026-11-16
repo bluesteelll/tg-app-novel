@@ -8,6 +8,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type { AttemptResponse, PuzzleStatus } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
 import type { AudioCommand } from '../audio/manager.ts';
+import { CUE_MOTIONS, motionOf } from '../cues/stage/motions.ts';
 import type { Cue, CueEvent } from '../cues/types.ts';
 import { MIN_TARGET_PX, createExploreController } from '../explore/controller.ts';
 import type { ExploreController } from '../explore/controller.ts';
@@ -16,6 +17,7 @@ import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { PuzzleRun, WorldState } from '../explore/state.ts';
 import { ROOM_SOURCE, cover, minTarget, toStage } from '../geom/cover.ts';
 import { mechT } from '../i18n/mechanics.ts';
+import type { CauseVerb, FactKind, MechanicId } from '../mechanics/contract.ts';
 import type { ChunkError, PuzzleUiProps } from '../puzzles/registry.ts';
 import { PUZZLE_TYPES } from '../puzzles/rules/index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from '../puzzles/rules/index.ts';
@@ -39,6 +41,7 @@ import type { DocId, HotspotKey, ItemId, RoomId, WorldPublic } from '../world/ty
 import type { WaitRow } from '../requests.test.ts';
 import { DEMO_PAUSE_MS, DEMO_STEP_MS, DIRTY_DEBOUNCE_MS, ROOM_FADE_MS, TAKE_FADE_MS, VIEW_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
 import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
+import * as yieldsModule from './yields.ts';
 import yieldsSource from './yields.ts?raw';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -918,8 +921,9 @@ test('yields: dispose leaves no cue subscriber', async () => {
   };
   const r = rig({ create });
   await inHall(r);
-  // A late look cue (the writer's record; a `look` effect itself plays no cue).
-  const looked: ExploreEffect = { kind: 'cue', cue: coreCue('look', 'study.desk' as HotspotKey, null) };
+  // A late look cue (the writer's record; a `look` effect itself plays no cue), at a hotspot of the hall, the room shown
+  // (GM8h2 D1: a late cue at another room's hotspot plays nothing).
+  const looked: ExploreEffect = { kind: 'cue', cue: coreCue('look', 'hall.box' as HotspotKey, null) };
   // Control: while the session lives, such an effect reaches the scene role.
   const before = r.cues.length;
   listener.fn?.(looked);
@@ -4616,6 +4620,132 @@ test("yields: a device's module cue lands on the device box", async () => {
   }
 });
 
+/** The keys of the fact and module cues after `mark` caused at (a fact) or naming (a module cue) hotspot `k`. */
+const atHotspot = (r: Rig, mark: number, k: string): string[] =>
+  r.cues.slice(mark).flatMap((e) => ((e.cue.kind === 'fact' ? e.cue.cause.at : e.cue.kind === 'module' ? e.cue.at : null) === k ? [keyOf(e.cue)] : []));
+
+test("yields: the cue subject table is motions.ts's box rows", () => {
+  // GM8h2 D2 (RULINGS 377 A4): yields drops a world cue whose subject is off screen (D1); its subject is the hotspot of a
+  // `box` row of the stage's motion table, which the engine may not import. Read through the namespace, so a missing
+  // export fails here by assertion. Every fact and module key, under the default cause and each `byCause` variant: the
+  // subject is the cue's hotspot exactly when its motion lands on `box`. No other kind of cue has one.
+  expect(typeof yieldsModule.cueSubject).toBe('function');
+  const at = key('hall.box');
+  const drift: string[] = [];
+  let subjects = 0;
+  let variants = 0;
+  for (const [k, spec] of Object.entries(CUE_MOTIONS)) {
+    const [kind, a = '', b = ''] = k.split(':');
+    const verbs: CauseVerb[] = ['tap', ...(Object.keys(spec.byCause ?? {}) as CauseVerb[])];
+    const cues: Array<[string, Cue]> =
+      kind === 'fact'
+        ? verbs.map((verb) => [`${k}@${verb}`, { kind: 'fact', fact: { kind: a as FactKind, id: 'x' }, change: b === 'added' ? 'added' : 'removed', cause: { verb, at, item: null, via: null } }])
+        : kind === 'module'
+          ? [[k, { kind: 'module', module: a as MechanicId, name: b, at, item: null }]]
+          : [];
+    variants += Math.max(0, cues.length - 1);
+    cues.forEach(([name, c], i) => {
+      const box = motionOf(c).target === 'box';
+      subjects += box && i === 0 ? 1 : 0; // the default row (`tap`), not a variant
+      if (yieldsModule.cueSubject(c) !== (box ? at : null)) {
+        drift.push(name);
+      }
+    });
+  }
+  const others: Cue[] = [
+    { kind: 'move', from: null, to: null, via: at, how: 'zoom-in' },
+    { kind: 'ui', control: 'hotspot', item: null, index: null },
+    { kind: 'ui-state', name: 'waiting', panel: null, item: null },
+    { kind: 'puzzle', puzzle: DRAWER, name: 'input', index: 0 },
+  ];
+  expect([drift, others.map((c) => yieldsModule.cueSubject(c))]).toEqual([[], [null, null, null, null]]);
+  // The floor: the table's 24 box rows were seen, and its three `byCause` variants.
+  expect([subjects, variants]).toEqual([24, 3]);
+});
+
+test("yields: a hidden device's late answer emits no cue at its device", async () => {
+  // GM8h2 D1 (Q65), T14's case: the zoom-out hides the device with its POST in flight, and the correct answer lands
+  // while the hall is shown. The device's lock opens, and no cue plays at the device, which is not on screen.
+  const r = deviceRig('dials');
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.ontry();
+  await settle();
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame]).toEqual(['hall', null]);
+  const mark = r.cues.length;
+  q.answer(SOLVED);
+  await settle();
+  expect([r.yields.world().puzzles[DEV]?.outcome, r.yields.world().open.includes(key('panel.dial'))]).toEqual(['solved', true]);
+  expect(atHotspot(r, mark, 'panel.dial')).toEqual([]);
+  r.yields.dispose();
+});
+
+test('yields: a late answer for a lock in a room left emits no cue at the lock', async () => {
+  // GM8h2 D1, RULINGS 377 A2 (Q65's own case): an X8 Back hides the drawer's frame with its POST in flight, the player
+  // walks to the cellar, and the correct answer lands there. The chest's lock opens, and no cue plays at the chest,
+  // which is not on screen.
+  const answer = deferred<void>();
+  const r = rig({ world: cueWorld(), attempts: [RIGHT], attemptGate: answer.promise });
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  r.yields.host.ontry();
+  await settle();
+  r.screens.back();
+  await settle();
+  r.yields.layer.ontap(key('hall.to_cellar'));
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, r.calls.attempts]).toEqual(['cellar', null, 1]);
+  const mark = r.cues.length;
+  answer.resolve();
+  await settle();
+  expect([r.yields.world().puzzles[DRAWER]?.outcome, r.yields.world().open.includes(key('hall.chest'))]).toEqual(['solved', true]);
+  expect(atHotspot(r, mark, 'hall.chest')).toEqual([]);
+  r.yields.dispose();
+});
+
+test('yields: an at-less box cue is still emitted', async () => {
+  // GM8h2 D2 / D3: a box cue at no hotspot (a linear puzzle's end: `puzzle-ended`'s cause has no lock) has no subject,
+  // so D1 never drops it; it plays as today (G-2, carried to SH10). Delivered as the early cue of a walk from the hall,
+  // the form of `an arrival's fact cues play with its move at the batch start`.
+  const solved: Cue = { kind: 'fact', fact: { kind: 'solved', id: 'drawer' }, change: 'added', cause: { verb: 'solve', at: null, item: null, via: null } };
+  const create: ExploreChunk['create'] = (deps) => {
+    const real = createExploreController(deps);
+    return {
+      ...real,
+      onEffect: (fn) =>
+        real.onEffect((e) => {
+          if (e.kind === 'room' && e.how === 'walk') {
+            fn({ kind: 'cue', cue: solved });
+          }
+          fn(e);
+        }),
+    };
+  };
+  const r = rig({ world: cueWorld(), create });
+  await inHall(r);
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_cellar'));
+  await settle();
+  expect([roomOf(r), r.cues.slice(mark).filter((e) => e.cue === solved).length]).toEqual(['cellar', 1]);
+  r.yields.dispose();
+});
+
+test("yields: a resumed section's held device cue plays although no room was shown", async () => {
+  // GM8h2 D1 (RULINGS 380 B2): `restore` leaves no room shown, so a resume's held cues play by their job's room alone:
+  // the solved device's arrival cue at its key is emitted.
+  const r = deviceRig('dials');
+  await inHall(r);
+  r.yields.restore(endedAt(r, 'solved', 'panel'), null, { kind: 'explore', section: MANOR });
+  const mark = r.cues.length;
+  await r.yields.onYield({ kind: 'explore', section: MANOR });
+  await settle();
+  expect([roomOf(r), atHotspot(r, mark, 'panel.dial')]).toEqual(['panel', ['module:devices:done']]);
+  r.yields.dispose();
+});
+
 test('yields: a fact cue at the shown device lands on the device box', async () => {
   // GM8h2 D5: a device's own facts (a local wrong's attempt, a posted solve, a failed limit's end and its onFail's fire)
   // are caused at its lock, the device hotspot, which draws no button: they land on the device's box.
@@ -5176,6 +5306,12 @@ test('yields: a posted wrong landing after a zoom-out counts once and is saved',
   await settle();
   const wx = x.yields.world();
   expect([wx.room, wx.puzzles[DEV]?.outcome, endedOf(x), wx.held, puzzleCuesOf(x, markx), x.puzzle.frame]).toEqual(['hall', 'failed', ['failed'], ['coin'], [], null]);
+  // GM8h2 D1, D2, D4: the device is not on screen, so its own facts play nothing; the coin's gift plays on the ribbon
+  // (no subject), so it still flies; its `got` toast is an effect, never dropped.
+  const fromDial = atHotspot(x, markx, 'panel.dial');
+  expect(fromDial).toContain('fact:held:added');
+  expect(fromDial.filter((k) => k !== 'fact:held:added')).toEqual([]);
+  expect(notes(x)).toContainEqual(['got', 'Монета']);
   x.yields.dispose();
 });
 

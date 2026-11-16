@@ -344,6 +344,50 @@ export const coreCue = (name: CoreCueName, at: HotspotKey | null, item: ItemId |
 const cause = (verb: CauseVerb, at: HotspotKey | null = null, item: ItemId | null = null): Cause => ({ verb, at, item, via: null });
 
 /**
+ * The cue keys whose motion plays on a hotspot's box (the `box` rows of the cue stage's motion table,
+ * `cues/stage/motions.ts`, which the engine may not import; the drift row of yields.test.ts holds the two equal).
+ */
+const SUBJECT_KEYS: ReadonlySet<string> = new Set([
+  'fact:taken:added',
+  'fact:taken:removed',
+  'fact:examined:added',
+  'fact:examined:removed',
+  'fact:open:added',
+  'fact:open:removed',
+  'fact:fired:added',
+  'fact:fired:removed',
+  'fact:solved:added',
+  'fact:solved:removed',
+  'fact:failed:added',
+  'fact:failed:removed',
+  'fact:abandoned:added',
+  'fact:abandoned:removed',
+  'fact:attempt:added',
+  'fact:attempt:removed',
+  'fact:hint:removed',
+  'module:core:look',
+  'module:core:locked',
+  'module:core:refused',
+  'module:use:refused',
+  'module:use:said',
+  'module:devices:done',
+  'module:devices:jammed',
+]);
+
+/**
+ * GM8h2 D2 (Q65): the hotspot a world cue plays on, its subject: a fact's cause hotspot or a module cue's own, for a key
+ * of `SUBJECT_KEYS`; null for every other cue, and for one at no hotspot (it plays as today, D3). A section entry's
+ * unlock and trigger sweep the stage instead (the `enter` variants of `fact:open:added` and `fact:fired:added`).
+ */
+export function cueSubject(c: Cue): HotspotKey | null {
+  if (c.kind === 'fact') {
+    const swept = c.change === 'added' && c.cause.verb === 'enter' && (c.fact.kind === 'open' || c.fact.kind === 'fired');
+    return SUBJECT_KEYS.has(`fact:${c.fact.kind}:${c.change}`) && !swept ? c.cause.at : null;
+  }
+  return c.kind === 'module' && SUBJECT_KEYS.has(`module:${c.module}:${c.name}`) ? c.at : null;
+}
+
+/**
  * The cause of a dispatched action's cues; a use acts at its target with its item (§6.1); a combine acts at no hotspot
  * with the selected item (§6.2); a lock puzzle's run acts at its lock, so its cues land on the lock's box.
  */
@@ -465,10 +509,12 @@ export function createYields(h: YieldsHost): Yields {
 
   /**
    * A room batch to run (D9): how its move enters the room, its move cue, built at the effect, and the cues of the entry
-   * that pushed it (D8).
+   * that pushed it (D8). `from` is the room the move leaves (its move cue's): on screen with `room` while the batch
+   * starts, so the entry's cues at either play (GM8h2 D1, RULINGS 377 A1); null on a first entry.
    */
   type RoomJob = {
     readonly room: RoomId;
+    readonly from: RoomId | null;
     readonly sfx: Extract<ExploreEffect, { kind: 'room' }>['sfx'];
     readonly how: MoveHow;
     readonly move: CueEvent;
@@ -494,15 +540,31 @@ export function createYields(h: YieldsHost): Yields {
   /** The next section entry is the resume onto its yield. */
   let resumed = false;
   /**
+   * GM8h2 D1 (Q65): a world cue plays only while its subject is on screen: a cue with no subject (`cueSubject`) always,
+   * a subject cue when its hotspot's room is one of `rooms`. No world, or a key the world does not hold: not on screen.
+   */
+  const onScreen = (c: Cue, rooms: readonly RoomId[]): boolean => {
+    const at = cueSubject(c);
+    if (at === null) {
+      return true;
+    }
+    const w = h.chapter()?.world ?? null;
+    const room = w === null ? undefined : indexOf(w).hotspots.get(at)?.room;
+    return room !== undefined && rooms.includes(room);
+  };
+  /** The rooms a cue may play over, the null of a first entry left out (RULINGS 380 B2). */
+  const shownOf = (rooms: ReadonlyArray<RoomId | null>): RoomId[] => rooms.filter((r): r is RoomId => r !== null);
+  /**
    * A world cue of the entry in scope, on its hotspot's box; a module cue at the shown room's device on the device's box
-   * (GM8h2 D5: a device draws no button, and an arrival's cue is caused by the move, not at the device).
+   * (GM8h2 D5: a device draws no button, and an arrival's cue is caused by the move, not at the device). Outside an
+   * entry (a late listener call) it plays at once, over the room shown.
    */
   const send = (cue: Cue): void => {
     const e = cueEvent(cue, cue.kind === 'module' ? (controller?.deviceBox(cue.at) ?? scope.box) : scope.box);
-    if (scope.cues === null) {
-      bus.emit(e);
-    } else {
+    if (scope.cues !== null) {
       scope.cues.push(e);
+    } else if (onScreen(cue, shownOf([shown]))) {
+      bus.emit(e);
     }
   };
   /**
@@ -515,7 +577,11 @@ export function createYields(h: YieldsHost): Yields {
     scope = s;
     const out = run();
     scope = AT_ONCE;
-    const cues = (s.cues ?? []).map((e) => ({ ...e, diff: s.diff })); // the diff is known once the entry has run
+    // D1 (A1): a cue held to the entry's move plays at its batch's start, over the room it enters and the room it leaves
+    // (two moves in one entry: the first's); any other plays now, over the room shown. A late reply's cue at a room left
+    // plays nothing (Q65).
+    const rooms = shownOf(s.job === null ? [shown] : [s.job.room, s.job.from]);
+    const cues = (s.cues ?? []).filter((e) => onScreen(e.cue, rooms)).map((e) => ({ ...e, diff: s.diff })); // the diff is known once the entry has run
     if (s.job !== null) {
       s.job.cues = cues;
     } else {
@@ -641,7 +707,7 @@ export function createYields(h: YieldsHost): Yields {
         const how: MoveHow = e.how === 'zoom-in' || e.how === 'zoom-out' ? e.how : scope.how;
         const box = e.how === 'zoom-out' && e.via === null && w !== null ? exitBoxInto(w, e.from) : scope.box;
         const move = cueEvent({ kind: 'move', from: shown, to: e.room, via: scope.cause.at, how }, box);
-        const job: RoomJob = { room: e.room, sfx: e.sfx, how, move, cues: [] };
+        const job: RoomJob = { room: e.room, from: shown, sfx: e.sfx, how, move, cues: [] };
         if (scope.cues !== null) {
           scope.job ??= job;
         }
