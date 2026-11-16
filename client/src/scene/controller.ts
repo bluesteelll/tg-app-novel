@@ -24,7 +24,7 @@ import { ENSURE_HOLDER, createAssetScheduler, windowDeps } from './preload.ts';
 import type { AssetScheduler, StageWindow, WindowStats } from './preload.ts';
 import { createAssetRegistry, pixiFrames } from './registry.ts';
 import type { AssetError, AssetRegistry, ReviveEnd, SceneError } from './registry.ts';
-import { createRenderLoop } from './render-loop.ts';
+import { AMBIENT_FPS, createRenderLoop } from './render-loop.ts';
 import type { RenderLoop } from './render-loop.ts';
 import { createReviveFlow } from './revive-flow.ts';
 import type { ReviveFlow } from './revive-flow.ts';
@@ -625,19 +625,23 @@ export function createSceneController(): SceneController {
         frames: pixiFrames({ Texture, Rectangle }),
       });
       // The current Application (the rebuild replaces it), and the only path to a frame: none while the context is lost
-      // or the revive flow holds frames, so no frame binds a texture not yet revived (MEMORY-PLAN I7).
+      // or the revive flow holds frames, so no frame binds a texture not yet revived (MEMORY-PLAN I7). A gated tick
+      // answers false, so the loop counts no ambient frame for it (D7). The player's input on the page is activity.
       const loop = createRenderLoop({
         ticker: gsapTicker,
         render: () => {
           const c = core;
           if (!gateOpen(c)) {
-            return;
+            return false;
           }
           if (doneGen !== gen) {
             staleFrames += 1;
           }
           c.app.render();
+          return true;
         },
+        fps: AMBIENT_FPS[o.perfClass],
+        input: document,
       });
       const scheduler = createAssetScheduler({
         registry,
