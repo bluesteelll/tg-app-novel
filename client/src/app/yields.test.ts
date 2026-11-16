@@ -4936,6 +4936,22 @@ test('yields: the demo control plays its first step at once', async () => {
   r.yields.dispose();
 });
 
+test('yields: the demo control replaces a running demonstration', async () => {
+  // One demonstration runner per `Open` (cut "one runner per `Open`"): `ondemo()` tapped mid-demonstration restarts the
+  // order from its first step and drops the running chain, so the order plays once more, not twice interleaved.
+  const r = deviceRig('chimes');
+  await atDevice(r);
+  const mark = r.cues.length;
+  r.clock.advance(DEMO_STEP_MS); // the opening demonstration's step 0
+  expect(demoOf(r, mark)).toEqual(['demo@2']);
+  r.yields.host.ondemo?.(); // replay tapped mid-demonstration: restarts the order, no second chain
+  expect(demoOf(r, mark)).toEqual(['demo@2', 'demo@2']);
+  r.clock.advance(DEMO_STEP_MS * 3);
+  expect(demoOf(r, mark)).toEqual(['demo@2', 'demo@2', 'demo@0', 'demo@1']);
+  expect(r.clock.pending(DEMO_STEP_MS)).toBe(0);
+  r.yields.dispose();
+});
+
 test('yields: a dropped device leaves no demo timer', async () => {
   // D8: no demonstration step outlives its device. The drop sites `restore`, `chapterChanged` and `dispose` prove the
   // drop's own stop (RULINGS 366 B10, O2); a zoom-out with no attempt in flight stops it at `hideFrame`, and the third
