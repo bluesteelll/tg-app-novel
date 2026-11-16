@@ -18,6 +18,11 @@
   // and the user agent releases it right after a cancel (Pointer Events 3 §4.1.3.3), which ends the stroke with no
   // listener of its own (D9a: a cancel attribute is no delegated event, and its runtime would join the entry chunk).
   // Every handler is delegated to the mount root, so none outlives the component.
+  //
+  // A refusal (GM8h2 D7): a cell a step cannot take (past the far end, off the line's end, a blocked or a held cell) goes
+  // to `onblocked`, which plays `puzzle:blocked` on it. Each refused press reports; a refused down reports once and
+  // starts no stroke, as a tap; a live stroke reports its first refused cell, then none until a step succeeds. The
+  // line's own end is never a refusal, and nothing reports while busy.
   import { mechT } from '../../i18n/mechanics.ts';
   import { PATH_PLAY, advance, cellAt, cellsAlong, touch } from '../play/path.ts';
   import type { GridPoint } from '../play/path.ts';
@@ -25,7 +30,7 @@
   import type { PuzzleUiProps } from '../registry.ts';
   import { PUZZLE_RULES } from '../rules/index.ts';
 
-  let { params, answer, busy, lang, onchange, onreach, oncue }: PuzzleUiProps = $props();
+  let { params, answer, busy, lang, onchange, onreach, onblocked, oncue }: PuzzleUiProps = $props();
 
   const uid = $props.id();
   const grid = $derived.by(() => {
@@ -61,6 +66,8 @@
     const next = touch(grid, answer, cell);
     if (next !== null) {
       onchange(next);
+    } else if (cell !== answer.at(-1)) {
+      onblocked?.(cell);
     }
   }
 
@@ -68,6 +75,8 @@
   let surface: HTMLElement | undefined = $state();
   /** The stroke: its pointer and its last point in grid units; null between strokes. No render reads it. */
   let stroke: { readonly id: number; last: GridPoint } | null = null;
+  /** The pointer's refusal is reported: set by a refused cell, cleared at a down and by a step. No render reads it. */
+  let refused = false;
 
   /** The live stroke: one whose pointer the surface still captures (an up or the user agent's release ends it). */
   function live(): boolean {
@@ -100,9 +109,12 @@
     if (at === null || cell === null) {
       return;
     }
+    refused = false;
     const next = touch(grid, answer, cell);
-    // A stroke starts where it can draw: on a cell it steps to, or on the line's end.
+    // A stroke starts where it can draw: on a cell it steps to, or on the line's end; elsewhere the down is a refusal.
     if (next === null && cell !== answer.at(-1)) {
+      refused = true;
+      onblocked?.(cell);
       return;
     }
     stroke = { id: e.pointerId, last: at };
@@ -127,7 +139,11 @@
       const next = advance(grid, a, cell);
       if (next !== null) {
         a = next;
+        refused = false;
         oncue?.('path-stroke', cell);
+      } else if (cell !== a.at(-1) && !refused) {
+        refused = true;
+        onblocked?.(cell);
       }
     }
     stroke.last = at;

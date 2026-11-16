@@ -684,6 +684,98 @@ test("path: the drawn line, its tint and the surface's label", () => {
   expect(d.view.container.querySelector(`[id="${label}"]`)?.textContent).toBe(mechT(d.p.lang, 'mech.path_rule'));
 });
 
+// The refusals (GM8h2 D7): a cell a step cannot take goes to `onblocked` (yields plays `puzzle:blocked` on it). On P32's
+// reached line (end 3), every cell but 4 (the back-step) and 3 (the end) is refused.
+
+/** A drawn PathPuzzle whose `onblocked` records the refused parts. */
+function refusing(over: Partial<PuzzleUiProps> = {}) {
+  const blocked: number[] = [];
+  const d = drawn({ onblocked: (part: number) => blocked.push(part), ...over });
+  return { ...d, blocked };
+}
+
+test('path: a drag across refused cells reports once', () => {
+  // A live stroke from the reached line's end through three refused cells: one report, its first refused cell.
+  const d = refusing({ answer: P32_SOLVE });
+  const s = rig(d);
+  s.at('pointerdown', 3);
+  for (const c of [0, 1, 2]) {
+    s.at('pointermove', c);
+  }
+  s.at('pointerup', 2);
+  expect([d.blocked, d.changes]).toEqual([[0], []]);
+});
+
+test('path: a refusal after a step reports again', () => {
+  // Refused (0), the line's end entered again (3: no refusal), a back-step (4), refused again (1, already held).
+  const d = refusing({ answer: P32_SOLVE });
+  const s = rig(d);
+  s.at('pointerdown', 3);
+  for (const c of [0, 3, 4, 1]) {
+    s.at('pointermove', c);
+  }
+  expect([d.blocked, d.changes]).toEqual([[0, 1], [[0, 1, 2, 5, 4]]]);
+});
+
+test('path: each stroke reports its own refusal', () => {
+  // RULINGS 380 B6: the flag is the pointer's, reset at its down: two live strokes, each crossing a refused cell, two
+  // reports.
+  const d = refusing({ answer: P32_SOLVE });
+  const s = rig(d);
+  for (const stroke of [1, 2]) {
+    s.at('pointerdown', 3, stroke);
+    s.at('pointermove', 0, stroke);
+    s.at('pointerup', 0, stroke);
+  }
+  expect([d.blocked, d.changes]).toEqual([[0, 0], []]);
+});
+
+test('path: each refused tap reports', () => {
+  // A refused down starts no stroke and reports once, as a tap on a refused cell; the next tap reports its own.
+  const d = refusing({ answer: [0] });
+  const s = rig(d);
+  for (const c of [5, 4]) {
+    s.at('pointerdown', c);
+    s.at('pointerup', c);
+  }
+  expect([d.blocked, d.changes, s.surface.hasPointerCapture(1)]).toEqual([[5, 4], [], false]);
+});
+
+test('path: each refused press reports', async () => {
+  // A cell's own activation (a keyboard or an assistive press) is one input each: two presses, two reports.
+  const d = refusing({ answer: [0] });
+  await fireEvent.click(d.cell(5));
+  await fireEvent.click(d.cell(5));
+  expect([d.blocked, d.changes]).toEqual([[5, 5], []]);
+});
+
+test('path: a busy input reports no refusal', async () => {
+  // A live stroke, then busy: its move into a refused cell, a down on a refused cell and a press report nothing.
+  const d = refusing({ answer: P32_SOLVE });
+  const s = rig(d);
+  s.at('pointerdown', 3);
+  d.p.busy = true;
+  flushSync();
+  s.at('pointermove', 0);
+  s.at('pointerup', 0);
+  s.at('pointerdown', 1);
+  s.at('pointerup', 1);
+  await fireEvent.click(d.cell(1));
+  expect([d.blocked, d.changes]).toEqual([[], []]);
+});
+
+test("path: the line's end is no refusal", async () => {
+  // RULINGS 377 A10 (Notes 8): the finger on the line's end is no refusal: a down on it starts a stroke, a press on it
+  // changes nothing; neither reports.
+  const d = refusing({ answer: [0, 1] });
+  const s = rig(d);
+  s.at('pointerdown', 1);
+  expect(s.surface.hasPointerCapture(1)).toBe(true);
+  s.at('pointerup', 1);
+  await fireEvent.click(d.cell(1));
+  expect([d.blocked, d.changes]).toEqual([[], []]);
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // The `grid` type UI (engine plan §7.2; GM7g D5-D7): a tap selects a free cell, a palette tap places a symbol on it
 // (Clear is 0); the fill is the `answer` prop, which follows `onchange` here as the session's does; the report is the
