@@ -19,6 +19,7 @@ import type { Box } from '../../geom/cover.ts';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import type { Cause, FactKind, MechanicId } from '../../mechanics/contract.ts';
+import CodeLock from '../../puzzles/ui/CodeLock.svelte';
 import type { PuzzleLocalId } from '../../story/staging.ts';
 import type { DocId, HotspotKey, ItemId } from '../../world/types.ts';
 import { createExploreView, forwardLayer } from '../explore-view.svelte.ts';
@@ -924,6 +925,9 @@ const CONTROL_STATES: readonly ControlState[] = [
   // sheet's controls, the room inert under it): both lie in the explore root, which emits them.
   { name: 'device host failed', over: { items: [SUN], inView: true, puzzle: { host: null, frame: deviceFrame({ loadFailed: true }) } } },
   { name: 'device ladder', over: { items: [SUN], inView: true, puzzle: { host: PuzzleHost, frame: deviceFrame(), ladder: DEVICE_LADDER } } },
+  // GM8h2 D13(2): a device in its room, the host's room place with its type UI. Its bar and parts lie in the place's own
+  // `frame` root, nested in the explore root, which emits them to the host's `oncue`, once each (the innermost root).
+  { name: 'device room', over: { items: [SUN], inView: true, puzzle: { host: PuzzleHost, frame: deviceFrame({ ui: CodeLock }) } } },
 ];
 
 /** Every control a state shows a player, in document order: W1's non-vacuity, so a state that fails to render or a
@@ -963,6 +967,23 @@ const EXPECTED_CONTROLS: readonly Fired[] = [
   ['device host failed', 'bar-inventory', null, null],
   ['device host failed', 'bar-reveal', null, null],
   ['device ladder', 'hint-use', 2, null],
+  ['device room', 'bare-art', null, null],
+  ['device room', 'hotspot', null, null],
+  ['device room', 'hotspot', null, null],
+  ['device room', 'hotspot', null, null],
+  ['device room', 'puzzle-hint', null, null],
+  ['device room', 'dial-up', 0, null],
+  ['device room', 'dial-down', 0, null],
+  ['device room', 'dial-up', 1, null],
+  ['device room', 'dial-down', 1, null],
+  ['device room', 'dial-up', 2, null],
+  ['device room', 'dial-down', 2, null],
+  ['device room', 'dial-up', 3, null],
+  ['device room', 'dial-down', 3, null],
+  ['device room', 'ribbon-item', null, 'medal_sun'],
+  ['device room', 'view-leave', null, null],
+  ['device room', 'bar-inventory', null, null],
+  ['device room', 'bar-reveal', null, null],
 ];
 
 /** The controls a player can tap now: every `[data-cue]` element outside an inert subtree, in document order. */
@@ -974,11 +995,12 @@ async function fire(el: HTMLElement): Promise<void> {
   await (on === 'click' ? fireEvent.click(el) : fireEvent(el, new Event(on, { bubbles: true })));
 }
 
-/** The layer in `state`, its root emitting into `cues` (cleared after the state's own taps). */
+/** The layer in `state`, its root and a device's room place emitting into `cues` (cleared after the state's own taps). */
 async function openState(state: ControlState): Promise<{ container: HTMLElement; cues: CueEvent[]; unmount: () => void }> {
   const cues: CueEvent[] = [];
   const props = layerProps(state.over);
   props.view.oncue = (e) => cues.push(e);
+  props.puzzleActions.oncue = (e) => cues.push(e);
   const { container, unmount } = render(ExploreView, props);
   await tick();
   await state.prep?.(container);
