@@ -13,11 +13,12 @@
   // bus through yields, which moves each point from the root's px to the stage host's.
   // GM8h (engine plan §7.5 "Host"): `place` picks where it renders. `frame` (the default, App's frame layer) is the
   // overlay above. `room` is a device inside its room (ExploreView's `.room`): a full-bleed root that takes no tap, the
-  // parts layer with the type UI, and the compact bar anchored to the top in three rows (the title with Hint and, while
-  // a chunk failed, Retry, or Try while a reached answer awaits after an offline reply, the one case a device posts by
-  // hand; the status line, or the load notice in its place; the attempts), no give-up (a lock puzzle cannot be
-  // abandoned); the root is the frame family's and the bar its frame marker. Its type UI is busy through a 429 countdown
-  // too: the bar has no Try that holds it, so the parts take no press until the countdown ends.
+  // compact bar anchored to the top in three rows (the title with Hint and, while a chunk failed, Retry, or Try while a
+  // reached answer awaits after an offline reply, the one case a device posts by hand; the status line, or the load
+  // notice in its place; the attempts), then the parts layer with the type UI: the bar comes first, so a screen reader
+  // meets the title first, and paints over the parts. No give-up (a lock puzzle cannot be abandoned); the root is the
+  // frame family's and the bar its frame marker. Its type UI is busy through a 429 countdown too: the bar has no Try
+  // that holds it, so the parts take no press until the countdown ends.
   // `ladder` is the hint ladder alone, in a room sheet over a device, with no root: its controls emit through the
   // innermost root around it, ExploreView's. It is that sheet's panel, so it pads itself past the safe area and scrolls.
   import { cueRoot } from '../../cues/root.ts';
@@ -144,25 +145,6 @@
   {#key frame.id}
     {#if place === 'room'}
       <section class="device" bind:this={root} data-cue-root="frame" aria-labelledby="{uid}-title">
-        <div class="parts" data-cue-hit>
-          {#if frame.ui !== null}
-            {@const Ui = frame.ui}
-            <Ui
-              params={frame.params}
-              answer={frame.answer}
-              busy={frame.busy || ended || frame.retryAfter !== null}
-              {lang}
-              {onchange}
-              {item}
-              {onreach}
-              {onwork}
-              {oncommit}
-              {ondemo}
-              {onblocked}
-              oncue={gesture}
-            />
-          {/if}
-        </div>
         <div class="bar" data-cue-frame data-cue-panel="puzzle">
           <div class="row">
             <h2 id="{uid}-title" class="title">{frame.title}</h2>
@@ -182,6 +164,25 @@
           {/if}
           {#if frame.attemptsLeft !== null}
             <p class="attempts" data-cue-attempts>{t(lang, 'puzzle.attempts_left', { n: frame.attemptsLeft })}</p>
+          {/if}
+        </div>
+        <div class="parts" data-cue-hit>
+          {#if frame.ui !== null}
+            {@const Ui = frame.ui}
+            <Ui
+              params={frame.params}
+              answer={frame.answer}
+              busy={frame.busy || ended || frame.retryAfter !== null}
+              {lang}
+              {onchange}
+              {item}
+              {onreach}
+              {onwork}
+              {oncommit}
+              {ondemo}
+              {onblocked}
+              oncue={gesture}
+            />
           {/if}
         </div>
       </section>
@@ -275,11 +276,22 @@
   }
 
   /*
-   * The bar sits under the Telegram header, in three rows of a fixed height (6 + 44 + 4 + 36 + 4 + 18 + 6 = 118 px), so
-   * the art under it is the same for every device: one button row that never wraps, a status of at most two lines.
+   * The bar comes before the parts in the DOM (a screen reader meets the title first) yet paints and takes taps over
+   * them: the device is its own stacking context, so the bar's `z-index` orders it inside the device only, and the
+   * device as a whole keeps its place under the ribbon, the explore bar and every sheet.
+   */
+  .device {
+    isolation: isolate;
+  }
+
+  /*
+   * The bar sits under the Telegram header, in three rows: one button row that never wraps (44 px), the status clamped
+   * to two 18 px lines, the attempts line. Its height follows the status, 118 px at most (6 + 44 + 4 + 36 + 4 + 18 + 6),
+   * the most the device band is sized for (`DEVICE_BAR_CSS_H`, scripts/story/mechanics/devices.ts).
    */
   .bar {
     position: absolute;
+    z-index: 1;
     top: calc(var(--app-inset-top, 0px) + 8px);
     right: 0;
     left: 0;

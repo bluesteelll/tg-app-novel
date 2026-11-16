@@ -1304,6 +1304,20 @@ test('puzzle-host: the ladder place pads past the safe area and scrolls', () => 
   ]);
 });
 
+test('puzzle-host: a room-place host puts its bar before its parts', () => {
+  // Places F7(i) (RULINGS 368): a screen reader meets the device's title first, so the bar (its `h2` with it) comes
+  // before the parts layer. The layout stays (both absolute), and so do the paint and hit order: the device is its own
+  // stacking context (`isolation`), in which the bar's `z-index` keeps it over the parts, while the device as a whole
+  // keeps its place under the ribbon, the explore bar and every sheet.
+  const { container } = render(PuzzleHost, placed('room', { frame: deviceFrame({ ui: EMITTER }) }));
+  const device = must(container.querySelector('section.device'), 'the device');
+  const kinds = [...device.children].map((c) => (c.classList.contains('bar') ? 'bar' : c.classList.contains('parts') ? 'parts' : c.tagName));
+  const title = must(device.querySelector('h2'), 'the title');
+  const part = must(device.querySelector('[data-cue-part="1"]'), 'the part cell');
+  expect([kinds, (title.compareDocumentPosition(part) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0]).toEqual([['bar', 'parts'], true]);
+  expect([declarationsOf(puzzleHostSource, '.device').get('isolation'), declarationsOf(puzzleHostSource, '.bar').get('z-index')]).toEqual(['isolate', '1']);
+});
+
 test('puzzle-host: every puzzle cue target resolves in the room-place bar and the ladder place', async () => {
   // §8.5 "Cue targets" for a device (GM8h): the room place's bar is the frame marker and the `puzzle` panel, the parts
   // layer beside it holds the parts (L3: a `part` resolves inside the frame's family root), and the ladder place's
