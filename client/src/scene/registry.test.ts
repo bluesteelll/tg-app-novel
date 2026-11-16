@@ -6,7 +6,7 @@ import type { AssetId } from '../story/staging.ts';
 import { textureGeometry } from './layout.ts';
 import type { TextureGeometry } from './layout.ts';
 import { createImageLoader } from './loader.ts';
-import { HARD_CAP_BYTES, STEADY_CAP_BYTES, createAssetRegistry, pixiFrames } from './registry.ts';
+import { HARD_CAP_BYTES, STEADY_CAP_BYTES, TRANSIENT_CAP_BYTES, createAssetRegistry, pixiFrames } from './registry.ts';
 import type { Decoded, FrameCut, HeldFile, HoldImage, LoadError, LoadImage } from './registry.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2065,4 +2065,187 @@ test("registry: the real loader's upgrade swaps the full file into the same text
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Transient reservations (CH D14 / D15 and §5.4, shots §5.5 step 1, QO16; lane SH6 D3): a transition target's bytes
+// held outside the records, inside the 16 MiB band above STEADY and under HARD with the records; a reservation over
+// HARD evicts every preload-priority holder at once (warm included) and checks once more. Visible loads and visible
+// upgrades count the reservations; preloads are admitted on records only.
+
+test('registry: a transient reservation admits against HARD and its band', async () => {
+  // The band: 9.0 MiB, then the 7.0 MiB left of it, fill it exactly; one byte more is refused, evicting nothing.
+  const h = harness();
+  const pre = h.acquire('bg/p', bg('p'), 'preload:k', 'preload');
+  h.succeedAll();
+  expect((await pre).ok).toBe(true);
+  const a = ok(h.registry.reserve('flat:dissolve', 9_437_184));
+  const b = ok(h.registry.reserve('flat:patch', 7_340_032));
+  expect(TRANSIENT_CAP_BYTES).toBe(HARD_CAP_BYTES - STEADY_CAP_BYTES);
+  expect(TRANSIENT_CAP_BYTES).toBe(16_777_216);
+  expect(h.registry.reserveStats()).toEqual({ reservations: 2, reservedBytes: TRANSIENT_CAP_BYTES });
+  expect(h.registry.reserve('flat:patch', 1)).toEqual({
+    ok: false,
+    error: { kind: 'over-cap', needBytes: 1, liveBytes: TRANSIENT_CAP_BYTES, capBytes: TRANSIENT_CAP_BYTES },
+  });
+  expect(h.registry.state(asId('bg/p'))).toBe('live');
+  // A reservation is no record: the records' bytes, the live count and the visible refusals ignore it.
+  expect(h.registry.stats()).toMatchObject({ live: 1, bytes: BG + F, overCap: 0 });
+  h.registry.unreserve(a);
+  h.registry.unreserve(b);
+  expect(h.registry.reserveStats()).toEqual({ reservations: 0, reservedBytes: 0 });
+  // HARD: five visible plates (44,237,300) take 5,000,000 more; 2,000,000 more passes 48 MiB with nothing to evict.
+  const k = harness();
+  const five = ['v1', 'v2', 'v3', 'v4', 'v5'].map((n) => k.acquire(`bg/${n}`, bg(n), `scene:${n}`, 'visible'));
+  k.succeedAll();
+  for (const r of await Promise.all(five)) {
+    expect(r.ok).toBe(true);
+  }
+  const c = ok(k.registry.reserve('flat:dissolve', 5_000_000));
+  expect(k.registry.reserve('flat:patch', 2_000_000)).toEqual({
+    ok: false,
+    error: { kind: 'over-cap', needBytes: 2_000_000, liveBytes: 49_237_300, capBytes: HARD_CAP_BYTES },
+  });
+  expect(k.registry.reserveStats()).toEqual({ reservations: 1, reservedBytes: 5_000_000 });
+  k.registry.unreserve(c);
+  ok(k.registry.reserve('flat:patch', 2_000_000));
+  expect(k.registry.reserveStats()).toEqual({ reservations: 1, reservedBytes: 2_000_000 });
+  expect(k.registry.stats()).toMatchObject({ live: 5, bytes: 44_237_300, overCap: 0 });
+});
+
+test('registry: a reservation over HARD evicts preload holders first', async () => {
+  // 09d:22-24's records: a visible 16.562 MiB and a visible 12.703 MiB, a preload-only 11.262 MiB and two warm-held
+  // files, 44,495,640 B; a 9.0 MiB reservation passes HARD on them (53,932,824). Every preload-priority holder goes at
+  // once, the warm ones included although the preload alone would make room (D3); the visible records stay.
+  const sized = (name: string, bytes: number): ImageEntry => ({ ...bg(name), avif: { url: `/assets/${name}.avif`, bytes: bytes - BG } });
+  const h = holding();
+  const pre = h.acquire('bg/p', sized('p', 11_809_063), 'preload:k', 'preload');
+  void h.warm('bg/w1', sized('w1', BG + 1_000_000));
+  void h.warm('bg/w2', sized('w2', BG + 1_000_000));
+  const vs = [h.acquire('bg/v1', sized('v1', 17_366_516), 'scene:v1', 'visible'), h.acquire('bg/v2', sized('v2', 13_320_061), 'scene:v2', 'visible')];
+  await h.settleAll();
+  for (const r of await Promise.all([pre, ...vs])) {
+    expect(r.ok).toBe(true);
+  }
+  expect(h.registry.stats().bytes).toBe(44_495_640);
+  expect(['bg/p', 'bg/w1', 'bg/w2'].map((id) => h.registry.state(asId(id)))).toEqual(['live', 'held', 'held']);
+  ok(h.registry.reserve('flat:dissolve', 9_437_184));
+  expect([h.released('p'), h.dropped('w1'), h.dropped('w2')]).toEqual([1, 1, 1]);
+  expect(['bg/p', 'bg/w1', 'bg/w2', 'bg/v1', 'bg/v2'].map((id) => h.registry.state(asId(id)))).toEqual(['none', 'none', 'none', 'live', 'live']);
+  expect([h.released('v1'), h.released('v2')]).toEqual([0, 0]);
+  expect(h.registry.reserveStats()).toEqual({ reservations: 1, reservedBytes: 9_437_184 });
+  expect(h.registry.stats()).toMatchObject({ live: 2, bytes: 30_686_577, overCap: 0 });
+});
+
+test('registry: a refused reservation falls back', async () => {
+  // Still over HARD after the eviction: refused, nothing reserved, no visible refusal counted (its fallback runs). The
+  // eviction happened all the same (one at-once eviction, then one check), and the visible records stay.
+  const h = harness();
+  const pre = h.acquire('bg/p', bg('p'), 'preload:k', 'preload');
+  const four = ['v1', 'v2', 'v3', 'v4'].map((n) => h.acquire(`bg/${n}`, bg(n), `scene:${n}`, 'visible'));
+  h.succeedAll();
+  for (const r of await Promise.all([pre, ...four])) {
+    expect(r.ok).toBe(true);
+  }
+  expect(h.registry.reserve('flat:dissolve', 16_000_000)).toEqual({
+    ok: false,
+    error: { kind: 'over-cap', needBytes: 16_000_000, liveBytes: 35_389_840, capBytes: HARD_CAP_BYTES },
+  });
+  expect(h.registry.reserveStats()).toEqual({ reservations: 0, reservedBytes: 0 });
+  expect(releasedOf(h.released, 'p')).toBe(1);
+  expect(h.registry.stats()).toMatchObject({ live: 4, bytes: 35_389_840, overCap: 0 });
+});
+
+test('registry: a visible load counts live reservations against the hard cap', async () => {
+  // Four visible plates (35,389,840) and a 9.0 MiB reservation: a fifth plate (8,847,460) fits the records alone, not
+  // the records and the reservation (53,674,484 > HARD), so it is refused until the reservation ends.
+  const h = harness();
+  const four = ['v1', 'v2', 'v3', 'v4'].map((n) => h.acquire(`bg/${n}`, bg(n), `scene:${n}`, 'visible'));
+  h.succeedAll();
+  for (const r of await Promise.all(four)) {
+    expect(r.ok).toBe(true);
+  }
+  const r = ok(h.registry.reserve('flat:dissolve', 9_437_184));
+  expect(await h.acquire('bg/v5', bg('v5'), 'scene:v5', 'visible')).toEqual({
+    ok: false,
+    error: { kind: 'over-cap', id: asId('bg/v5'), needBytes: BG + F, liveBytes: 44_827_024, capBytes: HARD_CAP_BYTES },
+  });
+  expect(h.callsOf('/assets/v5.avif')).toHaveLength(0);
+  expect(h.registry.stats().overCap).toBe(1);
+  h.registry.unreserve(r);
+  const fifth = h.acquire('bg/v5', bg('v5'), 'scene:v5', 'visible');
+  h.succeedAll();
+  expect((await fifth).ok).toBe(true);
+  expect(h.registry.stats()).toMatchObject({ live: 5, bytes: 44_237_300 });
+});
+
+test('registry: a preload is admitted on records only while a reservation is live', async () => {
+  // Two visible plates (17,694,920) and a 16,000,000 B reservation are past STEADY together (33,694,920); a preload
+  // plate fits STEADY on the records (26,542,380), so it is admitted: a transient never refuses a preload (CH:650).
+  const h = harness();
+  const two = ['v1', 'v2'].map((n) => h.acquire(`bg/${n}`, bg(n), `scene:${n}`, 'visible'));
+  h.succeedAll();
+  for (const r of await Promise.all(two)) {
+    expect(r.ok).toBe(true);
+  }
+  ok(h.registry.reserve('flat:dissolve', 16_000_000));
+  const pre = h.acquire('bg/p', bg('p'), 'preload:k', 'preload');
+  h.succeedAll();
+  expect((await pre).ok).toBe(true);
+  expect(h.registry.stats()).toMatchObject({ live: 3, bytes: 26_542_380, overCap: 0 });
+  expect(h.registry.reserveStats()).toEqual({ reservations: 1, reservedBytes: 16_000_000 });
+});
+
+test('registry: an upgrade of a visible record counts live reservations', async () => {
+  // A visible preview beside three visible plates (28,754,260): its full file (8,847,460) fits HARD on the records, not
+  // with a 13,000,000 B reservation (50,601,720), so the upgrade is refused (no try) until the reservation ends.
+  const h = harness();
+  const three = ['b', 'c', 'd'].map((n) => h.acquire(`bg/${n}`, bg(n), `scene:${n}`, 'visible'));
+  const p = h.preview('bg/a', halved('a', bg('a')), 'scene:bg');
+  h.succeedAll();
+  for (const r of await Promise.all([...three, p])) {
+    expect(r.ok).toBe(true);
+  }
+  const r = ok(h.registry.reserve('flat:dissolve', 13_000_000));
+  expect(await h.registry.upgrade(asId('bg/a'))).toEqual({
+    ok: false,
+    error: { kind: 'over-cap', id: asId('bg/a'), needBytes: BG + F, liveBytes: 41_754_260, capBytes: HARD_CAP_BYTES },
+  });
+  expect(h.upgrades).toEqual([]);
+  h.registry.unreserve(r);
+  const up = h.registry.upgrade(asId('bg/a'));
+  expect(h.upgrades).toHaveLength(1);
+  h.upgrades[0]?.settle({ ok: true, value: undefined });
+  expect(await up).toEqual({ ok: true, value: true });
+  // A preview with no visible holder answers to STEADY on its records only, as a preload does: 19,906,800 + 8,847,460
+  // fits it, although the records and a 16,000,000 B reservation are past it.
+  const k = harness();
+  const two = ['b', 'c'].map((n) => k.acquire(`bg/${n}`, bg(n), `scene:${n}`, 'visible'));
+  const q = k.preview('bg/a', halved('a', bg('a')), 'preload:win:bg/a', 'preload');
+  k.succeedAll();
+  for (const x of await Promise.all([...two, q])) {
+    expect(x.ok).toBe(true);
+  }
+  ok(k.registry.reserve('flat:dissolve', 16_000_000));
+  const steady = k.registry.upgrade(asId('bg/a'));
+  expect(k.upgrades).toHaveLength(1);
+  k.upgrades[0]?.settle({ ok: true, value: undefined });
+  expect(await steady).toEqual({ ok: true, value: true });
+});
+
+test('registry: unreserve is idempotent', () => {
+  const h = harness();
+  const a = ok(h.registry.reserve('flat:dissolve', 1_000));
+  const b = ok(h.registry.reserve('flat:patch', 2_000));
+  h.registry.unreserve(a);
+  h.registry.unreserve(a);
+  expect(h.registry.reserveStats()).toEqual({ reservations: 1, reservedBytes: 2_000 });
+  h.registry.unreserve(b);
+  h.registry.unreserve(b);
+  expect(h.registry.reserveStats()).toEqual({ reservations: 0, reservedBytes: 0 });
+  // The next reservation is a new id: an old one's late unreserve leaves it alone.
+  const c = ok(h.registry.reserve('flat:dissolve', 3_000));
+  expect(c).not.toBe(a);
+  h.registry.unreserve(a);
+  expect(h.registry.reserveStats()).toEqual({ reservations: 1, reservedBytes: 3_000 });
 });

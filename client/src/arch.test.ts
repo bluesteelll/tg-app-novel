@@ -37,6 +37,10 @@ const RULE_IDS = [
   'waapi',
   'svelte-action',
   'pixi-env',
+  'render-texture',
+  'mesh-create',
+  'gpu-target',
+  'scene-lazy',
 ] as const;
 
 type RuleId = (typeof RULE_IDS)[number];
@@ -80,6 +84,10 @@ const GROUP: Record<RuleId, Group> = {
   waapi: 'scene',
   'svelte-action': 'pattern',
   'pixi-env': 'scene',
+  'render-texture': 'boundary',
+  'mesh-create': 'boundary',
+  'gpu-target': 'pattern',
+  'scene-lazy': 'lazy',
 };
 
 /** Paths are relative to src/; index.html sits one level up. */
@@ -255,6 +263,27 @@ const PIXI_RENDERERS = new Set(['WebGLRenderer', 'WebGPURenderer', 'CanvasRender
  */
 const PIXI_ENV_LOADERS = new Set(['loadEnvironmentExtensions', 'autoDetectEnvironment']);
 
+// The GPU targets (lane SH6 D28, CH §5.3): a render target and a mesh are made only in scene/controller.ts, beside the
+// GPU ledger that counts them (`render-texture`, `mesh-create`); nothing in src/ makes a filter, a cached texture, a
+// generated texture or an extract, each a target no ledger sees (`gpu-target`); and the scene's motion kit
+// (`scene/motion/`, SH7's lazy chunk) is reached from outside it only by the controller's `import()` (`scene-lazy`).
+/** Pixi's mesh classes and geometries, by exact name (a suffix match would take `TextureGeometry`, layout.ts). */
+const MESH_CREATE = new Set([
+  'Mesh',
+  'MeshPlane',
+  'MeshRope',
+  'MeshSimple',
+  'PerspectiveMesh',
+  'MeshGeometry',
+  'PlaneGeometry',
+  'PerspectivePlaneGeometry',
+  'RopeGeometry',
+]);
+/** The Pixi names an import alias is resolved for, beside the texture ones. */
+const PIXI_GPU_NAMES = new Set(['RenderTexture', ...MESH_CREATE]);
+/** The one importer of the motion kit, by `import()`; the kit's own directory (a bare `./motion` resolves into it). */
+const SCENE_MOTION_DIR = '/src/scene/motion/';
+
 function isPixiEnvMember(name: string): boolean {
   return PIXI_ENV_PROPS.has(name) || name.startsWith('accessible') || (name.startsWith('on') && FEDERATED_EVENT.test(name.slice(2)));
 }
@@ -353,6 +382,11 @@ function applies(rule: RuleId, file: string): boolean {
       return !file.startsWith('api/');
     case 'texture-create':
       return file !== 'scene/loader.ts' && file !== 'scene/registry.ts';
+    case 'render-texture':
+    case 'mesh-create':
+      return file !== PIXI_APP_FILE;
+    case 'scene-lazy':
+      return !file.startsWith('scene/motion/');
     case 'pure-world':
       return isPureWorld(file);
     case 'runner-enter':
@@ -555,7 +589,7 @@ function collectPixiAliases(sf: ts.SourceFile): Map<string, string> {
     }
     for (const el of bindings.elements) {
       const imported = (el.propertyName ?? el.name).text;
-      if (PIXI_TEXTURE_NAMES.has(imported)) {
+      if (PIXI_TEXTURE_NAMES.has(imported) || PIXI_GPU_NAMES.has(imported)) {
         aliases.set(el.name.text, imported);
       }
     }
@@ -632,6 +666,15 @@ function checkNode(ctx: Ctx, node: ts.Node): void {
     if (name === 'Texture') {
       report(ctx, 'texture-create', node);
     }
+    if (name === 'RenderTexture') {
+      report(ctx, 'render-texture', node);
+    }
+    if (name !== undefined && MESH_CREATE.has(name)) {
+      report(ctx, 'mesh-create', node);
+    }
+    if (name?.endsWith('Filter') === true) {
+      report(ctx, 'gpu-target', node);
+    }
   }
   checkImport(ctx, node);
   checkPixiEnv(ctx, node);
@@ -692,6 +735,9 @@ function checkIdentifier(ctx: Ctx, node: ts.Identifier): void {
   if (PURE_WORLD_GLOBALS.has(text) && !isMemberName(node)) {
     report(ctx, 'pure-world', node);
   }
+  if (text === 'filters' && isPropertyName(node)) {
+    report(ctx, 'gpu-target', node);
+  }
 }
 
 /** A name that is a member, not a reference: `o.document`, `{ document: 1 }`, a method or a qualified type name. */
@@ -741,6 +787,12 @@ function checkMember(ctx: Ctx, node: ts.Node, obj: ts.Expression, name: string):
   const owner = rightName(ctx, obj);
   if ((name === 'from' && (owner === 'Texture' || owner === 'Sprite')) || (ASSETS_LOADS.has(name) && owner === 'Assets')) {
     report(ctx, 'texture-create', node);
+  }
+  if (name === 'create' && owner === 'RenderTexture') {
+    report(ctx, 'render-texture', node);
+  }
+  if (name === 'cacheAsTexture' || name === 'generateTexture' || (name === 'extract' && owner === 'renderer')) {
+    report(ctx, 'gpu-target', node);
   }
   if (ts.isElementAccessExpression(node)) {
     // Property-access forms are caught as identifiers; element access hides the name in a string.
@@ -850,6 +902,10 @@ function checkImport(ctx: Ctx, node: ts.Node): void {
     // importers. The trailing slash makes a bare directory (`../mechanics/rules`, which resolves to its index.ts)
     // match, and a sibling such as `mechanics/rulesets.ts` not.
     const isImportCall = ts.isCallExpression(node);
+    // Into the motion kit from outside it: only the controller's `import()` (SH7's lazy chunk, 09d).
+    if (`${target}/`.startsWith(SCENE_MOTION_DIR) && !(isImportCall && ctx.file === PIXI_APP_FILE)) {
+      report(ctx, 'scene-lazy', node);
+    }
     for (const { path, importers, importCall } of RULES_LAZY) {
       const outside = !isRulesImporter(ctx.file, [path]) && !isRulesImporter(ctx.file, importers);
       if (inRulesLazy(target, path) && outside && !(isImportCall && importCall === 'allowed')) {
@@ -2293,6 +2349,31 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['scene/controller.ts', 'await loadEnvironmentExtensions(false);'],
     ['scene/executor.ts', "import { autoDetectEnvironment as env } from 'pixi.js';\nawait env(true);"],
   ],
+  'render-texture': [
+    // M-SH6a's form, the static factory, and both through an alias outside the scene.
+    ['scene/executor.ts', "import { RenderTexture } from 'pixi.js';\nconst t = new RenderTexture();"],
+    ['scene/executor.ts', 'const t = RenderTexture.create({ width: 2, height: 2 });'],
+    ['app/game.ts', "import { RenderTexture as R } from 'pixi.js';\nconst t = R.create({ width: 2, height: 2 });"],
+  ],
+  'mesh-create': [
+    ['scene/executor.ts', 'const m = new MeshPlane({ texture, verticesX: 4, verticesY: 4 });'],
+    ['scene/motion/breath.ts', 'const g = new PlaneGeometry({ width: 2, height: 2 });'],
+  ],
+  'gpu-target': [
+    // A filter by property or option, a filter made, a cached texture, a generated texture, an extract.
+    ['ui/x.ts', 'node.filters = [f];'],
+    ['scene/controller.ts', 'const s = new Sprite({ filters: [f] });'],
+    ['app/x.ts', 'const f = new ColorMatrixFilter();'],
+    ['scene/controller.ts', 'c.cacheAsTexture(true);'],
+    ['scene/controller.ts', 'const t = app.renderer.generateTexture(c);'],
+    ['scene/controller.ts', 'const px = app.renderer.extract.pixels(c);'],
+  ],
+  'scene-lazy': [
+    // 09d's static import, an import() outside the controller, and a re-export.
+    ['scene/executor.ts', "import { breathe } from './motion/breath.ts';"],
+    ['scene/executor.ts', "void import('./motion/breath.ts');"],
+    ['scene/index.ts', "export { breathe } from './motion/breath.ts';"],
+  ],
 };
 
 for (const rule of RULE_IDS) {
@@ -2483,6 +2564,27 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       ['scene/controller.ts', 'app.renderer.texture.initSource(source);'],
       // A comment and a string name the environment loader and entry point without importing or calling either.
       ['scene/controller.ts', "// never loadEnvironmentExtensions(\nconst src = 'pixi.js/browser';"],
+    ],
+  ],
+  // The controller makes the targets and the meshes, beside the GPU ledger that counts them (D28).
+  ['render-texture', [['scene/controller.ts', 'const t = RenderTexture.create({ width: w, height: h, resolution: 1 });']]],
+  ['mesh-create', [['scene/controller.ts', 'const m = new MeshPlane({ texture });']]],
+  [
+    'gpu-target',
+    [
+      // Near misses: an array filter, a sprite's options, a string.
+      ['scene/executor.ts', 'const kept = records.filter((r) => r.live);'],
+      ['scene/controller.ts', 'const s = new Sprite({ texture: t });'],
+      ['ui/x.ts', "const label = 'filters';"],
+    ],
+  ],
+  [
+    'scene-lazy',
+    [
+      // The controller's import(), a type from the kit, and the kit's own imports.
+      ['scene/controller.ts', "const m = await import('./motion/index.ts');"],
+      ['scene/executor.ts', "import type { Motion } from './motion/index.ts';"],
+      ['scene/motion/breath.ts', "import { ease } from './ease.ts';"],
     ],
   ],
 ];

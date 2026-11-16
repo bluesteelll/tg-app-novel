@@ -1,9 +1,11 @@
 // The scene controller (PROTOTYPE-PLAN "Scene controller and asset registry"): one Pixi Application driven
-// imperatively, its layers (bg, props, chars, cg, fx), the Pixi StageAdapter the executor drives, and the wiring of
+// imperatively, its layers (the world: bg, props, chars; then the transition layer, cg, fx), the Pixi StageAdapter the
+// executor drives, the transition targets (the only RenderTexture maker, D28) and their GPU ledger, and the wiring of
 // registry, loader, scheduler, executor, revive flow and render loop. It reads staging commands only, never story state
 // (principle 7); input belongs to the DOM overlay (`stage.eventMode = 'none'`). After a GPU context change it drives
-// the revive (MEMORY-PLAN M2, section 8): frames are drawn only while the context is live and the flow lets them.
-import { Application, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
+// the revive (MEMORY-PLAN M2, section 8): frames and target renders happen only while the context is live and the flow
+// lets them.
+import { Application, Container, Graphics, Matrix, Rectangle, RenderTexture, Sprite, Texture } from 'pixi.js';
 import type { ApplicationOptions, ImageSource } from 'pixi.js';
 
 import type { Size } from '../geom/cover.ts';
@@ -12,6 +14,8 @@ import type { ShotRig } from '../story/shots.ts';
 import type { AssetId, BgId, PropId } from '../story/staging.ts';
 import { createExecutor, gsapTicker, pauseAll, resumeAll } from './executor.ts';
 import type { Executor, GroupRef, Layer, SceneSnapshot, SpriteRef, StageAdapter, VisualCommand } from './executor.ts';
+import { createGpuLedger } from './flatten.ts';
+import type { GpuLedger } from './flatten.ts';
 import { halfFits, renderResolution, stageBound, tierFor } from './layout.ts';
 import type { PerfClass } from './layout.ts';
 import { createImageLoader, probeAvif } from './loader.ts';
@@ -60,6 +64,18 @@ export type SceneStats = {
   warmBytes?: number;
   /** Live preview records (shots §5.8 step 5): a chapter entry's files still at their half, before their upgrade. */
   previews?: number;
+  // The transition targets (shots §5.5, lane SH6): optional in the type only, as above; the controller always reports them.
+  /** Live targets and their bytes, as the GPU ledger counts them: down only on Pixi's destroy event (CH D30). */
+  targets?: number;
+  targetBytes?: number;
+  /** Targets made and destroyed since mount (cumulative). */
+  targetsCreated?: number;
+  targetsDestroyed?: number;
+  /** Live transient reservations and their bytes (the registry's band). */
+  reservations?: number;
+  reservedBytes?: number;
+  /** Dissolves and patches that fell back to the container-alpha crossfade (cumulative, CH D15). */
+  flatRefused?: number;
 };
 
 export interface SceneController {
@@ -104,12 +120,22 @@ export interface SceneController {
 /** PROTOTYPE-PLAN concurrency table: a context still lost this long after `activated` is rebuilt. */
 export const CONTEXT_GRACE_MS = 2000;
 
-type Layers = { readonly bg: Container; readonly props: Container; readonly chars: Container; readonly cg: Container; readonly fx: Graphics };
+type Layers = {
+  readonly world: Container;
+  readonly bg: Container;
+  readonly props: Container;
+  readonly chars: Container;
+  readonly flat: Container;
+  readonly cg: Container;
+  readonly fx: Graphics;
+};
 type Mounted = {
   readonly host: HTMLElement;
   readonly resolution: number;
   /** Replaced once by the rebuild after an unrecoverable context loss. */
   app: Application;
+  /** The transition targets' ledger: made at mount, it outlives a rebuild's adapter (CH D30). */
+  readonly ledger: GpuLedger;
   /** The registry's size tier (MEMORY-PLAN 4.C): chosen at mount, demoted once to 'full' by a resize past the bound. */
   tier: SizeTier;
   readonly registry: AssetRegistry<Texture>;
@@ -158,26 +184,61 @@ export function appOptions(host: HTMLElement, resolution: number): Partial<Appli
   };
 }
 
-/** The stage's layers, bottom to top (the Application's stage, or a bare Container in a test). */
+/**
+ * The stage's layers, bottom to top (the Application's stage, or a bare Container in a test): `world` holds bg, props
+ * and chars, a render group from mount (a target render then changes no structure, and the camera writes one transform,
+ * D1); `flat` shows a dissolve's target above it; then cg and fx.
+ */
 export function createLayers(app: Pick<Application, 'stage'>): Layers {
   const fx = new Graphics().rect(0, 0, 1, 1).fill(0x000000);
   fx.alpha = 0;
   fx.visible = false;
-  const layers: Layers = { bg: new Container(), props: new Container(), chars: new Container(), cg: new Container(), fx };
+  const world = new Container({ isRenderGroup: true });
+  const layers: Layers = { world, bg: new Container(), props: new Container(), chars: new Container(), flat: new Container(), cg: new Container(), fx };
   layers.chars.sortableChildren = true;
   layers.props.sortableChildren = true;
+  world.addChild(layers.bg, layers.props, layers.chars);
   app.stage.eventMode = 'none';
-  app.stage.addChild(layers.bg, layers.props, layers.chars, layers.cg, layers.fx);
+  app.stage.addChild(world, layers.flat, layers.cg, layers.fx);
   return layers;
 }
 
-/** The executor's stage over Pixi: every display object it creates is destroyed through destroy / dropGroup. */
-export function pixiAdapter(app: Pick<Application, 'screen'>, layers: Layers): StageAdapter<Texture> {
+/** A target render (Pixi's `renderer.render` into a target): the world through `transform`, cleared to opaque black. */
+export type TargetRender = { container: Container; target: Texture; transform: Matrix; clear: true; clearColor: [number, number, number, number] };
+/** The controller's target seam (D1, D28): the GPU ledger, and the one render into a target (false: refused). */
+export type TargetKit = { readonly ledger: GpuLedger; render(world: Container, target: Texture, transform: Matrix): boolean };
+
+/** The kit over a renderer: a render only while `open()` holds (the render loop's own gate, MEMORY-PLAN I7). */
+export function targetKit(app: { readonly renderer: { render(o: TargetRender): void } }, open: () => boolean, ledger: GpuLedger): TargetKit {
+  return {
+    ledger,
+    render(world, target, transform) {
+      if (!open()) {
+        return false;
+      }
+      app.renderer.render({ container: world, target, transform, clear: true, clearColor: [0, 0, 0, 1] });
+      return true;
+    },
+  };
+}
+
+/**
+ * The executor's stage over Pixi: every display object it creates is destroyed through destroy / dropGroup, and every
+ * target through dropTarget. Without a `kit` it draws no target (`flatten` answers null and makes nothing).
+ */
+export function pixiAdapter(app: Pick<Application, 'screen'>, layers: Layers, kit?: TargetKit): StageAdapter<Texture> {
   let n = 0;
   const sprites = new Map<number, Sprite>();
   const groups = new Map<number, Container>();
   /** An anchor's id -> the ids of its three inner nodes, forgotten with it (no entry outlives its Container). */
   const inner = new Map<number, readonly number[]>();
+  /** A target's sprite id -> the target, freed only by dropTarget. */
+  const targets = new Map<number, Texture>();
+  /**
+   * The world's delta as last written: a target's transform is built from it, since the world's matrix is refreshed
+   * only by a frame (review O2).
+   */
+  let delta = { x: 0, y: 0, scale: 1 };
   const node = (t: SpriteRef | GroupRef): Container | undefined => ('sprite' in t ? sprites.get(t.sprite) : groups.get(t.group));
   const add = (c: Container): GroupRef => {
     n += 1;
@@ -262,6 +323,48 @@ export function pixiAdapter(app: Pick<Application, 'screen'>, layers: Layers): S
       layers.fx.visible = alpha > 0;
       layers.fx.scale.set(app.screen.width, app.screen.height);
     },
+    world(p) {
+      delta = { x: p.x, y: p.y, scale: p.scale };
+      layers.world.position.set(p.x, p.y);
+      layers.world.scale.set(p.scale);
+    },
+    flatten(plan, place) {
+      const parent = place.kind === 'screen' ? layers.flat : groups.get(place.parent.group);
+      if (kit === undefined || parent === undefined) {
+        return null;
+      }
+      // Counted from its making (CH D30): a refused render destroys it, and the ledger sees that too.
+      const target = RenderTexture.create({ width: plan.w, height: plan.h, resolution: 1 });
+      kit.ledger.track('target', plan.bytes, target.source);
+      // Target px = plan.scale x (stage px - origin), where stage px = the world's delta over its content.
+      const k = plan.scale * delta.scale;
+      if (!kit.render(layers.world, target, new Matrix(k, 0, 0, k, plan.scale * (delta.x - plan.origin.x), plan.scale * (delta.y - plan.origin.y)))) {
+        target.destroy(true);
+        return null;
+      }
+      const s = new Sprite(target);
+      if (place.kind === 'screen') {
+        s.scale.set(1 / plan.scale);
+      } else {
+        s.position.set(place.x, place.y);
+        s.scale.set(place.k);
+        s.zIndex = place.z;
+      }
+      parent.addChild(s);
+      n += 1;
+      sprites.set(n, s);
+      targets.set(n, target);
+      return { sprite: n, flat: true };
+    },
+    dropTarget(f) {
+      const s = sprites.get(f.sprite);
+      const target = targets.get(f.sprite);
+      sprites.delete(f.sprite);
+      targets.delete(f.sprite);
+      s?.destroy();
+      // With its source: TextureSource.destroy() frees the GPU copy, then emits the event the ledger counts down on.
+      target?.destroy(true);
+    },
   };
 }
 
@@ -298,6 +401,16 @@ export function restoreStep<T>(c: StageParts<T>, s: SceneSnapshot, o?: { preview
   const done = o?.preview === true ? c.registry.previewing(() => executor.restore(s)) : executor.restore(s);
   c.registry.releaseHolder(ENSURE_HOLDER);
   return done;
+}
+
+/**
+ * `SceneController.setChapter` over the mounted parts (carry S5): the running batch completes first, so its window is
+ * reported into the chapter it was planned in; then the scheduler takes the new chapter. A batch still awaiting its
+ * takes reports after the change: microtasks wide, since the stage ensures before it applies (accepted, review O7).
+ */
+export function chapterStep<T>(c: { readonly executor: Pick<Executor<T>, 'complete'>; readonly scheduler: Pick<AssetScheduler, 'setChapter'> }, m: AssetManifest): void {
+  c.executor.complete();
+  c.scheduler.setChapter(m);
 }
 
 export function createSceneController(): SceneController {
@@ -365,6 +478,10 @@ export function createSceneController(): SceneController {
     canvas.removeEventListener('webglcontextlost', onLost);
     canvas.removeEventListener('webglcontextrestored', onRestored);
   };
+  /** The render gate (MEMORY-PLAN I7): a frame, or a target render, only while the context is live and the flow lets it. */
+  const gateOpen = (c: Mounted | null): c is Mounted => c !== null && !lost && !c.flow.suspended();
+  /** The target seam over `app`, on the mount's ledger and the current render gate. */
+  const kitOf = (app: Application, ledger: GpuLedger): TargetKit => targetKit(app, () => gateOpen(core), ledger);
   const isLost = (app: Application): boolean => {
     const r = app.renderer;
     return lost || ('gl' in r && r.context.isLost);
@@ -444,7 +561,7 @@ export function createSceneController(): SceneController {
     c.flow.lost();
     unwatch(old.canvas);
     c.host.appendChild(app.canvas);
-    c.executor.rebind(pixiAdapter(app, createLayers(app)));
+    c.executor.rebind(pixiAdapter(app, createLayers(app), kitOf(app, c.ledger)));
     c.app = app;
     lost = false;
     watch(app.canvas);
@@ -513,7 +630,7 @@ export function createSceneController(): SceneController {
         ticker: gsapTicker,
         render: () => {
           const c = core;
-          if (c === null || lost || c.flow.suspended()) {
+          if (!gateOpen(c)) {
             return;
           }
           if (doneGen !== gen) {
@@ -529,13 +646,15 @@ export function createSceneController(): SceneController {
         // revive's resume does; the loop's render keeps its guards.
         sharpened: () => loop.requestRender(),
       });
+      const ledger = createGpuLedger();
       const executor = createExecutor<Texture>({
-        adapter: pixiAdapter(app, layers),
+        adapter: pixiAdapter(app, layers, kitOf(app, ledger)),
         registry,
         resolve: (id) => scheduler.resolve(id),
         loop,
         resolution,
         onSkip: report,
+        gen: () => gen,
         // A demoted session's new records are full (MEMORY-PLAN 4.C), so the overscan reads the tier as it is now.
         shots: { rigs: () => rigs, half: () => core?.tier === 'half' },
         // The swap point wants the step's window; a release retries what the window was refused (shots §5.8).
@@ -548,7 +667,7 @@ export function createSceneController(): SceneController {
       });
       // The renderer's only sizing after init: the host's box, whatever changed it (a window resize, Telegram's height).
       const observer = new ResizeObserver(onResize);
-      core = { host, resolution, app, tier, registry, scheduler, loop, executor, flow, observer };
+      core = { host, resolution, app, ledger, tier, registry, scheduler, loop, executor, flow, observer };
       observer.observe(host);
       watch(app.canvas);
       if (pendingManifest !== null) {
@@ -564,7 +683,7 @@ export function createSceneController(): SceneController {
         rigs = chapterRigs(m);
       }
       if (core !== null) {
-        core.scheduler.setChapter(m);
+        chapterStep(core, m);
       } else if (state !== 'destroyed') {
         pendingManifest = m;
       }
@@ -624,16 +743,18 @@ export function createSceneController(): SceneController {
       if (core === null) {
         const none = { liveTextures: 0, liveBytes: 0, pendingLoads: 0, activeTimelines: 0, overCap: 0 };
         const windows = { window: { pending: 0, ids: [] }, rooms: [], warm: 0, warmBytes: 0, previews: 0 };
-        return { ...none, openBitmaps: 0, stale: 0, reviveFailed: 0, reviving: false, ...counters, ...windows };
+        const flats = { targets: 0, targetBytes: 0, targetsCreated: 0, targetsDestroyed: 0, reservations: 0, reservedBytes: 0, flatRefused: 0 };
+        return { ...none, openBitmaps: 0, stale: 0, reviveFailed: 0, reviving: false, ...counters, ...windows, ...flats };
       }
       const r = core.registry.stats();
+      const ex = core.executor.stats();
       return {
         liveTextures: r.live,
         // What the caps count minus the kept files (MEMORY-PLAN M2): texture bytes plus the loads and the upgrade in
-        // flight (a reservation, not GPU bytes, while anything loads).
+        // flight (a reservation, not GPU bytes, while anything loads). A transition target is not in it: its own fields.
         liveBytes: r.bytes - r.keptBytes,
         pendingLoads: r.pending,
-        activeTimelines: core.executor.stats().activeTimelines,
+        activeTimelines: ex.activeTimelines,
         overCap: r.overCap,
         openBitmaps: r.openBitmaps,
         stale: r.stale,
@@ -643,6 +764,9 @@ export function createSceneController(): SceneController {
         ...core.scheduler.stats(),
         ...core.registry.warmStats(),
         previews: core.registry.previews().length,
+        ...core.ledger.stats(),
+        ...core.registry.reserveStats(),
+        flatRefused: ex.flatRefused,
       };
     },
     debugForceContextLoss(mode) {

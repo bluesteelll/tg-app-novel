@@ -6,17 +6,20 @@ import type { Size } from '../geom/cover.ts';
 import type { AnchorKey } from '../mechanics/contract.ts';
 import type { ImageEntry, Result } from '../story/catalog.ts';
 import type { Box as Box4, CastRig, Member, ShotRig } from '../story/shots.ts';
-import type { AssetId, BgId, CgId, CharId, ExprId, PropId, Rect, Slot } from '../story/staging.ts';
+import type { AssetId, BgId, CamState, CgId, CharId, ExprId, PropId, Rect, Slot } from '../story/staging.ts';
 import { createExecutor } from './executor.ts';
 import type { ExecutorDeps, Layer, Placement, StageAdapter, VisualCommand } from './executor.ts';
+import { patchPlan } from './flatten.ts';
+import type { FlatPlan } from './flatten.ts';
 import { backdropPlacement, propPlacement } from './layout.ts';
 import type { StageWindow } from './preload.ts';
-import { REVIVE_DEADLINE_MS, createAssetRegistry } from './registry.ts';
+import { REVIVE_DEADLINE_MS, TRANSIENT_CAP_BYTES, createAssetRegistry } from './registry.ts';
 import type { AssetError, Decoded, FrameCut, LoadError, LoadImage } from './registry.ts';
 import { createRenderLoop } from './render-loop.ts';
 import type { RenderLoop, Ticker } from './render-loop.ts';
 import { createReviveFlow } from './revive-flow.ts';
-import { restFraming } from './shot-view.ts';
+import { camFraming, restFraming, worldOf } from './shot-view.ts';
+import type { WorldDelta } from './shot-view.ts';
 
 // GSAP reads the clock through `Date.now`, captured when its module loads: fake timers installed before every import
 // (vi.hoisted runs first) make its ticker deterministic. advance() moves the fake clock and runs one manual tick (V6).
@@ -48,14 +51,18 @@ const track = (p: Promise<void>): { done: boolean } => {
 // A recording stage: every node (a character group, the four nodes of an anchor, a sprite) with its parent, an event
 // log, the alpha writes, and a throw on any write to a destroyed node, on a sprite over a released texture (Pixi would
 // crash, or draw a dead texture, there) and on a drop over a live sprite (the executor destroys the art first).
+// Opt-in (lane SH6): the transition targets, each a `flat` node (on screen in the `flat` layer, or a patch in a group),
+// logged when made and dropped, with a throw on a second drop or a write after it.
 
 type Tex = { readonly url: string };
-type Role = 'char' | 'anchor' | 'depth' | 'motion' | 'content' | 'node' | 'sprite';
+type Role = 'char' | 'anchor' | 'depth' | 'motion' | 'content' | 'node' | 'sprite' | 'flat';
+/** The executor's layers, and the transition layer above the world where a screen target shows. */
+type StageLayer = Layer | 'flat';
 /** `parent`: null for a node at the top of its layer. */
 type Node = {
   readonly id: number;
   readonly role: Role;
-  readonly layer: Layer;
+  readonly layer: StageLayer;
   readonly key: string;
   readonly parent: number | null;
   alive: boolean;
@@ -65,15 +72,24 @@ type Node = {
 
 const S390: Size = { w: 390, h: 844 };
 
-/** `freed`: the textures whose Decoded.release() ran (by identity: every load decodes a new texture object). */
-function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
+/**
+ * `freed`: the textures whose Decoded.release() ran (by identity: every load decodes a new texture object). `targets`
+ * (opt-in): the stage draws transition targets (`draw`), or answers every `flatten` with null (`refuse`: a closed
+ * render gate), and draws the camera (each world delta written, in `worlds`); absent, it has neither member, as every
+ * stage before lane SH6.
+ */
+function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set(), targets?: 'draw' | 'refuse') {
   let n = 0;
   const log: string[] = [];
   /** Every `set` that wrote an alpha: its target's role and key. */
   const alphas: Array<{ role: Role; key: string; alpha: number }> = [];
   const nodes = new Map<number, Node>();
   /** The live children of each parent (a node, or a layer for its top nodes) in Pixi's array order. */
-  const kids = new Map<number | Layer, number[]>();
+  const kids = new Map<number | StageLayer, number[]>();
+  /** Every `flatten` call's plan, in order (a refused one included). */
+  const plans: FlatPlan[] = [];
+  /** Every world delta written, in order. */
+  const worlds: WorldDelta[] = [];
   const stage = { size };
   const node = (k: number): Node => {
     const x = nodes.get(k);
@@ -82,7 +98,7 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
     }
     return x;
   };
-  const add = (role: Role, layer: Layer, key: string, parent: number | null, tex: Tex | null): number => {
+  const add = (role: Role, layer: StageLayer, key: string, parent: number | null, tex: Tex | null): number => {
     n += 1;
     nodes.set(n, { id: n, role, layer, key, parent, alive: true, p: {}, tex });
     kids.set(parent ?? layer, [...(kids.get(parent ?? layer) ?? []), n]);
@@ -119,7 +135,7 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
       if (x.role !== 'char' && x.role !== 'anchor' && x.role !== 'node') {
         throw new Error(`stage: drop of an anchor's inner ${x.role} node`);
       }
-      const art = below(x).find((d) => d.role === 'sprite');
+      const art = below(x).find((d) => d.role === 'sprite' || d.role === 'flat');
       if (art !== undefined) {
         throw new Error(`stage: drop of ${x.key} with the live sprite ${art.key}`);
       }
@@ -158,7 +174,37 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
       log.push(`fx:${alpha}`);
     },
   };
+  if (targets !== undefined) {
+    adapter.world = (p) => {
+      worlds.push({ ...p });
+    };
+    adapter.flatten = (plan, place) => {
+      plans.push(plan);
+      if (targets === 'refuse') {
+        log.push('flatten:refused');
+        return null;
+      }
+      const parent = place.kind === 'screen' ? null : node(place.parent.group);
+      const key = parent === null ? 'screen' : `patch:${parent.key}`;
+      log.push(`flatten:${key}:${plan.w}x${plan.h}`);
+      const id = add('flat', parent?.layer ?? 'flat', key, parent?.id ?? null, null);
+      if (place.kind === 'group') {
+        Object.assign(node(id).p, { x: place.x, y: place.y, scale: place.k, z: place.z });
+      }
+      return { sprite: id, flat: true };
+    };
+    adapter.dropTarget = (f) => {
+      const x = node(f.sprite);
+      if (x.role !== 'flat') {
+        throw new Error(`stage: dropTarget of a ${x.role} node`);
+      }
+      kill(x);
+      log.push(`dropTarget:${x.key}`);
+    };
+  }
   const live = (layer: Layer): Node[] => [...nodes.values()].filter((x) => x.role === 'sprite' && x.alive && x.layer === layer);
+  /** The live transition targets, in creation order. */
+  const flats = (): Node[] => [...nodes.values()].filter((x) => x.role === 'flat' && x.alive);
   const inGroup = (char: string): Node[] =>
     [...nodes.values()].filter((x) => x.role === 'sprite' && x.alive && x.parent !== null && node(x.parent).role === 'char' && node(x.parent).key === char);
   /** Every live node of every role, in creation order. */
@@ -195,7 +241,7 @@ function recordingStage(size: Size, freed: ReadonlySet<Tex> = new Set()) {
     }
     return c;
   };
-  return { adapter, log, alphas, live, inGroup, liveNodes, anchors, rolesAbove, worldAlpha, worldBox, drawOrder, contentOf, stage };
+  return { adapter, log, alphas, live, flats, plans, worlds, inGroup, liveNodes, anchors, rolesAbove, worldAlpha, worldBox, drawOrder, contentOf, stage };
 }
 
 /** The one node of a list (a test reads a single anchor or sprite). */
@@ -260,16 +306,18 @@ const quietLoop = (): RenderLoop => createRenderLoop({ ticker: { add: () => {}, 
 /**
  * `shots`: the executor's shot dep (absent: none). The registry cuts frames as stand-ins named `<file url>#<box>`; a
  * disposed frame joins `freed`, so a sprite drawn on it throws like one on a released texture. `seat`: the window
- * seat's two reports (shots §5.8; absent: none).
+ * seat's two reports (shots §5.8; absent: none). `targets`: the stage's target members (recordingStage). The
+ * executor's GPU generation is the harness's (`setGen`).
  */
 function harness(
   size: Size = S390,
   loop: RenderLoop = quietLoop(),
   shots?: { rigs(): ReadonlyMap<BgId, ShotRig> | null; half(): boolean },
   seat?: Pick<ExecutorDeps<Tex>, 'swapped' | 'released'>,
+  targets?: 'draw' | 'refuse',
 ) {
   const freed = new Set<Tex>();
-  const stage = recordingStage(size, freed);
+  const stage = recordingStage(size, freed, targets);
   const loads = new Map<string, number>();
   const released = new Map<string, number>();
   const byUrl = new Map(Object.values(ENTRIES).map((e) => [e.avif.url, e]));
@@ -349,7 +397,17 @@ function harness(
   const onSkip = (e: AssetError): void => {
     skipped.push(e);
   };
-  const ex = createExecutor<Tex>({ adapter: stage.adapter, registry, resolve, loop, resolution: 2, onSkip, ...(shots === undefined ? {} : { shots }), ...seat });
+  const ex = createExecutor<Tex>({
+    adapter: stage.adapter,
+    registry,
+    resolve,
+    loop,
+    resolution: 2,
+    onSkip,
+    gen: () => gen,
+    ...(shots === undefined ? {} : { shots }),
+    ...seat,
+  });
   return {
     ...stage,
     freed,
@@ -383,6 +441,10 @@ function harness(
     /** Every later load of `id` fails to decode (a manifest file whose bytes are broken). */
     failLoad: (id: string): void => {
       broken.add(urlOf(id));
+    },
+    /** Every later load of `id` decodes again (the fetch that failed was the network's). */
+    mendLoad: (id: string): void => {
+      broken.delete(urlOf(id));
     },
     /** The next load of `id` waits (a stalled fetch) until the returned function is called. */
     deferLoad: (id: string): (() => void) => {
@@ -1618,7 +1680,7 @@ test('executor: a cam move persists in the snapshot until the next cut', async (
   const push = { kind: 'push', to: 'ally' as CharId, z: 120 } as const;
   await h.ex.apply([camera(push)], NOW);
   expect(h.ex.snapshot().cam).toEqual(push);
-  // A show, a CG and a wait keep the framing; nothing draws it yet (the shots plan's SH6).
+  // A show, a CG and a wait keep the framing; the legacy harness draws no camera (no rig).
   await h.ex.apply([show('stranger', 'serious', 'right', 'cut')], NOW);
   await h.ex.apply([cg('letter', 'cut')], NOW);
   await h.ex.apply([wait(100)], { instant: true });
@@ -1764,6 +1826,23 @@ test('executor: a rebind whose prop sprite throws leaves no anchor in its layer'
   expect(fresh.live('props')).toEqual([]);
 });
 
+test('executor: a rebind whose character sprite throws leaves no group in its layer', async () => {
+  // Carry E2: rebind's chars loop makes the group, then its sprite throws; the group goes with it (newChar's rule).
+  const h = harness();
+  await h.ex.apply([bg('cafe', 'cut'), show('ally', 'neutral', 'left', 'cut')], NOW);
+  const fresh = recordingStage(S390, h.freed);
+  const sprite = fresh.adapter.sprite.bind(fresh.adapter);
+  fresh.adapter.sprite = (layer, tex, g) => {
+    if (tex.id === 'char/ally/neutral') {
+      throw new Error('stage: a bug in the build of char/ally/neutral');
+    }
+    return sprite(layer, tex, g);
+  };
+  expect(() => h.ex.rebind(fresh.adapter)).toThrow('char/ally/neutral');
+  expect(fresh.log.filter((x) => /^(group|drop):/.test(x))).toEqual(['group:ally', 'drop:ally']);
+  expect(fresh.liveNodes().filter((x) => x.role === 'char')).toEqual([]);
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // SH1 review M2 / M3: a show and a face of one character in one batch.
 
@@ -1856,14 +1935,18 @@ test('executor: one prop at two anchors keeps both', async () => {
 // Shots drawn from rigs (docs/plans/shots §5.1-5.2, §5.5, lane SH4): the plate and the drawn faces in the bg anchor.
 
 const mem = (file: string, frame: Box4, at: Box4): Member => ({ file: asId(file), frame, at });
-/** A face member of `shot` at `at`: rest `neutral` (talk), `smile` and `worried` (each a layer; talk where the shot has it). */
-function castMember(shot: string, c: string, at: Box4): CastRig & { char: CharId } {
+/**
+ * A face member of `shot` at `at`: rest `neutral` (talk), `smile` and `worried` (each a layer; talk where the shot has
+ * it). `moved`: an expression whose layer sits at another box of the same size.
+ */
+function castMember(shot: string, c: string, at: Box4, moved: Readonly<Record<string, Box4>> = {}): CastRig & { char: CharId } {
   const talkOf = (x: string): Member[] => (Object.hasOwn(ENTRIES, `talk/${shot}/${c}/${x}`) ? [mem(`talk/${shot}/${c}/${x}`, [0, 0, 40, 20], [at[0] + 40, at[1] + 140, 40, 20])] : []);
   const motion = (x: string) => {
     const f = `face/${shot}/${c}/${x}`;
     return { blink: { half: mem(f, [0, 0, 1, 1], at), closed: mem(f, [1, 0, 1, 1], at) }, talk: talkOf(x), accent: mem(f, [2, 0, 1, 1], at) };
   };
-  const expr = (x: string) => (Object.hasOwn(ENTRIES, `face/${shot}/${c}/${x}`) ? { [x]: { layer: mem(`face/${shot}/${c}/${x}`, [0, 40, at[2], at[3]], at), motion: motion(x) } } : {});
+  const expr = (x: string) =>
+    Object.hasOwn(ENTRIES, `face/${shot}/${c}/${x}`) ? { [x]: { layer: mem(`face/${shot}/${c}/${x}`, [0, 40, at[2], at[3]], moved[x] ?? at), motion: motion(x) } } : {};
   return {
     char: c as CharId,
     view: 'face',
@@ -1976,7 +2059,7 @@ test("executor: a cut destroys the old shot's layers", async () => {
     'create:bg:sheet/lamp_cu',
   ]);
   expect(['bg/lamp', 'sheet/lamp', 'face/lamp/ally/smile'].map(h.releasedOf)).toEqual([1, 1, 1]);
-  // A dissolve to another shot: the new root over the old, which retires whole at the end.
+  // The fallback (this stage has no `flatten`): the new root over the old, which retires whole.
   h.log.length = 0;
   const dissolve = track(h.ex.apply([bg('lamp', 'crossfade', 300)], NOW));
   await flush();
@@ -2458,6 +2541,21 @@ test('executor: a batch without a window reports no swap', async () => {
   h.ex.destroy();
 });
 
+test('executor: destroy settles a windowed batch and reports no swap', async () => {
+  // Carry S4 (IMPL-2): the controller destroys the scheduler right after the executor, so a window reported at
+  // destroy() would plan loads that are aborted a moment later; the batch settles and its window is dropped.
+  const h = seated();
+  await h.ex.apply([bg('cafe', 'cut')], NOW);
+  const fade = track(h.ex.apply([bg('street', 'crossfade', 500)], { instant: false, window: STREET }));
+  await flush();
+  advance(250);
+  expect(h.reports).toEqual([]);
+  h.ex.destroy();
+  await flush();
+  expect(fade.done).toBe(true);
+  expect(h.reports).toEqual([]);
+});
+
 test('executor: a batch that fails to build still reports its swap at its end', async () => {
   const h = seated();
   const errors = spyErrors();
@@ -2493,4 +2591,637 @@ test('executor: a sweep that releases a holder reports it', async () => {
   expect(h.reports).toEqual(['released: bg/cafe released 1']);
   h.ex.destroy();
   expect(h.reports).toEqual(['released: bg/cafe released 1']);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The exact dissolve between shots (docs/plans/shots §5.5, S14; lane SH6 D2, D8): one render of the stage into a
+// target reserved in the transient band, the old shot gone and its holders released at once, the new shot built
+// opaque under the target, which fades out and is dropped at the fade's end, at complete(), at a rebind or a revive
+// of another generation, and at destroy(). A stage with no target member, a refused reservation or a closed render
+// gate fall back to the new root over the old (counted in `flatRefused`).
+
+/** A shot harness whose stage draws targets (or refuses them), with the seat's reports when given. */
+const flatHarness = (targets: 'draw' | 'refuse' = 'draw', seat?: Pick<ExecutorDeps<Tex>, 'swapped' | 'released'>): ReturnType<typeof harness> =>
+  harness(S390, quietLoop(), { rigs: () => LAMP_RIGS, half: () => false }, seat, targets);
+/** The stage's draw log with the targets made and dropped. */
+const flatLog = (h: ReturnType<typeof harness>): string[] => h.log.filter((x) => /^(anchor|node|create|destroy|drop|flatten|dropTarget):/.test(x));
+const drops = (h: ReturnType<typeof harness>): string[] => h.log.filter((x) => x.startsWith('dropTarget:'));
+const NO_RESERVATION = { reservations: 0, reservedBytes: 0 };
+/** The phone snapshot: 390 x 844 at r 2 (flatten.ts snapshotPlan). */
+const SNAPSHOT_BYTES = 780 * 1688 * 4;
+const CU: StageWindow = { need: [asId('bg/lamp_cu')], warm: [], near: 0, hope: [], eventRoom: [] };
+
+test("executor: a dissolve draws the old shot's snapshot over the new shot and drops it", async () => {
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  h.log.length = 0;
+  h.alphas.length = 0;
+  const d = track(h.ex.apply([bg('lamp_cu', 'crossfade', 500)], NOW));
+  await flush();
+  // One render of the whole stage in device px, shown above the world; then the old root goes and the new one is
+  // built opaque under it, with the faces the bg keeps.
+  expect(flatLog(h)).toEqual([
+    'flatten:screen:780x1688',
+    'destroy:bg:face/lamp/ally/smile',
+    'destroy:bg:sheet/lamp',
+    'drop:face:ally',
+    'destroy:bg:lamp',
+    'drop:bg/lamp',
+    'anchor:bg:bg/lamp_cu',
+    'create:bg:lamp_cu',
+    'node:face:ally',
+    'create:bg:face/lamp_cu/ally/smile',
+    'create:bg:sheet/lamp_cu',
+  ]);
+  expect(h.plans).toEqual([{ w: 780, h: 1688, bytes: SNAPSHOT_BYTES, scale: 2, origin: { x: 0, y: 0 } }]);
+  expect(h.anchors('bg').map((x) => [x.key, x.p.alpha])).toEqual([['bg/lamp_cu', 1]]);
+  const [flat] = h.flats();
+  expect([flat?.key, flat?.layer, flat?.parent]).toEqual(['screen', 'flat', null]);
+  // The snapshot fades out over the new shot, its bytes reserved in the band while it shows.
+  advance(250);
+  expect(flat?.p.alpha).toBeGreaterThan(0.4);
+  expect(flat?.p.alpha).toBeLessThan(0.6);
+  expect(h.registry.reserveStats()).toEqual({ reservations: 1, reservedBytes: SNAPSHOT_BYTES });
+  expect(drops(h)).toEqual([]);
+  advance(300);
+  await flush();
+  expect(d.done).toBe(true);
+  expect(drops(h)).toEqual(['dropTarget:screen']);
+  expect(h.flats()).toEqual([]);
+  expect(h.registry.reserveStats()).toEqual(NO_RESERVATION);
+  expect(h.ex.stats()).toEqual({ activeTimelines: 0, flatRefused: 0 });
+  h.ex.destroy();
+  expect(h.liveNodes()).toEqual([]);
+});
+
+test("executor: a dissolve releases the old shot's records right after the snapshot render", async () => {
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  const d = track(h.ex.apply([bg('lamp_cu', 'crossfade', 500)], NOW));
+  await flush();
+  // No time has passed and no window asked for it: the target holds the old shot's pixels, so its plate, sheet, face
+  // and talk files are released now; the new shot's are live.
+  expect(d.done).toBe(false);
+  expect(['bg/lamp', 'sheet/lamp', 'face/lamp/ally/smile', 'talk/lamp/ally/smile'].map(h.releasedOf)).toEqual([1, 1, 1, 1]);
+  expect(liveIn(h, ['bg/lamp_cu', 'sheet/lamp_cu', 'face/lamp_cu/ally/smile', 'talk/lamp_cu/ally/smile'])).toEqual([true, true, true, true]);
+  h.ex.complete();
+  await flush();
+  expect(d.done).toBe(true);
+  h.ex.destroy();
+  expect(h.registry.stats().live).toBe(0);
+});
+
+test('executor: a dissolve reports its swap right after the snapshot render', async () => {
+  // A1 (S6): the swap point of the exact dissolve is the snapshot, not the old root's retirement (the legacy
+  // crossfade's pin keeps that one); the target's end is no second swap.
+  const reports: string[] = [];
+  const h = flatHarness('draw', {
+    swapped: (w) => reports.push(`swapped ${w.need.join(',')}: bg/lamp released ${h.releasedOf('bg/lamp')}`),
+  });
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  const d = h.ex.apply([bg('lamp_cu', 'crossfade', 500)], { instant: false, window: CU });
+  await flush();
+  expect(reports).toEqual(['swapped bg/lamp_cu: bg/lamp released 1']);
+  advance(550);
+  await d;
+  expect(reports).toEqual(['swapped bg/lamp_cu: bg/lamp released 1']);
+  h.ex.destroy();
+});
+
+test("executor: a dissolve's end asks the scheduler to retry", async () => {
+  // T6: the target's bytes come back at its drop, so a preload refused while it showed may now be admitted.
+  let retries = 0;
+  const h = flatHarness('draw', {
+    released: () => {
+      retries += 1;
+    },
+  });
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  // Windowed: the swap's own release is the window's report, not a retry.
+  const d = h.ex.apply([bg('lamp_cu', 'crossfade', 500)], { instant: false, window: CU });
+  await flush();
+  advance(250);
+  expect(retries).toBe(0);
+  advance(300);
+  await d;
+  expect(drops(h)).toEqual(['dropTarget:screen']);
+  expect(retries).toBe(1);
+  h.ex.destroy();
+});
+
+test('executor: a tap completes a dissolve and frees its target', async () => {
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  const d = track(h.ex.apply([bg('lamp_cu', 'crossfade', 500)], NOW));
+  await flush();
+  advance(100);
+  expect(h.flats()).toHaveLength(1);
+  h.ex.complete();
+  await flush();
+  expect(d.done).toBe(true);
+  expect(drops(h)).toEqual(['dropTarget:screen']);
+  expect(h.flats()).toEqual([]);
+  expect(h.registry.reserveStats()).toEqual(NO_RESERVATION);
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  // Dropped exactly once: a second tap and the next batch drop nothing (the stage throws on a second drop).
+  h.ex.complete();
+  await h.ex.apply([face('ally', 'neutral')], { instant: true });
+  expect(drops(h)).toEqual(['dropTarget:screen']);
+  h.ex.destroy();
+  expect(h.liveNodes()).toEqual([]);
+});
+
+test('executor: a refused target dissolves by container alpha and counts flatRefused', async () => {
+  // CH D15: the render gate refuses (the stage answers null), the band refuses the reservation, or the stage draws no
+  // target: today's crossfade, the new root over the old, which retires whole; no reservation is left.
+  const arms: ReadonlyArray<readonly [string, () => ReturnType<typeof harness>]> = [
+    ['a closed render gate', () => flatHarness('refuse')],
+    ['a full band', () => flatHarness('draw')],
+    ['no target member', () => shotHarness()],
+  ];
+  for (const [arm, make] of arms) {
+    const h = make();
+    await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+    const band = arm === 'a full band' ? h.registry.reserve('test', TRANSIENT_CAP_BYTES) : null;
+    h.log.length = 0;
+    const d = track(h.ex.apply([bg('lamp_cu', 'crossfade', 300)], NOW));
+    await flush();
+    advance(150);
+    expect(h.anchors('bg').map((x) => x.key), arm).toEqual(['bg/lamp', 'bg/lamp_cu']);
+    expect(h.flats(), arm).toEqual([]);
+    expect(h.registry.reserveStats(), arm).toEqual(band?.ok === true ? { reservations: 1, reservedBytes: TRANSIENT_CAP_BYTES } : NO_RESERVATION);
+    advance(200);
+    await flush();
+    expect(d.done, arm).toBe(true);
+    expect(h.anchors('bg').map((x) => x.key), arm).toEqual(['bg/lamp_cu']);
+    expect(h.log.filter((x) => x.startsWith('flatten:')), arm).toEqual(arm === 'a closed render gate' ? ['flatten:refused'] : []);
+    expect(h.ex.stats(), arm).toEqual({ activeTimelines: 0, flatRefused: 1 });
+    if (band?.ok === true) {
+      h.registry.unreserve(band.value);
+    }
+    expect(h.registry.reserveStats(), arm).toEqual(NO_RESERVATION);
+    h.ex.destroy();
+    expect(h.liveNodes(), arm).toEqual([]);
+  }
+});
+
+test('executor: a crossfade onto the shot on stage fades only the props and reserves no target', async () => {
+  // D16 (a guard): the take batch (yields.ts stateBatch: the room's bg again, crossfade, and the new props) keeps the
+  // shot and crossfades its props; no target, no reservation, nothing counted.
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), props(['lamp', LAMP])], NOW);
+  const root = one(h.anchors('bg'));
+  h.log.length = 0;
+  h.alphas.length = 0;
+  const take = track(h.ex.apply([bg('lamp', 'crossfade', 500), props(['key', KEY])], NOW));
+  await flush();
+  advance(250);
+  expect(h.registry.reserveStats()).toEqual(NO_RESERVATION);
+  expect(h.anchors('bg')).toEqual([root]);
+  const mid = h.anchors('props').map((x) => x.p.alpha ?? 1);
+  expect(mid).toHaveLength(2);
+  for (const a of mid) {
+    expect(a).toBeGreaterThan(0.4);
+    expect(a).toBeLessThan(0.6);
+  }
+  advance(300);
+  await flush();
+  expect(take.done).toBe(true);
+  expect(h.log.filter((x) => /^(flatten|dropTarget|anchor:bg|drop:bg)/.test(x))).toEqual([]);
+  expect(h.alphas.filter((w) => w.role === 'anchor' && w.key === 'bg/lamp')).toEqual([]);
+  expect(h.anchors('props').map((x) => x.key)).toEqual(['key']);
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  h.ex.destroy();
+});
+
+test('executor: a rebind mid-dissolve drops the target through the old adapter', async () => {
+  // D8: rebind's complete() ends the dissolve on the old stage, so its target is dropped there before the new adapter
+  // takes over; the old Application's destroy then meets no live target.
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  const d = track(h.ex.apply([bg('lamp_cu', 'crossfade', 500)], NOW));
+  await flush();
+  advance(100);
+  const fresh = recordingStage(S390, h.freed, 'draw');
+  h.ex.rebind(fresh.adapter);
+  await flush();
+  expect(d.done).toBe(true);
+  expect(drops(h)).toEqual(['dropTarget:screen']);
+  expect(h.flats()).toEqual([]);
+  expect(fresh.log.filter((x) => /^(flatten|dropTarget):/.test(x))).toEqual([]);
+  expect(fresh.anchors('bg').map((x) => x.key)).toEqual(['bg/lamp_cu']);
+  expect(h.registry.reserveStats()).toEqual(NO_RESERVATION);
+  h.ex.destroy();
+  expect(fresh.liveNodes()).toEqual([]);
+});
+
+test('executor: destroy mid-dissolve drops its target once', async () => {
+  // C4 and review O4: destroy() drops the target with the rest of the stage, and reports no release (the scheduler is
+  // destroyed right after, as S4 rules for the swap).
+  let retries = 0;
+  const h = flatHarness('draw', {
+    released: () => {
+      retries += 1;
+    },
+  });
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  const d = track(h.ex.apply([bg('lamp_cu', 'crossfade', 500)], NOW));
+  await flush();
+  advance(100);
+  const before = retries;
+  h.ex.destroy();
+  await flush();
+  expect(d.done).toBe(true);
+  expect(drops(h)).toEqual(['dropTarget:screen']);
+  expect(retries).toBe(before);
+  expect(h.registry.reserveStats()).toEqual(NO_RESERVATION);
+  expect(h.liveNodes()).toEqual([]);
+  h.ex.destroy();
+  expect(drops(h)).toEqual(['dropTarget:screen']);
+});
+
+test('executor: a revive mid-dissolve completes it and drops the target', async () => {
+  // Shots §5.5 "Context loss mid-dissolve": a target rendered under an older GPU generation lost its pixels, so the
+  // reacquire after the revive ends its batch; review O3: one rendered under the current generation stays.
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  const d = track(h.ex.apply([bg('lamp_cu', 'crossfade', 500)], NOW));
+  await flush();
+  advance(100);
+  h.setGen(2);
+  h.ex.reacquire();
+  await flush();
+  expect(d.done).toBe(true);
+  expect(drops(h)).toEqual(['dropTarget:screen']);
+  expect(h.registry.reserveStats()).toEqual(NO_RESERVATION);
+  const e = track(h.ex.apply([bg('lamp', 'crossfade', 500)], NOW));
+  await flush();
+  advance(100);
+  h.ex.reacquire();
+  await flush();
+  expect(e.done).toBe(false);
+  expect(h.flats()).toHaveLength(1);
+  expect(drops(h)).toEqual(['dropTarget:screen']);
+  advance(450);
+  await flush();
+  expect(e.done).toBe(true);
+  expect(drops(h)).toEqual(['dropTarget:screen', 'dropTarget:screen']);
+  h.ex.destroy();
+  expect(h.liveNodes()).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The exact face patch (docs/plans/shots §5.5, S15; lane SH6 D9, review O1): a timed face change on a shot root renders
+// the union of its old and new groups' boxes at the after-state into a target in the root's content, which fades in
+// over the before-state; a refused one is K7. And the E1 lifetime (B2): a face change takes a failed sheet again, once
+// per entry of the shot; every other slot keeps its failed take.
+
+/** The lamp rig with ally's worried layer moved right and down: its group's box is not the smile group's. */
+const MOVED_RIG = shotRig([castMember('lamp', 'ally', ALLY_AT, { worried: [260, 600, 160, 200] }), castMember('lamp', 'stranger', [700, 500, 160, 200])]);
+const MOVED: { rigs(): ReadonlyMap<BgId, ShotRig>; half(): boolean } = { rigs: () => new Map([['lamp' as BgId, MOVED_RIG]]), half: () => false };
+const faceNodes = (h: ReturnType<typeof harness>): Node[] => h.liveNodes().filter((x) => x.role === 'node' && x.key.startsWith('face:'));
+const faceAlphas = (h: ReturnType<typeof harness>): string[] => faceNodes(h).map((x) => `${x.key}@${x.p.alpha}`);
+/** What each target render sees: the face groups as `key@alpha`, in creation order. */
+function rendersOf(h: ReturnType<typeof harness>): string[][] {
+  const seen: string[][] = [];
+  const draw = h.adapter.flatten;
+  h.adapter.flatten = (plan, place) => {
+    seen.push(faceAlphas(h));
+    return draw?.(plan, place) ?? null;
+  };
+  return seen;
+}
+
+test('executor: a face change patches only the union of the old and new expression layer boxes', async () => {
+  // D9: ally's smile group covers plate (200, 460) 200 x 260 (its layer and the hair lock above it), the worried one
+  // (200, 460) 220 x 340 (its layer moved): the patch is their union, device (101, 365) 188 x 289 at the lamp's rest
+  // framing on a phone at r 2, and the stranger's face is not in it.
+  const h = harness(S390, quietLoop(), MOVED, undefined, 'draw');
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile'), face('stranger', 'smile')], NOW);
+  const seen = rendersOf(h);
+  h.log.length = 0;
+  const one = track(h.ex.apply([face('ally', 'worried')], NOW));
+  await flush();
+  expect(flatLog(h)).toEqual(['node:face:ally', 'create:bg:face/lamp/ally/worried', 'create:bg:sheet/lamp', 'flatten:patch:bg/lamp:188x289']);
+  expect(h.plans).toEqual([{ w: 188, h: 289, bytes: 217_328, scale: 2, origin: { x: 50.5, y: 182.5 } }]);
+  // Rendered at the after-state: the old group hidden, the new one shown.
+  expect(seen).toEqual([['face:ally@0', 'face:stranger@1', 'face:ally@1']]);
+  // Shown in the root's content above both members' parts (z 2 x 2 + 1), at the snapped edge in plate px, one target
+  // px per device px; under it the before-state.
+  const f = restFraming(MOVED_RIG, S390, 2, false);
+  const [patch] = h.flats();
+  expect([patch?.key, patch?.p.z, patch?.p.alpha]).toEqual(['patch:bg/lamp', 5, 0]);
+  expect(patch?.p.x).toBeCloseTo((50.5 - f.x) / f.k, 9);
+  expect(patch?.p.y).toBeCloseTo((182.5 - f.y) / f.k, 9);
+  expect(patch?.p.scale).toBeCloseTo(1 / (2 * f.k), 12);
+  expect(faceAlphas(h)).toEqual(['face:ally@1', 'face:stranger@1', 'face:ally@0']);
+  // The patch fades in over the face's 200 ms, its bytes reserved in the band while it shows.
+  advance(100);
+  expect(patch?.p.alpha).toBeGreaterThan(0.4);
+  expect(patch?.p.alpha).toBeLessThan(0.6);
+  expect(faceAlphas(h)).toEqual(['face:ally@1', 'face:stranger@1', 'face:ally@0']);
+  expect(h.registry.reserveStats()).toEqual({ reservations: 1, reservedBytes: 217_328 });
+  advance(150);
+  await flush();
+  // At its end the new group shows, the old one goes and the target is dropped.
+  expect(one.done).toBe(true);
+  expect(flatLog(h).slice(4)).toEqual(['destroy:bg:face/lamp/ally/smile', 'destroy:bg:sheet/lamp', 'drop:face:ally', 'dropTarget:patch:bg/lamp']);
+  expect(faceAlphas(h)).toEqual(['face:stranger@1', 'face:ally@1']);
+  expect(h.registry.reserveStats()).toEqual(NO_RESERVATION);
+  expect(h.ex.stats()).toEqual({ activeTimelines: 0, flatRefused: 0 });
+
+  // Review O1: two faces in one batch, one back to its rest. Both renders see both faces at their after-state, so
+  // neither patch keeps the other's before-state where they would overlap; a tap ends both.
+  seen.length = 0;
+  h.log.length = 0;
+  const two = track(h.ex.apply([face('ally', 'smile'), face('stranger', 'neutral')], NOW));
+  await flush();
+  expect(h.log.filter((x) => x.startsWith('flatten:'))).toEqual(['flatten:patch:bg/lamp:188x289', 'flatten:patch:bg/lamp:171x221']);
+  expect(seen).toEqual([
+    ['face:stranger@0', 'face:ally@0', 'face:ally@1'],
+    ['face:stranger@0', 'face:ally@0', 'face:ally@1'],
+  ]);
+  expect(faceAlphas(h)).toEqual(['face:stranger@1', 'face:ally@1', 'face:ally@0']);
+  advance(50);
+  h.ex.complete();
+  await flush();
+  expect(two.done).toBe(true);
+  expect(drops(h)).toEqual(['dropTarget:patch:bg/lamp', 'dropTarget:patch:bg/lamp']);
+  expect(h.flats()).toEqual([]);
+  expect(faceAlphas(h)).toEqual(['face:ally@1']);
+  expect(h.registry.reserveStats()).toEqual(NO_RESERVATION);
+  h.ex.destroy();
+  expect(h.liveNodes()).toEqual([]);
+});
+
+test('executor: a refused patch falls back to the expression crossfade and counts flatRefused', async () => {
+  // CH D15: the render gate refuses (the stage answers null), the band refuses the reservation, or the stage draws no
+  // target: K7 for that face, the new group over the old one, which retires whole; no target, no reservation left.
+  const arms: ReadonlyArray<readonly [string, () => ReturnType<typeof harness>]> = [
+    ['a closed render gate', () => harness(S390, quietLoop(), MOVED, undefined, 'refuse')],
+    ['a full band', () => harness(S390, quietLoop(), MOVED, undefined, 'draw')],
+    ['no target member', () => harness(S390, quietLoop(), MOVED)],
+  ];
+  for (const [arm, make] of arms) {
+    const h = make();
+    await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+    const band = arm === 'a full band' ? h.registry.reserve('test', TRANSIENT_CAP_BYTES) : null;
+    h.log.length = 0;
+    const p = track(h.ex.apply([face('ally', 'worried')], NOW));
+    await flush();
+    advance(100);
+    const [old, fresh] = faceNodes(h);
+    expect(old?.p.alpha, arm).toBe(1);
+    expect(fresh?.p.alpha, arm).toBeGreaterThan(0.4);
+    expect(fresh?.p.alpha, arm).toBeLessThan(0.6);
+    expect(h.flats(), arm).toEqual([]);
+    advance(150);
+    await flush();
+    expect(p.done, arm).toBe(true);
+    expect(drawLog(h), arm).toEqual([
+      'node:face:ally',
+      'create:bg:face/lamp/ally/worried',
+      'create:bg:sheet/lamp',
+      'destroy:bg:face/lamp/ally/smile',
+      'destroy:bg:sheet/lamp',
+      'drop:face:ally',
+    ]);
+    expect(h.log.filter((x) => x.startsWith('flatten:')), arm).toEqual(arm === 'a closed render gate' ? ['flatten:refused'] : []);
+    expect(h.ex.stats(), arm).toEqual({ activeTimelines: 0, flatRefused: 1 });
+    if (band?.ok === true) {
+      h.registry.unreserve(band.value);
+    }
+    expect(h.registry.reserveStats(), arm).toEqual(NO_RESERVATION);
+    h.ex.destroy();
+    expect(h.liveNodes(), arm).toEqual([]);
+  }
+});
+
+test('executor: a sheet take that failed once is taken again at the next face change', async () => {
+  // E1 lifetime (B2): the shot's sheet failed at its entry, so its face was drawn at rest; the next face change on the
+  // shot takes the sheet again, waits for it and draws the face.
+  const h = shotHarness();
+  h.failLoad('sheet/lamp');
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  expect([h.loadsOf('sheet/lamp'), partNodes(h).length]).toEqual([1, 0]);
+  h.mendLoad('sheet/lamp');
+  await h.ex.apply([face('ally', 'worried')], { instant: true });
+  expect(h.loadsOf('sheet/lamp')).toBe(2);
+  expect(partNodes(h)).toEqual(['face:ally']);
+  h.ex.destroy();
+  expect(h.liveNodes()).toEqual([]);
+  expect(h.registry.stats().live).toBe(0);
+  // The bound: a retake that fails too is not taken again on the same entry of the shot, whatever the faces do...
+  const g = shotHarness();
+  g.failLoad('sheet/lamp');
+  await g.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  await g.ex.apply([face('ally', 'worried')], { instant: true });
+  await g.ex.apply([face('ally', 'smile'), face('stranger', 'smile')], { instant: true });
+  expect(g.loadsOf('sheet/lamp')).toBe(2);
+  expect(g.skipped.map((e) => `${e.kind}:${e.id}`)).toEqual(['decode:sheet/lamp', 'decode:sheet/lamp']);
+  // ...until the shot is entered again: a restore that sets it, with a face changed, takes it once more.
+  await g.ex.restore({ ...g.ex.snapshot(), chars: [{ char: 'ally' as CharId, expr: 'worried' as ExprId, at: 'center' }] });
+  expect(g.loadsOf('sheet/lamp')).toBe(3);
+  g.ex.destroy();
+  expect(g.liveNodes()).toEqual([]);
+  // Only what draws a face: the shot's plate keeps its failed take (A9).
+  const k = shotHarness();
+  k.failLoad('bg/lamp');
+  await k.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  await k.ex.apply([face('ally', 'worried')], { instant: true });
+  expect(k.loadsOf('bg/lamp')).toBe(1);
+  k.ex.destroy();
+  expect(k.registry.stats().live).toBe(0);
+});
+
+test('executor: a legacy bg take that failed is not taken again on the next line', async () => {
+  // B2 (a guard): a chapter without rigs keeps its skip-once: a failed bg is not fetched again while its id is
+  // unchanged, whatever the next lines change.
+  const h = harness();
+  h.failLoad('bg/cafe');
+  await h.ex.apply([scene('cafe', 'cut'), show('ally', 'neutral', 'left', 'cut')], NOW);
+  await h.ex.apply([face('ally', 'worried')], { instant: true });
+  await h.ex.apply([show('ally', 'neutral', 'right', 'fade', 200), props(['lamp', LAMP])], { instant: true });
+  expect(h.loadsOf('bg/cafe')).toBe(1);
+  expect(h.skipped.map((e) => `${e.kind}:${e.id}`)).toEqual(['decode:bg/cafe']);
+  h.ex.destroy();
+  expect(h.registry.stats().live).toBe(0);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The camera (docs/plans/shots §5.4, S20; lane SH6 Q7, D4, S1): a move tweens the world container's delta from the drawn
+// framing to the target's, on the batch's timeline; a scene or a bg puts it back to rest at the cut point; a restore or
+// an instant batch sets it at once; a relayout or a rebind frames the held move again for the stage it now has.
+
+const PUSH = { kind: 'push', to: 'ally' as CharId, z: 120 } as const;
+/** The world delta `cam` frames on the lamp shot (r 2, the full tier) at `size`. */
+const framed = (cam: CamState, size: Size = S390): WorldDelta => worldOf(restFraming(LAMP_RIG, size, 2, false), camFraming(LAMP_RIG, size, 2, false, cam));
+const REST: WorldDelta = { x: 0, y: 0, scale: 1 };
+/** The last world delta a stage drew. */
+const lastWorld = (worlds: readonly WorldDelta[]): WorldDelta | undefined => worlds[worlds.length - 1];
+function expectWorld(got: WorldDelta | undefined, want: WorldDelta, at = ''): void {
+  expect(got, at).toBeDefined();
+  expect(got?.x, at).toBeCloseTo(want.x, 9);
+  expect(got?.y, at).toBeCloseTo(want.y, 9);
+  expect(got?.scale, at).toBeCloseTo(want.scale, 12);
+}
+
+test('executor: a cam move tweens the world and a tap completes it', async () => {
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  // At rest nothing is written.
+  expect(h.worlds).toEqual([]);
+  const end = framed(PUSH);
+  expect(end.scale).toBeGreaterThan(1);
+  const m = track(h.ex.apply([camera(PUSH)], NOW));
+  await flush();
+  // The push's 2400 ms, power1.inOut: half way at its midpoint.
+  advance(1200);
+  const mid = lastWorld(h.worlds);
+  expect(mid?.scale).toBeCloseTo(1 + (end.scale - 1) / 2, 6);
+  expect(mid?.x).toBeCloseTo(end.x / 2, 6);
+  expect(m.done).toBe(false);
+  expect(h.ex.stats().activeTimelines).toBe(1);
+  h.ex.complete();
+  await flush();
+  expect(m.done).toBe(true);
+  expectWorld(lastWorld(h.worlds), end);
+  expect(h.ex.snapshot().cam).toEqual(PUSH);
+  // Held: a line that moves no camera writes no world; a pull returns to rest over its 1200 ms.
+  const n = h.worlds.length;
+  await h.ex.apply([face('ally', 'worried')], { instant: true });
+  expect(h.worlds).toHaveLength(n);
+  // A face patch under the held push renders the pushed rect (review O2: through the delta the executor wrote).
+  const rest = restFraming(LAMP_RIG, S390, 2, false);
+  const pushed = { x: end.x + end.scale * rest.x, y: end.y + end.scale * rest.y, k: end.scale * rest.k };
+  const patched = track(h.ex.apply([face('ally', 'smile')], NOW));
+  await flush();
+  expect(h.plans).toEqual([patchPlan([200, 460, 200, 260], pushed, 2)?.plan]);
+  h.ex.complete();
+  await flush();
+  expect(patched.done).toBe(true);
+  expect(h.worlds).toHaveLength(n);
+  const pull = track(h.ex.apply([camera({ kind: 'pull' })], NOW));
+  await flush();
+  advance(600);
+  expect(lastWorld(h.worlds)?.scale).toBeCloseTo(end.scale - (end.scale - 1) / 2, 6);
+  advance(700);
+  await flush();
+  expect(pull.done).toBe(true);
+  expect(lastWorld(h.worlds)).toEqual(REST);
+  h.ex.destroy();
+});
+
+test('executor: a cut resets the camera', async () => {
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  await h.ex.apply([camera(PUSH)], { instant: true });
+  expectWorld(lastWorld(h.worlds), framed(PUSH));
+  // A cut: at rest at once, at the cut point.
+  h.worlds.length = 0;
+  await h.ex.apply([bg('lamp_cu', 'cut')], NOW);
+  expect(h.worlds).toEqual([REST]);
+  expect('cam' in h.ex.snapshot()).toBe(false);
+  // A dip: at rest at black, not before.
+  await h.ex.apply([camera(PUSH)], { instant: true });
+  h.worlds.length = 0;
+  const dip = track(h.ex.apply([bg('lamp', 'fade', 400)], NOW));
+  await flush();
+  advance(150);
+  expect(h.worlds).toEqual([]);
+  advance(100);
+  expect(h.worlds).toEqual([REST]);
+  advance(250);
+  await flush();
+  expect(dip.done).toBe(true);
+  // A dissolve: the snapshot keeps the pushed frame, then the world is at rest under it; a move in the same batch
+  // starts from rest at the cut point.
+  await h.ex.apply([camera(PUSH)], { instant: true });
+  h.worlds.length = 0;
+  const d = track(h.ex.apply([bg('lamp_cu', 'crossfade', 500), camera({ kind: 'push', to: 'center', z: 110 })], NOW));
+  await flush();
+  expect(h.log.filter((x) => x.startsWith('flatten:'))).toContain('flatten:screen:780x1688');
+  expect(h.worlds).toEqual([REST]);
+  h.ex.complete();
+  await flush();
+  expect(d.done).toBe(true);
+  const cu = LAMP_RIGS.get('lamp_cu' as BgId);
+  if (cu === undefined) {
+    throw new Error('invariant: the fixture has the close-up');
+  }
+  expectWorld(lastWorld(h.worlds), worldOf(restFraming(cu, S390, 2, false), camFraming(cu, S390, 2, false, { kind: 'push', to: 'center', z: 110 })));
+  h.ex.destroy();
+});
+
+test('executor: restore applies the camera end state', async () => {
+  const h = flatHarness();
+  await h.ex.restore({ bg: 'lamp' as BgId, cg: null, chars: [{ char: 'ally' as CharId, expr: 'smile' as ExprId, at: 'center' }], props: [], cam: PUSH });
+  // At once, one write, no timeline.
+  expect(h.worlds).toHaveLength(1);
+  expectWorld(h.worlds[0], framed(PUSH));
+  expect(h.ex.stats().activeTimelines).toBe(0);
+  // A restore without a move: back to rest at once.
+  await h.ex.restore({ bg: 'lamp' as BgId, cg: null, chars: [], props: [] });
+  expect(lastWorld(h.worlds)).toEqual(REST);
+  h.ex.destroy();
+});
+
+test('executor: a relayout re-frames a held push for the new stage', async () => {
+  // D4: the push to the stranger on the phone is held by the plate's right and top edges (the clamp); on the larger
+  // stage the clamp is another, so the held delta is framed again, never kept.
+  const toStranger = { kind: 'push', to: 'stranger' as CharId, z: 120 } as const;
+  const S412: Size = { w: 412, h: 915 };
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  await h.ex.apply([camera(toStranger)], { instant: true });
+  const small = camFraming(LAMP_RIG, S390, 2, false, toStranger);
+  expect(small.x).toBeCloseTo(390 - 1080 * small.k, 9);
+  expect(small.y).toBe(0);
+  const before = lastWorld(h.worlds);
+  expectWorld(before, framed(toStranger));
+  h.stage.size = S412;
+  h.ex.relayout();
+  const large = camFraming(LAMP_RIG, S412, 2, false, toStranger);
+  expect(large.x).toBeCloseTo(412 - 1080 * large.k, 9);
+  expect(large.y).toBe(0);
+  expectWorld(lastWorld(h.worlds), framed(toStranger, S412));
+  expect(Math.abs((lastWorld(h.worlds)?.x ?? 0) - (before?.x ?? 0))).toBeGreaterThan(1);
+  h.ex.destroy();
+});
+
+test('executor: a rebind re-frames a held push on the new adapter', async () => {
+  // D4: the rebuilt stage's world starts at identity; the held push is drawn on it, framed for its size.
+  const S412: Size = { w: 412, h: 915 };
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  await h.ex.apply([camera(PUSH)], { instant: true });
+  const fresh = recordingStage(S412, h.freed, 'draw');
+  h.ex.rebind(fresh.adapter);
+  expect(fresh.worlds).toHaveLength(1);
+  expectWorld(fresh.worlds[0], framed(PUSH, S412));
+  // The held move stays the snapshot's.
+  expect(h.ex.snapshot().cam).toEqual(PUSH);
+  h.ex.destroy();
+});
+
+test('executor: a crossfade onto the shot on stage returns a held camera to rest over its time', async () => {
+  // S1: SH1's rule is kept: any bg resets the camera, the take's crossfade onto the shot on stage included; the drawn
+  // world returns to rest over the crossfade's time, not at once.
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  await h.ex.apply([camera(PUSH)], { instant: true });
+  const end = framed(PUSH);
+  h.worlds.length = 0;
+  const take = track(h.ex.apply([bg('lamp', 'crossfade', 500), props(['key', KEY])], NOW));
+  await flush();
+  expect(h.worlds).toEqual([]);
+  advance(250);
+  expect(lastWorld(h.worlds)?.scale).toBeCloseTo(end.scale - (end.scale - 1) / 2, 6);
+  advance(300);
+  await flush();
+  expect(take.done).toBe(true);
+  expect(lastWorld(h.worlds)).toEqual(REST);
+  expect('cam' in h.ex.snapshot()).toBe(false);
+  expect(h.log.filter((x) => x.startsWith('flatten:'))).toEqual([]);
+  h.ex.destroy();
 });

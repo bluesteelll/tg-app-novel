@@ -9,12 +9,15 @@ import { ROOM_SOURCE } from '../geom/cover.ts';
 import type { Box, Size } from '../geom/cover.ts';
 import type { ImageEntry, Result } from '../story/catalog.ts';
 import type { Box as Box4, ShotRig } from '../story/shots.ts';
-import type { AssetId, BgId, CharId, ExprId, PropId, PropPlacement, PropsCommand, Rect, Slot, StagingCommand, StagingSnapshot } from '../story/staging.ts';
+import type { AssetId, BgId, CamState, CharId, ExprId, PropId, PropPlacement, PropsCommand, Rect, Slot, StagingCommand, StagingSnapshot } from '../story/staging.ts';
+import { patchPlan, snapshotPlan } from './flatten.ts';
+import type { FlatPlan } from './flatten.ts';
 import { backdropPlacement, charPlacement, propPlacement } from './layout.ts';
 import type { StageWindow } from './preload.ts';
-import type { AssetError, AssetRegistry, TextureHandle } from './registry.ts';
+import type { AssetError, AssetRegistry, ReservationId, TextureHandle } from './registry.ts';
 import type { RenderLoop, Ticker } from './render-loop.ts';
-import { faceLayers, facesOf, restFraming, shotSlots } from './shot-view.ts';
+import { CAM_MS, camFraming, faceLayers, facesOf, restFraming, shotSlots, worldOf } from './shot-view.ts';
+import type { WorldDelta } from './shot-view.ts';
 
 /** GSAP's ticker for the render loop: one clock for tweens and frames (K6); tweens update before the frame draws. */
 export const gsapTicker: Ticker = {
@@ -59,6 +62,15 @@ export type Layer = 'bg' | 'props' | 'chars' | 'cg';
  * left; `z` orders a node among its siblings (char groups, prop anchors, the sprites in a `content`).
  */
 export type Placement = { x?: number; y?: number; w?: number; h?: number; alpha?: number; z?: number; scale?: number };
+/** A transition target's sprite (shots §5.5): `set` writes its alpha; only `dropTarget` frees it, with its target. */
+export type FlatRef = SpriteRef & { readonly flat: true };
+/**
+ * Where a target shows: over the whole stage in the transition layer above the world (`screen`, at 1 / plan.scale), or
+ * as a patch in a shot root's `content` at plate px (x, y), scaled by `k` (plate px per target px), at z `z`.
+ */
+export type FlatPlace =
+  | { readonly kind: 'screen' }
+  | { readonly kind: 'group'; readonly parent: GroupRef; readonly x: number; readonly y: number; readonly k: number; readonly z: number };
 
 /** The stage the executor drives; GSAP tweens plain proxies and writes them through `set` (K7). */
 export interface StageAdapter<T> {
@@ -76,6 +88,18 @@ export interface StageAdapter<T> {
   set(target: SpriteRef | GroupRef, p: Placement): void;
   /** The alpha of the full-stage black rect (fade through black). */
   fx(alpha: number): void;
+  /**
+   * The camera's delta on the world container (stage px; identity at rest): written only when it changes, and never
+   * while it stays at rest (a legacy chapter writes nothing).
+   */
+  world?(p: { x: number; y: number; scale: number }): void;
+  /**
+   * One render of the world into a new target (flatten.ts plan), shown at `place`; null when refused (no target left).
+   * Absent: a stage that draws no target (every transition falls back).
+   */
+  flatten?(plan: FlatPlan, place: FlatPlace): FlatRef | null;
+  /** The sprite, then the target with its source: the only path that frees a target. */
+  dropTarget?(f: FlatRef): void;
 }
 
 export interface Executor<T> {
@@ -114,7 +138,8 @@ export interface Executor<T> {
    * (debugPropRects adds the page offset).
    */
   propRects(): ReadonlyArray<{ prop: PropId } & Box>;
-  stats(): { activeTimelines: number };
+  /** `flatRefused` (cumulative): dissolves and patches that fell back to the container-alpha crossfade (CH D15). */
+  stats(): { activeTimelines: number; flatRefused: number };
   /** Kills every timeline, settles every pending apply, destroys every sprite and releases every `scene:*` holder. */
   destroy(): void;
 }
@@ -137,12 +162,19 @@ export type ExecutorDeps<T> = {
   shots?: { rigs(): Rigs; half(): boolean };
   /**
    * A batch's window at its swap point (shots §5.8): the sweep that releases the old shot's holders has run. The swap
-   * point is at black for `scene:` and `bg t=fade`, when the old root retires for a `bg t=crossfade`, right after the
-   * build for any other batch, and at the batch's end when it settles first. Once per batch with a window.
+   * point is at black for `scene:` and `bg t=fade`, when the old root retires for a container-alpha `bg t=crossfade`,
+   * right after the snapshot render for the exact dissolve, right after the build for any other batch, and at the
+   * batch's end when it settles first. Once per batch with a window; never at `destroy()`, after which the scheduler
+   * is destroyed too.
    */
   swapped?(w: StageWindow): void;
-  /** A sweep outside a swap point released a holder: room a refused preload may now take. */
+  /**
+   * A sweep outside a swap point, or the end of a transition's target, released a holder or a reservation: room a
+   * refused preload may now take.
+   */
   released?(): void;
+  /** The GPU generation (controller.ts): a target rendered under an older one lost its pixels in a context change. */
+  gen?(): number;
 };
 type Rigs = ReadonlyMap<BgId, ShotRig> | null;
 
@@ -177,6 +209,23 @@ function slotsOf(s: SceneSnapshot, rigs: Rigs): Map<string, AssetId> {
     out.set(propSlot(p.prop), `prop/${p.prop}` as AssetId);
   }
   return out;
+}
+
+/** The world at rest: no camera move. */
+const REST_WORLD: WorldDelta = Object.freeze({ x: 0, y: 0, scale: 1 });
+const REST_CAM: CamState = Object.freeze({ kind: 'rest' });
+const sameWorld = (a: WorldDelta, b: WorldDelta): boolean => a.x === b.x && a.y === b.y && a.scale === b.scale;
+
+/** The smallest box holding both (plate px). */
+function unionBox(a: Box4, b: Box4): Box4 {
+  const x = Math.min(a[0], b[0]);
+  const y = Math.min(a[1], b[1]);
+  return [x, y, Math.max(a[0] + a[2], b[0] + b[2]) - x, Math.max(a[1] + a[3], b[1] + b[3]) - y];
+}
+
+/** The same expression for the same characters. */
+function sameFaces(a: ReadonlyMap<CharId, ExprId>, b: ReadonlyMap<CharId, ExprId>): boolean {
+  return a.size === b.size && [...a].every(([c, x]) => b.get(c) === x);
 }
 
 function find<K extends VisualCommand['kind']>(
@@ -269,15 +318,22 @@ type Hold<T> = Promise<Result<TextureHandle<T>, AssetError>>;
 /**
  * A hold entry: the acquire, and the handle of the record it is bound to (identity rule item 2): the live record `take`
  * joined, read by `registry.current` right after the acquire, else the handle the acquire resolved with; null until
- * then, and for a take that could not acquire.
+ * then, and for a take that could not acquire. `failed`: the acquire settled with an error (a resolve miss is the
+ * manifest's and never is), the only entry a face change may take again (lane SH6 B2).
  */
-type Held<T> = { readonly hold: Hold<T>; bound: TextureHandle<T> | null };
+type Held<T> = { readonly hold: Hold<T>; bound: TextureHandle<T> | null; failed: boolean };
 type View<T> = { readonly slot: string; readonly handle: TextureHandle<T>; readonly sprite: SpriteRef };
 /**
  * A part of a shot root (shots §5.1): a face's expression group (`expr`) or a member's figure plane (null), one node
- * over the plate whose sprites draw frames of the records their views hold (the sheet, the face file).
+ * over the plate whose sprites draw frames of the records their views hold (the sheet, the face file). `area`: the
+ * union of its sprites' plate boxes (a face patch covers it, S15).
  */
-type Part<T> = { readonly char: CharId; readonly expr: ExprId | null; readonly group: GroupRef; readonly views: readonly View<T>[] };
+type Part<T> = { readonly char: CharId; readonly expr: ExprId | null; readonly group: GroupRef; readonly views: readonly View<T>[]; readonly area: Box4 };
+/**
+ * One face's change on a shot root (K7, S15): the group it leaves (`out` destroys it, once) and the group it shows (none:
+ * back to the rest the plate shows), over `ms`.
+ */
+type FaceSwap<T> = { readonly old: Part<T> | undefined; readonly next: Part<T> | undefined; readonly out: (() => void) | undefined; readonly ms: number };
 /** A bg or a CG in its own anchor (a crossfade holds two); a shot's bg is its root, with its parts by key. */
 type BackdropView<T> = View<T> & { readonly node: AnchorRef; readonly shot?: { readonly rig: ShotRig; readonly parts: Map<string, Part<T>> } };
 /** The slot's live handle for a shot part, or undefined (its record is not live: the part is not drawn). */
@@ -294,6 +350,8 @@ type PropAnchor<T> = { readonly node: AnchorRef; readonly rect: Rect; views: Pro
 /** A visual on its way out: destroyed when its transition ends, when its batch finishes, or by destroy(). */
 type Retiree<T> = { readonly views: readonly View<T>[]; readonly group: GroupRef | null };
 type Timeline = ReturnType<typeof gsap.timeline>;
+/** A live transition target: its sprite, its reservation and the GPU generation it was rendered under. */
+type Flat = { readonly ref: FlatRef; readonly rid: ReservationId; readonly gen: number };
 type Batch<T> = {
   readonly cmds: readonly VisualCommand[];
   readonly target: SceneSnapshot;
@@ -330,6 +388,14 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   const chars = new Map<CharId, CharView<T>>();
   /** Prop anchors by key, in the last props command's order (E-P7): every pass over them walks the draw order. */
   const anchors = new Map<string, PropAnchor<T>>();
+  /** The live transition targets (one batch builds at a time, so they are the running batch's). */
+  const flats = new Set<Flat>();
+  let flatRefused = 0;
+  /** B2 (W1): the face slots taken again since the shot on stage was entered; each at most once per entry. */
+  const retaken = new Set<string>();
+  /** The drawn camera (S20): the world's delta as last written, and the move the last built batch framed. */
+  let world: WorldDelta = REST_WORLD;
+  let drawnCam: CamState = REST_CAM;
 
   /** The record behind `h` has ended (failed its revive): the registry no longer names this handle (identity rule). */
   const ended = (h: TextureHandle<T>): boolean => registry.current(h.id) !== h;
@@ -348,15 +414,16 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     }
     const entry = resolve(id);
     if (!entry.ok) {
-      byId.set(id, { hold: Promise.resolve(entry), bound: null });
+      byId.set(id, { hold: Promise.resolve(entry), bound: null, failed: false });
       return Promise.resolve(entry);
     }
     const hold = registry.acquire(id, holder, { entry: entry.value, priority: 'visible' });
-    const held: Held<T> = { hold, bound: registry.current(id) };
+    const held: Held<T> = { hold, bound: registry.current(id), failed: false };
     void hold.then((r) => {
       if (r.ok && held.bound === null) {
         held.bound = r.value;
       }
+      held.failed = !r.ok;
     });
     byId.set(id, held);
     return hold;
@@ -454,6 +521,42 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     }
   };
 
+  /**
+   * One transition target (shots §5.5 step 1; CH D14, D15): `plan.bytes` reserved under `holder` in the transient band,
+   * then the world rendered once into it; null (the caller falls back, counted) when the stage draws no target, the
+   * reservation is refused or the render gate is closed.
+   */
+  const makeFlat = (holder: string, plan: FlatPlan, place: FlatPlace): Flat | null => {
+    if (adapter.flatten !== undefined) {
+      const r = registry.reserve(holder, plan.bytes);
+      if (r.ok) {
+        const ref = adapter.flatten(plan, place);
+        if (ref !== null) {
+          const f: Flat = { ref, rid: r.value, gen: deps.gen?.() ?? 0 };
+          flats.add(f);
+          return f;
+        }
+        registry.unreserve(r.value);
+      }
+    }
+    flatRefused += 1;
+    return null;
+  };
+  /**
+   * A target's end, once: its sprite and target freed by the adapter that made it (a rebind completes first), its
+   * reservation returned, and the room reported (T6) unless the executor is being destroyed (review O4).
+   */
+  const dropFlat = (f: Flat, report = true): void => {
+    if (!flats.delete(f)) {
+      return;
+    }
+    adapter.dropTarget?.(f.ref);
+    registry.unreserve(f.rid);
+    if (report) {
+      deps.released?.();
+    }
+  };
+
   /** The sprite only: its texture stays held until sweep() finds the (holder, id) unused. */
   const destroyView = (v: View<T>): void => {
     adapter.destroy(v.sprite);
@@ -517,6 +620,21 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     adapter.set(v.node.anchor, { x: c.offsetX, y: c.offsetY });
     adapter.set(v.sprite, { w: ROOM_SOURCE.w * c.scale, h: ROOM_SOURCE.h * c.scale });
   };
+  /** The world to `p` (shots §5.4): written only when it changes. */
+  const writeWorld = (p: WorldDelta): void => {
+    if (!sameWorld(world, p)) {
+      world = { x: p.x, y: p.y, scale: p.scale };
+      adapter.world?.(world);
+    }
+  };
+  /** The world's delta that frames `cam` on `rig` at the stage's size (rest for no rig: a legacy bg, or none). */
+  const framingOf = (rig: ShotRig | undefined, cam: CamState): WorldDelta => {
+    if (rig === undefined) {
+      return REST_WORLD;
+    }
+    const half = deps.shots?.half() ?? false;
+    return worldOf(restFraming(rig, adapter.size(), resolution, half), camFraming(rig, adapter.size(), resolution, half, cam));
+  };
   /**
    * One part of a shot root (shots §5.1): `char`'s figure plane (`expr` null), or its expression group at `expr` (the
    * layer, then the member's hair locks: `faceLayers`, so only that expression's own set, RULINGS 273 O2), on top of the
@@ -556,19 +674,35 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         adapter.set(sprite, { x, y, w, h: ht });
       }
     } catch (e) {
-      destroyPart({ char, expr, group, views });
+      destroyPart({ char, expr, group, views, area: [0, 0, 0, 0] });
       throw e;
     }
     // Members back to front; a figure plane under its member's face.
     adapter.set(group, { z: 2 * rig.cast.findIndex((m) => m.char === char) + (expr === null ? 1 : 2) });
-    return { char, expr, group, views };
+    return { char, expr, group, views, area: drawn.map((d) => d.at).reduce(unionBox) };
+  };
+  /** K7: the new group fades in over the old one, or the old one out to the rest; the old one goes at the end. */
+  const crossfadeFace = (fade: Fade, s: FaceSwap<T>): void => {
+    if (s.next !== undefined) {
+      fade(s.next.group, 0, 1, s.ms, s.out);
+    } else if (s.old !== undefined) {
+      fade(s.old.group, 1, 0, s.ms, s.out);
+    }
   };
   /**
    * A shot root's parts to `faces` (K7): a missing figure plane is drawn; per face whose expression changed, the new
    * group fades in over the old one, which retires whole at the fade's end; a face back to its rest (the plate shows
-   * it) or whose file is not live fades its group out. Only a changed face's groups are touched.
+   * it) or whose file is not live fades its group out. Only a changed face's groups are touched. With `swaps`, each
+   * change is built and listed there instead of faded (the batch patches them, S15).
    */
-  const drawFaces = (v: BackdropView<T>, faces: ReadonlyMap<CharId, ExprId>, handleOf: HandleOf<T>, fade: Fade, msOf: (c: CharId) => number): void => {
+  const drawFaces = (
+    v: BackdropView<T>,
+    faces: ReadonlyMap<CharId, ExprId>,
+    handleOf: HandleOf<T>,
+    fade: Fade,
+    msOf: (c: CharId) => number,
+    swaps?: FaceSwap<T>[],
+  ): void => {
     const shot = v.shot;
     if (shot === undefined) {
       return;
@@ -587,13 +721,20 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         continue;
       }
       const next = x === null ? undefined : part(v, shot.rig, m.char, x, handleOf);
+      if (next === undefined && old === undefined) {
+        continue;
+      }
       const out = old === undefined ? undefined : retire(old.views, old.group);
       if (next !== undefined) {
         shot.parts.set(key, next);
-        fade(next.group, 0, 1, msOf(m.char), out);
-      } else if (old !== undefined) {
+      } else {
         shot.parts.delete(key);
-        fade(old.group, 1, 0, msOf(m.char), out);
+      }
+      const s: FaceSwap<T> = { old, next, out, ms: msOf(m.char) };
+      if (swaps === undefined) {
+        crossfadeFace(fade, s);
+      } else {
+        swaps.push(s);
       }
     }
   };
@@ -688,7 +829,10 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     } else {
       loop.requestRender();
     }
-    // Batches build one at a time, so whatever still retires belongs to this one.
+    // Batches build one at a time, so whatever still retires, and every live target, belongs to this one.
+    for (const f of [...flats]) {
+      dropFlat(f);
+    }
     for (const r of [...retiring]) {
       retireNow(r);
     }
@@ -707,6 +851,14 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     const sec = (ms: number): number => (b.instant ? 0 : Math.max(0, ms) / 1000);
     /** The swap point comes later than the build: at black, or when the old root retires. */
     let later = false;
+    /** The exact dissolve's target: the swap point is right after its render, whether or not a window is reported. */
+    let flat: Flat | null = null;
+    /** The face changes the batch patches (S15): listed by a batch whose props change at once, patched at the end. */
+    let swaps: FaceSwap<T>[] | null = null;
+    /** Q7: when a scene or a bg puts the camera back to rest (s: 0, or at black for a dip); null: the drawn one holds. */
+    let camCut: number | null = null;
+    /** S1: a take's crossfade onto the shot on stage returns the camera to the target's framing over its time (ms). */
+    let camMs = 0;
     /**
      * The batch's handle for a slot only while its record is live, read in the same step as the sprite it makes,
      * also at a fade's midpoint (identity rule item 1). Else the slot is built as a skipped visual.
@@ -726,13 +878,110 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       const rig = target.bg === null ? undefined : b.rigs?.get(target.bg);
       return rig && { rig, faces: facesOf(target), handleOf: shotHandle };
     };
-    /** The faces of the shot on stage to the target's, over each face command's time (200 ms by default). */
-    const syncFaces = (now = false): void => {
+    /**
+     * The faces of the shot on stage to the target's, over each face command's time (200 ms by default); with `swaps`,
+     * built and listed for patchFaces.
+     */
+    const syncFaces = (now = false, swaps?: FaceSwap<T>[]): void => {
       if (bg !== null) {
         const msOf = (c: CharId): number =>
           now ? 0 : (b.cmds.find((x): x is Extract<VisualCommand, { kind: 'face' }> => x.kind === 'face' && x.char === c)?.ms ?? 200);
-        drawFaces(bg, facesOf(target), shotHandle, fade, msOf);
+        drawFaces(bg, facesOf(target), shotHandle, fade, msOf, swaps);
       }
+    };
+    /**
+     * S15 (shots §5.5, D9, review O1): each timed face change on the shot root as an exact patch, the union of its old
+     * and new groups' boxes rendered at the after-state into a target in the root's content above every part. Every
+     * changed face is set to its after-state, every patch rendered, then every face back at its before-state; a patch
+     * fades in over its face's time, and at its end the new group shows, the old one goes and the target is dropped. A
+     * face whose patch is refused (no target member, no room in the band, past the cap, a closed render gate) takes
+     * K7, counted in `flatRefused`; one with no time changes at once.
+     */
+    /**
+     * The drawn camera to the target's (S20, shots §5.4, Q7): a scene or a bg puts it back to rest at the cut point (at
+     * once, or at black for a dip); then the batch's move tweens from there to the target's framing over its time
+     * (power1.inOut, on the batch's timeline, so a tap completes it); a take's crossfade onto the shot on stage returns
+     * it over the crossfade's time (S1); any other change (a restore, an instant batch) is set at once. A stage at rest
+     * that stays at rest (every legacy chapter) writes nothing.
+     */
+    const camera = (): void => {
+      const rig = target.bg === null ? undefined : b.rigs?.get(target.bg);
+      drawnCam = target.cam ?? REST_CAM;
+      const end = framingOf(rig, drawnCam);
+      const at = camCut ?? 0;
+      const from = camCut === null ? world : REST_WORLD;
+      if (camCut !== null && !sameWorld(world, REST_WORLD)) {
+        if (at === 0) {
+          writeWorld(REST_WORLD);
+        } else {
+          tl.call(() => writeWorld(REST_WORLD), undefined, at);
+        }
+      }
+      if (sameWorld(from, end)) {
+        return;
+      }
+      const move = find(b.cmds, 'cam');
+      const d = sec(move === undefined ? camMs : (move.ms ?? CAM_MS[move.cam.kind]));
+      if (d === 0) {
+        if (at === 0) {
+          writeWorld(end);
+        } else {
+          tl.call(() => writeWorld(end), undefined, at);
+        }
+        return;
+      }
+      // The eased ratio, not the delta: GSAP rounds a tweened value to 1e-6, and the held framing must be exact.
+      const p = { t: 0 };
+      const lerp = (t: number): WorldDelta =>
+        t >= 1 ? end : { x: from.x + (end.x - from.x) * t, y: from.y + (end.y - from.y) * t, scale: from.scale + (end.scale - from.scale) * t };
+      tl.to(p, { t: 1, duration: d, ease: 'power1.inOut', onUpdate: () => writeWorld(lerp(p.t)) }, at);
+    };
+    const patchFaces = (swaps: readonly FaceSwap<T>[]): void => {
+      const root = bg;
+      const rig = root?.shot?.rig;
+      const show = (p: Part<T> | undefined, alpha: number): void => {
+        if (p !== undefined) {
+          adapter.set(p.group, { alpha });
+        }
+      };
+      const timed = (s: FaceSwap<T>): boolean => sec(s.ms) > 0;
+      if (root === null || rig === undefined || adapter.flatten === undefined || !swaps.some(timed)) {
+        for (const s of swaps) {
+          flatRefused += timed(s) ? 1 : 0;
+          crossfadeFace(fade, s);
+        }
+        return;
+      }
+      // Plate px to stage px through the root's rest framing and the world's delta (review O2: the one written last).
+      const rest = restFraming(rig, adapter.size(), resolution, deps.shots?.half() ?? false);
+      const at = { x: world.x + world.scale * rest.x, y: world.y + world.scale * rest.y, k: world.scale * rest.k };
+      for (const s of swaps) {
+        show(s.old, 0);
+        show(s.next, 1);
+      }
+      const made = swaps.map((s): Flat | null => {
+        const area = [s.old?.area, s.next?.area].filter((x): x is Box4 => x !== undefined).reduce(unionBox);
+        const p = timed(s) ? patchPlan(area, at, resolution) : null;
+        if (p === null) {
+          flatRefused += timed(s) ? 1 : 0;
+          return null;
+        }
+        return makeFlat('flat:patch', p.plan, { kind: 'group', parent: root.node.content, x: p.x, y: p.y, k: p.k, z: 2 * rig.cast.length + 1 });
+      });
+      swaps.forEach((s, i) => {
+        const f = made[i] ?? null;
+        show(s.old, 1);
+        if (f === null) {
+          crossfadeFace(fade, s);
+          return;
+        }
+        show(s.next, 0);
+        fade(f.ref, 0, 1, s.ms, () => {
+          show(s.next, 1);
+          s.out?.();
+          dropFlat(f);
+        });
+      });
     };
 
     /** Tweens an alpha from → to from t = 0; with no time it is set at once and `onEnd` runs now. */
@@ -927,6 +1176,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
 
     const scene = find(b.cmds, 'scene');
     if (scene !== undefined) {
+      camCut = sec(scene.t === 'cut' ? 0 : scene.ms) / 2;
       // §7 step 2: while black, hide every character, remove the CG and the props, set the bg, apply the shows.
       dip(scene.t === 'cut' ? 0 : scene.ms, () => {
         for (const cv of [...chars.values()]) {
@@ -966,6 +1216,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       // §7 step 3: bg, show, hide, cg (and props) start together.
       const bgCmd = find(b.cmds, 'bg');
       if (bgCmd !== undefined && bgCmd.t === 'fade') {
+        camCut = sec(bgCmd.ms) / 2;
         dip(bgCmd.ms, () => {
           swapBg();
           syncFaces(true);
@@ -976,27 +1227,55 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       } else if (bgCmd !== undefined && bgCmd.t === 'crossfade') {
         const id = want.get('bg') ?? null;
         const h = handleFor('bg');
-        if ((bg?.handle.id ?? null) !== id && h !== undefined) {
-          // New over old, never a symmetric fade (K7); the old one is destroyed when the new one is opaque. Another
-          // shot is the dissolve's fallback: the new root over the old, which retires whole (shots §5.5).
-          const old = bg;
-          bg = backdrop('bg', h, 0, shotOf());
-          if (old === null) {
-            fade(bg.node.anchor, 0, 1, bgCmd.ms);
+        const old = bg;
+        // Another root (or a kept one, its plate failed) is a cut at t = 0; the shot on stage is a take (S1).
+        if ((old?.handle.id ?? null) !== id) {
+          camCut = 0;
+        } else {
+          camMs = bgCmd.ms;
+        }
+        if ((old?.handle.id ?? null) !== id && h !== undefined) {
+          // D2: another shot of a shot chapter over a root on stage, in time, is the exact dissolve (shots §5.5): the
+          // target holds the old stage's pixels, so the old root goes now and the new one is built opaque under it.
+          flat = old !== null && b.rigs !== null && sec(bgCmd.ms) > 0 ? makeFlat('flat:dissolve', snapshotPlan(adapter.size(), resolution), { kind: 'screen' }) : null;
+          if (flat !== null && old !== null) {
+            const f = flat;
+            destroyBackdrop(old);
+            bg = null;
+            try {
+              bg = backdrop('bg', h, 1, shotOf());
+            } catch (e) {
+              dropFlat(f);
+              throw e;
+            }
+            fade(f.ref, 1, 0, bgCmd.ms, () => dropFlat(f));
           } else {
-            const retireOld = retireBackdrop(old);
-            later = true;
-            fade(bg.node.anchor, 0, 1, bgCmd.ms, () => {
-              retireOld();
-              swap(b);
-            });
+            // New over old, never a symmetric fade (K7); the old one is destroyed when the new one is opaque. The
+            // dissolve's fallback (CH D15) and the legacy crossfade: the new root over the old, which retires whole.
+            bg = backdrop('bg', h, 0, shotOf());
+            if (old === null) {
+              fade(bg.node.anchor, 0, 1, bgCmd.ms);
+            } else {
+              const retireOld = retireBackdrop(old);
+              later = true;
+              fade(bg.node.anchor, 0, 1, bgCmd.ms, () => {
+                retireOld();
+                swap(b);
+              });
+            }
           }
         }
-        syncFaces();
-        syncProps(bgCmd.ms);
+        // Under a target the faces and props change at once: it covers the old ones, and a fade under it would show late.
+        syncFaces(flat !== null);
+        syncProps(flat === null ? bgCmd.ms : 0);
       } else {
+        if (bgCmd !== undefined) {
+          camCut = 0;
+        }
         swapBg();
-        syncFaces();
+        // A face change fades no props here: its patch renders once the batch's instant changes are written (S15).
+        swaps = [];
+        syncFaces(false, swaps);
         syncProps(0);
       }
 
@@ -1057,7 +1336,16 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       }
     }
 
-    if (!later) {
+    // The camera first, so a patch renders under the world it shows from t = 0.
+    camera();
+    if (swaps !== null) {
+      patchFaces(swaps);
+    }
+
+    if (flat !== null) {
+      // The old shot's holders go with the snapshot (§5.5 step 3), reported as the swap or as a release.
+      sweepFor(b);
+    } else if (!later) {
       swap(b);
     }
 
@@ -1137,16 +1425,39 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   /**
    * The logical stage moves to `target`; every slot whose id changes is taken now. `covered`: the slots a CG covers are
    * taken by a second instant batch chained behind this one, which this batch does not wait for (restore with a CG).
+   * B2 (W1, E1 lifetime): a batch that changes a face on a shot takes again its sheet or a face file whose take failed,
+   * at most once per slot per entry of the shot (a bg to another id, or a restore: `entry`); every other slot, and every
+   * legacy chapter, keeps its failed take until its id changes.
    */
-  const enqueue = (cmds: readonly VisualCommand[], target: SceneSnapshot, instant: boolean, rigs: Rigs, window: StageWindow | null, covered = false): Promise<void> => {
-    const before = slotsOf(logical, logicalRigs);
+  const enqueue = (
+    cmds: readonly VisualCommand[],
+    target: SceneSnapshot,
+    instant: boolean,
+    rigs: Rigs,
+    window: StageWindow | null,
+    covered = false,
+    entry = false,
+  ): Promise<void> => {
+    const prev = logical;
+    const before = slotsOf(prev, logicalRigs);
     logical = target;
     logicalRigs = rigs;
+    if (entry || prev.bg !== target.bg) {
+      retaken.clear();
+    }
+    const faced = target.bg !== null && rigs?.has(target.bg) === true && !sameFaces(facesOf(prev), facesOf(target));
+    const failed = (slot: string, id: AssetId): boolean => holds.get(holderOf(slot))?.get(id)?.failed === true;
     const takes = new Map<string, Hold<T>>();
     const under = new Map<string, Hold<T>>();
     for (const [slot, id] of slotsOf(target, rigs)) {
+      const into = covered && slot !== 'cg' ? under : takes;
       if (before.get(slot) !== id) {
-        takeFor(covered && slot !== 'cg' ? under : takes, slot, id);
+        takeFor(into, slot, id);
+      } else if (faced && (slot === 'sheet' || slot.startsWith('face:')) && !retaken.has(slot) && failed(slot, id)) {
+        // Waited on as a first take is: a face drawn from it needs it.
+        retaken.add(slot);
+        holds.get(holderOf(slot))?.delete(id);
+        takeFor(into, slot, id);
       }
     }
     const done = queue(cmds, target, instant, takes, rigs, window);
@@ -1183,7 +1494,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       }
       complete();
       // A CG covers the stage: the restore waits for it alone (a covered plate loading late shows nothing new).
-      return enqueue([], copy(s), true, deps.shots?.rigs() ?? null, null, s.cg !== null);
+      return enqueue([], copy(s), true, deps.shots?.rigs() ?? null, null, s.cg !== null, true);
     },
     snapshot() {
       return copy(logical);
@@ -1206,6 +1517,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       for (const a of anchors.values()) {
         placeAnchor(a);
       }
+      // D4: the held move framed again for the new size, re-clamped inside the plate (never the old stage's delta).
+      writeWorld(framingOf(bg?.shot?.rig, drawnCam));
       loop.requestRender();
     },
     rebind(a) {
@@ -1215,6 +1528,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       complete();
       adapter = a;
       fxAlpha = 0;
+      // The new stage's world is at identity.
+      world = REST_WORLD;
       // After complete() every visual is at its end state: opaque, at its slot. A view whose record ended is not
       // re-created (identity rule item 1); reacquire() takes its slot again.
       const again = <V extends View<T>>(v: V, layer: Layer, group?: GroupRef): V => {
@@ -1240,7 +1555,14 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
           continue;
         }
         const group = adapter.group(cv.char);
-        const view = again(cv.view, 'chars', group);
+        // A sprite that throws takes its fresh group with it (newChar's rule; carry E2).
+        let view: View<T>;
+        try {
+          view = again(cv.view, 'chars', group);
+        } catch (e) {
+          adapter.dropGroup(group);
+          throw e;
+        }
         chars.set(cv.char, { char: cv.char, group, at: cv.at, view });
         placeCharSprite(view);
         adapter.set(group, { ...groupAt(cv.at, view), alpha: 1 });
@@ -1271,11 +1593,19 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         adapter.set(node.anchor, { alpha: 1 });
       }
       orderProps();
+      // D4: the held move on the new stage, framed for its size.
+      writeWorld(framingOf(bg?.shot?.rig, drawnCam));
       loop.requestRender();
     },
     reacquire() {
       if (destroyed) {
         return;
+      }
+      // A target rendered under an older GPU generation lost its pixels (revive-flow.ts): its batch ends now. One
+      // rendered on the restored context stays (review O3).
+      const gen = deps.gen?.();
+      if ([...flats].some((f) => gen === undefined || f.gen < gen)) {
+        complete();
       }
       if (shownViews().some((v) => ended(v.handle))) {
         // No transition may write to a view after it is gone: every running batch ends first (its retirees with it).
@@ -1340,7 +1670,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       return [...anchors.values()].flatMap((a) => a.views.map((v) => ({ prop: v.prop, ...v.box })));
     },
     stats() {
-      return { activeTimelines: active.size };
+      return { activeTimelines: active.size, flatRefused };
     },
     destroy() {
       if (destroyed) {
@@ -1358,6 +1688,10 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       }
       unfinished.length = 0;
       active.clear();
+      // Before the roots, which a patch lives in; no release is reported (S4's rule for the swap, review O4).
+      for (const f of [...flats]) {
+        dropFlat(f, false);
+      }
       for (const r of [...retiring]) {
         retireNow(r);
       }

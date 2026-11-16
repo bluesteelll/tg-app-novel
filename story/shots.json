@@ -65,6 +65,12 @@
           "rest": "worried"
         }
       ]
+    },
+    {
+      "id": "lamp_lens_insert",
+      "loc": "lamp_room",
+      "frame": "insert",
+      "cast": []
     }
   ]
 }
