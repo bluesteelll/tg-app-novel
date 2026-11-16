@@ -398,7 +398,7 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   - **SH6** `b0ef547` (E_engine 1.6, entry +0.1 KB, RULINGS 367): engine **211,126** (+2,396 against the +3,743 B STOP; sample 2.396 / 1.6 = **1.498**), entry **39,155** (+23 against +100),
     first line **250,281** (+2,419 against +3,843), all JS **292,168** (+2,443 against +3,843), explore-ui **13,405** (-1), puzzle-host **2,988** (-1), puzzle-type **2,223** (+1), cue-stage
     **6,224** (+20), meta-ui **5,434** (+6), meta controller 5,147 (+2), overlays 2,493 (+3), first load ch1 **303,647** / ch3 **283,007**, entry step images ch4 16.7 KB; 113 rows, 112 PASS,
-    0 FAIL, 1 PENDING (the new row `image bg/lamp_lens_insert`; RULINGS 374).
+    0 FAIL, 1 PENDING (the `scene-motion chunk` row, SH7's; the new row `image bg/lamp_lens_insert` is a PASS; RULINGS 374; Changed by RULINGS 374 (as of `172e47e`; docs lane `docs-errata-21`, group B): the first text read "the new row `image bg/lamp_lens_insert`" as the PENDING one, which `sh6-shot-cuts/impl.md:158` and `merge/verify-gates.md:178-179` do not say).
   **R:** engine **1.748** at GM8h's merge (n 25: the 13th value; RULINGS 372) and **1.724** at SH6's (n 26: -0.127, 0.123, 0.527, 0.871, 1.009, 1.036, 1.27, 1.31, 1.390, 1.498, 1.527,
   1.558, **1.700**, **1.748**, 2.306, 2.551, 2.90, 3.025, 3.131, 3.364, 3.513, 3.546, 4.000, 4.60, 5.96, 11.1; the median (1.700 + 1.748) / 2; RULINGS 374); later lanes use 1.724. The
   explore-ui R stays **2.319** (the list is not rebuilt, RULINGS 214's rule). Remaining engine terms (ARITHMETIC): **5.741** at GM8h's cut (E_engine 0.45 in place of the row's 0.11,

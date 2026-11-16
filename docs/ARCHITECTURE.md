@@ -52,7 +52,8 @@
 > RULINGS 291); open at `48489b7`: the client lane GM5q `gm5q-mech-place-quotient` (lane A, RULINGS 309, 313) and
 > this docs lane `docs-errata-18` (lane C, RULINGS 315); open at `f6487fc`: the client lane GM7p `gm7p-mech-path`
 > (lane A, RULINGS 342, 344, 345) and this docs lane `docs-errata-19` (lane C, RULINGS 347); open at `b0b1b41`: this
-> docs lane `docs-errata-20` alone (lane C, RULINGS 362; engine GM8h next in lane A). Parts not
+> docs lane `docs-errata-20` alone (lane C, RULINGS 362; engine GM8h next in lane A); open at `172e47e`: this docs
+> lane `docs-errata-21` alone (lane C, RULINGS 376; engine GM8h2 next in lane A, RULINGS 375). Parts not
 > built yet are marked **planned** with the lane and the plan section. Operating the bot and the server: the
 > runbooks, indexed in the [README](../README.md#documentation).
 
@@ -634,6 +635,12 @@ At `6e459a3` (GM7p, GM7g and GM8i; RULINGS 351, 359, 361; `b0b1b41` adds docs on
 2,172, GM7g +63 with the shared `reach` chunk), explore-ui 13,101 B (GM7g 12,587, GM8i +514), cue-stage 6,136 B (GM8i
 +36), all JS 288,342 B, first-load ch1 300,364 B and ch3 279,724 B; 112 rows, 111 PASS, 0 FAIL, 1 PENDING; R 2.027 (n
 24).
+At `b0ef547` (GM8h and SH6; RULINGS 372, 374; `172e47e` adds docs only) the rows read the engine closure 211,126 B (GM8h
++701 to 208,730, SH6 +2,396), the entry closure 39,155 B (GM8h -37, SH6 +23), the JS before the first line 250,281 B
+(247,862 B at `4471fbf`), puzzle-type 2,223 B, puzzle-host 2,988 B (GM8h +345 to 2,989, SH6 -1), explore-ui 13,405 B
+(GM8h +305 to 13,406, SH6 -1), cue-stage 6,224 B (GM8h +68, SH6 +20), meta-ui 5,434 B, all JS 292,168 B (289,725 B at
+`4471fbf`), first-load ch1 303,647 B (301,227 B at `4471fbf`) and ch3 283,007 B; 113 rows, 112 PASS, 0 FAIL, 1 PENDING; R
+1.724 (n 26).
 FEATURE_MAP's build row has each lane's before -> after.
 
 **The leak scan** `scan-dist.ts` reads every file of `client/dist/` (with decoded `data:` URIs) against fingerprint

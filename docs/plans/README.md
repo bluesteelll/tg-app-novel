@@ -66,6 +66,18 @@ per-player GM6c1a are ready by their rows, with no slot ruled; by length the cha
 GM6c3 and GM6d1 to GM9r is now one lane longer than the mechanics chain from GM8h (11 lanes against 10 to SH12b; engine
 §12's status block), while RULINGS 241's order stands; two lanes at most (RULINGS 255, 276, 338); the rest is planned,
 in the one order below.
+Changed by RULINGS 363-376 (as of `172e47e`; docs lane `docs-errata-21`, group B): built since also engine GM8h
+(`4471fbf`; a device drawn inside its view room; engine R 1.748, RULINGS 372) and shots SH6 (`b0ef547`; exact cuts between
+shots, the face patch and the camera push; engine R 1.724, RULINGS 374), side by side from `572c13d` and `284f948` by
+disjoint locks (RULINGS 363 S3, 365); GM8h's merge followed a fix round the orchestrator's pre-merge verifiers asked for
+(RULINGS 368, 372), SH6 merged second, after a trunk sync and a full merge check (RULINGS 372, 374); GM8h's split made a
+new engine lane, GM8h2 `mech-device-cues` (RULINGS 363 S1; launch rulings RULINGS 375, its spec in preparation); the
+lever Y stays an approved design on the shelf (RULINGS 374); no plan lane runs: the docs lane `docs-errata-21` holds lane
+C (RULINGS 376); next, engine GM8h2 in lane A, then GM8a -> GM8b -> GM8d -> GM9r; in lane C, engine GM9p, shots SH7 and
+per-player GM6c1a are ready by their rows, with no slot ruled; by length the shot chain from SH7 through per-player
+GM6c2, GM6c3 and GM6d1 to GM9r is now as long as the mechanics chain from GM8h2 (10 lanes each to SH12b; engine §12's
+status block), while RULINGS 241's order stands; two lanes at most (RULINGS 255, 276, 338); the rest is planned, in the
+one order below.
 
 - [engine](engine/README.md) — the mechanics engine: module contract, world data, puzzle types, the cue union and bus, lanes GM1a-GM9r.
 - [per-player](per-player/README.md) — per-player codes and labels on the art: the server half, the values store, labels, lanes GM6a-GM6d2.

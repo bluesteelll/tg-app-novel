@@ -255,6 +255,10 @@ puzzle", "Grid puzzle" and "Devices" rows; the "World tooling", "Puzzle rules", 
 line citations re-pointed only, the "Boot", "Image trimming", "Texture memory", "Half tier", "Exploration model",
 "State visuals", "Views", "Place quotient", "Combine" and "Flags" rows).
 
+Open at `172e47e` (RULINGS 376): this docs lane `docs-errata-21` (lane C); no code lane (engine GM8h2 is next in lane A,
+RULINGS 375). GM8h mech-device-host (merged `4471fbf`, RULINGS 372) and SH6 shot-cuts (merged `b0ef547`, RULINGS 374)
+are the lanes this docs lane's map rows cover.
+
 - **The adopted plans' features** (the mechanics engine, per-player values and labels, drawn-shot staging): the
   planned lanes GM1a-GM9r, GM6a-GM6d2 and SH1-SH12b of [docs/plans/README.md](plans/README.md) (planned, not built),
   in the one order of [engine §12](plans/engine/12f-order-and-conflicts.md#order-and-conflicts); GM1a and GM6k were
@@ -297,6 +301,16 @@ line citations re-pointed only, the "Boot", "Image trimming", "Texture memory", 
   [engine §12](plans/engine/12f-order-and-conflicts.md#order-and-conflicts)), while RULINGS 241's order stands; two
   lanes at most (RULINGS 255, 276, 338); R is 2.027 and the trigger does not hold (Ledger 4 218.977 / 230.0, Ledger 2
   39.169 / 40.0, Ledger 1 258.146 / 270.0; RULINGS 361).
+  Changed by RULINGS 363-376 (as of `172e47e`; docs lane `docs-errata-21`, group B): built since `b0b1b41` (RULINGS 372,
+  374): GM8h `mech-device-host` (lane A, `4471fbf`) and SH6 `shot-cuts` (lane C, `b0ef547`), side by side by disjoint
+  locks (RULINGS 363 S3, 365); GM8h's split made GM8h2 `mech-device-cues` (RULINGS 363 S1; launch rulings RULINGS 375;
+  its spec is in preparation), next in lane A before GM8a and GM8d (RULINGS 375 S3), then GM8a -> GM8b -> GM8d -> GM9r;
+  no code lane runs (this docs lane holds lane C, RULINGS 376); in lane C, GM9p, SH7 and per-player GM6c1a are ready by
+  their rows, with no slot ruled; by length the shot chain from SH7 and the mechanics chain from GM8h2 are now equal
+  (10 lanes each to SH12b;
+  [engine §12](plans/engine/12f-order-and-conflicts.md#order-and-conflicts)), while RULINGS 241's order stands; two
+  lanes at most (RULINGS 255, 276, 338); R is 1.724 and the trigger does not hold (Ledger 4 217.834 / 230.0, Ledger 2
+  39.155 / 40.0, Ledger 1 256.989 / 270.0; RULINGS 374).
 - **Erasure on request**: a later lane before production; until then the manual procedure of
   [privacy-ops.md](runbooks/privacy-ops.md#answer-a-deletion-request-manual-erasure). Built since GM6k: the order it
   will run, as data (`ERASURE_ORDER`, the "Database and migrations" row); no command or route runs it yet.
