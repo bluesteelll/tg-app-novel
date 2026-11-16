@@ -37,6 +37,10 @@
     ongetmore,
     oncue,
     onreach,
+    onwork,
+    oncommit,
+    ondemo,
+    onblocked,
     place = 'frame',
   }: PuzzleHostProps = $props();
 
@@ -146,6 +150,10 @@
               {onchange}
               {item}
               {onreach}
+              {onwork}
+              {oncommit}
+              {ondemo}
+              {onblocked}
               oncue={gesture}
             />
           {/if}
@@ -186,6 +194,10 @@
                 {onchange}
                 {item}
                 {onreach}
+                {onwork}
+                {oncommit}
+                {ondemo}
+                {onblocked}
                 oncue={gesture}
               />
             {/if}

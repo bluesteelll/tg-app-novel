@@ -4190,7 +4190,9 @@ function viewType<T extends string>(type: T, over: Partial<PuzzleTypeData<T, Par
 
 /** A configuration device posted by its commit part (`commit: 'control'`), its wrong posted: a `setting`. */
 const DIALS = viewType('dials');
-const DEVICE_TYPES: PuzzleTypes = [...PUZZLE_TYPES, DIALS];
+/** A configuration device that knows a wrong press itself (`wrong: 'local'`): no POST checks it. */
+const BELLS = viewType('bells', { wrong: 'local' });
+const DEVICE_TYPES: PuzzleTypes = [...PUZZLE_TYPES, DIALS, BELLS];
 const DEV = 'dev' as PuzzleLocalId;
 
 /**
@@ -4540,5 +4542,64 @@ test("yields: opening another puzzle during a hidden device's POST drops the dev
   q.answer(POSTED_WRONG);
   await settle();
   expect([r.yields.world().puzzles[DEV], r.events]).toEqual([undefined, []]);
+  r.yields.dispose();
+});
+
+/** The puzzle cues after `mark`, as `name@index`. */
+const puzzleCuesOf = (r: Rig, mark: number): string[] =>
+  r.cues.slice(mark).flatMap((e) => (e.cue.kind === 'puzzle' ? [`${e.cue.name}@${String(e.cue.index)}`] : []));
+
+test('yields: the third local wrong input ends the device failed and fires its onFail', async () => {
+  // §7.5 "Attempts": a `wrong: 'local'` device's wrong press counts one attempt with no POST (`failLocal`, then
+  // `attempted`); the third of three ends it failed, and its lock's onFail runs (the coin; `fail:panel.dial`).
+  const r = deviceRig('bells', { maxAttempts: 3 });
+  await atDevice(r);
+  const mark = r.cues.length;
+  r.yields.host.onwork?.([1, 0, 0], true);
+  await settle();
+  expect([r.puzzle.frame?.answer, r.puzzle.frame?.line, r.puzzle.frame?.attemptsLeft, r.puzzle.frame?.busy]).toEqual([[1, 0, 0], 'wrong', 2, false]);
+  expect(puzzleCuesOf(r, mark)).toEqual(['input@0', 'wrong@null']);
+  r.yields.host.onwork?.([1, 1, 0], true);
+  await settle();
+  expect(r.puzzle.frame?.attemptsLeft).toBe(1);
+  r.yields.host.onwork?.([1, 1, 1], true);
+  await settle();
+  expect([r.puzzle.frame, r.calls.attempts]).toEqual([null, 0]);
+  expect(r.events.map((e) => (e.kind === 'puzzle_ended' ? e.outcome : e.kind))).toEqual(['failed']);
+  const w = r.yields.world();
+  expect([w.puzzles[DEV]?.outcome, w.puzzles[DEV]?.attempts, w.fired.includes('fail:panel.dial'), w.held]).toEqual(['failed', 3, true, ['coin']]);
+  r.yields.dispose();
+});
+
+test("yields: a device's commit part posts through Try", async () => {
+  // §7.5 "Commit" (C-17): a `commit: 'control'` device's commit part posts its working answer through `post`, Try's
+  // own path: `checking`, one POST, and none while it is in flight.
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const r = deviceRig('dials', { attemptGate: gate, attempts: [SOLVED] });
+  await atDevice(r);
+  r.yields.host.onwork?.([1, 0, 2], false);
+  const mark = r.cues.length;
+  r.yields.host.oncommit?.();
+  r.yields.host.oncommit?.(); // a second press while the first is in flight
+  await settle();
+  expect([r.posted, r.puzzle.frame?.busy, r.puzzle.frame?.line]).toEqual([[[1, 0, 2]], true, 'checking']);
+  expect(puzzleCuesOf(r, mark)).toEqual(['checking@null']);
+  release();
+  await settle();
+  expect([r.puzzle.frame, r.yields.world().puzzles[DEV]?.outcome]).toEqual([null, 'solved']);
+  r.yields.dispose();
+});
+
+test("yields: a type UI's refused input plays puzzle blocked on its part", async () => {
+  // D7 (Q4): a refused input changes nothing and plays `puzzle:blocked` on its part, through the host's `onblocked`.
+  const r = deviceRig('dials');
+  await atDevice(r);
+  const mark = r.cues.length;
+  r.yields.host.onblocked?.(2);
+  expect(puzzleCuesOf(r, mark)).toEqual(['blocked@2']);
+  expect([r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]]).toEqual([[0, 0, 0], undefined]);
   r.yields.dispose();
 });

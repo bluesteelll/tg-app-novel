@@ -748,3 +748,28 @@ test('hints: unavailable refreshes the ladder from the server', async () => {
   expect(s.ladder().tiers.map((t) => t.state)).toEqual(['unavailable', 'unavailable', 'unavailable']);
   expect(api.getPuzzle.mock.calls[1]).toEqual(['ch1.gate', 'ru', { signal: expect.any(AbortSignal) }]);
 });
+
+test('session: a local wrong input counts one attempt and the limit ends the session failed', async () => {
+  // GM8h (engine plan §7.5 "Attempts"): a `wrong: 'local'` device's wrong press counts as a posted wrong does, with no
+  // POST: one attempt and `attempt-failed`; the saved run's attempts count toward the limit, which ends it `failed`.
+  const { s, api, dispatch, ends } = rig({ world: knobsWorld(3), types: VIEW_TYPES, run: { attempts: 1 } });
+  expect(s.failLocal()).toEqual(ok({ kind: 'wrong', attemptsLeft: 1 }));
+  expect([dispatch.mock.calls, api.postAttempt.mock.calls.length, ends]).toEqual([[[FAILED_ATTEMPT]], 0, []]);
+  expect(s.failLocal()).toEqual(ok({ kind: 'failed' }));
+  expect([dispatch.mock.calls.length, ends]).toEqual([2, [{ outcome: 'failed', hintsOpened: 0 }]]);
+  // Over: closed, and nothing more is counted.
+  expect(s.failLocal()).toEqual(err({ kind: 'closed' }));
+  expect(dispatch).toHaveBeenCalledTimes(2);
+  // With an attempt in flight: busy (its reply counts); a type whose wrong is posted: invalid, nothing counted.
+  const b = rig({ world: knobsWorld(), types: VIEW_TYPES });
+  const answer = deferred<Result<AttemptResponse, ApiError>>();
+  b.api.postAttempt.mockReturnValueOnce(answer.promise);
+  const first = b.s.attempt();
+  expect(b.s.failLocal()).toEqual(err({ kind: 'busy' }));
+  answer.resolve(WRONG);
+  expect(await first).toEqual(ok({ kind: 'wrong', attemptsLeft: null }));
+  expect(b.dispatch).toHaveBeenCalledTimes(1);
+  const c = rig();
+  expect(c.s.failLocal()).toEqual(err({ kind: 'invalid' }));
+  expect(c.dispatch).not.toHaveBeenCalled();
+});

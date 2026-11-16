@@ -276,8 +276,8 @@ const EMITTER = ((anchor: Comment, props: PuzzleUiProps): void => {
 
 test('puzzle-host: a gesture step reaches the cue bus through oncue', () => {
   // Engine plan §8.3 (GM7r): a type UI's `oncue(name, index)` reaches the host's `oncue` as its control's `ui` cue, with
-  // the step's part cell as its element (the stage's `control` target) and no point. GestureCue has no member until
-  // GM7p's `path`, so the name is a fixture's (the cast).
+  // the step's part cell as its element (the stage's `control` target) and no point. The name is a fixture's (the
+  // cast), so the test stays off every type's control set (GestureCue has members since GM7p's `path`).
   const oncue = vi.fn();
   const { container } = render(PuzzleHost, hostProps({ oncue, frame: frameOf({ ui: EMITTER }) }));
   const cell = must(container.querySelector('[data-cue-part="1"]'), 'the part cell');
@@ -291,6 +291,17 @@ test("puzzle-host: a type UI's reach report reaches onreach", () => {
   render(PuzzleHost, hostProps({ onreach, frame: frameOf({ ui: EMITTER }) }));
   must(emitted.at(-1), 'the type UI props').onreach?.([3, 2, 1]);
   expect(onreach.mock.calls).toEqual([[[3, 2, 1]]]);
+});
+
+test("puzzle-host: a type UI's refused input reaches onblocked", () => {
+  // D7 (Q4's host half): a type UI that refuses an input reports its part; the host hands it on in either place.
+  for (const place of ['frame', 'room'] as const) {
+    const onblocked = vi.fn();
+    const { unmount } = render(PuzzleHost, { ...hostProps({ onblocked, frame: frameOf({ ui: EMITTER, mode: 'explore', presentation: place === 'room' ? 'view' : 'overlay' }) }), place });
+    must(emitted.at(-1), 'the type UI props').onblocked?.(1);
+    expect([place, onblocked.mock.calls]).toEqual([place, [[1]]]);
+    unmount();
+  }
 });
 
 test('puzzle-host: the status line is a cue target', () => {
@@ -402,6 +413,18 @@ function recordingHost(tag: string, calls: unknown[][]): PuzzleHostCallbacks {
     onreach: (c) => {
       calls.push([tag, 'onreach', c]);
     },
+    onwork: (w, wrong) => {
+      calls.push([tag, 'onwork', w, wrong]);
+    },
+    oncommit: () => {
+      calls.push([tag, 'oncommit']);
+    },
+    ondemo: () => {
+      calls.push([tag, 'ondemo']);
+    },
+    onblocked: (part) => {
+      calls.push([tag, 'onblocked', part]);
+    },
   };
 }
 
@@ -423,6 +446,10 @@ function callEveryCallback(c: PuzzleHostCallbacks): ReturnType<PuzzleHostCallbac
   c.ongetmore();
   c.oncue?.(TRY_CUE);
   c.onreach?.([3, 2, 1]);
+  c.onwork?.([0, 2], true);
+  c.oncommit?.();
+  c.ondemo?.();
+  c.onblocked?.(1);
   return named;
 }
 
@@ -438,6 +465,10 @@ const everyCallbackOn = (tag: string): unknown[][] => [
   [tag, 'ongetmore'],
   [tag, 'oncue', 'ui:puzzle-try'],
   [tag, 'onreach', [3, 2, 1]],
+  [tag, 'onwork', [0, 2], true],
+  [tag, 'oncommit'],
+  [tag, 'ondemo'],
+  [tag, 'onblocked', 1],
 ];
 
 test("puzzle-view: forwardHost reaches the current session's host and nothing after it ends", () => {
@@ -445,7 +476,22 @@ test("puzzle-view: forwardHost reaches the current session's host and nothing af
   let current: PuzzleHostCallbacks | undefined = recordingHost('a', calls);
   const forward = forwardHost(() => current);
   // One forwarder per callback, no more: a lane adding a callback edits the forwarder and this list.
-  expect(Object.keys(forward).sort()).toEqual(['item', 'onchange', 'oncue', 'ongetmore', 'ongiveup', 'onhint', 'onreach', 'onretry', 'ontry', 'onusehint']);
+  expect(Object.keys(forward).sort()).toEqual([
+    'item',
+    'onblocked',
+    'onchange',
+    'oncommit',
+    'oncue',
+    'ondemo',
+    'ongetmore',
+    'ongiveup',
+    'onhint',
+    'onreach',
+    'onretry',
+    'ontry',
+    'onusehint',
+    'onwork',
+  ]);
   expect(callEveryCallback(forward)).toEqual({ name: 'a medal', glyph: 'sun' });
   expect(calls).toEqual(everyCallbackOn('a'));
   // A later session: the same forwarders reach its host only (the getter runs at each call, never at creation).

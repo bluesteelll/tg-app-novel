@@ -86,6 +86,11 @@ export type PuzzleHostCallbacks = {
    * form. yields posts it once per solve; a commit frame ignores it. Optional: a host that opens no reach type needs none.
    */
   onreach?: (canonical: readonly number[]) => void;
+  /** A device type UI's part press, its commit part, its demonstration control and its refused input (§7.5; GM8h). */
+  onwork?: PuzzleUiProps['onwork'];
+  oncommit?: PuzzleUiProps['oncommit'];
+  ondemo?: PuzzleUiProps['ondemo'];
+  onblocked?: PuzzleUiProps['onblocked'];
 };
 
 /**
@@ -105,6 +110,10 @@ export function forwardHost(get: () => PuzzleHostCallbacks | undefined): PuzzleH
     ongetmore: () => get()?.ongetmore(),
     oncue: (e) => get()?.oncue?.(e),
     onreach: (c) => get()?.onreach?.(c),
+    onwork: (w, wrong) => get()?.onwork?.(w, wrong),
+    oncommit: () => get()?.oncommit?.(),
+    ondemo: () => get()?.ondemo?.(),
+    onblocked: (part) => get()?.onblocked?.(part),
   };
 }
 

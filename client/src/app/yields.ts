@@ -1304,6 +1304,34 @@ export function createYields(h: YieldsHost): Yields {
     return post(o);
   };
 
+  /**
+   * The one write path of a working answer (engine plan §7.5 "One write path"; GM8h): the session's answer, the move
+   * away from a reached answer, the frame, then one `puzzle:input` per moved part in index order. A type UI's
+   * `onchange` and a device's `onwork` both come through here.
+   */
+  const moveWork = (o: Open, a: readonly number[]): void => {
+    // The frame's answer is the drawn one; after a reach post the session holds the canonical form (Q6).
+    const was = frameOf()?.answer ?? o.session.answer();
+    o.session.setAnswer(a);
+    const now = o.session.answer();
+    const changed: number[] = [];
+    for (let i = 0; i < Math.max(was.length, now.length); i += 1) {
+      if (was[i] !== now[i]) {
+        changed.push(i);
+      }
+    }
+    // A move away from a reached answer: its pending post is cancelled and Try is off until it is reached again.
+    const away = o.reach !== null && changed.length > 0;
+    if (away) {
+      o.reach = null;
+    }
+    setFrame(o, away ? { answer: now, awaiting: false } : { answer: now });
+    // One cue per changed part, in index order.
+    for (const i of changed) {
+      puzzleCue(o, 'input', i);
+    }
+  };
+
   const puzzleHost: PuzzleHostCallbacks = {
     item: (id) => {
       const w = h.chapter()?.world ?? null;
@@ -1313,26 +1341,30 @@ export function createYields(h: YieldsHost): Yields {
     onchange: (a) => {
       const o = open;
       if (o !== null) {
-        // The frame's answer is the drawn one; after a reach post the session holds the canonical form (Q6).
-        const was = frameOf()?.answer ?? o.session.answer();
-        o.session.setAnswer(a);
-        const now = o.session.answer();
-        const changed: number[] = [];
-        for (let i = 0; i < Math.max(was.length, now.length); i += 1) {
-          if (was[i] !== now[i]) {
-            changed.push(i);
-          }
-        }
-        // A move away from a reached answer: its pending post is cancelled and Try is off until it is reached again.
-        const away = o.reach !== null && changed.length > 0;
-        if (away) {
-          o.reach = null;
-        }
-        setFrame(o, away ? { answer: now, awaiting: false } : { answer: now });
-        // One cue per changed part, in index order.
-        for (const i of changed) {
-          puzzleCue(o, 'input', i);
-        }
+        moveWork(o, a);
+      }
+    },
+    onwork: (work, wrong) => {
+      const o = open;
+      if (o === null) {
+        return;
+      }
+      moveWork(o, work);
+      if (wrong) {
+        // A `wrong: 'local'` device's wrong press (§7.5 "Attempts"): counted as a posted wrong is, through `attempted`.
+        attempted(o, o.session.failLocal());
+      }
+    },
+    oncommit: () => {
+      const o = open;
+      if (o !== null) {
+        post(o); // a device's commit part is its Try (§7.5 "Commit"): the same refusals, the same reply path
+      }
+    },
+    onblocked: (part) => {
+      const o = open;
+      if (o !== null) {
+        puzzleCue(o, 'blocked', part); // D7: a refused input, on its part (the UI changed nothing)
       }
     },
     ontry: () => {
