@@ -12,7 +12,8 @@ import { GLYPH_PATHS } from '../../ui/glyphs.ts';
 import type { Glyph, ItemId } from '../../world/types.ts';
 import { loadPuzzleUi, PUZZLE_UI } from '../registry.ts';
 import type { PuzzleUiProps } from '../registry.ts';
-import type { PuzzleType } from '../rules/index.ts';
+import { PUZZLE_TYPES, puzzleInstance } from '../rules/index.ts';
+import type { PuzzleType, PuzzleTypes } from '../rules/index.ts';
 import CodeLock from './CodeLock.svelte';
 import codeLockSource from './CodeLock.svelte?raw';
 import GridPuzzle from './GridPuzzle.svelte';
@@ -215,6 +216,34 @@ test('puzzles: every type UI marks its parts', async () => {
     expect(marks, type).toEqual(Array.from({ length: f.parts }, (_, i) => String(i)));
     unmount();
   }
+});
+
+/**
+ * Per registered type, the part a `puzzle:input` index names (RULINGS 384 D4; GM8h2 D9): `'position'` for a
+ * configuration that starts full-length (a dial, a slot, a cell), `'value'` for an answer that starts empty (a press
+ * list, a path: the index is the part pressed or drawn). yields reads the kind from the start (`initial()` empty: by
+ * value), so a type declares its kind here (a missing entry is a tsc error) and a start that disagrees fails below.
+ */
+const INDEX_KINDS: { readonly [T in PuzzleType]: 'position' | 'value' } = {
+  code: 'position',
+  order: 'position',
+  path: 'value',
+  grid: 'position',
+};
+
+test('puzzles: every registered type declares its index kind and its start gives that kind', () => {
+  const registered: PuzzleTypes = PUZZLE_TYPES;
+  const kinds: Readonly<Record<string, 'position' | 'value'>> = INDEX_KINDS;
+  const fixtures: Readonly<Record<string, { readonly params: unknown }>> = PART_FIXTURES;
+  // Every registered type has an entry, and the table names no other.
+  expect(registered.map((r) => r.type).sort()).toEqual(Object.keys(kinds).sort());
+  // yields' derivation on the instance it reads, built from the params that render the type's parts.
+  const derived = registered.map((r) => {
+    const p = r.decodeParams(fixtures[r.type]?.params);
+    const instance = p.ok ? puzzleInstance({ type: r.type, params: p.value }) : null;
+    return [r.type, instance === null ? 'no instance' : instance.initial().length === 0 ? 'value' : 'position'];
+  });
+  expect(derived).toEqual(registered.map((r) => [r.type, kinds[r.type]]));
 });
 
 test('registry: each type loads its own component', async () => {
