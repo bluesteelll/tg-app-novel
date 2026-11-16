@@ -18,6 +18,8 @@ import type { TextureGeometry } from './layout.ts';
 export const STEADY_CAP_BYTES = 33_554_432;
 /** Visible admission, after evicting every preload-priority holder: ≤ 48 MiB (K5). */
 export const HARD_CAP_BYTES = 50_331_648;
+/** The transient band (CH D14, §5.4): what HARD leaves above STEADY, the most a transition's targets may reserve. */
+export const TRANSIENT_CAP_BYTES = HARD_CAP_BYTES - STEADY_CAP_BYTES;
 /** Principle 4: no texture side above 2048 px. The build gate is the first line, this the runtime one. */
 export const MAX_TEXTURE_PX = 2048;
 /**
@@ -124,6 +126,10 @@ export type RegistryStats = {
 };
 /** The warm form's counts (shots §5.8): records with a warm holder, and the file bytes of those held with no texture. */
 export type WarmStats = { warm: number; warmBytes: number };
+/** A live transient reservation (`reserve`). */
+export type ReservationId = number & { readonly __brand: 'ReservationId' };
+/** The live transient reservations and their bytes. */
+export type ReserveStats = { reservations: number; reservedBytes: number };
 /**
  * An id's record as `state(id)` reports it: decoded (revived or not); a non-warm holder waiting for its texture; warm
  * holders only (the file fetched or in flight); or no record.
@@ -221,6 +227,16 @@ export interface AssetRegistry<T> {
   tier(): SizeTier;
   stats(): RegistryStats;
   warmStats(): WarmStats;
+  /**
+   * A transition target's GPU bytes held outside the records (CH D14 / D15, shots §5.5 step 1), under `holder`
+   * (`flat:dissolve`, `flat:patch`): admitted inside the band (`TRANSIENT_CAP_BYTES`, which no eviction can cure) and
+   * with the records under HARD. Over HARD it first evicts every preload-priority holder at once, `warm` included (QO16;
+   * never a visible one), then checks once more. A refusal is no visible refusal (`overCap`): its fallback runs.
+   */
+  reserve(holder: string, bytes: number): Result<ReservationId, { kind: 'over-cap'; needBytes: number; liveBytes: number; capBytes: number }>;
+  /** Ends a reservation; idempotent. */
+  unreserve(r: ReservationId): void;
+  reserveStats(): ReserveStats;
   /**
    * Frames cut from the live record behind `h` at `boxes` (file px), once per box, owned by that record: disposed when
    * it ends, before its texture is released. Refused (`decode`) for a handle that is not the id's current record, and
@@ -322,6 +338,9 @@ export function createAssetRegistry<T>(
   let destroyed = false;
   /** Inside `previewing`: the visible records started now are previews. */
   let previewScope = false;
+  /** The live transient reservations: id -> its holder and bytes. */
+  const reservations = new Map<number, { readonly holder: string; readonly bytes: number }>();
+  let lastReservation = 0;
 
   const refOf = (file: ImageFile): AssetRef => (deps.variant === 'avif' ? file.avif : file.webp);
   /** A record decodes for its non-warm holders only; with warm ones alone it is its file. */
@@ -336,6 +355,14 @@ export function createAssetRegistry<T>(
     let bytes = 0;
     for (const rec of records.values()) {
       bytes += (rec.decoded?.keptBytes ?? rec.held?.bytes ?? rec.ref.bytes) + (decodes(rec) ? rec.file.decodedBytes : 0) + (rec.upgrading?.bytes ?? 0);
+    }
+    return bytes;
+  };
+  /** The live reservations' bytes: never in `counted()`, so the records' figures (`stats().bytes`) stay records only. */
+  const reserved = (): number => {
+    let bytes = 0;
+    for (const r of reservations.values()) {
+      bytes += r.bytes;
     }
     return bytes;
   };
@@ -548,8 +575,9 @@ export function createAssetRegistry<T>(
   };
 
   /**
-   * K5: a preload or warm file must fit the steady cap; a visible load the hard cap, after evicting every preload
-   * holder, then the warm holders of other records.
+   * K5: a preload or warm file must fit the steady cap on the records alone (a transient never refuses one, CH:650); a
+   * visible load the hard cap with the live reservations, after evicting every preload holder, then the warm holders of
+   * other records.
    */
   const admit = (id: AssetId, need: number, priority: Priority, self?: Rec<T>): AssetError | null => {
     if (priority !== 'visible') {
@@ -562,12 +590,12 @@ export function createAssetRegistry<T>(
       if (p !== null) {
         evict(p, self);
       }
-      if (counted() + need <= HARD_CAP_BYTES) {
+      if (counted() + reserved() + need <= HARD_CAP_BYTES) {
         return null;
       }
     }
     overCap += 1;
-    return { kind: 'over-cap', id, needBytes: need, liveBytes: counted(), capBytes: HARD_CAP_BYTES };
+    return { kind: 'over-cap', id, needBytes: need, liveBytes: counted() + reserved(), capBytes: HARD_CAP_BYTES };
   };
 
   /** Resolves once the record has what `holder` waits for: its texture (live and current), or for a warm one its file. */
@@ -652,11 +680,12 @@ export function createAssetRegistry<T>(
     if (d === null || swap === undefined || isStale(rec, reviveGen) || reviving !== null || rec.failures >= UPGRADE_TRIES || signal?.aborted === true) {
       return done(false);
     }
-    // Shots §5.8 step 3: one file at a time beside the half, evicting nothing; a visible record under the hard cap.
+    // Shots §5.8 step 3: one file at a time beside the half, evicting nothing; a visible record under the hard cap with
+    // the live reservations (as a visible load), any other on its records under the steady cap (as a preload).
     const ref = refOf(rec.entry);
     const need = ref.bytes + rec.entry.decodedBytes;
     const cap = hasVisibleHolder(rec) ? HARD_CAP_BYTES : STEADY_CAP_BYTES;
-    const used = counted();
+    const used = counted() + (cap === HARD_CAP_BYTES ? reserved() : 0);
     if (used + need > cap) {
       return Promise.resolve(fail({ kind: 'over-cap', id, needBytes: need, liveBytes: used, capBytes: cap }));
     }
@@ -978,6 +1007,29 @@ export function createAssetRegistry<T>(
         }
       }
       return { warm, warmBytes };
+    },
+    reserve(holder, bytes) {
+      const refuse = (liveBytes: number, capBytes: number) => fail({ kind: 'over-cap' as const, needBytes: bytes, liveBytes, capBytes });
+      if (reserved() + bytes > TRANSIENT_CAP_BYTES) {
+        return refuse(reserved(), TRANSIENT_CAP_BYTES);
+      }
+      if (counted() + reserved() + bytes > HARD_CAP_BYTES) {
+        // QO16: every preload-priority holder at once, never stepwise (a stepwise eviction would keep the warm files).
+        evict('preload', undefined);
+        evict('warm', undefined);
+        if (counted() + reserved() + bytes > HARD_CAP_BYTES) {
+          return refuse(counted() + reserved(), HARD_CAP_BYTES);
+        }
+      }
+      lastReservation += 1;
+      reservations.set(lastReservation, { holder, bytes });
+      return { ok: true, value: lastReservation as ReservationId };
+    },
+    unreserve(r) {
+      reservations.delete(r);
+    },
+    reserveStats() {
+      return { reservations: reservations.size, reservedBytes: reserved() };
     },
     destroy() {
       destroyed = true;
