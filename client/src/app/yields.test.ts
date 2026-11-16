@@ -4809,6 +4809,57 @@ test('yields: a device move redraws its part decor', async () => {
   r.yields.dispose();
 });
 
+test('yields: a device move during an intent draws its decor after the intent', async () => {
+  // Gates F2 (RULINGS 368; cut Q-a): a move's state batch drains through `h.queue`, which in GameSession waits for the
+  // intent in progress (`app/game.ts` `after`). Started directly, it would run a second `drain` loop over the one job
+  // list beside the intent's, and its `props` would draw inside that intent.
+  const r = deviceRig('dials', { decor: true });
+  await atDevice(r);
+  intentQueue(r);
+  let release: () => void = () => undefined;
+  const hold = new Promise<void>((res) => {
+    release = res;
+  });
+  const intent = r.host.tap(async () => {
+    await hold;
+  });
+  const mark = r.batches.length;
+  r.yields.host.onwork?.([1, 0, 0], false);
+  await settle();
+  const props = (): boolean => r.batches.slice(mark).flat().some((c) => c.kind === 'props');
+  const during = props();
+  release();
+  await intent;
+  await flushLate(r);
+  expect([during, props()]).toEqual([false, true]);
+  r.yields.dispose();
+});
+
+test("yields: a second device press during the first press's state batch draws after it", async () => {
+  // Gates F2, the reachable shape: nothing refuses a press while an intent runs (the explore layer's `inert` reads no
+  // intent), so a second press can land while the first press's state batch is still on screen (its load held). Its
+  // batch queues behind the first one: one scene batch at a time, both drawn, the run's work the second press's.
+  const r = deviceRig('dials', { decor: true, late: true });
+  const entered = r.yields.onYield({ kind: 'explore', section: MANOR });
+  await flushLate(r);
+  await entered;
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await flushLate(r);
+  expect([roomOf(r), r.puzzle.frame?.presentation]).toEqual(['panel', 'view']);
+  intentQueue(r);
+  const mark = r.batches.length;
+  const drawn = (): number => r.batches.slice(mark).filter((b) => b.some((c) => c.kind === 'props')).length;
+  r.yields.host.onwork?.([1, 0, 0], false);
+  await settle();
+  const first = drawn();
+  r.yields.host.onwork?.([1, 1, 0], false);
+  await settle();
+  const during = drawn();
+  await flushLate(r);
+  expect([first, during, drawn(), r.yields.world().puzzles[DEV]?.work]).toEqual([1, 1, 2, [1, 1, 0]]);
+  r.yields.dispose();
+});
+
 test("yields: a device's first move of one part plays one press on that part", async () => {
   // D5 (A7, Q6 option (b)): a device move's `work` facts play no cue (the writer diffs a first move against no saved
   // work, an `added` for every position); its one press per moved part is `puzzle:input`. A part is an answer position
