@@ -91,8 +91,8 @@
   (sample 1.036; R 2.4285 after it), puzzle-type 2,172 ([§11.1](11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13),
   "Main `6e459a3`"). e2e 111 / 111 at r1; not owed after fix3, whose only module change was PathPuzzle's stylesheet
   rule and which no committed world loads (RULINGS 348, 351). Its test `story: a path whose solution visits 17 cells is
-  refused` became GM7g's `story: a 49-cell path passes the answer bound`. Carried (`carry.md` "GM7p carries"): Solver F3
-  and A1-A3 to GM7g (taken there); N1, F1, F2, CQ-e and the real-layout e2e to GM8d; V3, Q4, Q5 and the stale comments
+  refused` became GM7g's `story: a 49-cell path passes the answer bound`. Carried (`carry.md` "GM7p carries"): Solver F3,
+  A1 and A3 to GM7g (taken there, as rider R1; A2 went on to GM8a, RULINGS 354 Q4); N1, F1, F2, CQ-e and the real-layout e2e to GM8d; V3, Q4, Q5 and the stale comments
   to GM8h; Q6 and review M1 to GM9p; Q8 (dead-end pruning) to the first lane whose path search stops at its bound, or
   GM8d (RULINGS 352 G5).
 - **Commits:** (1) rules + canonical (`path: a reversed path posts its canonical form`); the path UI reports through

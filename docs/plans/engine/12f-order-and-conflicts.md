@@ -199,7 +199,8 @@ RULINGS 347, 349), the workflow commit `874244e` (RULINGS 350), GM7p (`8be35a0`,
 RULINGS 352, 353, 356, 358, 360, 361). The locks as ruled: GM7g 19 (RULINGS 352 G1, 354), GM8i 20 (RULINGS 352 D1, 353;
 `clues.ts` the twentieth, RULINGS 360) ([12e](12e-lanes-gm7-gm9.md)). **The order (RULINGS 352 S1-S5):** GM7g and GM8i
 launched side by side from `8be35a0`, both holding `client/scripts/story/world.test.ts` by disjoint hunk (S2), so the
-`next:` line above, which read GM8i as lock-disjoint beside GM7g, is the `f6487fc` record (S5; RULINGS 349's "SH6 or
+`f6487fc` `next:` line (quoted in the "Changed by RULINGS 348-362" mark below), which read GM8i as lock-disjoint beside
+GM7g, is that record (S5; RULINGS 349's "SH6 or
 GM8i beside GM7g" is read with the rows: SH6 is never beside GM7g, `arch.test.ts`); GM8h comes after both (its row) and
 may now launch; GM9p comes after both (N5); Q8 (path dead-end pruning) is re-routed to the first lane whose path search
 stops at its bound, or GM8d (G5). The engine R is **2.027** (n 24; 2.4285 at GM7p's merge, 2.306 at GM7g's). On

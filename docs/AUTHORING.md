@@ -769,8 +769,12 @@ RULINGS 351, 359 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): there a
 group A)): the screen shows the goal, the answer posts itself once it reaches the goal, and there is no wrong answer.
 So a `path` or `grid` puzzle has no "wrong" Try and no `maxAttempts` (`world/attempts-without-wrong`); Try only
 re-posts a reached answer while one awaits ([PuzzleHost.svelte:42-43](../client/src/ui/puzzles/PuzzleHost.svelte#L42)).
-If the player's tab holds an older version of the world, the server refuses the post; the puzzle returns to its start
-and the sticky update toast asks the player to reopen the game ([yields.ts:1189-1197](../client/src/app/yields.ts#L1189)).
+If the player's tab holds an older version of the world, the server refuses the post. When the update kept the
+puzzle's answer shape, the puzzle returns to its start and the sticky update toast asks the player to reopen the game
+([yields.ts:1189-1197](../client/src/app/yields.ts#L1189)). When it changed the shape (a `path` gains or loses a
+blocked cell, a `grid` changes `rows` or `cols` or lowers `symbols`), the server answers 400 and the frame shows
+"offline" with no toast, and Try re-posts into the same 400 ([yields.ts:1209-1212](../client/src/app/yields.ts#L1209));
+the fix is GM8d's (`carry.md` "GM7p carries", N1).
 The rules, checked at build time by each type's lint half
 ([puzzles/path.ts](../client/scripts/story/puzzles/path.ts), [puzzles/grid.ts](../client/scripts/story/puzzles/grid.ts)):
 
@@ -778,8 +782,9 @@ The rules, checked at build time by each type's lint half
   neighbour (no diagonals). There is no checkpoint param: the line visits every open cell. The build searches for
   every such line and needs exactly one. A puzzle with none is `world/reach-solution` "has no solution". Today the
   message names no cause; look for the two common ones (Solver F2). Either the colours do not fit: colour the cells
-  like a chessboard; a line alternates colours, so with an even open count the two ends must differ in colour, and with
-  an odd one both ends must be on the colour that has one more cell. Or a cell is a dead end: an open cell that is not
+  like a chessboard; a line alternates colours, so with an even open count the two colours must hold equally many open
+  cells and the two ends must differ in colour, and with an odd one one colour must hold exactly one more open cell and
+  both ends must be on it ([puzzles/path.ts:34-48](../client/scripts/story/puzzles/path.ts#L34)). Or a cell is a dead end: an open cell that is not
   an end and has fewer than two open neighbours. Naming the cause in the message is planned (GM8d, `carry.md` "GM7p
   carries").
 - **`grid`:** fill every blank with a symbol 1..`symbols` so that no symbol is twice in a row or a column; the givens

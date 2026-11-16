@@ -213,10 +213,11 @@ export interface PuzzleTypeLint<P> {
   1,000,000 extensions per instance (`PATH_SEARCH_STEPS`, `client/scripts/story/puzzles/path.ts:13`;
   `GRID_SEARCH_STEPS`, `client/scripts/story/puzzles/grid.ts:12`); a stopped search is a result, refused as
   `world/unique-solution` "stopped at its bound", never a hang, and no stage runs an unbounded search (RULINGS 352 S4).
-  The grid's timings are **indicative** (GM7g `impl.md`, a loaded machine): the worst instance found is the empty
-  6 x 5 / 6, about 44-48k steps and about 50 ms (43,622 steps in 53.0 ms; 47,547 in 48.6 ms after a hill climb), under
-  5 % of the bound; none of 18,500 instances stopped at it, and the grid lens's worst search (the same shape) ended at 43.6k steps
-  (RULINGS 357). The path's dead-end / connectivity pruning (Q8) is re-routed to the first lane whose path search stops
+  The grid's timings are **indicative** (GM7g `impl.md`, a loaded machine): the empty 6 x 5 / 6 takes 43,622 steps in
+  53.0 ms (the worst of a 6,308-instance sample; the grid lens's worst search, the same empty grid, stopped at 43.6k
+  steps, RULINGS 357); the worst instance found after a hill climb is a different 6 x 5 / 6, with three givens (3 at
+  cell 2, 1 at cell 4, 4 at cell 8), at 47,547 steps in 48.6 ms, about 4.8 % of the bound; none of 18,500 instances
+  stopped at it. The path's dead-end / connectivity pruning (Q8) is re-routed to the first lane whose path search stops
   at its bound, or GM8d, whichever comes first (RULINGS 352 G5); a 7 x 7 path search run unbounded once took 11.5 s
   (RULINGS 350 G-1).
 - **Runtime mismatch** (m3). The realistic trigger is a stale tab: a free bundle built before a deploy posts against
