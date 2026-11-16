@@ -3900,3 +3900,59 @@ test('executor: under reduced motion a dissolve still runs', async () => {
   expect(h.ex.blinks?.()).toBe(before + 1);
   h.ex.destroy();
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// The lens minors (lane SH7, D9): a failed build leaves no live target and no reservation; the world is written only
+// when it changes.
+
+test("executor: a stage that throws after a dissolve's snapshot leaves no live target", async () => {
+  // M1 / gpu 1 (B12): the throw comes after the dissolve's own catch, from a prop sprite the same batch draws, so only
+  // the failed batch's finish() can drop the target.
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  throwOn(h, 'prop/key');
+  await applyFailing(h, [bg('lamp_cu', 'crossfade', 500), props(['key', KEY])]);
+  expect(h.log.filter((x) => x.startsWith('flatten:'))).toEqual(['flatten:screen:780x1688']);
+  expect(drops(h)).toEqual(['dropTarget:screen']);
+  expect(h.flats()).toEqual([]);
+  expect(h.registry.reserveStats()).toEqual(NO_RESERVATION);
+  h.ex.destroy();
+});
+
+test('executor: a flatten that throws leaves no reservation', async () => {
+  // r1 M2, the executor half: the dissolve's reservation is returned when the stage's render throws.
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  h.adapter.flatten = () => {
+    throw new Error('stage: a bug in a target render');
+  };
+  await applyFailing(h, [bg('lamp_cu', 'crossfade', 500)]);
+  expect(h.registry.reserveStats()).toEqual(NO_RESERVATION);
+  // The next dissolve reserves again from an empty band.
+  h.ex.destroy();
+  expect(h.registry.reserveStats()).toEqual(NO_RESERVATION);
+});
+
+test('executor: a relayout and a rebind write the world only when it changes', async () => {
+  // M5: `writeWorld` writes a delta only when it differs from the one the stage has.
+  const h = flatHarness();
+  await h.ex.apply([scene('lamp', 'cut'), face('ally', 'smile')], NOW);
+  // At rest: neither a relayout nor a rebind writes the world.
+  h.ex.relayout();
+  const rest = recordingStage(S390, h.freed, 'draw');
+  h.ex.rebind(rest.adapter);
+  expect([h.worlds, rest.worlds]).toEqual([[], []]);
+  // A held push: written once; a relayout at the same size writes nothing more.
+  await h.ex.apply([camera(PUSH)], { instant: true });
+  expect(rest.worlds).toHaveLength(1);
+  h.ex.relayout();
+  expect(rest.worlds).toHaveLength(1);
+  // A rebind writes it once on the new stage (its world starts at rest), and a relayout after it nothing.
+  const next = recordingStage(S390, h.freed, 'draw');
+  h.ex.rebind(next.adapter);
+  expect(next.worlds).toHaveLength(1);
+  expectWorld(next.worlds[0], framed(PUSH));
+  h.ex.relayout();
+  expect([rest.worlds.length, next.worlds.length]).toEqual([1, 1]);
+  h.ex.destroy();
+});

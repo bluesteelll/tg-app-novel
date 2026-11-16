@@ -605,7 +605,14 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     if (adapter.flatten !== undefined) {
       const r = registry.reserve(holder, plan.bytes);
       if (r.ok) {
-        const ref = adapter.flatten(plan, place);
+        let ref: FlatRef | null;
+        try {
+          ref = adapter.flatten(plan, place);
+        } catch (e) {
+          // SH7 (D9, r1 M2): a stage that throws in its render leaves no reservation behind the failed batch.
+          registry.unreserve(r.value);
+          throw e;
+        }
         if (ref !== null) {
           const f: Flat = { ref, rid: r.value, gen: deps.gen?.() ?? 0 };
           flats.add(f);

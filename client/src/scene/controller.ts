@@ -368,7 +368,15 @@ export function pixiAdapter(app: Pick<Application, 'screen'>, layers: Layers, ki
       kit.ledger.track('target', plan.bytes, target.source);
       // Target px = plan.scale x (stage px - origin), where stage px = the world's delta over its content.
       const k = plan.scale * delta.scale;
-      if (!kit.render(layers.world, target, new Matrix(k, 0, 0, k, plan.scale * (delta.x - plan.origin.x), plan.scale * (delta.y - plan.origin.y)))) {
+      let drawn: boolean;
+      try {
+        drawn = kit.render(layers.world, target, new Matrix(k, 0, 0, k, plan.scale * (delta.x - plan.origin.x), plan.scale * (delta.y - plan.origin.y)));
+      } catch (e) {
+        // SH7 (D9, r1 M2): a render that throws destroys the target it was given, so the ledger sees it go.
+        target.destroy(true);
+        throw e;
+      }
+      if (!drawn) {
         target.destroy(true);
         return null;
       }

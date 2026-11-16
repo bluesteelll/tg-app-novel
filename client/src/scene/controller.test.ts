@@ -771,3 +771,22 @@ test("controller: a rebuilt canvas takes the old canvas's place and the host's b
   expect(children.map((c) => c.name)).toEqual(['new canvas', 'the frame layer']);
   expect(sizes).toEqual([[412, 915]]);
 });
+
+test('controller: a target render that throws destroys its target', () => {
+  // r1 M2, the controller half: the target is made and tracked before its render; a render that throws (a renderer
+  // bug, a context lost mid-render) destroys it, so the ledger sees it go, and nothing is shown.
+  const ledger = createGpuLedger();
+  const layers = createLayers({ stage: new Container() });
+  const made: Texture[] = [];
+  const renderer = {
+    render: (o: { target: Texture }): void => {
+      made.push(o.target);
+      throw new Error('renderer: a lost context mid-render');
+    },
+  };
+  const adapter = pixiAdapter({ screen: new Rectangle(0, 0, 390, 844) }, layers, targetKit({ renderer }, () => true, ledger));
+  expect(() => adapter.flatten?.(PHONE, { kind: 'screen' })).toThrow('renderer: a lost context mid-render');
+  expect(made.map((t) => t.destroyed)).toEqual([true]);
+  expect(ledger.stats()).toEqual({ targets: 0, targetBytes: 0, targetsCreated: 1, targetsDestroyed: 1 });
+  expect(layers.flat.children).toEqual([]);
+});
