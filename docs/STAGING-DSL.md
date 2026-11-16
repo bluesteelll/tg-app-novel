@@ -422,7 +422,7 @@ The archive was colder than I remembered. #id:ch2.archive.c0ld
   character that is not on stage changes nothing. On a shot chapter (§14.1; as built, SH4) a `face` changes that cast
   member's drawn face in the shot in effect: the new expression's layers fade in over the old ones over `ms`, which
   retire whole at the fade's end; a face back at its rest fades out to the plate, which shows the rest. Changed by
-  RULINGS 365, 367, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A): since SH6 (`b0ef547`) a timed `face` in a batch with no `scene` whose `bg`, if it has one, is a `t=cut` is drawn as one patch, a flat snapshot of the faces'
+  RULINGS 365, 367, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A): since SH6 (`b0ef547`) a timed `face` in a batch with no `scene` that keeps the shot on stage (no `bg`, or a `bg` `t=cut` onto it) is drawn as one patch, a flat snapshot of the faces'
   box that fades in over the old drawing (`patchFaces`, `client/src/scene/executor.ts:939-985`); if the patch cannot be
   reserved or the shot has no rig, the layer crossfade above stands (K7: new over old, never a symmetric fade). In a batch
   whose `bg` is a `t=crossfade` to another shot, the faces change with the `bg`: at once under the dissolve's snapshot, or
