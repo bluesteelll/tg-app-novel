@@ -752,12 +752,54 @@ E story/ch1/world.json:40 world/hotspot-frame hall.clock [700, 100, 250, 250] le
 ### Puzzles and hint ladders
 
 A puzzle is `{ type, title, prompt, closeup, params, maxAttempts, giveUp, solution, hints }`. There are two types
-([code.ts](../client/src/puzzles/rules/code.ts), [order.ts](../client/src/puzzles/rules/order.ts)):
+([code.ts](../client/src/puzzles/rules/code.ts), [order.ts](../client/src/puzzles/rules/order.ts)). Changed by
+RULINGS 351, 359 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): there are **four** types: GM7p's `path`
+([path.ts](../client/src/puzzles/rules/path.ts), merged `8be35a0`) and GM7g's `grid`
+([grid.ts](../client/src/puzzles/rules/grid.ts), merged `9dc5765`) joined them
+([`PUZZLE_TYPES`, rules/index.ts:52](../client/src/puzzles/rules/index.ts#L52)):
 
 | Type | `params` | Answer and `solution` | Start state |
 |---|---|---|---|
 | `code` | `{ "dials": 2..6 }` | one digit 0–9 per dial | all zeros |
 | `order` | `{ "pieces": [2..5 distinct item ids] }` | the piece index per slot, a permutation | the listed order |
+| `path` | `{ "cols": 2..7, "rows": 2..7, "ends": [a, b], "blocked": [cells] }`; cells are numbered row by row (`row * cols + col`); `ends` are two distinct cells, `blocked` distinct cells that are not ends | the cells in drawn order, from the lower-numbered end: `cols x rows - blocked` entries | no cell drawn |
+| `grid` | `{ "rows": 2..6, "cols": 2..6, "symbols": max(rows, cols)..6, "given": [rows x cols entries] }`; `given` lists every cell row by row, 0 for a blank, else the given symbol 1..`symbols` | one symbol per cell, row by row, the givens kept | the givens, blanks empty |
+
+**`path` and `grid` are reach types** (Changed by RULINGS 351, 359 (as of `b0b1b41`; docs lane `docs-errata-20`,
+group A)): the screen shows the goal, the answer posts itself once it reaches the goal, and there is no wrong answer.
+So a `path` or `grid` puzzle has no "wrong" Try and no `maxAttempts` (`world/attempts-without-wrong`); Try only
+re-posts a reached answer while one awaits ([PuzzleHost.svelte:42-43](../client/src/ui/puzzles/PuzzleHost.svelte#L42)).
+If the player's tab holds an older version of the world, the server refuses the post. When the update kept the
+puzzle's answer shape, the puzzle returns to its start and the sticky update toast asks the player to reopen the game
+([yields.ts:1189-1197](../client/src/app/yields.ts#L1189)). The shape is all the server checks: the answer's length
+and its largest value ([server/src/puzzles/mod.rs:78-85](../server/src/puzzles/mod.rs#L78)); a `path` posts
+`cols x rows - blocked` cells, each below `cols x rows`, a `grid` `rows x cols` symbols, each at most `symbols`. When
+the update changed the shape so that the stale answer no longer fits (for example, a row or column added to or taken
+from either type, a `path` cell blocked or unblocked, a `grid`'s `symbols` lowered), the server answers 400 and the
+frame shows "offline" with no toast, and Try re-posts into the same 400
+([yields.ts:1209-1212](../client/src/app/yields.ts#L1209)); the fix is GM8d's (`carry.md` "GM7p carries", N1). A swap
+of `rows` and `cols` keeps both numbers, so it gets the toast.
+The rules, checked at build time by each type's lint half
+([puzzles/path.ts](../client/scripts/story/puzzles/path.ts), [puzzles/grid.ts](../client/scripts/story/puzzles/grid.ts)):
+
+- **`path`:** one line from one end to the other through **every** open cell exactly once, by steps to a side
+  neighbour (no diagonals). There is no checkpoint param: the line visits every open cell. The build searches for
+  every such line and needs exactly one. A puzzle with none is `world/reach-solution` "has no solution". Today the
+  message names no cause; look for the two common ones (Solver F2). Either the colours do not fit: colour the cells
+  like a chessboard; a line alternates colours, so with an even open count the two colours must hold equally many open
+  cells and the two ends must differ in colour, and with an odd one one colour must hold exactly one more open cell and
+  both ends must be on it ([puzzles/path.ts:34-48](../client/scripts/story/puzzles/path.ts#L34)). Or a cell is a dead end: an open cell that is not
+  an end and has fewer than two open neighbours. Naming the cause in the message is planned (GM8d, `carry.md` "GM7p
+  carries").
+- **`grid`:** fill every blank with a symbol 1..`symbols` so that no symbol is twice in a row or a column; the givens
+  stay. `symbols` is at least the longer side (a line of n cells needs n distinct symbols). The build needs exactly one
+  fill. Two givens that clash in a line give `world/reach-solution` "has no solution" with no cell or symbol named
+  (`carry.md` "GM7g carries", solver N1, for the grid files' next holder); check the givens' rows and columns by hand.
+  The numerals 1..6 and the cells' look are placeholders until GM8d's art.
+- **Both:** two or more solutions, or a search that stopped at its bound of 1,000,000 steps, are
+  `world/unique-solution`. `solution` must equal the one the build finds, else `world/solution` prints it; a `path`
+  is written from its lower-numbered end
+  ([puzzles/path.ts:147-155](../client/scripts/story/puzzles/path.ts#L147)).
 
 - `maxAttempts` is `null` or 1–9; at the limit the outcome is `failed` ([decode.ts:489-502](../client/src/world/decode.ts#L489)).
 - `giveUp: true` offers Give up (outcome `abandoned`); only for a puzzle no lock carries.
@@ -977,7 +1019,10 @@ their own codes, outside that table, so a new mechanic never edits it
 them like any other finding. As merged at `837b1ed` (every one is an error, E); Changed by RULINGS 217, 292, 312 (as
 of `48489b7`; docs lane `docs-errata-18`, group A): the rows from `world/use-unknown-ref` on are GM3's `use`, GM4's
 `view` and GM5's `combine`, and `world/keep-consumed` is a warning (W); Changed by RULINGS 327, 334 (as of `f6487fc`; docs
-lane `docs-errata-19`, group A): the two `world/flag-*` rows are GM5f's `flags` (`FLAGS_LINT`, both E):
+lane `docs-errata-19`, group A): the two `world/flag-*` rows are GM5f's `flags` (`FLAGS_LINT`, both E); Changed by
+RULINGS 351, 354, 359, 361 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): the three reach codes
+(`REACH_CODES`, GM7p, all E) are `clues`' too, the answer bound is 64 (GM7g), and the ten rows from
+`world/view-type-site` on are GM8i's `devices` (`DEVICES_LINT`, all E):
 
 | Code | Registered by | What the gate refuses |
 |---|---|---|
@@ -985,10 +1030,13 @@ lane `docs-errata-19`, group A): the two `world/flag-*` rows are GM5f's `flags` 
 | `world/renamed-source` | `core` | a `renamed` source id that is still in this world |
 | `world/renamed-cycle` | `core` | a `renamed` chain that returns to itself |
 | `world/renamed-puzzles` | `core` | any `renamed.puzzles` entry (refused until per-player GM6c1b re-keys stored puzzles) |
-| `world/clue-declared` | `clues` ([mechanics/clues.ts:23](../client/scripts/story/mechanics/clues.ts#L23)) | a secret-goal puzzle that a lock holds and that declares no clue |
+| `world/clue-declared` | `clues` ([mechanics/clues.ts:29](../client/scripts/story/mechanics/clues.ts#L29)) | a secret-goal puzzle that a lock holds and that declares no clue |
 | `world/reach-has-clue` | `clues` | a clue on a puzzle whose goal the screen shows |
 | `world/clue-reachable` | `clues` | a clue that names no fact of this world, or holds in no state of the lock's section reached before the puzzle is solved or failed |
-| `world/answer-len` | `puzzle-shape` ([puzzles/shape.ts:22](../client/scripts/story/puzzles/shape.ts#L22)) | a puzzle whose posted answer is outside 1..16 entries |
+| `world/unique-solution` | `clues` ([mechanics/clues.ts:40](../client/scripts/story/mechanics/clues.ts#L40), `REACH_CODES`) | a reach puzzle (`path`, `grid`) with two or more solutions, or whose solution search stopped at its bound before it proved one |
+| `world/reach-solution` | `clues` | a reach puzzle with no solution (the search ran to its end), a `solve` the device's own rule does not reach or would post in another order, a start that already reaches, or a type whose lint half lacks `solve`, `reached` or `canonical` |
+| `world/attempts-without-wrong` | `clues` | `maxAttempts` on a puzzle whose type has no wrong answer (`path`, `grid`): the count never moves |
+| `world/answer-len` | `puzzle-shape` ([puzzles/shape.ts:21](../client/scripts/story/puzzles/shape.ts#L21)) | a puzzle whose posted answer is outside 1..64 entries (1..16 before GM7g; a reach type without a `solve` is measured by its answer shape) |
 | `world/cross-section-cond` | `conditions` ([mechanics/conditions.ts:24](../client/scripts/story/mechanics/conditions.ts#L24)) | a gating condition atom naming an id outside its section (since GM5f a hotspot's `when` is a gating condition of its section too) |
 | `world/visual-only-atom` | `conditions` | a visual-only module atom inside a gating condition |
 | `world/cond-size` | `conditions` | a condition deeper than 4 or with more than 16 atoms (clues included) |
@@ -1004,10 +1052,23 @@ lane `docs-errata-19`, group A): the two `world/flag-*` rows are GM5f's `flags` 
 | `world/recipe-scope` | `combine` | a recipe whose inputs no one section gives; a product with another giver (a take, a trigger, a `use` rule or another recipe, in any section); a product another section's lock accepts (X15) |
 | `world/flag-unknown-ref` | `flags` ([mechanics/flags.ts:29](../client/scripts/story/mechanics/flags.ts#L29)) | a flag declared with a section the world lacks; a `set`, or a `flag` atom at any condition site, naming an undeclared flag |
 | `world/flag-scope` | `flags` | a `set` in a trigger of another section than the flag's; a `flag` atom in a gating condition (a hotspot `when`, a `uses.when`, a recipe `when`) of another section than the flag's |
+| `world/view-type-site` | `devices` ([mechanics/devices.ts:28](../client/scripts/story/mechanics/devices.ts#L28)) | a view-type puzzle on no lock, on a lock with slots, or on a lock that is no view room's device; a `device` key on a room that is no view |
+| `world/device-type` | `devices` | a device hotspot with no lock, a lock with slots or a lock with no puzzle; a device puzzle that is not of a view type |
+| `world/device-parts-frame` | `devices` | registered with no check yet: the check (every part inside the band) is GM8a's, with the first view type |
+| `world/device-closeup` | `devices` | a view-type puzzle with a `closeup` |
+| `world/device-failed-state` | `devices` | a device puzzle with `maxAttempts` when neither a decor state of its room nor a state of the device hotspot reads `{ "failed": <puzzle> }` (a jammed device must look jammed) |
+| `world/device-object` | `devices` | a device hotspot that is not an `object`, or that carries `uses` |
+| `world/device-when` | `devices` | a device hotspot with a `when` |
+| `world/device-alone` | `devices` | another lock with a puzzle in a device's room |
+| `world/device-unlock` | `devices` | an `unlock` of a device hotspot in any trigger list (`onEnter`, `then`, `onOpen`, `onFail`, a `use` rule's `do`) |
+| `world/device-part` | `devices` | a `part` atom (a hotspot's or a decor's state `is`) naming a puzzle other than its room's device, an `index` at or past the device's part count, or an `is` above the part's range |
 
-The registry is `MECHANIC_LINTS` ([mechanics/index.ts:61](../client/scripts/story/mechanics/index.ts#L61), ten passes since GM5f). The
-puzzle types' own tables in `PUZZLE_LINTS` ([puzzles/index.ts:30](../client/scripts/story/puzzles/index.ts#L30)) are
-empty for `code` and `order`: their `world/solution*` codes are STAGING-DSL §11's. The test `story: module and type
+The registry is `MECHANIC_LINTS` ([mechanics/index.ts:62](../client/scripts/story/mechanics/index.ts#L62), ten passes since GM5f,
+eleven since GM8i's `DEVICES_LINT`). The
+puzzle types' own tables in `PUZZLE_LINTS` ([puzzles/index.ts:42](../client/scripts/story/puzzles/index.ts#L42)) are
+empty for all four types: the `world/solution*` codes are STAGING-DSL §11's, and `path` and `grid` report through the
+reach codes above. A device's `device` key, `part` atom and their rules: [STAGING-DSL §11](STAGING-DSL.md#11-what-the-story-lint-enforces),
+"Devices". The test `story: module and type
 lint codes are unique and none is a DSL code` ([world.test.ts:971](../client/scripts/story/world.test.ts#L971)) keeps
 each code in one table. This table is written by hand; no test compares it with the registries.
 

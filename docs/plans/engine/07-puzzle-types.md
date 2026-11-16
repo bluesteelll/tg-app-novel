@@ -114,6 +114,13 @@ export interface PuzzleTypeLint<P> {
 // renderer at its one call site (`client/scripts/story/emit.ts:428`), so GM8a only implements `levers.renderHints`.
 ```
 
+- Changed by RULINGS 352, 354, 359 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): the sketch's `answerShape` doc ("Reach types: the
+  longest working answer (the posted length is `solve(p).length`, known at build)") is restated by Solver F3 (G4, N7;
+  as merged, GM7g `9dc5765`): the build measures a reach type by its lint half's `solve(p).length` when `solve` exists
+  and returns an answer, **else by `answerShape(p).len`** (`client/scripts/story/puzzles/shape.ts:31-41`), so a reach
+  type without a `solve` is still bounded by its answer shape and its missing solution is the reach pass's finding.
+  Both shipped reach types post their full answer shape: `path` `cols x rows - |blocked|` cells
+  (`client/src/puzzles/rules/path.ts:89-91`), `grid` one entry per cell (`client/src/puzzles/rules/grid.ts:84`).
 - `session.ts` keeps a type-agnostic shape check from `instance.shape` before a POST; type validity lives in the play
   half (the UI enables its commit control). The server compares shape and equality only (unchanged).
 - Registry pin (GM1c, round 3): `check === 'commit'` implies `wrong === 'posted'`; `check === 'reach'` implies `wrong`
@@ -126,8 +133,17 @@ export interface PuzzleTypeLint<P> {
   order }` then one line per type lane: GM7p, GM7g, GM8a, GM8b), mapped over `PuzzleType` so a type without a lint half
   fails `tsc`. `postedLength(p, PUZZLE_LINTS)`, `answerLenIssues`, `world/unique-solution` and `toServer`'s `renderHints`
   (GM2b's `emit.ts:428` call site) all read it; no other file names the type lint halves.
+  Changed by RULINGS 344, 351 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): as merged (GM7p `8be35a0`, its cut D6),
+  the reach findings are one shared pass, not each type's `codes`: `REACH_CODES` (`world/unique-solution`,
+  `world/reach-solution`, `world/attempts-without-wrong`) and `reachFindings` live in
+  `client/scripts/story/mechanics/clues.ts` (`:40-44`, `:219`), registered with the clue lints in `CLUES_LINT` (`:266`),
+  and read each reach type's `solve` / `countSolutions` / `reached` / `canonical` through `PUZZLE_LINTS`
+  (`client/scripts/story/puzzles/index.ts:42`, `{ code, order, path, grid }` since GM7g); the `path` and `grid` lint
+  halves declare `codes: {}`.
 - Bytes: ~25 lines per data half, ~0.11 KB br engine per type (ARITHMETIC); play halves ride each type chunk
-  (<= 8 KB br LIMIT, `budget.ts:109`).
+  (<= 8 KB br LIMIT, `budget.ts:109`; Changed by RULINGS 351 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): the LIMIT `puzzleTypeChunkBr`
+  8,000 is `client/scripts/budget.ts:163`, read per root closure, `largest`, over the roots under `src/puzzles/ui/`,
+  `:251-258`).
 
 ### 7.2 Per-type table
 
@@ -135,8 +151,8 @@ export interface PuzzleTypeLint<P> {
 |---|---|---|---|---|---|---|---|
 | `code` (built) | commit / posted | secret | overlay | `dials` <= 6 (as built, critique_engine_r2 W3) | digit per dial; `dials` | static or per-player | yes, >= 4 dials (floor) |
 | `order` (built) | commit / posted | secret | overlay | `pieces` <= 5 (as built) | permutation; `pieces` | static | no (<= 120) |
-| `path` (GM7p) | reach / none | shown (rules drawn) | overlay | `cols`, `rows` 2..7, `ends`, `blocked`, `visit` | node sequence starting at the lower-index end; `solve(p).length` <= 49, bounded by `world/answer-len` (<= 16 until GM7g raises it to 64) | static, `solve(p)` | no |
-| `grid` (GM7g) | reach / none | shown | overlay | `rows`, `cols` 2..6, `symbols` 2..6, `given` | cell-major fill; `rows x cols` <= 36, bounded by `world/answer-len` (64 from GM7g) | static, `solve(p)` | no |
+| `path` (GM7p) | reach / none | shown (rules drawn) | overlay | `cols`, `rows` 2..7, `ends`, `blocked`, `visit`. Changed by RULINGS 344, 351 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): as merged (GM7p `8be35a0`, D1), a **visit-all path**: one line from end to end through every open cell exactly once, by 4-neighbour steps, cells row-major; `visit` is dropped (it would be the derived `cols x rows - \|blocked\|`); `ends` two distinct cells, `blocked` distinct non-end cells (`client/src/puzzles/rules/path.ts:43-82`) | node sequence starting at the lower-index end; `solve(p).length` <= 49, bounded by `world/answer-len` (<= 16 until GM7g raises it to 64; Changed by RULINGS 354, 359 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): 64 since GM7g `9dc5765`; `answerShape(p).len` = `cols x rows - \|blocked\|` = every solution's length, `max` = `cols x rows - 1`) | static, `solve(p)` | no |
+| `grid` (GM7g) | reach / none | shown | overlay | `rows`, `cols` 2..6, `symbols` 2..6, `given`. Changed by RULINGS 354, 359 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): as merged (GM7g `9dc5765`, D1, ruled Q2), **`symbols` is `max(rows, cols)..6`** (a line of n cells holds n distinct symbols); `given` is **dense and cell-major**, `rows x cols` entries, **0 the blank**, else a symbol 1..`symbols`; the rule: no symbol twice in a row or a column, the givens kept (`client/src/puzzles/rules/grid.ts:1-4`, `:27-67`); input is select a cell, then a symbol (with Clear), and a given cell is a disabled button. The numerals 1..6 and the cells' look are placeholders for GM8d's art | cell-major fill; `rows x cols` <= 36, bounded by `world/answer-len` (64 from GM7g); as merged, `answerShape(p)` = `{ len: rows x cols, max: symbols }` (`grid.ts:84`), `initial` = `startShown` = the givens | static, `solve(p)` | no |
 | `levers` (GM8a) | reach / none | shown (the target pattern drawn on the device) | view | `parts` 2..8, `positions` 2..4, `couples`, `target`, `rects` | configuration; `parts` <= 8 | static, `solve(p)` = the target iff a BFS over throws from `initial` reaches it, else null (m8); `witness(p)` = the shortest throw order | no |
 | `setting` (GM8a) | commit / posted | secret (copied from a clue) | view | `parts` 1..8, `positions` 2..10, a commit part, `rects` | configuration; `parts` <= 8 | static or per-player | yes if `positions^parts - 1` >= 1,000 (`startShown` = `initial`, excluded, `world/solution-initial`, `client/scripts/story/world.ts:581-582`; m4): 10^3 - 1 = 999 fails, 4^5 - 1 = 1,023 and 6^4 - 1 = 1,295 pass (ARITHMETIC) |
 | `sequence` (GM8b) | reach / **local** | shown (the device plays the order: `demo(p) = order`, at arrival, after each wrong ring and on its replay control; round 4 m7) | view | `parts` 2..8, `order` of length 2..12 | the order; <= 12 | static | no |
@@ -193,6 +209,17 @@ export interface PuzzleTypeLint<P> {
 - `world/reach-solution`: `reached(p, solve(p))` and `canonical(p, solve(p))` equals `solve(p)`; `toServer` emits it.
 - Search bounds: `path` cols, rows <= 7; `grid` rows, cols, symbols <= 6 (decode limits), so `countSolutions` stays a
   small backtracking search; the story tool reports its time per instance (MEASURED in GM7p / GM7g).
+  Changed by RULINGS 345, 350, 352, 355, 359 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): as merged, each search is bounded by a step budget,
+  1,000,000 extensions per instance (`PATH_SEARCH_STEPS`, `client/scripts/story/puzzles/path.ts:13`;
+  `GRID_SEARCH_STEPS`, `client/scripts/story/puzzles/grid.ts:12`); a stopped search is a result, refused as
+  `world/unique-solution` "stopped at its bound", never a hang, and no stage runs an unbounded search (RULINGS 352 S4).
+  The grid's timings are **indicative** (GM7g `impl.md`, a loaded machine): the empty 6 x 5 / 6 takes 43,622 steps in
+  53.0 ms (the worst of a 6,308-instance sample; the grid lens's worst search, the same empty grid, stopped at 43.6k
+  steps, RULINGS 357); the worst instance found after a hill climb is a different 6 x 5 / 6, with three givens (3 at
+  cell 2, 1 at cell 4, 4 at cell 8), at 47,547 steps in 48.6 ms, about 4.8 % of the bound; none of 18,500 instances
+  stopped at it. The path's dead-end / connectivity pruning (Q8) is re-routed to the first lane whose path search stops
+  at its bound, or GM8d, whichever comes first (RULINGS 352 G5); a 7 x 7 path search run unbounded once took 11.5 s
+  (RULINGS 350 G-1).
 - **Runtime mismatch** (m3). The realistic trigger is a stale tab: a free bundle built before a deploy posts against
   updated server content; a lint bug is the other. The server answers wrong to a reach post; the session resolves the
   attempt as `{ kind: 'mismatch' }` (a new `AttemptResult` kind, GM7r; round 5: it dispatches no `attempt-failed`, so
@@ -235,10 +262,21 @@ export interface PuzzleTypeLint<P> {
     `answerLenIssues(w, lints, types): WorldIssue[]` (`:44`); `answerLenFindings(input, lints, types)` (`:57`) is
     exported beside them and turns each issue into the `world/answer-len` finding `SHAPE_LINT` registers. The sketch's
     `typeof PUZZLE_LINTS` and `Issue[]` are the round-4 record.
+    Changed by RULINGS 352, 354, 359 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): as merged (GM7g `9dc5765`, G3 / G4), the build's
+    `MAX_ANSWER_LEN` is **64** (`client/scripts/story/puzzles/shape.ts:19`), equal to the server's, so the paragraph's
+    "16" and the sketch's `16` / "GM7g: 64" are the round-3 record; and **Solver F3**: `postedLength` reads a reach
+    type's `answerShape(p).len` when its lint half's `solve` is absent or returns null (`shape.ts:31-41`,
+    `lint?.solve?.(p.params)?.length ?? data.answerShape(p.params).len`), so the sketch's "null: no solve" now means
+    only an unknown type, and a reach type without a `solve` is bounded by its answer shape.
   - lint `world/answer-len`: `1 <= postedLength(p) <= MAX_ANSWER_LEN` for every puzzle, per-player ones included (their
     domain length is `answerShape(p).len`, per-player.md `world/per-player-domain`); seen red in GM1d on a fixture type
     whose answer is 17 entries (the registry parameter, as GM3c's fixture module), pinned in GM7p on a real path whose
-    solution visits 17 cells;
+    solution visits 17 cells; Changed by RULINGS 354, 359 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): at 64 no decode-legal path or grid
+    exceeds the bound (49 and 36 cells at most), so GM7g replaced the 17-cell pin in place by the **49-cell pin**,
+    `story: a 49-cell path passes the answer bound` (`client/scripts/story/puzzles/path.test.ts`: the 7 x 7 path from
+    corner to corner posts 49 and passes, and a positive control whose `solve` returns 65 entries gives
+    `world/answer-len`); the lint is seen red on fixtures only (`world.test.ts`'s literals 65 / 64, and a fixture reach
+    type without a `solve` in `grid.test.ts`);
   - pin `story: the build's answer bound never exceeds the server's MAX_ANSWER_LEN` (GM1d): reads
     `server/src/puzzles/mod.rs`, requires a match of `pub const MAX_ANSWER_LEN: usize = (\d+);` (no match is red, so the
     test cannot pass vacuously) and asserts client <= server; seen red on the mutation client = 17. It is `<=` on
@@ -250,6 +288,8 @@ export interface PuzzleTypeLint<P> {
     stays 16 until GM7g (`client/scripts/story/puzzles/shape.ts:20`);
   - the per-type decode bounds (§7.2) keep every non-board type at <= 12 entries; `path` (<= 49 cells) and `grid`
     (<= 36) are bounded by the lint, so an author's 5 x 5 visit-all path fails `npm run story` until GM7g, never a POST;
+    Changed by RULINGS 359 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): since GM7g's raise (`9dc5765`) every decode-legal path and grid
+    passes the bound;
   - per-player GM6s2's load rule `answer_len <= MAX_ANSWER_LEN` ([per-player §3.3 Content format 2](../per-player/03-server-half.md#33-content-format-2)) is the server's own second line;
     no lane of this file waits for it.
 - **Tests:** `story: a grid with two solutions is refused` (seen red), `path: a reversed path posts its canonical form`
@@ -263,10 +303,48 @@ export interface PuzzleTypeLint<P> {
   refused` (GM8a), `levers: the witness is the shortest throw order` (GM8a), `story: an answer longer than
   MAX_ANSWER_LEN is refused` and `story: the build's answer bound never exceeds the server's MAX_ANSWER_LEN` (GM1d),
   `story: a path whose solution visits 17 cells is refused` (GM7p), `story: a 25-cell grid passes the answer bound`
-  (GM7g; red at 16).
+  (GM7g; red at 16). Changed by RULINGS 355, 359 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): GM7g renamed GM7p's 17-cell test to
+  `story: a 49-cell path passes the answer bound` (one missing name and one new name, declared).
 
 ### 7.5 Devices: lifecycle, attempts, working state (m6, m7, W2; round 3 W1, W2, m9, m10; GM8i module, GM8h host)
 
+- **Ruled since: RULINGS 352, 353, 356, 358, 360, 361** (as of `b0b1b41`; docs lane `docs-errata-20`, group A) — **GM8i is merged** (`6e459a3`; lock 20): the
+  module half of this section is built; GM8h's host half is not. **No world holds a device yet**: no registered type is
+  `presentation: 'view'` (`PUZZLE_TYPES` is `code`, `order`, `path`, `grid`, all overlay), so GM8a makes the first real
+  view type, and until then every device rule runs only on fixture types. As merged:
+  - the room key `device` and the `part` atom: `client/src/mechanics/data/devices.ts` (`decodeDevices` :34,
+    `decodePartAtom` :65; registered with `owns: { room: ['device'], atoms: ['part'], facts: ['work'] }` and the atom
+    `gating: false`, `client/src/mechanics/data/index.ts:78-89`);
+  - the arrival hook: `arriveDevice` (`client/src/mechanics/rules/devices.ts:49-63`), called by core's `arrived` (the
+    guard `client/src/mechanics/rules/core.ts:57-59`) after each `room` push: the move (`arrive`, `:85-87`), the resume
+    (`enterSection`, `:97-98`) and the event return (`eventReturned`, `:121-122`). The plan's `reduce.ts:322` / `:332` /
+    `:354` are these sites, its `reduce.ts:370` / `:373` is `lockTap` (`core.ts:139-146`, the `puzzle` effect `:142`, the
+    `lock` effect `:144`), its `reduce.ts:572-577` / `:598-618` are `actions` (`core.ts:447-479`, the tap list `:466`)
+    and `successors` (`client/src/mechanics/rules/search.ts:38-61`), its `yields.ts:540` / `:555` are `yields.ts:986` /
+    `:1062`, and its `graph.ts:601-606` is `client/scripts/story/graph.ts:682-686` (GM8i cut 1.1, re-located on
+    `b0b1b41`);
+  - `device-moved` (`applyDevices`, `rules/devices.ts:82-93`): a no-op outside a section's room, while a knot is
+    pending, for a puzzle that is not the room's device or whose run has ended, and (fix1, RULINGS 358, 361) for a
+    `work` that is no array or holds a hole or a value the save cannot keep (`:84`); it writes the run's `work` through
+    the writer, which records each part change as a `work` fact `<puzzle>.<index>=<v>`, removals then additions
+    (`client/src/mechanics/rules/writer.ts:240-252`); `keyPlan` throws on a `work` read
+    (`client/src/mechanics/rules/search.ts:271-273`), so the kind stays outside the section key;
+  - the `part` atom holds while part `index` of the saved `work` (else the type's `initial`) is `is` (`partHolds`,
+    `rules/devices.ts:107-109`); a `part` atom in a gating condition is refused at its line (`world/visual-only-atom`,
+    E), and that section is neither soft-lock-checked nor clue-checked (`gatesVisualOnly`,
+    `client/scripts/story/softlock.ts:73-76`, `:85-88`; `client/scripts/story/mechanics/clues.ts:139-141`), so the run
+    may also print `world/unreachable` W for items only that section's use rules or recipes give (the gate fails
+    closed; `carry.md` "GM8i carries", Q-F2);
+  - the controller draws no button for the device hotspot (`client/src/explore/controller.ts:155-159`); the cues
+    `fact:work:*` (`press`, 240 ms, target `part`, no haptic) and `module:devices:done` (`glint`, 420, `box`) /
+    `:jammed` (`jam`, 480, `box`, haptic error) (`client/src/cues/stage/motions.ts:174-175`, `:233-234`);
+  - at resume `normalizeDevices` drops a `work` its type's `workFits` refuses (`fitWork`, `data/devices.ts:97-113`); no
+    registered type has `workFits` yet, so it drops nothing before GM8a;
+  - the ten lint codes of `client/scripts/story/mechanics/devices.ts` (`DEVICES_CODES` :28-43, `devicesFindings`
+    :86), listed in [AUTHORING "Module and type lint codes"](../../AUTHORING.md#module-and-type-lint-codes);
+    `world/device-parts-frame` is registered with **no check** (RULINGS 353 Q1 (c)): the part rects need a source no
+    file in GM8i's lock had (D6), so the check, T11 / T18 and the `HOTSPOT_MIN_SOURCE_PX` static pin go to GM8a, whose
+    lock gains `client/scripts/story/mechanics/devices.ts` and `client/src/mechanics/devices.test.ts`.
 - **Open (m10, round 3; round 4 m9, W3).** A view room with `device: <hotspot>` whose hotspot carries a zero-slot lock
   with `puzzle`. The device hotspot is drawn by the device, never as a hotspot button: the controller's hotspot views omit
   it (GM8i). **Where arrival runs (round 4, m9):** nothing dispatches it. The devices module's `arrived(w, s, room, out)`
@@ -355,7 +433,11 @@ export interface PuzzleTypeLint<P> {
     in `client/src` (Grep), so 0 is today's value; verify at GM8h's cut against core.telegram.org/bots/webapps
     (`safeAreaInset`, `contentSafeAreaInset`) whether any launch path enters fullscreen, and if one does, set the
     constant from the mock's largest inset (the band then grows, it never silently overlaps). The constants live in
-    `client/scripts/story/mechanics/devices.ts` (build-only); GM8d's e2e pins the real bar against `DEVICE_BAR_CSS_H`
+    `client/scripts/story/mechanics/devices.ts` (build-only; Changed by RULINGS 352, 361 (as of `b0b1b41`; docs lane `docs-errata-20`, group A): as
+    merged, `DEVICE_BAR_CSS_H` :47, `DEVICE_TOP_INSET_CSS` :49, `deviceBandY` :57 and `DEVICE_BAND_Y` :66, 496; the 320
+    vs 360 note (D6, X5): since Q67 the app lays out at the 360 px design width (`client/src/telegram/viewport.ts`), where
+    the same formula gives 448, so the 320 px value, 496, is the stricter one and stays; `DEVICE_TOP_INSET_CSS`'s
+    verification is GM8h's); GM8d's e2e pins the real bar against `DEVICE_BAR_CSS_H`
     (`mechanics: the device bar is no taller than its lint's bound`, seen red on the mutation "the bar's padding 6 ->
     16 px", 118 + 20 = 138 > 120). **Round 6 (m1): the pin runs at the derivation's own width in the bar's fullest state:**
     `page.setViewportSize({ width: 320, height: 569 })`, the fog bells (`sequence`, `maxAttempts: 3`) after an aborted
