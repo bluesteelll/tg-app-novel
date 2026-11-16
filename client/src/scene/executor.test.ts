@@ -3952,6 +3952,21 @@ test("executor: a face's mouths join its group when its talk file lands after th
   }
 });
 
+// Triage r1 S1: a batch whose build throws on one face's part stops before a second changed face's O2 drop; the sync at
+// its finish drops that face's group by its expression (the drawn rest is no longer the logical one).
+test("executor: a build that throws on one face's part still takes another changed face's motion off", async () => {
+  const loop = quietLoop();
+  const h = harness(S390, loop, MOTION);
+  h.ex.setMotion(fakeKit().kit);
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  expect([motionNodes(h).map((x) => x.key), loop.stats().ambientSources]).toEqual([['motion:ally', 'motion:stranger'], 2]);
+  throwOn(h, 'face/lamp/ally/smile');
+  await applyFailing(h, [face('ally', 'smile'), face('stranger', 'smile')]);
+  expect([motionNodes(h).map((x) => x.key), loop.stats().ambientSources]).toEqual([[], 0]);
+  h.ex.destroy();
+});
+
 // Reduced motion (lane SH7, D2, D12): a camera move lands at its end; cuts, dissolves and the faces keep their time.
 
 test('executor: under reduced motion a camera move jumps to its end', async () => {

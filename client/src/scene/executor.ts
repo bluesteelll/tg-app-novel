@@ -859,6 +859,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     const shot = root?.shot;
     let shown = false;
     for (const g of [...groups.values()]) {
+      // The expression check also takes off a face a throwing build never reached: its O2 drop did not run (triage S1).
       if (
         g.root !== root ||
         shot === undefined ||
