@@ -3986,6 +3986,49 @@ test('executor: a batch end between a failed revive and its reacquire drops the 
   h.ex.destroy();
 });
 
+// Triage r2 S4 (A15): a sync asks for a frame only when a member that showed leaves; under frozen every member is held
+// hidden, so the kit's landing over a drawn shot and a talk landing that rebuilds a group change no pixel.
+test('executor: the kit landing and a talk landing ask for no frame when no member showed', async () => {
+  // The kit lands under frozen over a drawn shot: its groups are built and held.
+  {
+    const d = drivenLoop();
+    const h = harness(S390, d.loop, MOTION);
+    d.loop.setAnimation({ frozen: true });
+    await h.ex.apply([scene('lamp', 'cut')], NOW);
+    await flush();
+    d.run(500);
+    const before = d.loop.stats().frames;
+    h.ex.setMotion(fakeKit().kit);
+    await flush();
+    d.run(100);
+    expect.soft([d.loop.stats().frames - before, d.loop.stats().ambientSources], 'frames and sources after the kit landing').toEqual([0, 2]);
+    h.ex.destroy();
+  }
+  // A talk file lands after its group: the mouthless group, with no member showing, is dropped and rebuilt (frozen, and
+  // live before the face's first change).
+  for (const frozen of [true, false]) {
+    const d = drivenLoop();
+    const h = frozen ? harness(S390, d.loop, MOTION, undefined, 'draw') : harness(S390, d.loop, MOTION);
+    const { kit, faces } = fakeKit();
+    h.ex.setMotion(kit);
+    if (frozen) {
+      d.loop.setAnimation({ frozen: true });
+    }
+    const go = h.deferLoad('talk/lamp/ally/neutral');
+    await h.ex.apply([scene('lamp', 'cut')], NOW);
+    await flush();
+    d.run(1_100);
+    const before = d.loop.stats().frames;
+    go();
+    await flush();
+    d.run(100);
+    // A new face for ally with its mouth: the landing's sync did drop and rebuild the group.
+    expect(faces.map((f) => f.set.talk.length), `the rebuilt group (frozen ${frozen})`).toEqual([0, 1, 1]);
+    expect.soft(d.loop.stats().frames - before, `frames after the talk landing (frozen ${frozen})`).toBe(0);
+    h.ex.destroy();
+  }
+});
+
 // Reduced motion (lane SH7, D2, D12): a camera move lands at its end; cuts, dissolves and the faces keep their time.
 
 test('executor: under reduced motion a camera move jumps to its end', async () => {
