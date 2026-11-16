@@ -140,6 +140,8 @@ build STOP is E x R + 0.5 KB, with an attribution tripwire (no STOP) at E + 0.5.
 advanced blend mode without lever X's import-back (rule `pixi-env`, `client/src/arch.test.ts:217`; RULINGS 201 lever X,
 design §2.4 D4): the scene skips Pixi's environment extensions, so those systems are not registered.
 
+**Ruled since: RULINGS 365, 367, 372, 374** (as of `172e47e`; docs lane `docs-errata-21`, group A) — SH6 merged `b0ef547` booked **E_engine 1.6** (RULINGS 367: its own cut's itemization, in place of this table's 1.4) and entry +0.1 KB; it measured engine **+2,396 B** (sample 2.396 / 1.6 = **1.498**; STOP +3,743 B), entry +23, first line +2,419 and all JS +2,443 (STOP +3,843 B each). The new budget row is `image bg/lamp_lens_insert`, a PASS (113 rows, 112 PASS, 1 PENDING: the `scene-motion` chunk row, SH7's). **The engine R is 1.724 at n 26** (1.748 at n 25, GM8h's merge), the remaining engine terms are **3.891** KB, and the ledgers at `b0ef547` are L4 217.834, L1 256.989, L2 39.155; the figures are owned by [engine §11.1](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13) ("Main `b0ef547`"), not restated here.
+
 ### 10.1 Fixture ledger (rev. 6, RULINGS 138 (c); the invariant S34)
 
 **Rule.** Every e2e test and every integration test this design names has a row. A row names the content shape the

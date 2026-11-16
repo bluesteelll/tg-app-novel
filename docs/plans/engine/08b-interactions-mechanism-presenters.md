@@ -316,5 +316,6 @@ per-player round 2): their motion is theirs, gated with this file's `MIN_VISIBLE
 - **Ruled: RULINGS 234** — Q65: a world cue whose subject is not in the shown room (a hidden puzzle's late
   `fact:attempt:added` / `fact:solved:added` after the player walked away) is dropped by the cue stage: no motion, no
   haptic, no fallback count; the next holder of `client/src/cues/stage/{index,player}.ts` implements it with a stage
-  test where the answer lands after a walk (not GM3p's: its lock excludes `cues/stage/**`).
+  test where the answer lands after a walk (not GM3p's: its lock excludes `cues/stage/**`). Changed by RULINGS 363, 375 (as of `172e47e`; docs lane `docs-errata-21`, group A): the lane that implements Q65 is **GM8h2** `gm8h2-mech-device-cues` (RULINGS 363 S1, C1; launch rulings RULINGS 375), not GM8h, which holds the host and
+  only the `part` target of `cues/stage/index.ts`; this wording stands until GM8h2 merges.
 - **Overrides** (later, MR1): world / catalog override per hotspot or prop -> catalog default per prop -> this table.

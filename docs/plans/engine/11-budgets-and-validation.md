@@ -391,6 +391,21 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   **Ledger 1** 247.198 + 10.948 = **258.146 / 270.0 (11.854 left)**; **Ledger 2** **39.169 / 40.0 (0.831 left)**. The
   trigger does not hold; the engine-lever candidate waits for Ledger 4 or 1 within 2.0 KB (RULINGS 253); L2's return
   line does not hold.
+- **Main `b0ef547`, MEASURED** (Changed by RULINGS 363, 366, 367, 372, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A); the orchestrator's merge checks, 4 builds per tree, exact B br; rows judged by module identity). Per lane, main -> merge (docs-errata-20 `284f948`, the OPEN-QUESTIONS commits `572c13d`, `b354f36` and `172e47e` and the workflow commit `f7acea2` are not builds):
+  - **GM8h** `4471fbf` (E_engine 0.45, E_explore 0.1, E_cue 0.05, puzzle-host 0.52, entry +0.1 KB, RULINGS 366): engine 208,029 -> **208,730** (+701 against the +1,412 B STOP; sample
+    0.701 / 0.45 = **1.558**), entry **39,132** (-37), first line **247,862**, all JS **289,725**, explore-ui **13,406** (+305 against the +732 B STOP; 594 B under the 14.0 KB split
+    trigger), puzzle-host **2,989** (+345), cue-stage **6,204** (+68 against +601), meta-ui 5,428, first load ch1 **301,227**; 112 rows, 111 PASS, 0 FAIL, 1 PENDING (RULINGS 372).
+  - **SH6** `b0ef547` (E_engine 1.6, entry +0.1 KB, RULINGS 367): engine **211,126** (+2,396 against the +3,743 B STOP; sample 2.396 / 1.6 = **1.498**), entry **39,155** (+23 against +100),
+    first line **250,281** (+2,419 against +3,843), all JS **292,168** (+2,443 against +3,843), explore-ui **13,405** (-1), puzzle-host **2,988** (-1), puzzle-type **2,223** (+1), cue-stage
+    **6,224** (+20), meta-ui **5,434** (+6), meta controller 5,147 (+2), overlays 2,493 (+3), first load ch1 **303,647** / ch3 **283,007**, entry step images ch4 16.7 KB; 113 rows, 112 PASS,
+    0 FAIL, 1 PENDING (the `scene-motion chunk` row, SH7's; the new row `image bg/lamp_lens_insert` is a PASS; RULINGS 374).
+  **R:** engine **1.748** at GM8h's merge (n 25: the 13th value; RULINGS 372) and **1.724** at SH6's (n 26: -0.127, 0.123, 0.527, 0.871, 1.009, 1.036, 1.27, 1.31, 1.390, 1.498, 1.527,
+  1.558, **1.700**, **1.748**, 2.306, 2.551, 2.90, 3.025, 3.131, 3.364, 3.513, 3.546, 4.000, 4.60, 5.96, 11.1; the median (1.700 + 1.748) / 2; RULINGS 374); later lanes use 1.724. The
+  explore-ui R stays **2.319** (the list is not rebuilt, RULINGS 214's rule). Remaining engine terms (ARITHMETIC): **5.741** at GM8h's cut (E_engine 0.45 in place of the row's 0.11,
+  RULINGS 366), **5.941** at SH6's (1.6 in place of 1.4, RULINGS 367), **5.491** after GM8h's 0.45 was spent (RULINGS 372) and **3.891** after SH6's 1.6 (RULINGS 374; none of the
+  rest is GM8h2's, RULINGS 375 E2). Ledgers: at `4471fbf` (R 1.748, term 5.491 x 1.748 = 9.598) L4 **218.328**, L1 **257.460**, L2 **39.132**; at `b0ef547` (R 1.724, term 3.891 x
+  1.724 = 6.708) **Ledger 4** 211.126 + 6.708 = **217.834 / 230.0 (12.166 left)**; **Ledger 1** 250.281 + 6.708 = **256.989 / 270.0 (13.011 left)**; **Ledger 2** **39.155 / 40.0 (0.845
+  left)**. The trigger does not hold; the engine-lever candidate waits for Ledger 4 or 1 within 2.0 KB (RULINGS 253); L2's return line does not hold.
 - **The path rule (RULINGS 201; the union rule, budget round r198 design §3.1).** Ledgers 1 and 4 count every JS chunk
   that some supported WebView requests **automatically before its first line** on the boot -> chapter -> first-line
   path, a capability fallback included (Pixi's three renderer facades: a device requests one by what it is): the
@@ -450,7 +465,8 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   with GM7r's 1.390 that RULINGS 341 omitted): engine **2.551** (n 21; the sample 2.551);
   (Changed by RULINGS 351, 359, 361 (as of `b0b1b41`; docs lane `docs-errata-20`, group A)) at GM7p's (RULINGS 351): engine **2.4285** (n 22; the sample
   1.036); at GM7g's (RULINGS 359): engine **2.306** (n 23; the sample 0.871); at GM8i's (RULINGS 361): engine **2.027**
-  (n 24; the sample 1.748);
+  (n 24; the sample 1.748); (Changed by RULINGS 372, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A)) at GM8h's (RULINGS 372): engine **1.748** (n 25; the sample 1.558); at SH6's (RULINGS 374): engine **1.724**
+  (n 26; the sample 1.498);
   the explore-ui samples 0.582, 0.445 and 0.94 recorded, its R kept at 2.319 (and GM8i's 1.5625 / 1.606, RULINGS 356,
   361);
   cue-stage and `scene-motion` use the all-JS R. **Stability note:** the engine sample is bimodal (1.009 | 3.025, SH1
@@ -694,6 +710,8 @@ a mouse stroke's text selection cancelling the next stroke, and gates F1-F4, clo
 (gates F1-F4, test-only, closed by fix1, RULINGS 357, 359) and GM8i (persistence F1 / F2, a sparse or non-array
 `work`, and proof P1, a gating `part` atom crashing the story gate, closed by fix1, RULINGS 358, 360, 361). Per-merge
 rows: the `6e459a3` bullet above.
+
+**Ruled since: RULINGS 362-375** (as of `172e47e`; docs lane `docs-errata-21`, group A) — GM8h (`4471fbf`) and SH6 (`b0ef547`) took the engine to 211,126 B, and **R is 1.724** (n 26; 1.748 at GM8h's merge). At `b0ef547`: **Ledger 4 217.834 / 230.0** (12.166 left), **Ledger 1 256.989 / 270.0** (13.011 left), **Ledger 2 39.155 / 40.0** (0.845 left), with 3.891 KB of engine terms left. **The trigger does not hold**; L2 stays shelved. The explore-ui row is 13,405 B, 595 B under the 14.0 KB split trigger (03:486-488); GM8h's +0.1 sat outside the joint +0.3 that GM8i spent (RULINGS 366), and its STOP of +732 B stands. The pre-merge lens check (RULINGS 289) ran at both merges. It held GM8h for a fix round (six important findings: a late answer racing a zoom back in, the QuickBar over the device bar, the ladder place's padding and scroll, a demonstration under a covering sheet, and two unpinned wirings; fix1, RULINGS 368, 372); SH6's lenses (paid, gpu, legacy, gates) found no defect that held it, and their minors are carried (RULINGS 371, 374). Per-merge rows: the `b0ef547` bullet above.
 
 **One owner per figure (reconcile r2, RC-W1).** This section owns the sums, headrooms and verdicts of the three
 designs; each design owns its own lane terms (EN §3.5, per-player §10 "Ledgers", the shots §9 / §10 with this
