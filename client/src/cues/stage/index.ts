@@ -71,6 +71,16 @@ function sel(t: keyof typeof CUE_TARGET_ATTRS, value?: string | number): string 
   return `[${CUE_TARGET_ATTRS[t]}${value === undefined ? '' : `="${value}"`}]`;
 }
 
+/**
+ * The leaf matches of a panel selector: the live ones (outside the stage layer) that contain no other, in document
+ * order. A device's ladder sheet holds the card, both `hints`: only the card is a leaf, so a box-less hold and the
+ * `ladder` target land on it, as in the frame place, never on the full-screen sheet (RULINGS 382 C1, 384 D1).
+ */
+function leaves(s: string): Element[] {
+  const named = [...document.querySelectorAll(s)].filter((p) => p.closest('[data-cue-stage]') === null);
+  return named.filter((p) => !named.some((q) => q !== p && p.contains(q)));
+}
+
 /** The item a cue names: a fact's id (a `slot` fact's id is its lock, so its cause's item: GM3's O5), or the item a
  *  module, control or panel cue carries. */
 function itemOf(c: Cue): string | null {
@@ -104,7 +114,7 @@ function partIndex(c: Cue): number | null {
 export function resolveTarget(t: CueTarget, e: CueEvent, layer: Element): Resolved {
   const c = e.cue;
   const frame = (): Element | null => live(sel('frame'));
-  const ladder = (): Element | null => live(sel('ladder', 'hints'));
+  const ladder = (): Element | null => leaves(sel('ladder', 'hints'))[0] ?? null;
   /** A marker inside the frame (or the ladder), else the frame (the ladder) itself. */
   const inside = (scope: Element | null, s: string): Resolved => elOf(scope === null ? null : (live(s, scope) ?? scope));
   switch (t) {
@@ -121,12 +131,10 @@ export function resolveTarget(t: CueTarget, e: CueEvent, layer: Element): Resolv
       if (c.panel === null) {
         return { box: landing(layer, 'centre') };
       }
-      // A box-less hold of a panel: only the leaf panels of its name count, the live ones that contain no other (a
-      // device's ladder sheet holds the card, both `hints`: the card breathes, as in the frame place; RULINGS 382 C1).
+      // A box-less hold of a panel: only the leaf panels of its name count (a device's ladder sheet: the card breathes).
       // Then the notice a leaf shows (the leaf itself when it carries both markers), else a `puzzle` hold breathes at
       // `centre`, never on the wrapper `checking` moves, else the first leaf.
-      const named = [...document.querySelectorAll(sel('panel', c.panel))].filter((p) => p.closest('[data-cue-stage]') === null);
-      const panels = named.filter((p) => !named.some((q) => q !== p && p.contains(q)));
+      const panels = leaves(sel('panel', c.panel));
       for (const p of panels) {
         const notice = p.matches(sel('notice')) ? p : p.querySelector(sel('notice'));
         if (notice !== null) {

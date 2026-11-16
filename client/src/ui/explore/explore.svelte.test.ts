@@ -1452,10 +1452,11 @@ test('explore: every explore cue target resolves', async () => {
 });
 
 test('explore: the ladder sheet over a device is the hints panel its cues land on', async () => {
-  // GM8h2 D13(1), RULINGS 380 B8 and 382 C1: the device's ladder sheet is the room place's hints panel, the first in
-  // document order (the card's ancestor). `ladder`, `tier`, `alert` and the panel's open and close land on the sheet.
-  // The hold of a hint request (`waiting` / `waited`, box-less) takes the leaf hints panel, the card inside the sheet:
-  // the card breathes, as in the frame place. Each element by identity (an equal node is not the node).
+  // GM8h2 D13(1), RULINGS 380 B8, 382 C1 and 384 D1: the device's ladder sheet is the room place's hints panel, the
+  // first in document order (the card's ancestor): the panel's open and close land on the sheet. The `ladder` target
+  // (`puzzle:ladder`'s glint, `fact:hint:added`'s pulse) and the hold of a hint request (`waiting` / `waited`,
+  // box-less) take the leaf hints panel, the card inside the sheet, as in the frame place; `tier` and `alert` find
+  // their markers inside it. Each element by identity (an equal node is not the node).
   stageRig(); // the stage layer's box, and `unstage` clears the body
   const stage = document.createElement('div');
   stage.setAttribute('data-cue-stage', '');
@@ -1474,6 +1475,7 @@ test('explore: the ladder sheet over a device is the hints panel its cues land o
   const puzzle = 'dial' as PuzzleLocalId;
   const cues: ReadonlyArray<CueEvent['cue']> = [
     { kind: 'puzzle', puzzle, name: 'ladder', index: null },
+    { kind: 'fact', fact: { kind: 'hint', id: puzzle }, change: 'added', cause: { verb: 'tap', at: k('panel.dial'), item: null, via: null } },
     { kind: 'ui-state', name: 'panel-open', panel: 'hints', item: null },
     { kind: 'ui-state', name: 'panel-close', panel: 'hints', item: null },
     { kind: 'puzzle', puzzle, name: 'hint-shown', index: 1 },
@@ -1486,7 +1488,8 @@ test('explore: the ladder sheet over a device is the hints panel its cues land o
     return [cueKey(cue), r instanceof Element ? (named.get(r) ?? r.outerHTML.slice(0, 60)) : r];
   });
   expect(landed).toEqual([
-    ['puzzle:ladder', 'sheet'],
+    ['puzzle:ladder', 'card'],
+    ['fact:hint:added', 'card'],
     ['ui-state:panel-open', 'sheet'],
     ['ui-state:panel-close', 'sheet'],
     ['puzzle:hint-shown', 'tier 1'],

@@ -743,6 +743,50 @@ test('stage: a box-less hold of a panel that nests its name lands on the inner p
   expect(hold()).toBe('card');
 });
 
+test('stage: the ladder target of a hints panel that nests its name lands on the inner panel', async () => {
+  // RULINGS 384 D1 (GM8h2): the `ladder` target takes the leaf hints panel by the box-less hold's rule (one helper): a
+  // device's ladder sheet (`hints`) around the card (`hints`) glints and pulses the card, as in the frame place, never
+  // a sheet-sized light. `tier` and `alert` find their markers inside it; the `panel` target (the sheet's open and
+  // close) keeps the first live panel of the name, the sheet. A hints panel inside the stage layer is a ghost's and
+  // never counts. Each element by identity, named; a ghost by its box.
+  const s = mounted();
+  const CARD: Box = { x: 30, y: 300, w: 200, h: 120 };
+  element('div', { 'data-cue-panel': 'hints' }, HOTSPOT, s.layer);
+  const sheet = element('div', { 'data-cue-panel': 'hints' }, ROOT);
+  const card = element('section', { 'data-cue-panel': 'hints' }, CARD, sheet);
+  const tier1 = element('li', { 'data-cue-tier': '1' }, HOTSPOT, card);
+  const alert = element('p', { 'data-cue-alert': '' }, HOTSPOT, card);
+  const names = new Map<Element | Box | null, string>([
+    [sheet, 'sheet'],
+    [card, 'card'],
+    [tier1, 'tier 1'],
+    [alert, 'alert'],
+  ]);
+  const name = (el: Element | Box | null): string => names.get(el) ?? JSON.stringify(el);
+  const puzzle = (n: 'ladder' | 'hint-shown' | 'hint-failed', index: number | null): Cue => ({ kind: 'puzzle', puzzle: P, name: n, index });
+  const at = (target: CueTarget, cue: Cue): string => name(found(resolveTarget(target, event(cue), s.layer)));
+  expect([
+    at('ladder', puzzle('ladder', null)),
+    at('tier', puzzle('hint-shown', null)),
+    at('tier', puzzle('hint-shown', 1)),
+    at('alert', puzzle('hint-failed', null)),
+    at('panel', uiState('panel-open', 'hints')),
+  ]).toEqual(['card', 'card', 'tier 1', 'alert', 'sheet']);
+  // Through the real stage: `puzzle:ladder`'s glint (a box preset) sweeps a plain light at the card's box, and
+  // `fact:hint:added`'s pulse plays on the live card; nothing falls back.
+  const hinted: Cue = { kind: 'fact', fact: { kind: 'hint', id: P }, change: 'added', cause: { verb: 'tap', at: null, item: null, via: null } };
+  s.bus.emit(event(puzzle('ladder', null)));
+  await settle();
+  s.bus.emit(event(hinted));
+  await settle();
+  const where = (r: Rec): string | Box => (r.el.classList.contains('cue-ghost') ? boxOfGhost(r.el) : name(r.el));
+  expect(cueMotions().map((r) => [where(r), r.kf])).toEqual([
+    [CARD, PRESETS.glint],
+    ['card', PRESETS.pulse],
+  ]);
+  expect([s.played(), s.fallbacks()]).toEqual([['puzzle:ladder', 'fact:hint:added'], 0]);
+});
+
 /** ExploreView's props over a new view store, as GameSession mounts the layer. */
 function layerProps(): ExploreLayerProps {
   const view = createExploreView();
