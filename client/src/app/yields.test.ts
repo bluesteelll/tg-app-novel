@@ -37,7 +37,7 @@ import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DecodeOptions } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import type { WaitRow } from '../requests.test.ts';
-import { ROOM_FADE_MS, TAKE_FADE_MS, VIEW_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
+import { DEMO_PAUSE_MS, DEMO_STEP_MS, ROOM_FADE_MS, TAKE_FADE_MS, VIEW_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
 import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
 import yieldsSource from './yields.ts?raw';
 
@@ -204,14 +204,21 @@ afterEach(() => {
 class FakeClock implements Clock {
   #now = 0;
   #next = 1;
-  readonly #timers = new Map<number, { at: number; fn: () => void }>();
+  readonly #timers = new Map<number, { at: number; fn: () => void; ms: number }>();
   now(): number {
     return this.#now;
   }
   setTimeout(fn: () => void, ms: number): number {
     const id = this.#next++;
-    this.#timers.set(id, { at: this.#now + ms, fn });
+    this.#timers.set(id, { at: this.#now + ms, fn, ms });
     return id;
+  }
+  /**
+   * The timers set with delay `ms` that have neither run nor been cleared (D8, A16): a pin counts only the timers it
+   * means, by their delay, never the debounce's or a toast's.
+   */
+  pending(ms: number): number {
+    return [...this.#timers.values()].filter((t) => t.ms === ms).length;
   }
   clearTimeout(id: number): void {
     this.#timers.delete(id);
@@ -220,7 +227,7 @@ class FakeClock implements Clock {
   advance(ms: number): void {
     const end = this.#now + ms;
     for (;;) {
-      let next: [number, { at: number; fn: () => void }] | undefined;
+      let next: [number, { at: number; fn: () => void; ms: number }] | undefined;
       for (const e of this.#timers) {
         if (e[1].at <= end && (next === undefined || e[1].at < next[1].at)) {
           next = e;
@@ -4204,7 +4211,9 @@ const RITE = viewType('rite', {
 });
 /** A reach device with its goal shown and no wrong state: its UI reports a reached configuration (`onreach`). */
 const LATCH = viewType('latch', { check: 'reach', goal: 'shown', wrong: 'none' });
-const DEVICE_TYPES: PuzzleTypes = [...PUZZLE_TYPES, DIALS, BELLS, RITE, LATCH];
+/** A shown-goal reach device that demonstrates its goal (the parts 2, 0, 1) and knows a wrong press itself. */
+const CHIMES = viewType('chimes', { check: 'reach', goal: 'shown', wrong: 'local', demo: () => [2, 0, 1] });
+const DEVICE_TYPES: PuzzleTypes = [...PUZZLE_TYPES, DIALS, BELLS, RITE, LATCH, CHIMES];
 const DEV = 'dev' as PuzzleLocalId;
 
 /**
@@ -4815,5 +4824,130 @@ test('yields: a 429 with Retry-After 0 re-posts once after a second', async () =
   ]);
   await settle();
   expect([r.posted.length, r.puzzle.frame, r.yields.world().puzzles[DEV]?.outcome]).toEqual([2, null, 'solved']);
+  r.yields.dispose();
+});
+
+/** The demonstration steps after `mark`, as `demo@<part>`. */
+const demoOf = (r: Rig, mark: number): string[] => puzzleCuesOf(r, mark).filter((k) => k.startsWith('demo@'));
+
+test('yields: a demonstrating device plays its order once at open', async () => {
+  // §7.5 "Demonstration" (Q15h): a shown-goal device plays its type's order once, its first step `DEMO_STEP_MS` after
+  // its frame appeared (its `panel-open`), each step a `puzzle:demo` on its part, `DEMO_STEP_MS` apart.
+  const r = deviceRig('chimes');
+  await inHall(r);
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([roomOf(r), demoOf(r, mark), r.clock.pending(DEMO_STEP_MS)]).toEqual(['panel', [], 1]);
+  r.clock.advance(DEMO_STEP_MS - 1);
+  expect(demoOf(r, mark)).toEqual([]);
+  r.clock.advance(1);
+  expect(demoOf(r, mark)).toEqual(['demo@2']);
+  r.clock.advance(DEMO_STEP_MS * 2);
+  expect([demoOf(r, mark), r.clock.pending(DEMO_STEP_MS)]).toEqual([['demo@2', 'demo@0', 'demo@1'], 0]);
+  const keys = keysOf(r, mark);
+  expect(keys.indexOf('ui-state:panel-open')).toBeGreaterThanOrEqual(0);
+  expect(keys.indexOf('ui-state:panel-open')).toBeLessThan(keys.indexOf('puzzle:demo'));
+  r.clock.advance(DEMO_STEP_MS * 5); // once: nothing more
+  expect(demoOf(r, mark)).toHaveLength(3);
+  r.yields.dispose();
+});
+
+test('yields: the first input stops the demonstration and a wrong one replays it', async () => {
+  // The player's own press ends the demonstration; a wrong press that leaves the device open plays it again from its
+  // first step, `DEMO_PAUSE_MS` after the press.
+  const r = deviceRig('chimes', { maxAttempts: 3 });
+  await atDevice(r);
+  r.clock.advance(DEMO_STEP_MS);
+  let mark = r.cues.length;
+  expect(r.clock.pending(DEMO_STEP_MS)).toBe(1);
+  r.yields.host.onwork?.([2, 0, 0], false);
+  expect(r.clock.pending(DEMO_STEP_MS)).toBe(0);
+  r.clock.advance(DEMO_STEP_MS * 4);
+  expect(demoOf(r, mark)).toEqual([]);
+  mark = r.cues.length;
+  r.yields.host.onwork?.([2, 1, 0], true);
+  expect([r.puzzle.frame?.line, r.clock.pending(DEMO_PAUSE_MS)]).toEqual(['wrong', 1]);
+  r.clock.advance(DEMO_PAUSE_MS - 1);
+  expect(demoOf(r, mark)).toEqual([]);
+  r.clock.advance(1);
+  expect(demoOf(r, mark)).toEqual(['demo@2']);
+  r.clock.advance(DEMO_STEP_MS * 2);
+  expect(demoOf(r, mark)).toEqual(['demo@2', 'demo@0', 'demo@1']);
+  r.yields.dispose();
+});
+
+test('yields: a dropped device leaves no demo timer', async () => {
+  // D8: no demonstration step outlives its device. The drop sites `restore`, `chapterChanged` and `dispose` prove the
+  // drop's own stop (RULINGS 366 B10, O2); a zoom-out with no attempt in flight stops it at `hideFrame`, and the third
+  // local wrong at the press's first line, so those two do not prove the drop.
+  const sites: Array<[string, (r: Rig) => void]> = [
+    ['a restore', (r) => r.yields.restore(EMPTY_WORLD_STATE, null, null)],
+    ['a chapter change', (r) => r.yields.chapterChanged()],
+    ['dispose', (r) => r.yields.dispose()],
+    ['a zoom-out with no attempt in flight', (r) => r.yields.layer.onleaveview()],
+    [
+      'the third local wrong',
+      (r) => {
+        r.yields.host.onwork?.([1, 0, 0], true);
+        r.yields.host.onwork?.([1, 1, 0], true);
+        r.yields.host.onwork?.([1, 1, 1], true);
+      },
+    ],
+  ];
+  for (const [site, leave] of sites) {
+    const r = deviceRig('chimes', { maxAttempts: 3 });
+    await atDevice(r);
+    const pending = (): number => r.clock.pending(DEMO_STEP_MS) + r.clock.pending(DEMO_PAUSE_MS);
+    expect([site, pending()]).toEqual([site, 1]);
+    leave(r);
+    await settle();
+    expect([site, r.puzzle.frame, pending()]).toEqual([site, null, 0]);
+    r.yields.dispose();
+  }
+});
+
+test('yields: onreach stops the demonstration', async () => {
+  // A reached answer ends the demonstration (C-11: one step plays first, so the stop is seen).
+  const r = deviceRig('chimes');
+  await atDevice(r);
+  const mark = r.cues.length;
+  r.clock.advance(DEMO_STEP_MS);
+  expect(demoOf(r, mark)).toEqual(['demo@2']);
+  r.yields.host.onreach?.([2, 0, 1]);
+  expect(r.clock.pending(DEMO_STEP_MS)).toBe(0);
+  r.clock.advance(DEMO_STEP_MS * 4);
+  expect(demoOf(r, mark)).toEqual(['demo@2']);
+  r.yields.dispose();
+});
+
+test('yields: a zoom-out during a countdown ends the device and its countdown', async () => {
+  // D8: a 429 settled the attempt, so the zoom-out's close ends the session at once and its drop clears the countdown;
+  // nothing posts after it.
+  const r = deviceRig('latch', { attempts: [httpError(429, 3)] });
+  await atDevice(r);
+  r.yields.host.onreach?.([2, 1, 0]);
+  await settle();
+  expect([r.puzzle.frame?.line, r.clock.pending(1000)]).toEqual(['rate-limited', 1]);
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, r.clock.pending(1000)]).toEqual(['hall', null, 0]);
+  r.clock.advance(5000);
+  expect([r.posted.length, r.events]).toEqual([1, []]);
+  r.yields.dispose();
+});
+
+test('yields: a device hidden at a zoom-out leaves no demo timer', async () => {
+  // D8: a zoom-out with the reached answer's POST in flight hides the device while its session waits for the reply;
+  // the hide stops the demonstration, so no step is left pending for a hidden device.
+  const r = deviceRig('chimes');
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.onreach?.([2, 0, 1]);
+  r.yields.host.ondemo?.();
+  expect([q.signals.length, r.clock.pending(DEMO_STEP_MS)]).toEqual([1, 1]);
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted), r.clock.pending(DEMO_STEP_MS)]).toEqual(['hall', null, [false], 0]);
   r.yields.dispose();
 });

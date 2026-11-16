@@ -54,6 +54,10 @@ export const TAKE_FADE_MS = 300;
 export const CLOSEUP_FADE_MS = 300;
 /** PZ F9: a `dirty` effect autosaves after this quiet time; a newer one restarts it. */
 export const DIRTY_DEBOUNCE_MS = 2000;
+/** Engine plan §7.5 "Demonstration" (owner Q15h): one step of a device's demonstration, then the next after this long. */
+export const DEMO_STEP_MS = 600;
+/** The pause after a wrong press before the demonstration plays again (Q15h). */
+export const DEMO_PAUSE_MS = 800;
 /** A section's music fades in over this long when a room batch starts it. */
 const SECTION_BGM_FADE_MS = 1000;
 
@@ -268,6 +272,8 @@ type Open = {
   present: 'overlay' | 'view';
   /** A view frame's room, the room shown when its open ran (D3); null for an overlay frame. */
   room: RoomId | null;
+  /** The demonstration's next step while one runs (§7.5 "Demonstration"; D8): its timer, else null. */
+  demo: number | null;
 };
 
 /** The end cue of a dropped frame (`dropPuzzle`): the session's end, `closed` for a no-outcome drop, null at `dispose`. */
@@ -1022,6 +1028,7 @@ export function createYields(h: YieldsHost): Yields {
       clearRetry();
       return;
     }
+    stopDemo(o);
     if (cue !== null) {
       endFrame(o, cue);
     }
@@ -1040,6 +1047,7 @@ export function createYields(h: YieldsHost): Yields {
    * session stays open until its end, so an attempt in flight still reaches the world when it answers.
    */
   const hideFrame = (o: Open): void => {
+    stopDemo(o); // D8: a hidden device demonstrates nothing, though its session may wait for a POST
     endFrame(o, 'closed');
     setLadder(o, null);
     screens.close('hints');
@@ -1065,6 +1073,46 @@ export function createYields(h: YieldsHost): Yields {
     holdLoad(o, false);
     appear(o);
     puzzleCue(o, loaded ? 'opened' : 'load-failed');
+    if (loaded) {
+      startDemo(o, DEMO_STEP_MS); // a shown-goal device plays its order once, after its frame appeared
+    }
+  };
+
+  /** Stops `o`'s demonstration: its pending step never plays. */
+  const stopDemo = (o: Open): void => {
+    if (o.demo !== null) {
+      h.clock.clearTimeout(o.demo);
+      o.demo = null;
+    }
+  };
+
+  /**
+   * Plays `o`'s demonstration from its first step after `delay` ms (engine plan §7.5 "Demonstration"; Q15h): each part of
+   * its type's order as one `puzzle:demo` on that part, `DEMO_STEP_MS` apart; a new start replaces a running one. A
+   * type with no order plays none; a step plays only while `o` is the open, shown frame.
+   */
+  const startDemo = (o: Open, delay: number): void => {
+    stopDemo(o);
+    const order = o.session.instance.demo();
+    if (order === null || dead) {
+      return;
+    }
+    const step = (i: number): void => {
+      o.demo = null;
+      const part = order[i];
+      if (open !== o || o.hidden || part === undefined) {
+        return;
+      }
+      puzzleCue(o, 'demo', part);
+      if (i + 1 < order.length) {
+        o.demo = h.clock.setTimeout(() => step(i + 1), DEMO_STEP_MS);
+      }
+    };
+    if (delay > 0) {
+      o.demo = h.clock.setTimeout(() => step(0), delay);
+    } else {
+      step(0);
+    }
   };
 
   /** The end of a run (PZ F6 steps 5-6, F7 step 7): the report, the close-up cleared, the outcome into the world. */
@@ -1156,6 +1204,7 @@ export function createYields(h: YieldsHost): Yields {
       reach: null,
       present,
       room: present === 'view' ? world.room : null,
+      demo: null,
     };
     open = o;
     o.session.onEnd((e) => onEnd(o, e));
@@ -1393,10 +1442,15 @@ export function createYields(h: YieldsHost): Yields {
       if (o === null) {
         return;
       }
+      stopDemo(o); // the player's own press ends the demonstration
       moveWork(o, work);
       if (wrong) {
-        // A `wrong: 'local'` device's wrong press (§7.5 "Attempts"): counted as a posted wrong is, through `attempted`.
+        // A `wrong: 'local'` device's wrong press (§7.5 "Attempts"): counted as a posted wrong is, through `attempted`;
+        // while the session stays open, the demonstration plays again after a pause.
         attempted(o, o.session.failLocal());
+        if (open === o) {
+          startDemo(o, DEMO_PAUSE_MS);
+        }
         return;
       }
       postFull(o); // a full-commit device posts the press that completes its sequence
@@ -1405,6 +1459,12 @@ export function createYields(h: YieldsHost): Yields {
       const o = open;
       if (o !== null) {
         post(o); // a device's commit part is its Try (§7.5 "Commit"): the same refusals, the same reply path
+      }
+    },
+    ondemo: () => {
+      const o = open;
+      if (o !== null) {
+        startDemo(o, 0); // the device's demonstration control: its first step at once
       }
     },
     onblocked: (part) => {
@@ -1512,6 +1572,7 @@ export function createYields(h: YieldsHost): Yields {
       if (o === null || o.session.check !== 'reach') {
         return; // a commit frame posts from Try only
       }
+      stopDemo(o); // a reached answer ends the demonstration
       if (o.reach === null) {
         setFrame(o, { awaiting: true });
         puzzleCue(o, 'reached');
