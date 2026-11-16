@@ -19,6 +19,8 @@ import type { Box } from '../../geom/cover.ts';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import type { Cause, FactKind, MechanicId } from '../../mechanics/contract.ts';
+import CodeLock from '../../puzzles/ui/CodeLock.svelte';
+import type { PuzzleLocalId } from '../../story/staging.ts';
 import type { DocId, HotspotKey, ItemId } from '../../world/types.ts';
 import { createExploreView, forwardLayer } from '../explore-view.svelte.ts';
 import type {
@@ -923,6 +925,9 @@ const CONTROL_STATES: readonly ControlState[] = [
   // sheet's controls, the room inert under it): both lie in the explore root, which emits them.
   { name: 'device host failed', over: { items: [SUN], inView: true, puzzle: { host: null, frame: deviceFrame({ loadFailed: true }) } } },
   { name: 'device ladder', over: { items: [SUN], inView: true, puzzle: { host: PuzzleHost, frame: deviceFrame(), ladder: DEVICE_LADDER } } },
+  // GM8h2 D13(2): a device in its room, the host's room place with its type UI. Its bar and parts lie in the place's own
+  // `frame` root, nested in the explore root, which emits them to the host's `oncue`, once each (the innermost root).
+  { name: 'device room', over: { items: [SUN], inView: true, puzzle: { host: PuzzleHost, frame: deviceFrame({ ui: CodeLock }) } } },
 ];
 
 /** Every control a state shows a player, in document order: W1's non-vacuity, so a state that fails to render or a
@@ -962,6 +967,23 @@ const EXPECTED_CONTROLS: readonly Fired[] = [
   ['device host failed', 'bar-inventory', null, null],
   ['device host failed', 'bar-reveal', null, null],
   ['device ladder', 'hint-use', 2, null],
+  ['device room', 'bare-art', null, null],
+  ['device room', 'hotspot', null, null],
+  ['device room', 'hotspot', null, null],
+  ['device room', 'hotspot', null, null],
+  ['device room', 'puzzle-hint', null, null],
+  ['device room', 'dial-up', 0, null],
+  ['device room', 'dial-down', 0, null],
+  ['device room', 'dial-up', 1, null],
+  ['device room', 'dial-down', 1, null],
+  ['device room', 'dial-up', 2, null],
+  ['device room', 'dial-down', 2, null],
+  ['device room', 'dial-up', 3, null],
+  ['device room', 'dial-down', 3, null],
+  ['device room', 'ribbon-item', null, 'medal_sun'],
+  ['device room', 'view-leave', null, null],
+  ['device room', 'bar-inventory', null, null],
+  ['device room', 'bar-reveal', null, null],
 ];
 
 /** The controls a player can tap now: every `[data-cue]` element outside an inert subtree, in document order. */
@@ -973,11 +995,12 @@ async function fire(el: HTMLElement): Promise<void> {
   await (on === 'click' ? fireEvent.click(el) : fireEvent(el, new Event(on, { bubbles: true })));
 }
 
-/** The layer in `state`, its root emitting into `cues` (cleared after the state's own taps). */
+/** The layer in `state`, its root and a device's room place emitting into `cues` (cleared after the state's own taps). */
 async function openState(state: ControlState): Promise<{ container: HTMLElement; cues: CueEvent[]; unmount: () => void }> {
   const cues: CueEvent[] = [];
   const props = layerProps(state.over);
   props.view.oncue = (e) => cues.push(e);
+  props.puzzleActions.oncue = (e) => cues.push(e);
   const { container, unmount } = render(ExploreView, props);
   await tick();
   await state.prep?.(container);
@@ -1426,6 +1449,59 @@ test('explore: every explore cue target resolves', async () => {
   expect(got).toEqual(want);
   // Non-vacuous: every row names a target that exists (a marker lost on both sides would otherwise compare equal).
   expect(want.filter((w) => Array.isArray(w) && w[2] === null)).toEqual([]);
+});
+
+test('explore: the ladder sheet over a device is the hints panel its cues land on', async () => {
+  // GM8h2 D13(1), RULINGS 380 B8, 382 C1 and 384 D1: the device's ladder sheet is the room place's hints panel, the
+  // first in document order (the card's ancestor): the panel's open and close land on the sheet. The `ladder` target
+  // (`puzzle:ladder`'s glint, `fact:hint:added`'s pulse) and the hold of a hint request (`waiting` / `waited`,
+  // box-less) take the leaf hints panel, the card inside the sheet, as in the frame place; `tier` and `alert` find
+  // their markers inside it. Each element by identity (an equal node is not the node).
+  stageRig(); // the stage layer's box, and `unstage` clears the body
+  const stage = document.createElement('div');
+  stage.setAttribute('data-cue-stage', '');
+  document.body.append(stage);
+  const props = layerProps({ puzzle: { host: PuzzleHost, frame: deviceFrame(), ladder: { ...DEVICE_LADDER, failed: true } } });
+  const { container, unmount } = render(ExploreView, props);
+  await tick();
+  const card = must(container.querySelector('section.ladder'), 'the ladder card');
+  const sheet = must(card.closest('.sheet'), "the ladder's sheet");
+  const named = new Map<Element, string>([
+    [sheet, 'sheet'],
+    [card, 'card'],
+    [must(card.querySelector('[data-cue-tier="1"]'), 'tier 1'), 'tier 1'],
+    [must(card.querySelector('[data-cue-alert]'), 'the alert'), 'alert'],
+  ]);
+  const puzzle = 'dial' as PuzzleLocalId;
+  const cues: ReadonlyArray<CueEvent['cue']> = [
+    { kind: 'puzzle', puzzle, name: 'ladder', index: null },
+    { kind: 'fact', fact: { kind: 'hint', id: puzzle }, change: 'added', cause: { verb: 'tap', at: k('panel.dial'), item: null, via: null } },
+    { kind: 'ui-state', name: 'panel-open', panel: 'hints', item: null },
+    { kind: 'ui-state', name: 'panel-close', panel: 'hints', item: null },
+    { kind: 'puzzle', puzzle, name: 'hint-shown', index: 1 },
+    { kind: 'puzzle', puzzle, name: 'hint-failed', index: null },
+    { kind: 'ui-state', name: 'waiting', panel: 'hints', item: null },
+    { kind: 'ui-state', name: 'waited', panel: 'hints', item: null },
+  ];
+  const landed = cues.map((cue) => {
+    const r = foundOf(resolveTarget(motionOf(cue).target, { cue, box: null, point: null, diff: [], el: null }, stage));
+    return [cueKey(cue), r instanceof Element ? (named.get(r) ?? r.outerHTML.slice(0, 60)) : r];
+  });
+  expect(landed).toEqual([
+    ['puzzle:ladder', 'card'],
+    ['fact:hint:added', 'card'],
+    ['ui-state:panel-open', 'sheet'],
+    ['ui-state:panel-close', 'sheet'],
+    ['puzzle:hint-shown', 'tier 1'],
+    ['puzzle:hint-failed', 'alert'],
+    ['ui-state:waiting', 'card'],
+    ['ui-state:waited', 'card'],
+  ]);
+  // The marker is the literal on the sheet, which holds the ladder place directly (GM8h fix1's padding and scroll) and
+  // carries no notice (RULINGS 382 C2).
+  const place = sheet.querySelector(':scope > .ladder-place');
+  expect([sheet.getAttribute('data-cue-panel'), place?.contains(card), sheet.querySelector('[data-cue-notice]')]).toEqual(['hints', true, null]);
+  unmount();
 });
 
 /**

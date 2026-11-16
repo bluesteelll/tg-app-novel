@@ -1,9 +1,9 @@
 // The puzzle overlay's view store (docs/PUZZLES-PLAN.md X14 and "Modules"; PROTOTYPE-PLAN L15 commit 3): what
-// App.svelte renders for an open puzzle, written only by GameSession (app/yields.ts, L15). It holds views and the
-// loaded puzzle-host component, never a session, a runner or a Pixi object (principle 7). Every field is
-// `$state.raw` and is replaced, never mutated; `covers` is derived from `frame`. It is statically importable: the lazy
-// components appear here as types only, and their values arrive through `yields.ts`'s `import()` (the `lazy-ui` arch
-// rule).
+// renders for an open puzzle (App.svelte an overlay frame, ExploreView a `view` frame in its room), written only by
+// GameSession (app/yields.ts, L15). It holds views and the loaded puzzle-host component, never a session, a runner or
+// a Pixi object (principle 7). Every field is `$state.raw` and is replaced, never mutated; `covers` is derived from
+// `frame`. It is statically importable: the lazy components appear here as types only, and their values arrive through
+// `yields.ts`'s `import()` (the `lazy-ui` arch rule).
 import type { Component } from 'svelte';
 
 import type { CueEvent } from '../cues/types.ts';
@@ -130,7 +130,10 @@ export type HostPlace = 'frame' | 'room' | 'ladder';
  */
 export type PuzzleHostProps = { lang: Lang; frame: PuzzleFrameView | null; ladder: HintLadderUiView | null; place?: HostPlace } & PuzzleHostCallbacks;
 
-/** The store; App.svelte renders `host` with `frame` and `ladder` while both `host` and `frame` are set. */
+/**
+ * The store: `host` renders with `frame` and `ladder` while both `host` and `frame` are set, in App.svelte for an overlay
+ * frame and in ExploreView's room place for a `view` frame (its `presentation`).
+ */
 export interface PuzzleView {
   /** The puzzle-host chunk's component once `yields.ts` has loaded it. */
   host: Component<PuzzleHostProps> | null;

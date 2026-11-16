@@ -1339,8 +1339,9 @@ test('puzzle-host: a room-place host puts its bar before its parts', () => {
 test('puzzle-host: every puzzle cue target resolves in the room-place bar and the ladder place', async () => {
   // §8.5 "Cue targets" for a device (GM8h): the room place's bar is the frame marker and the `puzzle` panel, the parts
   // layer beside it holds the parts (L3: a `part` resolves inside the frame's family root), and the ladder place's
-  // sheet holds the ladder. Never a family root, never the stage centre's fallback for a marked target. A part here is
-  // an answer position (RULINGS 366 B2): `puzzle:input` index 1 and the `work` fact `p.1=2` both land on part 1.
+  // sheet holds the ladder. Never a family root, never the stage centre's fallback for a marked target. The part is the
+  // position for a position-indexed answer, the value for a value-indexed one (RULINGS 366 B2; GM8h2 D9): `puzzle:input`
+  // index 1 and the `work` fact `p.1=2` (whose id names a position) both land on part 1.
   stageRig();
   const stage = document.createElement('div');
   stage.setAttribute('data-cue-stage', '');

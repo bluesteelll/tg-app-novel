@@ -4,21 +4,38 @@
 // `Element.prototype.animate` that returns a fake `Animation` on vitest's fake clock.
 import { cleanup, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import type { Component } from 'svelte';
 import { parse } from 'svelte/compiler';
 import type { AST } from 'svelte/compiler';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
+import type { AttemptResponse } from '../../api/generated/api.ts';
+import type { ApiError, Clock } from '../../api/http.ts';
+import { createYields } from '../../app/yields.ts';
+import type { Yields, YieldsHost } from '../../app/yields.ts';
+import { createExploreController } from '../../explore/controller.ts';
+import type { PuzzleRun, WorldState } from '../../explore/state.ts';
 import type { Box } from '../../geom/cover.ts';
 import type { MechanicId } from '../../mechanics/contract.ts';
-import type { PuzzleLocalId } from '../../story/staging.ts';
+import type { PuzzleUiProps } from '../../puzzles/registry.ts';
+import { PUZZLE_TYPES } from '../../puzzles/rules/index.ts';
+import type { PuzzleTypeData, PuzzleTypes } from '../../puzzles/rules/index.ts';
+import type { SceneStats } from '../../scene/controller.ts';
+import { decodeChapterMeta } from '../../story/catalog.ts';
+import type { LoadedChapter, Result } from '../../story/catalog.ts';
+import type { ChapterId, PuzzleLocalId, SectionId, StagingSnapshot } from '../../story/staging.ts';
 import { createExploreView } from '../../ui/explore-view.svelte.ts';
 import type { ExploreLayerProps } from '../../ui/explore-view.svelte.ts';
 import ExploreView from '../../ui/explore/ExploreView.svelte';
 import appSource from '../../ui/App.svelte?raw';
 import { createPuzzleView } from '../../ui/puzzle-view.svelte.ts';
-import type { ScreenKind } from '../../ui/screens.ts';
-import type { CueStageProps } from '../../ui/state.svelte.ts';
-import type { ItemId } from '../../world/types.ts';
+import type { PuzzleHostProps } from '../../ui/puzzle-view.svelte.ts';
+import { createScreens } from '../../ui/screens.ts';
+import type { ScreenKind, Screens } from '../../ui/screens.ts';
+import { createViewModel } from '../../ui/state.svelte.ts';
+import type { CueStageProps, ViewModel } from '../../ui/state.svelte.ts';
+import { decodeWorldSource, toPublic } from '../../world/decode.ts';
+import type { HotspotKey, ItemId, RoomId, WorldPublic } from '../../world/types.ts';
 import { createCueBus } from '../bus.ts';
 import type { CueBus } from '../bus.ts';
 import { cueRoot, ROOT_TRIGGERS } from '../root.ts';
@@ -690,6 +707,86 @@ test('stage: a wait hold over a panel with a notice plays on the notice', async 
   expect(s.played()).toEqual(['ui-state:waiting@puzzle', 'ui-state:waited@puzzle', 'ui-state:waiting@puzzle']);
 });
 
+test('stage: a box-less hold of a panel that nests its name lands on the inner panel', async () => {
+  // RULINGS 382 C1 (GM8h2): a box-less hold of a panel takes only the leaf panels of its name, those that contain no
+  // other: a device's ladder sheet (`hints`) around the card (`hints`) breathes the card, as in the frame place. A
+  // notice of the outer panel's own, before the inner panel in document order, is not the leaf's; the inner panel's
+  // notice is. Each element by identity, named (an equal node is not the node).
+  const s = mounted();
+  const sheet = element('div', { 'data-cue-panel': 'hints' }, ROOT);
+  const wrap = element('div', { 'data-cue-notice': '' }, ROOT, sheet);
+  const card = element('section', { 'data-cue-panel': 'hints' }, HOTSPOT, wrap);
+  const names = new Map<Element | Box | null | undefined, string>([
+    [sheet, 'sheet'],
+    [wrap, 'wrap'],
+    [card, 'card'],
+  ]);
+  const name = (el: Element | Box | null | undefined): string => names.get(el) ?? JSON.stringify(el);
+  s.bus.emit(event(uiState('waiting', 'hints')));
+  await settle();
+  vi.advanceTimersByTime(WAIT_DELAY_MS);
+  s.bus.emit(event(uiState('waited', 'hints')));
+  await settle();
+  // The live card breathes and settles (no ghost); nothing falls back.
+  expect(cueMotions().map((r) => [name(r.el), r.kf])).toEqual([
+    ['card', PRESETS.breathe],
+    ['card', PRESETS.settle],
+  ]);
+  expect(s.fallbacks()).toBe(0);
+  // The inner panel's own notice; then, with no notice anywhere, the inner panel itself.
+  const hold = (): string => name(found(resolveTarget('box', event(uiState('waiting', 'hints')), s.layer)));
+  const inner = element('p', { 'data-cue-notice': '' }, HOTSPOT, card);
+  names.set(inner, 'inner');
+  expect(hold()).toBe('inner');
+  inner.remove();
+  wrap.removeAttribute('data-cue-notice');
+  expect(hold()).toBe('card');
+});
+
+test('stage: the ladder target of a hints panel that nests its name lands on the inner panel', async () => {
+  // RULINGS 384 D1 (GM8h2): the `ladder` target takes the leaf hints panel by the box-less hold's rule (one helper): a
+  // device's ladder sheet (`hints`) around the card (`hints`) glints and pulses the card, as in the frame place, never
+  // a sheet-sized light. `tier` and `alert` find their markers inside it; the `panel` target (the sheet's open and
+  // close) keeps the first live panel of the name, the sheet. A hints panel inside the stage layer is a ghost's and
+  // never counts. Each element by identity, named; a ghost by its box.
+  const s = mounted();
+  const CARD: Box = { x: 30, y: 300, w: 200, h: 120 };
+  element('div', { 'data-cue-panel': 'hints' }, HOTSPOT, s.layer);
+  const sheet = element('div', { 'data-cue-panel': 'hints' }, ROOT);
+  const card = element('section', { 'data-cue-panel': 'hints' }, CARD, sheet);
+  const tier1 = element('li', { 'data-cue-tier': '1' }, HOTSPOT, card);
+  const alert = element('p', { 'data-cue-alert': '' }, HOTSPOT, card);
+  const names = new Map<Element | Box | null, string>([
+    [sheet, 'sheet'],
+    [card, 'card'],
+    [tier1, 'tier 1'],
+    [alert, 'alert'],
+  ]);
+  const name = (el: Element | Box | null): string => names.get(el) ?? JSON.stringify(el);
+  const puzzle = (n: 'ladder' | 'hint-shown' | 'hint-failed', index: number | null): Cue => ({ kind: 'puzzle', puzzle: P, name: n, index });
+  const at = (target: CueTarget, cue: Cue): string => name(found(resolveTarget(target, event(cue), s.layer)));
+  expect([
+    at('ladder', puzzle('ladder', null)),
+    at('tier', puzzle('hint-shown', null)),
+    at('tier', puzzle('hint-shown', 1)),
+    at('alert', puzzle('hint-failed', null)),
+    at('panel', uiState('panel-open', 'hints')),
+  ]).toEqual(['card', 'card', 'tier 1', 'alert', 'sheet']);
+  // Through the real stage: `puzzle:ladder`'s glint (a box preset) sweeps a plain light at the card's box, and
+  // `fact:hint:added`'s pulse plays on the live card; nothing falls back.
+  const hinted: Cue = { kind: 'fact', fact: { kind: 'hint', id: P }, change: 'added', cause: { verb: 'tap', at: null, item: null, via: null } };
+  s.bus.emit(event(puzzle('ladder', null)));
+  await settle();
+  s.bus.emit(event(hinted));
+  await settle();
+  const where = (r: Rec): string | Box => (r.el.classList.contains('cue-ghost') ? boxOfGhost(r.el) : name(r.el));
+  expect(cueMotions().map((r) => [where(r), r.kf])).toEqual([
+    [CARD, PRESETS.glint],
+    ['card', PRESETS.pulse],
+  ]);
+  expect([s.played(), s.fallbacks()]).toEqual([['puzzle:ladder', 'fact:hint:added'], 0]);
+});
+
 /** ExploreView's props over a new view store, as GameSession mounts the layer. */
 function layerProps(): ExploreLayerProps {
   const view = createExploreView();
@@ -815,6 +912,21 @@ test('stage: a haptic plays only on top of a motion', async () => {
   await settle();
   expect(cueMotions()).toHaveLength(2);
   expect(s.haptics).toEqual(['notify:success', 'notify:error']);
+});
+
+test('stage: one path step plays one haptic', async () => {
+  // GM8h2 D18 (RULINGS 377 A5): a path's cell step is one input. Its gesture pulse (`ui:path-stroke`, declared with no
+  // haptic) and its `puzzle:input` roll on the same part play together, with one light haptic between them.
+  const s = mounted();
+  const place = element('div', { 'data-cue-root': 'frame' }, ROOT);
+  element('div', { 'data-cue-frame': '' }, HOTSPOT, place);
+  const cell = element('button', { 'data-cue-part': '3' }, HOTSPOT, place);
+  s.bus.emit(event({ kind: 'ui', control: 'path-stroke', item: null, index: 3 }, null, cell));
+  s.bus.emit(event({ kind: 'puzzle', puzzle: P, name: 'input', index: 3 }));
+  await settle();
+  expect(s.played()).toEqual(['ui:path-stroke', 'puzzle:input']);
+  expect(cueMotions().map((r) => r.el)).toEqual([cell, cell]);
+  expect([s.haptics, s.fallbacks()]).toEqual([['impact:light'], 0]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -979,4 +1091,322 @@ test("stage: App's host-failed notice and Retry carry their cue markers", () => 
   const cueRule = rules.find((r) => appSource.slice(r.prelude.start, r.prelude.end).trim() === '.cue-layer');
   const decls = (cueRule?.block.children ?? []).filter((d): d is AST.CSS.Declaration => d.type === 'Declaration');
   expect(decls.map((d) => [d.property, d.value])).toEqual([['pointer-events', 'none']]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM8h2: the real yields, the real explore controller and the real CueStage on the session's bus (spec A8: a copied
+// minimum of yields.test.ts's rig, built from the exported factories; no import of another test file)
+
+type Json = Record<string, unknown>;
+let lineCounter = 0;
+const txt = (ru: string): Json => ({ id: `ch1.sx.${(lineCounter++).toString(36).padStart(4, '0')}`, ru });
+const RECT = [100, 200, 200, 200];
+/** The device hotspot's own rect, apart from every button's `RECT` (as yields.test.ts's device world draws it). */
+const DIAL_RECT = [300, 700, 240, 300];
+const exitTo = (id: string, room: string): Json => ({ id, kind: 'exit', rect: RECT, label: txt(id), to: { room }, lock: null, sfx: null });
+/** An object behind a zero-slot lock of `puzzle`. */
+const lockedBy = (id: string, puzzle: string, rect: readonly number[] = RECT): Json => ({
+  id,
+  kind: 'object',
+  rect,
+  label: txt(id),
+  lock: { slots: [], puzzle, locked: txt('locked'), onOpen: [], onFail: [] },
+  then: [],
+  look: null,
+  prop: null,
+});
+const puzzleOf = (type: string, params: Json, solution: number[], maxAttempts: number | null): Json => ({
+  type,
+  title: txt(type),
+  prompt: txt('prompt'),
+  closeup: null,
+  params,
+  maxAttempts,
+  giveUp: false,
+  solution,
+  hints: [txt('hint')],
+});
+
+/** A fixture view type (no registered type is a view before GM8a): three parts of 0..2, a wrong press known locally. */
+const BELLS: PuzzleTypeData<'bells', { readonly parts: number }> = {
+  type: 'bells',
+  check: 'commit',
+  goal: 'secret',
+  presentation: 'view',
+  wrong: 'local',
+  commit: 'control',
+  decodeParams: (raw) => (typeof raw === 'object' && raw !== null && 'parts' in raw && typeof raw.parts === 'number' ? { ok: true, value: { parts: raw.parts } } : { ok: false, error: 'parts' }),
+  answerShape: (p) => ({ len: p.parts, max: 2 }),
+  initial: (p) => new Array<number>(p.parts).fill(0),
+  startShown: (p) => new Array<number>(p.parts).fill(0),
+  workFits: (p, work) => work.length === p.parts && work.every((v) => Number.isInteger(v) && v >= 0 && v <= 2),
+};
+const TYPES: PuzzleTypes = [...PUZZLE_TYPES, BELLS];
+const MANOR = 'manor' as SectionId;
+const DEV = 'dev' as PuzzleLocalId;
+const at = (k: string): HotspotKey => k as HotspotKey;
+
+/**
+ * yields.test.ts's cue and device fixtures in one world: the hall holds an exit to the cellar (whose onEnter gives the
+ * coin), an exit to the panel and `chest`, a code lock of the overlay puzzle `drawer`; the panel is a view of the hall
+ * whose `device` is `dial`, a zero-slot lock of the BELLS puzzle `dev`.
+ */
+function stageWorld(): WorldPublic {
+  const raw = {
+    format: 1,
+    items: { coin: { name: txt('Монета'), desc: txt('d'), glyph: 'sun' } },
+    docs: {},
+    puzzles: { drawer: puzzleOf('code', { dials: 4 }, [1, 1, 1, 1], 2), dev: puzzleOf('bells', { parts: 3 }, [1, 1, 1], 3) },
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: { bg: 'hall', title: txt('Hall'), onEnter: [], hotspots: [exitTo('to_cellar', 'cellar'), exitTo('to_panel', 'panel'), lockedBy('chest', 'drawer')] },
+          cellar: { bg: 'cellar', title: txt('Cellar'), onEnter: [{ give: 'coin' }], hotspots: [exitTo('to_hall', 'hall')] },
+          panel: { bg: 'panel', title: txt('Panel'), onEnter: [], hotspots: [lockedBy('dial', 'dev', DIAL_RECT)], view: { of: 'hall' }, device: 'dial' },
+        },
+      },
+    },
+  };
+  const r = decodeWorldSource(raw, { types: TYPES });
+  if (!r.ok) {
+    throw new Error(`invariant: the stage fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods, version: '9999999999999999' };
+}
+
+function stageChapter(world: WorldPublic): LoadedChapter {
+  const meta = decodeChapterMeta({
+    chapterId: 'ch1',
+    storyVersion: '0111111111111111',
+    firstKnot: 'start',
+    globals: [],
+    vars: [],
+    knots: { start: { assets: [], next: [], ending: false } },
+    endings: {},
+  });
+  if (!meta.ok) {
+    throw new Error(`invariant: the fixture meta decodes: ${JSON.stringify(meta.error)}`);
+  }
+  return { id: 'ch1' as ChapterId, story: {}, meta: meta.value, assets: { chapterId: 'ch1' as ChapterId, assets: {} }, en: null, world };
+}
+
+/** Stand-ins: the rig renders no layer, host or type UI of its own (a test mounts the markers it needs by hand). */
+const LAYER = (() => ({})) as unknown as Component<ExploreLayerProps>;
+const HOST = (() => ({})) as unknown as Component<PuzzleHostProps>;
+const TYPE_UI = (() => ({})) as unknown as Component<PuzzleUiProps>;
+/** The stage host the controller sizes its boxes by and the stage offsets the bus's boxes from: 360 x 640 at 0, 0. */
+const STAGE_HOST = {
+  clientWidth: 360,
+  clientHeight: 640,
+  getBoundingClientRect: () => ({ left: 0, top: 0, right: 360, bottom: 640, width: 360, height: 640, x: 0, y: 0 }),
+} as unknown as HTMLElement;
+/** A clock whose timers never run: no flow here waits on the debounce, a demonstration or a countdown. */
+const NO_CLOCK: Clock = { now: () => 0, setTimeout: () => 0, clearTimeout: () => {} };
+const IDLE: SceneStats = {
+  liveTextures: 0,
+  liveBytes: 0,
+  pendingLoads: 0,
+  activeTimelines: 0,
+  overCap: 0,
+  rebuilds: 0,
+  gen: 1,
+  openBitmaps: 0,
+  stale: 0,
+  staleFrames: 0,
+  reviveFailed: 0,
+  reviving: false,
+  visibleReviveMs: null,
+};
+
+type StageRig = {
+  readonly yields: Yields;
+  readonly vm: ViewModel;
+  readonly screens: Screens;
+  /** The Telegram haptics the slot's port played. */
+  readonly haptics: string[];
+  /** Settles the oldest attempt in flight. */
+  readonly answer: (v: Result<AttemptResponse, ApiError>) => void;
+};
+
+/** A session over `stageWorld` whose batches start at once and whose attempts wait for `answer`. */
+function stageRig(): StageRig {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    },
+  );
+  const vm = createViewModel({ timers: NO_CLOCK, lang: 'ru' });
+  let y: Yields | null = null;
+  const screens = createScreens({
+    back: { setVisible() {}, onPress: () => () => {} },
+    onView: (v) => {
+      vm.screens = v;
+      y?.screensChanged(v);
+    },
+  });
+  screens.setRoot({ kind: 'game' });
+  const haptics: string[] = [];
+  const held: Array<(v: Result<AttemptResponse, ApiError>) => void> = [];
+  let stage: StagingSnapshot = { bg: null, cg: null, chars: [], bgm: null, props: [] };
+  const ch = stageChapter(stageWorld());
+  const host: YieldsHost = {
+    vm,
+    screens,
+    tg: { haptic: { impact: (s) => haptics.push(`impact:${s}`), selection: () => haptics.push('selection'), notify: (t) => haptics.push(`notify:${t}`) } },
+    api: {
+      getPuzzle: async () => ({ ok: false, error: { kind: 'network', detail: 'none' } }),
+      postAttempt: () => new Promise((resolve) => held.push(resolve)),
+    },
+    scene: { preload: () => {}, releasePreload: () => {}, snapshot: () => stage, stats: () => IDLE },
+    explore: createExploreView(),
+    puzzle: createPuzzleView(),
+    reporter: { record: () => {} },
+    clock: NO_CLOCK,
+    chunks: {
+      explore: async () => ({ ok: true, value: { create: createExploreController, layer: LAYER } }),
+      puzzleHost: async () => ({ ok: true, value: HOST }),
+      puzzleUi: async () => ({ ok: true, value: TYPE_UI }),
+      cueStage: async () => ({ ok: true, value: CueStage }),
+    },
+    puzzleTypes: TYPES,
+    stageHost: () => STAGE_HOST,
+    chapter: () => ch,
+    runner: () => ({ enter: () => ({ ok: true, value: undefined }) }),
+    text: (w) => w.ru,
+    apply: async (visual, _audio, started) => {
+      for (const c of visual) {
+        stage = c.kind === 'bg' ? { ...stage, bg: c.bg, props: [] } : c.kind === 'props' ? { ...stage, props: [...c.props] } : stage;
+      }
+      started?.();
+    },
+    bgm: () => null,
+    continueStory: async () => {},
+    storyError: () => {},
+    autosave: () => {},
+    notice: () => {},
+    tap: (fn) => fn(),
+    queue: (fn) => fn(),
+  };
+  y = createYields(host);
+  return { yields: y, vm, screens, haptics, answer: (v) => held.shift()?.(v) };
+}
+
+/** The real CueStage mounted from the session's slot, as App mounts it: the stage's debug attributes. */
+function stageOn(r: StageRig): Pick<Mounted, 'played' | 'fallbacks'> {
+  const slot = r.vm.cueStage;
+  if (slot === null) {
+    throw new Error('expected the session to have written its cue stage slot');
+  }
+  const props: CueStageProps = { subscribe: slot.subscribe, orphans: slot.orphans, dropped: slot.dropped, host: slot.host, haptic: slot.haptic, reduced: false };
+  const { container } = render(slot.component, { props });
+  const layer = container.querySelector<HTMLElement>('[data-cue-stage]');
+  if (layer === null) {
+    throw new Error('no stage layer');
+  }
+  return {
+    played: () => (layer.dataset.cuesPlayed ?? '').split(' ').filter((k) => k !== ''),
+    fallbacks: () => Number(layer.dataset.cueFallbacks),
+  };
+}
+
+/** The rooms entered from the section's yield, the stage mounted from the slot and the entry's held cues played. */
+async function inRooms(r: StageRig): Promise<Pick<Mounted, 'played' | 'fallbacks'>> {
+  await r.yields.onYield({ kind: 'explore', section: MANOR });
+  const s = stageOn(r);
+  await settle();
+  vi.advanceTimersByTime(WAIT_DELAY_MS);
+  return s;
+}
+
+/** The session's world with the device solved in the panel (its lock open), as a save carries it. */
+const solvedInPanel = (r: StageRig): WorldState => {
+  const run: PuzzleRun = { outcome: 'solved', attempts: 1, hintsOpened: 0 };
+  return { ...r.yields.world(), room: 'panel' as RoomId, puzzles: { [DEV]: run }, open: [at('panel.dial')] };
+};
+
+test('stage: a resume onto a solved device counts no fallback', async () => {
+  // GM8h2 A3 (i): a resume onto a solved device opens no session; its arrival plays `module:devices:done` at the
+  // device's key, caused by the move with no hotspot. The cue lands on the device's box (D5), so nothing plays at the
+  // stage centre as a fallback.
+  const r = stageRig();
+  try {
+    const s = await inRooms(r);
+    r.yields.restore(solvedInPanel(r), null, { kind: 'explore', section: MANOR });
+    await r.yields.onYield({ kind: 'explore', section: MANOR });
+    await settle();
+    vi.advanceTimersByTime(WAIT_DELAY_MS);
+    expect(r.yields.world().room).toBe('panel');
+    expect(s.played()).toContain('module:devices:done');
+    expect(s.fallbacks()).toBe(0);
+  } finally {
+    r.yields.dispose();
+    vi.unstubAllGlobals();
+  }
+});
+
+test('stage: a fact cue at the shown device counts no fallback', async () => {
+  // GM8h2 A3 (ii), RULINGS 380 B4: a local wrong press plays the part's `puzzle:input`, the frame's `puzzle:wrong` and
+  // the lock's `fact:attempt:added`, caused at the device hotspot, which draws no button. The room place's markers are
+  // mounted by hand (PuzzleHost's device section: the bar is the frame and the puzzle panel, the parts beside it), so
+  // every cue of the press finds its target and the count is 0 absolute.
+  const place = element('section', { 'data-cue-root': 'frame' }, ROOT);
+  const bar = element('div', { 'data-cue-frame': '', 'data-cue-panel': 'puzzle' }, HOTSPOT, place);
+  element('p', { 'data-cue-status': '' }, HOTSPOT, bar);
+  for (const part of ['0', '1', '2']) {
+    element('button', { 'data-cue-part': part }, HOTSPOT, place);
+  }
+  const r = stageRig();
+  try {
+    const s = await inRooms(r);
+    r.yields.layer.ontap(at('hall.to_panel'));
+    await settle();
+    vi.advanceTimersByTime(WAIT_DELAY_MS);
+    expect([r.yields.world().room, r.yields.host.onwork === undefined]).toEqual(['panel', false]);
+    r.yields.host.onwork?.([1, 0, 0], true);
+    await settle();
+    vi.advanceTimersByTime(WAIT_DELAY_MS);
+    expect(r.yields.world().puzzles[DEV]?.attempts).toBe(1);
+    expect(s.played()).toEqual(expect.arrayContaining(['puzzle:input', 'puzzle:wrong', 'fact:attempt:added']));
+    expect(s.fallbacks()).toBe(0);
+  } finally {
+    r.yields.dispose();
+    vi.unstubAllGlobals();
+  }
+});
+
+test('stage: a late answer for a lock in a room left plays nothing', async () => {
+  // GM8h2 Q65's proof (spec item 7; RULINGS 377 A2): an X8 Back hides the drawer's frame with its POST in flight, the
+  // player walks to the cellar (its coin plays first), then the correct answer lands. The chest's lock opens off
+  // screen: no motion, no haptic and no counted fallback (on the parent its `solved` and `open` played at the stage
+  // centre, each counted, with their success haptics).
+  const r = stageRig();
+  try {
+    const s = await inRooms(r);
+    r.yields.layer.ontap(at('hall.chest'));
+    await settle();
+    r.yields.host.ontry();
+    await settle();
+    r.screens.back();
+    await settle();
+    r.yields.layer.ontap(at('hall.to_cellar'));
+    await settle();
+    vi.advanceTimersByTime(WAIT_DELAY_MS);
+    expect([r.yields.world().room, r.vm.screens.overlays.length]).toEqual(['cellar', 0]);
+    expect(s.played()).toContain('fact:held:added');
+    const before = { played: s.played(), haptics: [...r.haptics], fallbacks: s.fallbacks(), motions: cueMotions().length };
+    r.answer({ ok: true, value: { correct: true, solved: true, attemptsLeft: null, spent: false } });
+    await settle();
+    vi.advanceTimersByTime(WAIT_DELAY_MS);
+    const w = r.yields.world();
+    expect([w.puzzles['drawer' as PuzzleLocalId]?.outcome, w.open.includes(at('hall.chest'))]).toEqual(['solved', true]);
+    expect({ played: s.played(), haptics: r.haptics, fallbacks: s.fallbacks(), motions: cueMotions().length }).toEqual(before);
+  } finally {
+    r.yields.dispose();
+    vi.unstubAllGlobals();
+  }
 });

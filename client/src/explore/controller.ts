@@ -69,6 +69,12 @@ export interface ExploreController {
    */
   anchorBox(at: AnchorKey): Box | null;
   /**
+   * The stage box of the current room's device hotspot when `at` is its key, in the hotspots' form (the cover mapping
+   * with the minimum tap target), read on demand (GM8h2 D5): a device draws no button, so its cues find no box among the
+   * hotspot views. Null outside a section, in a room with no device, for any other key, and while the stage has no size.
+   */
+  deviceBox(at: HotspotKey | null): Box | null;
+  /**
    * Where a state batch's load holds (§6.4 round 13): at the first anchor of `diff`, in draw order, whose new view draws
    * an image; none draws one: `'no-load'`, the batch adds no image.
    */
@@ -180,6 +186,13 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
   const anchorBox = (at: AnchorKey): Box | null => {
     const v = views().find((x) => x.at === at);
     return v === undefined || stage.w <= 0 || stage.h <= 0 ? null : toStage(v.rect, cover(stage, ROOM_SOURCE));
+  };
+
+  const deviceBox = (at: HotspotKey | null): Box | null => {
+    const room = current.section === null ? null : current.room;
+    const device = room === null ? undefined : own(world.mods.devices.device, room);
+    const h = room === null || device === undefined || at !== hotspotKey(room, device) ? undefined : ix.hotspots.get(at)?.hotspot;
+    return h === undefined || stage.w <= 0 || stage.h <= 0 ? null : minTarget(toStage(h.rect, cover(stage, ROOM_SOURCE)), MIN_TARGET_PX);
   };
 
   /**
@@ -536,6 +549,7 @@ export function createExploreController(deps: ExploreControllerDeps): ExploreCon
     },
     visualsOf: (room) => visualsOf(world, current, room),
     anchorBox,
+    deviceBox,
     stateHold(diff) {
       const now = views();
       for (const d of diff) {

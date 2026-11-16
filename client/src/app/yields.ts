@@ -344,6 +344,50 @@ export const coreCue = (name: CoreCueName, at: HotspotKey | null, item: ItemId |
 const cause = (verb: CauseVerb, at: HotspotKey | null = null, item: ItemId | null = null): Cause => ({ verb, at, item, via: null });
 
 /**
+ * The cue keys whose motion plays on a hotspot's box (the `box` rows of the cue stage's motion table,
+ * `cues/stage/motions.ts`, which the engine may not import; the drift row of yields.test.ts holds the two equal).
+ */
+const SUBJECT_KEYS: ReadonlySet<string> = new Set([
+  'fact:taken:added',
+  'fact:taken:removed',
+  'fact:examined:added',
+  'fact:examined:removed',
+  'fact:open:added',
+  'fact:open:removed',
+  'fact:fired:added',
+  'fact:fired:removed',
+  'fact:solved:added',
+  'fact:solved:removed',
+  'fact:failed:added',
+  'fact:failed:removed',
+  'fact:abandoned:added',
+  'fact:abandoned:removed',
+  'fact:attempt:added',
+  'fact:attempt:removed',
+  'fact:hint:removed',
+  'module:core:look',
+  'module:core:locked',
+  'module:core:refused',
+  'module:use:refused',
+  'module:use:said',
+  'module:devices:done',
+  'module:devices:jammed',
+]);
+
+/**
+ * GM8h2 D2 (Q65): the hotspot a world cue plays on, its subject: a fact's cause hotspot or a module cue's own, for a key
+ * of `SUBJECT_KEYS`; null for every other cue, and for one at no hotspot (it plays as today, D3). A section entry's
+ * unlock and trigger sweep the stage instead (the `enter` variants of `fact:open:added` and `fact:fired:added`).
+ */
+export function cueSubject(c: Cue): HotspotKey | null {
+  if (c.kind === 'fact') {
+    const swept = c.change === 'added' && c.cause.verb === 'enter' && (c.fact.kind === 'open' || c.fact.kind === 'fired');
+    return SUBJECT_KEYS.has(`fact:${c.fact.kind}:${c.change}`) && !swept ? c.cause.at : null;
+  }
+  return c.kind === 'module' && SUBJECT_KEYS.has(`module:${c.module}:${c.name}`) ? c.at : null;
+}
+
+/**
  * The cause of a dispatched action's cues; a use acts at its target with its item (§6.1); a combine acts at no hotspot
  * with the selected item (§6.2); a lock puzzle's run acts at its lock, so its cues land on the lock's box.
  */
@@ -465,10 +509,12 @@ export function createYields(h: YieldsHost): Yields {
 
   /**
    * A room batch to run (D9): how its move enters the room, its move cue, built at the effect, and the cues of the entry
-   * that pushed it (D8).
+   * that pushed it (D8). `from` is the room the move leaves (its move cue's): on screen with `room` while the batch
+   * starts, so the entry's cues at either play (GM8h2 D1, RULINGS 377 A1); null on a first entry.
    */
   type RoomJob = {
     readonly room: RoomId;
+    readonly from: RoomId | null;
     readonly sfx: Extract<ExploreEffect, { kind: 'room' }>['sfx'];
     readonly how: MoveHow;
     readonly move: CueEvent;
@@ -493,22 +539,49 @@ export function createYields(h: YieldsHost): Yields {
   let shown: RoomId | null = null;
   /** The next section entry is the resume onto its yield. */
   let resumed = false;
-  /** A world cue of the entry in scope, on its hotspot's box. */
+  /**
+   * GM8h2 D1 (Q65): a world cue plays only while its subject is on screen: a cue with no subject (`cueSubject`) always,
+   * a subject cue when its hotspot's room is one of `rooms`. No world, or a key the world does not hold: not on screen.
+   */
+  const onScreen = (c: Cue, rooms: readonly RoomId[]): boolean => {
+    const at = cueSubject(c);
+    if (at === null) {
+      return true;
+    }
+    const w = h.chapter()?.world ?? null;
+    const room = w === null ? undefined : indexOf(w).hotspots.get(at)?.room;
+    return room !== undefined && rooms.includes(room);
+  };
+  /** The rooms a cue may play over, the null of a first entry left out (RULINGS 380 B2). */
+  const shownOf = (rooms: ReadonlyArray<RoomId | null>): RoomId[] => rooms.filter((r): r is RoomId => r !== null);
+  /**
+   * A world cue of the entry in scope, on its hotspot's box; a module cue at the shown room's device on the device's box
+   * (GM8h2 D5: a device draws no button, and an arrival's cue is caused by the move, not at the device). Outside an
+   * entry (a late listener call) it plays at once, over the room shown.
+   */
   const send = (cue: Cue): void => {
-    const e = cueEvent(cue, scope.box);
-    if (scope.cues === null) {
-      bus.emit(e);
-    } else {
+    const e = cueEvent(cue, cue.kind === 'module' ? (controller?.deviceBox(cue.at) ?? scope.box) : scope.box);
+    if (scope.cues !== null) {
       scope.cues.push(e);
+    } else if (onScreen(cue, shownOf([shown]))) {
+      bus.emit(e);
     }
   };
-  /** Runs one controller entry; the box is read before it, while the hotspot it acts on is still shown. */
+  /**
+   * Runs one controller entry; the box is read before it, while the hotspot it acts on is still shown: its button, else
+   * the shown room's device (GM8h2 D5), which draws none.
+   */
   const scoped = <T>(cause: Cause, run: () => T, how: MoveHow = 'walk'): T => {
-    const s: Scope = { cause, box: explore.hotspots.find((v) => v.key === cause.at)?.css ?? null, how, cues: [], job: null, diff: [] };
+    const box = explore.hotspots.find((v) => v.key === cause.at)?.css ?? controller?.deviceBox(cause.at) ?? null;
+    const s: Scope = { cause, box, how, cues: [], job: null, diff: [] };
     scope = s;
     const out = run();
     scope = AT_ONCE;
-    const cues = (s.cues ?? []).map((e) => ({ ...e, diff: s.diff })); // the diff is known once the entry has run
+    // D1 (A1): a cue held to the entry's move plays at its batch's start, over the room it enters and the room it leaves
+    // (two moves in one entry: the first's); any other plays now, over the room shown. A late reply's cue at a room left
+    // plays nothing (Q65). The diff is known once the entry has run.
+    const rooms = shownOf(s.job === null ? [shown] : [s.job.room, s.job.from]);
+    const cues = (s.cues ?? []).filter((e) => onScreen(e.cue, rooms)).map((e) => ({ ...e, diff: s.diff }));
     if (s.job !== null) {
       s.job.cues = cues;
     } else {
@@ -634,7 +707,7 @@ export function createYields(h: YieldsHost): Yields {
         const how: MoveHow = e.how === 'zoom-in' || e.how === 'zoom-out' ? e.how : scope.how;
         const box = e.how === 'zoom-out' && e.via === null && w !== null ? exitBoxInto(w, e.from) : scope.box;
         const move = cueEvent({ kind: 'move', from: shown, to: e.room, via: scope.cause.at, how }, box);
-        const job: RoomJob = { room: e.room, sfx: e.sfx, how, move, cues: [] };
+        const job: RoomJob = { room: e.room, from: shown, sfx: e.sfx, how, move, cues: [] };
         if (scope.cues !== null) {
           scope.job ??= job;
         }
@@ -942,8 +1015,9 @@ export function createYields(h: YieldsHost): Yields {
   };
 
   /**
-   * The frame is on screen (engine plan §8.1 point 8): App's frame layer renders the host component, or the failed-host
-   * block; before either, the layer is an empty `div`.
+   * The frame is on screen (engine plan §8.1 point 8): the host component renders, or the failed-host block, in App's
+   * frame layer for an overlay frame and in ExploreView's room place for a view frame (`presentation`); before either,
+   * the place is empty.
    */
   const shownFrame = (): boolean => puzzle.frame !== null && (puzzle.host !== null || puzzle.frame.loadFailed);
   /** The shown-frame test: a cue of `o`'s frame plays only while it is the open, appeared, unhidden frame on screen. */
@@ -1319,8 +1393,9 @@ export function createYields(h: YieldsHost): Yields {
           return;
         case 'mismatch':
           // A reach post answered wrong: the content changed under this client (engine plan §7.4). The device returns
-          // to its start answer through its one reset cue; nothing was counted, so nothing is saved; the sticky toast
-          // asks for a restart, and the console keeps the trace (no report).
+          // to its start answer through its one reset cue; nothing was counted, so no autosave here (a device's saved
+          // work follows its reset below); the sticky toast asks for a restart, and the console keeps the trace (no
+          // report).
           o.reach = null;
           setFrame(o, { busy: false, line: 'idle', answer: o.session.answer(), awaiting: false });
           puzzleCue(o, 'reset');
@@ -1383,9 +1458,9 @@ export function createYields(h: YieldsHost): Yields {
     o.session.instance.commit === 'full' && o.session.answer().length === o.session.instance.shape.len && post(o);
 
   /**
-   * A device starts over (§7.5 "Full commit", D15): its type's `initial()` through the one write path, so each moved
-   * position plays its light `puzzle:input` (never `puzzle:reset`: the reply's own cue said why) and the saved work
-   * follows.
+   * A device starts over (§7.5 "Full commit", D15): its type's `initial()` through the one write path, so each part that
+   * moved or went dark plays its light `puzzle:input` once (never `puzzle:reset`: the reply's own cue said why) and the
+   * saved work follows.
    */
   const restartWork = (o: Open): void => {
     moveWork(o, o.session.instance.initial());
@@ -1414,8 +1489,8 @@ export function createYields(h: YieldsHost): Yields {
 
   /**
    * The one write path of a working answer (engine plan §7.5 "One write path"; GM8h): the session's answer, the move
-   * away from a reached answer, the frame, then one `puzzle:input` per moved part in index order. A type UI's
-   * `onchange` and a device's `onwork` both come through here.
+   * away from a reached answer, the frame, then one `puzzle:input` per part the move names, in the order the changed
+   * positions first name them. A type UI's `onchange` and a device's `onwork` both come through here.
    */
   const moveWork = (o: Open, a: readonly number[]): void => {
     // The frame's answer is the drawn one; after a reach post the session holds the canonical form (Q6).
@@ -1434,9 +1509,20 @@ export function createYields(h: YieldsHost): Yields {
       o.reach = null;
     }
     setFrame(o, away ? { answer: now, awaiting: false } : { answer: now });
-    // One cue per changed part, in index order.
+    // GM8h2 D9 / D10: a type that starts full-length (a configuration) names a part by its position; one that starts
+    // empty (a sequence, a ritual, a path) by its value, so a changed position names the part it left, then the part it
+    // took. Each part plays once.
+    const valued = o.session.instance.initial().length === 0;
+    const parts: number[] = [];
     for (const i of changed) {
-      puzzleCue(o, 'input', i);
+      for (const part of valued ? [was[i], now[i]] : [i]) {
+        if (part !== undefined && !parts.includes(part)) {
+          parts.push(part);
+        }
+      }
+    }
+    for (const part of parts) {
+      puzzleCue(o, 'input', part);
     }
     if (o.present === 'view') {
       // A device's working answer is its saved work (§7.5 "Working state"; Q-a): written inside the press, so `run.work`
