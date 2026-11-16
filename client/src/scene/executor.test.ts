@@ -17,7 +17,7 @@ import { backdropPlacement, propPlacement } from './layout.ts';
 import type { StageWindow } from './preload.ts';
 import { REVIVE_DEADLINE_MS, TRANSIENT_CAP_BYTES, createAssetRegistry } from './registry.ts';
 import type { AssetError, Decoded, FrameCut, LoadError, LoadImage } from './registry.ts';
-import { createRenderLoop } from './render-loop.ts';
+import { IDLE_AFTER_MS, createRenderLoop } from './render-loop.ts';
 import type { RenderLoop, Ticker } from './render-loop.ts';
 import { createReviveFlow } from './revive-flow.ts';
 import { camFraming, restFraming, worldOf } from './shot-view.ts';
@@ -3701,5 +3701,141 @@ test('executor: a failed kit is retried at the next shot build, at most 3 times 
   expect(imports).toBe(5);
   expect(warn).toHaveBeenCalledTimes(4);
   warn.mockRestore();
+  h.ex.destroy();
+});
+
+test("executor: talk flaps the speaker's visible mouth and cues the listeners", async () => {
+  const d = drivenLoop();
+  const h = harness(S390, d.loop, MOTION);
+  const { kit, faces } = fakeKit();
+  h.ex.setMotion(kit);
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  const [ally, stranger] = [faceAt(faces, 0), faceAt(faces, 1)];
+  h.ex.talk('ally' as CharId, { forMs: 1_200 });
+  expect(ally.talks).toEqual([{ on: true, forMs: 1_200, think: false }]);
+  expect([stranger.talks, stranger.heard]).toEqual([[{ on: false }], 1]);
+  // The speaker's animator flaps: its mouth member shows at its next change, from the talk file's frame.
+  ally.state = { eyes: 'open', accent: false, mouth: 0 };
+  d.run(1_100);
+  expect(shownOf(h, 'ally')).toEqual(['talk_lamp_ally_neutral.avif#0,0,40,20']);
+  // A thought: its speaker's animator hears `think` (the mouth stays), and nobody is cued.
+  h.ex.talk('stranger' as CharId, { think: true });
+  expect(stranger.talks.at(-1)).toEqual({ on: true, think: true });
+  expect([ally.talks.at(-1), ally.heard]).toEqual([{ on: false }, 0]);
+  // Narration: every face stops, nobody is cued.
+  h.ex.talk(null);
+  expect([ally.talks.at(-1), stranger.talks.at(-1), ally.heard, stranger.heard]).toEqual([{ on: false }, { on: false }, 0, 1]);
+  // Arm: a restore stops the talk on the faces it finds, and a face it builds does not flap.
+  h.ex.talk('ally' as CharId, { forMs: 5_000 });
+  await h.ex.restore({ bg: 'lamp_cu' as BgId, cg: null, chars: [], props: [] });
+  await flush();
+  expect([ally.talks.at(-1), stranger.talks.at(-1)]).toEqual([{ on: false }, { on: false }]);
+  expect(faces).toHaveLength(3);
+  expect(faceAt(faces, 2).talks).toEqual([]);
+  h.ex.destroy();
+});
+
+test('executor: an off-screen speaker cues the listeners only', async () => {
+  const h = harness(S390, drivenLoop().loop, MOTION);
+  const { kit, faces } = fakeKit();
+  h.ex.setMotion(kit);
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  const heard = (): number[] => faces.map((f) => f.heard);
+  const talking = (): boolean[] => faces.map((f) => f.talks.some((t) => t.on));
+  // A speaker the shot does not show: nobody flaps, the faces hear.
+  h.ex.talk('keeper' as CharId, { forMs: 900 });
+  expect([heard(), talking()]).toEqual([
+    [1, 1],
+    [false, false],
+  ]);
+  // B15: a named speaker with no face (`radio`, `voice`) is off-screen too.
+  h.ex.talk(null, { offstage: true });
+  expect([heard(), talking()]).toEqual([
+    [2, 2],
+    [false, false],
+  ]);
+  // Its thought cues nobody, and narration cues nobody.
+  h.ex.talk('keeper' as CharId, { think: true });
+  h.ex.talk(null);
+  expect([heard(), talking()]).toEqual([
+    [2, 2],
+    [false, false],
+  ]);
+  h.ex.destroy();
+});
+
+test('executor: apply, restore and talk count as activity', async () => {
+  const d = drivenLoop();
+  const h = harness(S390, d.loop, MOTION);
+  h.ex.setMotion(fakeKit().kit);
+  // A continuous source on the loop is stepped until the idle clock passes IDLE_AFTER_MS, and again after activity.
+  let steps = 0;
+  d.loop.addAmbient({
+    layer: 'top',
+    continuous: () => true,
+    step: () => {
+      steps += 1;
+    },
+    nextChangeMs: () => null,
+    setMode: () => false,
+  });
+  const after = async (act: () => Promise<void> | void): Promise<number> => {
+    d.run(IDLE_AFTER_MS + 1_000);
+    const idle = steps;
+    d.run(1_000);
+    expect(steps).toBe(idle);
+    await act();
+    await flush();
+    d.run(1_000);
+    return steps - idle;
+  };
+  expect(await after(() => h.ex.apply([scene('lamp', 'cut')], NOW))).toBeGreaterThan(0);
+  expect(await after(() => h.ex.restore({ bg: 'lamp_cu' as BgId, cg: null, chars: [], props: [] }))).toBeGreaterThan(0);
+  expect(await after(() => h.ex.talk('ally' as CharId))).toBeGreaterThan(0);
+  // Nothing else is: an idle loop stays idle through a tap on a finished batch.
+  expect(await after(() => h.ex.complete())).toBe(0);
+  h.ex.destroy();
+});
+
+test("executor: a talk before its speaker's group is built flaps the group built after it", async () => {
+  const d = drivenLoop();
+  const h = harness(S390, d.loop, MOTION);
+  const { kit, faces } = fakeKit();
+  h.ex.setMotion(kit);
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  expect(faces).toHaveLength(2);
+  // (a) A face change with its line: the talk comes during the change's fade, with the speaker's group gone (O2).
+  const change = track(h.ex.apply([face('ally', 'smile')], NOW));
+  await flush();
+  advance(100);
+  h.ex.talk('ally' as CharId, { forMs: 3_000 });
+  expect(membersOf(h, 'ally')).toEqual([]);
+  d.run(1_000);
+  advance(150);
+  await flush();
+  expect(change.done).toBe(true);
+  expect(faces).toHaveLength(3);
+  // The smile's group, built at the batch's end, flaps for what is left of the talk.
+  expect(faceAt(faces, 2).talks).toEqual([{ on: true, forMs: 2_000, think: false }]);
+  // (b) A shot cut with its line: the talk comes while the cut waits on its plate; the close-up's face is built after.
+  const plate = h.deferLoad('bg/lamp_cu');
+  const cut = track(h.ex.apply([scene('lamp_cu', 'cut')], NOW));
+  await flush();
+  h.ex.talk('ally' as CharId, { think: true });
+  plate();
+  await flush();
+  expect(cut.done).toBe(true);
+  expect(faces).toHaveLength(4);
+  expect(faceAt(faces, 3).talks).toEqual([{ on: true, forMs: 20_000, think: true }]);
+  // (c) Past its deadline a talk flaps nothing: the group built after it rests.
+  h.ex.talk('ally' as CharId, { forMs: 500 });
+  d.run(600);
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  expect(faces).toHaveLength(6);
+  expect(faces.slice(4).map((f) => f.talks)).toEqual([[], []]);
   h.ex.destroy();
 });

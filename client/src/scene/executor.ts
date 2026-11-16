@@ -148,6 +148,14 @@ export interface Executor<T> {
    * gains its motion group, hidden until its source is stepped. Once; nothing waits on it.
    */
   setMotion(kit: MotionKit): void;
+  /**
+   * A line's talk (D5, B9): `char`'s face flaps, every other face stops and, unless the line is a thought, hears it (a
+   * speaker not in the shot's cast is off-screen: nobody flaps, the faces hear). `char` null: narration, every face stops
+   * and nobody is cued; with `offstage`, a named speaker with no face (`radio`, `voice`; B15), whom the faces hear. The
+   * talk is held until its deadline (`forMs`, else the kit's max) or a `restore`: a group built meanwhile for its
+   * speaker flaps for what is left of it (W1). Counts as activity, as `apply` and `restore` do.
+   */
+  talk(char: CharId | null, o?: { forMs?: number; think?: boolean; offstage?: boolean }): void;
   /** Blink members (`closed`) shown on a live texture since the executor was made (D8's counter, A13 (c)). */
   blinks?(): number;
   /** Kills every timeline, settles every pending apply, destroys every sprite and releases every `scene:*` holder. */
@@ -439,6 +447,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   /** The motion groups of the shot on stage, by character. */
   const groups = new Map<CharId, MotionGroup<T>>();
   let blinks = 0;
+  /** The current talk (W1): its speaker, whether it is a thought, and when it started (loop time) for how long. */
+  let talking: { readonly char: CharId; readonly think: boolean; readonly at: number; readonly forMs: number | undefined } | null = null;
   /** The slots of a stage, its motion-only ones included once the kit is set. */
   const slots = (s: SceneSnapshot, rigs: Rigs): Map<string, AssetId> => slotsOf(s, rigs, kit !== null);
 
@@ -783,6 +793,14 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     // Over its face's part (2i + 2), under the next member's figure plane (2i + 3); a patch (2n + 1) stays above.
     adapter.set(node, { z: 2 * shot.rig.cast.findIndex((m) => m.char === char) + 2.5 });
     const animator = k.face({ talk: members.filter((m) => m.role === 'talk') });
+    // W1: the talk outlives its speaker's group; a group built for the speaker before its deadline flaps the rest of it.
+    const t = talking;
+    if (t !== null && t.char === char) {
+      const left = (t.forMs ?? k.talkMaxMs) - (loop.time() - t.at);
+      if (left > 0) {
+        animator.talk(true, { forMs: left, think: t.think });
+      }
+    }
     const g: MotionGroup<T> = { root, char, expr: x, node, members, animator, off: () => {} };
     groups.set(char, g);
     const source: AmbientSource = {
@@ -1707,6 +1725,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       if (destroyed) {
         return Promise.resolve();
       }
+      loop.activity();
       complete();
       const rigs = deps.shots?.rigs() ?? null;
       return enqueue(cmds, reduce(logical, cmds, rigs !== null), o.instant, rigs, o.window ?? null);
@@ -1715,6 +1734,12 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     restore(s) {
       if (destroyed) {
         return Promise.resolve();
+      }
+      loop.activity();
+      // A restore ends the talk (CH section 6.2): no face flaps for a line of the stage it replaced.
+      talking = null;
+      for (const g of groups.values()) {
+        g.animator.talk(false);
       }
       complete();
       // A CG covers the stage: the restore waits for it alone (a covered plate loading late shows nothing new).
@@ -1924,6 +1949,26 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         }
       }
       syncMotion();
+    },
+    talk(char, o) {
+      if (destroyed) {
+        return;
+      }
+      loop.activity();
+      const think = o?.think === true;
+      talking = char === null ? null : { char, think, at: loop.time(), forMs: o?.forMs };
+      // A heard line cues the listeners (05a :84): any speaker's, a faceless one's included; narration and thought none.
+      const cue = (char !== null || o?.offstage === true) && !think;
+      for (const g of groups.values()) {
+        if (g.char === char) {
+          g.animator.talk(true, o?.forMs === undefined ? { think } : { forMs: o.forMs, think });
+        } else {
+          g.animator.talk(false);
+          if (cue) {
+            g.animator.heard();
+          }
+        }
+      }
     },
     blinks: () => blinks,
     destroy() {
