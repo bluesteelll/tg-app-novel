@@ -1454,8 +1454,10 @@ test('explore: every explore cue target resolves', async () => {
 test('explore: the ladder sheet over a device is the hints panel its cues land on', async () => {
   // GM8h2 D13(1), RULINGS 380 B8: the device's ladder sheet is the room place's hints panel, the first in document
   // order (the card's ancestor). `ladder`, `tier`, `alert` and the panel's open and close land on the sheet; the hold
-  // of a hint request (`waiting` / `waited`, box-less) stays on the card through the notice that wraps it inside the
-  // sheet, as it breathes the card in the frame place. Each element by identity (an equal node is not the node).
+  // of a hint request (`waiting` / `waited`, box-less) lands on the notice that wraps the card inside the sheet. That
+  // wrapper is live and the sheet's full height, so the player moves it with no ghost: `breathe` scales the whole
+  // column about the sheet's centre and its ring falls outside the app's clip, where the frame place breathes the card
+  // itself (fix r1, triage r1 I1). Each element by identity (an equal node is not the node).
   stageRig(); // the stage layer's box, and `unstage` clears the body
   const stage = document.createElement('div');
   stage.setAttribute('data-cue-stage', '');
