@@ -5219,6 +5219,89 @@ test('yields: a device hidden at a zoom-out leaves no demo timer', async () => {
   r.yields.dispose();
 });
 
+test('yields: a callback of a hidden device posts nothing, plays no cue and leaves no timer', async () => {
+  // Lifecycle M2 (RULINGS 368): a device hidden with its POST in flight keeps its session, so the host's callbacks still
+  // find it `open`; none of them posts, cues or schedules: `startDemo` does nothing for a hidden device, so a stale
+  // wrong press of its unmounted UI leaves no demonstration timer. (Such a press still writes the run's work through
+  // `moveWork`: a type UI never calls back after its destroy, lifecycle M2's rule for GM8a / GM8b.)
+  const r = deviceRig('chimes', { maxAttempts: 3 });
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.onreach?.([2, 0, 1]);
+  await settle();
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([r.puzzle.frame, r.yields.presence().puzzle, q.signals.map((s) => s.aborted)]).toEqual([null, true, [false]]);
+  const mark = r.cues.length;
+  const pending = (): number => r.clock.pending(DEMO_STEP_MS) + r.clock.pending(DEMO_PAUSE_MS);
+  const calls: Array<[string, () => void]> = [
+    ['ondemo', () => r.yields.host.ondemo?.()],
+    ['oncommit', () => r.yields.host.oncommit?.()],
+    ['onblocked', () => r.yields.host.onblocked?.(1)],
+    ['a stale wrong press', () => r.yields.host.onwork?.([1, 1, 1], true)],
+  ];
+  for (const [name, call] of calls) {
+    call();
+    expect(pending(), name).toBe(0);
+  }
+  r.clock.advance(DEMO_PAUSE_MS + DEMO_STEP_MS * 4);
+  await settle();
+  expect([r.posted.length, puzzleCuesOf(r, mark)]).toEqual([1, []]);
+  r.yields.dispose();
+});
+
+test('yields: a sheet over a device view stops its demonstration until the demo control replays it', async () => {
+  // Places F4 (RULINGS 368): a screen on the stack lies over the device's room (a view frame pushes none), so it covers
+  // the device: its opening stops the demonstration, no `puzzle:demo` plays while it covers, and the demo control does
+  // nothing then. Its close restarts nothing by itself; the demo control then replays the order from its first step.
+  const covers: Array<[string, (r: Rig) => void]> = [
+    ['the inventory', (r) => r.yields.layer.oninventory()],
+    ['the hint ladder', (r) => r.yields.host.onhint()],
+  ];
+  for (const [cover, open] of covers) {
+    const r = deviceRig('chimes');
+    await atDevice(r);
+    expect([cover, r.clock.pending(DEMO_STEP_MS)]).toEqual([cover, 1]);
+    const mark = r.cues.length;
+    open(r);
+    await settle();
+    expect([cover, overlaysOf(r).length, r.clock.pending(DEMO_STEP_MS)]).toEqual([cover, 1, 0]);
+    r.clock.advance(DEMO_STEP_MS * 3);
+    expect([cover, demoOf(r, mark)]).toEqual([cover, []]);
+    r.yields.host.ondemo?.();
+    expect([cover, demoOf(r, mark), r.clock.pending(DEMO_STEP_MS)]).toEqual([cover, [], 0]);
+    r.screens.back();
+    await settle();
+    r.clock.advance(DEMO_STEP_MS * 3);
+    expect([cover, overlaysOf(r), demoOf(r, mark)]).toEqual([cover, [], []]);
+    r.yields.host.ondemo?.();
+    expect([cover, demoOf(r, mark)]).toEqual([cover, ['demo@2']]);
+    r.clock.advance(DEMO_STEP_MS * 2);
+    expect([cover, demoOf(r, mark)]).toEqual([cover, ['demo@2', 'demo@0', 'demo@1']]);
+    r.yields.dispose();
+  }
+});
+
+test('yields: a device whose chunk failed plays no demonstration', async () => {
+  // Gates F3 (RULINGS 368): the demonstration starts only after a successful load; a failed type chunk or host chunk
+  // shows its Retry and plays nothing.
+  const failures: Array<[string, Partial<LazyChunks>]> = [
+    ['the type chunk', { puzzleUi: async () => CHUNK_OFFLINE }],
+    ['the host chunk', { puzzleHost: async () => CHUNK_OFFLINE }],
+  ];
+  for (const [chunk, loaders] of failures) {
+    const r = deviceRig('chimes', { loaders });
+    await inHall(r);
+    const mark = r.cues.length;
+    r.yields.layer.ontap(key('hall.to_panel'));
+    await settle();
+    expect([chunk, roomOf(r), r.puzzle.frame?.loadFailed]).toEqual([chunk, 'panel', true]);
+    r.clock.advance(DEMO_STEP_MS * 4);
+    expect([chunk, demoOf(r, mark), r.clock.pending(DEMO_STEP_MS)]).toEqual([chunk, [], 0]);
+    r.yields.dispose();
+  }
+});
+
 test("yields: a view frame's host Retry plays no yields control cue", async () => {
   // C-18: a device whose host chunk failed shows its Retry in the room (ExploreView's notice, inside the explore root),
   // and that root emits the control's cue; yields emits App's failed-host Retry cue for an overlay frame only.

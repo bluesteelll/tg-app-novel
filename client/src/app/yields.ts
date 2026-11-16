@@ -1093,14 +1093,21 @@ export function createYields(h: YieldsHost): Yields {
   };
 
   /**
+   * Whether a sheet covers `o`'s device (places F4, RULINGS 368): a view frame pushes no screen (`backScreen`), so any
+   * screen on the stack lies over its room: the inventory, a document, the lock panel, the hint ladder, a meta overlay.
+   */
+  const covered = (o: Open): boolean => o.present === 'view' && screens.view().overlays.length > 0;
+
+  /**
    * Plays `o`'s demonstration from its first step after `delay` ms (engine plan §7.5 "Demonstration"; Q15h): each part of
    * its type's order as one `puzzle:demo` on that part, `DEMO_STEP_MS` apart; a new start replaces a running one. A
-   * type with no order plays none; a step plays only while `o` is the open, shown frame.
+   * type with no order plays none; a step plays only while `o` is the open, shown frame. A hidden device (lifecycle M2)
+   * or one a sheet covers (places F4) starts none: a covering sheet's opening stops it, and its close restarts nothing.
    */
   const startDemo = (o: Open, delay: number): void => {
     stopDemo(o);
     const order = o.session.instance.demo();
-    if (order === null || dead) {
+    if (order === null || dead || o.hidden || covered(o)) {
       return;
     }
     const step = (i: number): void => {
@@ -1751,6 +1758,9 @@ export function createYields(h: YieldsHost): Yields {
         const o = open;
         hideFrame(o);
         o.session.close();
+      }
+      if (open !== null && covered(open)) {
+        stopDemo(open); // places F4: a sheet over a device view stops its demonstration
       }
       const ladder = puzzle.ladder;
       if (ladder !== null && !kinds.has('hints')) {
