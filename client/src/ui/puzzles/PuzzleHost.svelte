@@ -19,7 +19,7 @@
   // abandoned); the root is the frame family's and the bar its frame marker. Its type UI is busy through a 429 countdown
   // too: the bar has no Try that holds it, so the parts take no press until the countdown ends.
   // `ladder` is the hint ladder alone, in a room sheet over a device, with no root: its controls emit through the
-  // innermost root around it, ExploreView's.
+  // innermost root around it, ExploreView's. It is that sheet's panel, so it pads itself past the safe area and scrolls.
   import { cueRoot } from '../../cues/root.ts';
   import type { GestureCue } from '../../cues/types.ts';
   import { t } from '../../i18n/index.ts';
@@ -136,7 +136,9 @@
 
 {#if place === 'ladder'}
   {#if ladder !== null}
-    <HintLadder {lang} {ladder} onuse={(tier) => onusehint(tier)} ongetmore={() => ongetmore()} />
+    <div class="ladder-place">
+      <HintLadder {lang} {ladder} onuse={(tier) => onusehint(tier)} ongetmore={() => ongetmore()} />
+    </div>
   {/if}
 {:else if frame !== null}
   {#key frame.id}
@@ -324,6 +326,18 @@
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     line-clamp: 2;
+  }
+
+  /*
+   * The ladder place is its room sheet's panel: it pads itself past the safe area and scrolls, as every explore sheet
+   * does (Inventory.svelte), with no background of its own, so the sheet's backdrop stays around the ladder's card.
+   */
+  .ladder-place {
+    box-sizing: border-box;
+    height: 100%;
+    overflow-y: auto;
+    padding: calc(var(--app-inset-top, 0px) + 16px) calc(var(--app-inset-right, 0px) + 16px)
+      calc(var(--app-inset-bottom, 0px) + 16px) calc(var(--app-inset-left, 0px) + 16px);
   }
 
   .wrap {

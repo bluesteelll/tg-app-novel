@@ -1288,6 +1288,22 @@ test('puzzle-host: the room-place bar keeps one button row and clamps its status
   expect([declarationsOf(puzzleHostSource, '.title').get('min-width'), declarationsOf(puzzleHostSource, '.title').get('text-overflow')]).toEqual(['0', 'ellipsis']);
 });
 
+test('puzzle-host: the ladder place pads past the safe area and scrolls', () => {
+  // Places F3 (RULINGS 368): the ladder place is its sheet's panel, so it pads itself past the safe area by
+  // `--app-inset-*` plus the sheets' 16 px and scrolls, as every explore sheet does (Inventory, LockPanel,
+  // DocumentReader); it draws no background, so the sheet's backdrop stays around the ladder's card.
+  const { container } = render(PuzzleHost, placed('ladder', { ladder: ladderOf(TIERS, { cost: 1, balance: 2 }) }));
+  expect(container.querySelector('.ladder-place > section.ladder')).not.toBeNull();
+  const d = declarationsOf(puzzleHostSource, '.ladder-place');
+  expect(['box-sizing', 'height', 'overflow-y', 'padding', 'background'].map((p) => d.get(p)?.replace(/\s+/g, ' '))).toEqual([
+    'border-box',
+    '100%',
+    'auto',
+    'calc(var(--app-inset-top, 0px) + 16px) calc(var(--app-inset-right, 0px) + 16px) calc(var(--app-inset-bottom, 0px) + 16px) calc(var(--app-inset-left, 0px) + 16px)',
+    undefined,
+  ]);
+});
+
 test('puzzle-host: every puzzle cue target resolves in the room-place bar and the ladder place', async () => {
   // §8.5 "Cue targets" for a device (GM8h): the room place's bar is the frame marker and the `puzzle` panel, the parts
   // layer beside it holds the parts (L3: a `part` resolves inside the frame's family root), and the ladder place's
