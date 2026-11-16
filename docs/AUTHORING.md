@@ -218,7 +218,7 @@ catalog (`catalog/assets`).
 Tags stage the scene: `scene`, `bg`, `show`, `hide`, `cg`, `bgm`, `sfx`, `wait`, the shot kinds `face`, `cam`,
 `think`, `anim`, `fx` (DSL v3: a face change, a camera framing, a thought line, a character's one-shot motion, a
 screen effect; all five parsed and checked today; on today's sprite stage a `face` crossfades the character's
-expression, and on a shot chapter a timed `face` in a batch that keeps the shot on stage, with no `scene` and no `bg` change, is a patch over the old drawing), plus the two yield tags `puzzle` and `explore`.
+expression, and on a shot chapter a timed `face` in a batch with no `scene` whose `bg`, if any, is a `t=cut`, is a patch over the old drawing; with a `bg` crossfade or fade, a take included, it is the layer crossfade), plus the two yield tags `puzzle` and `explore`.
 Changed by RULINGS 365, 367, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A): `cam` is drawn since SH6 (`b0ef547`), and so is the exact dissolve of a
 `bg: <shot> t=crossfade` between two shots of a shot chapter; `think` is SH7's and `anim` and `fx` are SH8's, so those three
 are still parsed and checked only. A `cam: push` ignores reduced motion until SH7 (OPEN-QUESTIONS Q71). A worked example of the
