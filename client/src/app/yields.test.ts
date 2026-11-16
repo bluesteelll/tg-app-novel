@@ -9,12 +9,12 @@ import type { AttemptResponse, PuzzleStatus } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
 import type { AudioCommand } from '../audio/manager.ts';
 import type { Cue, CueEvent } from '../cues/types.ts';
-import { createExploreController } from '../explore/controller.ts';
+import { MIN_TARGET_PX, createExploreController } from '../explore/controller.ts';
 import type { ExploreController } from '../explore/controller.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { PuzzleRun, WorldState } from '../explore/state.ts';
-import { ROOM_SOURCE, cover, toStage } from '../geom/cover.ts';
+import { ROOM_SOURCE, cover, minTarget, toStage } from '../geom/cover.ts';
 import { mechT } from '../i18n/mechanics.ts';
 import type { ChunkError, PuzzleUiProps } from '../puzzles/registry.ts';
 import { PUZZLE_TYPES } from '../puzzles/rules/index.ts';
@@ -35,7 +35,7 @@ import { createViewModel } from '../ui/state.svelte.ts';
 import type { CueStageProps } from '../ui/state.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DecodeOptions } from '../world/decode.ts';
-import type { DocId, HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
+import type { DocId, HotspotKey, ItemId, RoomId, WorldPublic } from '../world/types.ts';
 import type { WaitRow } from '../requests.test.ts';
 import { DEMO_PAUSE_MS, DEMO_STEP_MS, DIRTY_DEBOUNCE_MS, ROOM_FADE_MS, TAKE_FADE_MS, VIEW_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
 import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
@@ -4261,6 +4261,11 @@ const DEVICE_TYPES: PuzzleTypes = [...PUZZLE_TYPES, DIALS, BELLS, RITE, LATCH, C
 /** The device world's knobs: its device's parts, attempt limit and hint tiers, the type registry, its part decor. */
 type DeviceWorldOptions = { parts?: number; maxAttempts?: number | null; hintTiers?: number; types?: PuzzleTypes; decor?: boolean };
 const DEV = 'dev' as PuzzleLocalId;
+/** The device hotspot's own rect (GM8h2 D5): apart from every other hotspot's `RECT`, so a box read off the exit taken or
+ *  any other button can never pass for the device's. */
+const DIAL_RECT = [300, 700, 240, 300] as const;
+/** The device's box on the rig's 360 x 640 stage host, in the hotspots' form (cover, then the minimum tap target). */
+const DIAL_BOX = minTarget(toStage(DIAL_RECT, cover({ w: 360, h: 640 }, ROOM_SOURCE)), MIN_TARGET_PX);
 
 /**
  * hall -> panel, a view of the hall whose `device` is `dial`: a zero-slot lock of the puzzle `dev`, of the fixture type
@@ -4307,7 +4312,7 @@ function deviceWorld(type: string, o: DeviceWorldOptions = {}): WorldPublic {
             bg: 'cellar',
             title: txt('Panel'),
             onEnter: [],
-            hotspots: [box('dial', { ...lockOf([], 'dev'), onFail: [{ give: 'coin' }] }), box('safe', lockOf([], 'loose')), toKnot('leave')],
+            hotspots: [{ ...box('dial', { ...lockOf([], 'dev'), onFail: [{ give: 'coin' }] }), rect: DIAL_RECT }, box('safe', lockOf([], 'loose')), toKnot('leave')],
             ...(o.decor === true ? { decor: Array.from({ length: parts }, (_, i) => lever(i)) } : {}),
             view: { of: 'hall' },
             device: 'dial',
@@ -4555,7 +4560,102 @@ test("yields: a correct answer landing after a zoom-out opens the device's lock"
   await settle();
   expect([roomOf(r), r.puzzle.frame]).toEqual(['panel', null]);
   expect(keysOf(r, mark)).toContain('module:devices:done');
+  // GM8h2 D5: the arrival's cue plays on the device it names, not on the exit the zoom-in took.
+  expect(r.cues.slice(mark).find((e) => keyOf(e.cue) === 'module:devices:done')?.box).toEqual(DIAL_BOX);
   r.yields.dispose();
+});
+
+/** The device world's state with its device ended `outcome` (a solved device's lock open), in `room`. */
+const endedAt = (r: Rig, outcome: 'solved' | 'failed', room: string, pendingStory: readonly KnotName[] = []): WorldState => ({
+  ...r.yields.world(),
+  room: room as RoomId,
+  pendingStory,
+  puzzles: { [DEV]: { outcome, attempts: 1, hintsOpened: 0 } },
+  open: outcome === 'solved' ? [key('panel.dial')] : [],
+});
+
+/** The `devices` module cues after `mark`, with their boxes. */
+const deviceCuesOf = (r: Rig, mark: number): Array<[string, CueEvent['box']]> =>
+  r.cues.slice(mark).flatMap((e): Array<[string, CueEvent['box']]> => (e.cue.kind === 'module' && e.cue.module === 'devices' ? [[keyOf(e.cue), e.box]] : []));
+
+test("yields: a device's module cue lands on the device box", async () => {
+  // GM8h2 D5: the arrival at an ended device plays `module:devices:done` / `:jammed` at the device's key, caused by the
+  // move (the zoom-in's exit; a resume's or an event return's nothing). A device draws no button, so the cue reads the
+  // device's own box, however the room was reached.
+  for (const [outcome, name] of [
+    ['solved', 'module:devices:done'],
+    ['failed', 'module:devices:jammed'],
+  ] as const) {
+    // A zoom-in from the hall.
+    const z = deviceRig('dials');
+    await inHall(z);
+    z.yields.restore(endedAt(z, outcome, 'hall'), null, { kind: 'explore', section: MANOR });
+    await z.yields.onYield({ kind: 'explore', section: MANOR });
+    let mark = z.cues.length;
+    z.yields.layer.ontap(key('hall.to_panel'));
+    await settle();
+    expect([outcome, 'zoom-in', roomOf(z), deviceCuesOf(z, mark)]).toEqual([outcome, 'zoom-in', 'panel', [[name, DIAL_BOX]]]);
+    z.yields.dispose();
+    // A resume onto the device's room.
+    const s = deviceRig('dials');
+    await inHall(s);
+    const returning = { ...endedAt(s, outcome, 'panel'), pendingStory: [AFTER] };
+    s.yields.restore(endedAt(s, outcome, 'panel'), null, { kind: 'explore', section: MANOR });
+    mark = s.cues.length;
+    await s.yields.onYield({ kind: 'explore', section: MANOR });
+    await settle();
+    expect([outcome, 'resume', roomOf(s), deviceCuesOf(s, mark)]).toEqual([outcome, 'resume', 'panel', [[name, DIAL_BOX]]]);
+    s.yields.dispose();
+    // An event return into it, in a fresh session (a reload inside a knot the room ran): the knot's own yield.
+    const e = deviceRig('dials');
+    e.yields.restore(returning, null, null);
+    await e.yields.onYield({ kind: 'explore', section: MANOR });
+    await settle();
+    expect([outcome, 'return', roomOf(e), e.yields.world().pendingStory, deviceCuesOf(e, 0)]).toEqual([outcome, 'return', 'panel', [], [[name, DIAL_BOX]]]);
+    e.yields.dispose();
+  }
+});
+
+test('yields: a fact cue at the shown device lands on the device box', async () => {
+  // GM8h2 D5: a device's own facts (a local wrong's attempt, a posted solve, a failed limit's end and its onFail's fire)
+  // are caused at its lock, the device hotspot, which draws no button: they land on the device's box.
+  const atDial = (r: Rig, mark: number): Array<[string, CueEvent['box']]> =>
+    r.cues
+      .slice(mark)
+      .flatMap((e): Array<[string, CueEvent['box']]> => (e.cue.kind === 'fact' && e.cue.cause.at === 'panel.dial' && e.cue.fact.kind !== 'held' ? [[keyOf(e.cue), e.box]] : []));
+  const r = deviceRig('bells', { maxAttempts: 3, attempts: [SOLVED] });
+  await atDevice(r);
+  let mark = r.cues.length;
+  r.yields.host.onwork?.([1, 0, 0], true);
+  await settle();
+  expect(['a local wrong', atDial(r, mark)]).toEqual(['a local wrong', [['fact:attempt:added', DIAL_BOX]]]);
+  mark = r.cues.length;
+  r.yields.host.oncommit?.();
+  await settle();
+  expect(['a posted solve', r.yields.world().puzzles[DEV]?.outcome, atDial(r, mark)]).toEqual([
+    'a posted solve',
+    'solved',
+    [
+      ['fact:solved:added', DIAL_BOX],
+      ['fact:open:added', DIAL_BOX],
+    ],
+  ]);
+  r.yields.dispose();
+  const f = deviceRig('bells', { maxAttempts: 1 });
+  await atDevice(f);
+  mark = f.cues.length;
+  f.yields.host.onwork?.([1, 0, 0], true);
+  await settle();
+  expect(['a failed limit', f.yields.world().puzzles[DEV]?.outcome, atDial(f, mark)]).toEqual([
+    'a failed limit',
+    'failed',
+    [
+      ['fact:attempt:added', DIAL_BOX],
+      ['fact:failed:added', DIAL_BOX],
+      ['fact:fired:added', DIAL_BOX],
+    ],
+  ]);
+  f.yields.dispose();
 });
 
 test('yields: a story effect during a device POST drops the answer', async () => {

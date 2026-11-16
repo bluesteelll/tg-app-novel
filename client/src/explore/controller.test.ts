@@ -1594,3 +1594,25 @@ test("device: a device's own end does not re-arrive", () => {
   expect(h.c.state().room).toBe('panel');
   expect(log).toEqual(['puzzle panel.dial', 'devices:done@panel.dial']);
 });
+
+test("controller: deviceBox is the shown room's device in the hotspot form", () => {
+  // GM8h2 D5: a device draws no button, so its cues read its box on demand, in the form a hotspot's button takes (the
+  // cover mapping with the minimum tap target); only the shown room's device, and only while the stage has a size.
+  const h = harness(devicePanel());
+  h.c.enter(sec('dev'), EMPTY_WORLD_STATE);
+  // The hall has no device: its own `dial` (the device's id) is a button, never a device box; another room's device
+  // is none either.
+  expect([h.c.deviceBox(k('hall.dial')), h.c.deviceBox(k('panel.dial'))]).toEqual([null, null]);
+  h.c.dispatch(tap('hall.to_panel'));
+  expect(h.c.state().room).toBe('panel');
+  // Computed here from the fixture's rect (`object`'s RECT), not read from the controller.
+  const expected = minTarget(toStage([100, 200, 200, 200], cover(S390, ROOM_SOURCE)), MIN_TARGET_PX);
+  expect(h.c.deviceBox(k('panel.dial'))).toEqual(expected);
+  // Any other key of the room, and no key, are no device.
+  expect([h.c.deviceBox(k('panel.crate')), h.c.deviceBox(k('panel.plate')), h.c.deviceBox(null)]).toEqual([null, null, null]);
+  // A stage with no size draws no box, as it draws no button.
+  h.host.clientWidth = 0;
+  h.host.clientHeight = 0;
+  h.ro.fire();
+  expect([h.c.deviceBox(k('panel.dial')), h.view.hotspots]).toEqual([null, []]);
+});

@@ -493,18 +493,25 @@ export function createYields(h: YieldsHost): Yields {
   let shown: RoomId | null = null;
   /** The next section entry is the resume onto its yield. */
   let resumed = false;
-  /** A world cue of the entry in scope, on its hotspot's box. */
+  /**
+   * A world cue of the entry in scope, on its hotspot's box; a module cue at the shown room's device on the device's box
+   * (GM8h2 D5: a device draws no button, and an arrival's cue is caused by the move, not at the device).
+   */
   const send = (cue: Cue): void => {
-    const e = cueEvent(cue, scope.box);
+    const e = cueEvent(cue, cue.kind === 'module' ? (controller?.deviceBox(cue.at) ?? scope.box) : scope.box);
     if (scope.cues === null) {
       bus.emit(e);
     } else {
       scope.cues.push(e);
     }
   };
-  /** Runs one controller entry; the box is read before it, while the hotspot it acts on is still shown. */
+  /**
+   * Runs one controller entry; the box is read before it, while the hotspot it acts on is still shown: its button, else
+   * the shown room's device (GM8h2 D5), which draws none.
+   */
   const scoped = <T>(cause: Cause, run: () => T, how: MoveHow = 'walk'): T => {
-    const s: Scope = { cause, box: explore.hotspots.find((v) => v.key === cause.at)?.css ?? null, how, cues: [], job: null, diff: [] };
+    const box = explore.hotspots.find((v) => v.key === cause.at)?.css ?? controller?.deviceBox(cause.at) ?? null;
+    const s: Scope = { cause, box, how, cues: [], job: null, diff: [] };
     scope = s;
     const out = run();
     scope = AT_ONCE;
