@@ -422,11 +422,13 @@ The archive was colder than I remembered. #id:ch2.archive.c0ld
   character that is not on stage changes nothing. On a shot chapter (§14.1; as built, SH4) a `face` changes that cast
   member's drawn face in the shot in effect: the new expression's layers fade in over the old ones over `ms`, which
   retire whole at the fade's end; a face back at its rest fades out to the plate, which shows the rest. Changed by
-  RULINGS 365, 367, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A): since SH6 (`b0ef547`) a timed `face` in a batch with no `bg` crossfade is drawn as one patch, a flat snapshot of the faces'
+  RULINGS 365, 367, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A): since SH6 (`b0ef547`) a timed `face` in a batch that keeps the shot on stage (no `scene`, and no `bg` that changes the shot) is drawn as one patch, a flat snapshot of the faces'
   box that fades in over the old drawing (`patchFaces`, `client/src/scene/executor.ts:939-985`); if the patch cannot be
   reserved or the shot has no rig, the layer crossfade above stands (K7: new over old, never a symmetric fade). In a batch
-  whose `bg` is a `t=crossfade` to another shot, the faces change with the `bg`: at once under the dissolve's snapshot, or by
-  the layer crossfade when the dissolve is not made (`executor.ts:1227-1269`); no patch is made there. The batch first ensures the shot's face file (its talk file is taken, never
+  whose `bg` is a `t=crossfade` to another shot, the faces change with the `bg`: at once under the dissolve's snapshot, or
+  with the new shot as it fades in when the dissolve is not made (`executor.ts:1227-1269`). A `scene` or a `bg t=fade` changes the
+  faces at once in the black (`:1199`, `:1222`), and a `bg` cut to another shot draws that shot's faces with it (`:767`, `:1271-1279`); no
+  patch is made in any of these. The batch first ensures the shot's face file (its talk file is taken, never
   awaited), and a face whose sheet or face file could not be had draws the rest face and logs a skip. On a shot chapter the build
   names no asset for a `face` (§8): its drawn files are the shot pass's (§14.4).
 - **Validation:** `tag/unknown-asset` (character or expression); with a shot list, `shot/char-absent` (the character
