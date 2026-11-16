@@ -13,7 +13,7 @@ import { createExploreController } from '../explore/controller.ts';
 import type { ExploreController } from '../explore/controller.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
-import type { WorldState } from '../explore/state.ts';
+import type { PuzzleRun, WorldState } from '../explore/state.ts';
 import { ROOM_SOURCE, cover, toStage } from '../geom/cover.ts';
 import { mechT } from '../i18n/mechanics.ts';
 import type { ChunkError, PuzzleUiProps } from '../puzzles/registry.ts';
@@ -37,7 +37,7 @@ import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DecodeOptions } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import type { WaitRow } from '../requests.test.ts';
-import { ROOM_FADE_MS, TAKE_FADE_MS, VIEW_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
+import { DEMO_PAUSE_MS, DEMO_STEP_MS, DIRTY_DEBOUNCE_MS, ROOM_FADE_MS, TAKE_FADE_MS, VIEW_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
 import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
 import yieldsSource from './yields.ts?raw';
 
@@ -204,14 +204,21 @@ afterEach(() => {
 class FakeClock implements Clock {
   #now = 0;
   #next = 1;
-  readonly #timers = new Map<number, { at: number; fn: () => void }>();
+  readonly #timers = new Map<number, { at: number; fn: () => void; ms: number }>();
   now(): number {
     return this.#now;
   }
   setTimeout(fn: () => void, ms: number): number {
     const id = this.#next++;
-    this.#timers.set(id, { at: this.#now + ms, fn });
+    this.#timers.set(id, { at: this.#now + ms, fn, ms });
     return id;
+  }
+  /**
+   * The timers set with delay `ms` that have neither run nor been cleared (D8, A16): a pin counts only the timers it
+   * means, by their delay, never the debounce's or a toast's.
+   */
+  pending(ms: number): number {
+    return [...this.#timers.values()].filter((t) => t.ms === ms).length;
   }
   clearTimeout(id: number): void {
     this.#timers.delete(id);
@@ -220,7 +227,7 @@ class FakeClock implements Clock {
   advance(ms: number): void {
     const end = this.#now + ms;
     for (;;) {
-      let next: [number, { at: number; fn: () => void }] | undefined;
+      let next: [number, { at: number; fn: () => void; ms: number }] | undefined;
       for (const e of this.#timers) {
         if (e[1].at <= end && (next === undefined || e[1].at < next[1].at)) {
           next = e;
@@ -2571,6 +2578,14 @@ test("yields: every frame's appearance plays one panel-open", async () => {
   expect(x.puzzle.frame?.mode).toBe('explore');
   expect(opens(x, mark)).toBe(1);
   x.yields.dispose();
+  // GM8h (C-16): a device's arrival in its room, one too (its bar is a panel), from the chunk write that shows it.
+  const d = deviceRig('dials');
+  await inHall(d);
+  const arriving = d.cues.length;
+  d.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([d.puzzle.frame?.presentation, opens(d, arriving)]).toEqual(['view', 1]);
+  d.yields.dispose();
 });
 
 test('yields: an X8 Back hides the frame at once and a late correct answer still opens the lock', async () => {
@@ -2644,8 +2659,22 @@ test("yields: a frame's appearance is emitted by the write that shows it", async
   expect(frameKeys(failed)).toEqual(['ui-state:waiting@puzzle', 'ui-state:waited@puzzle', 'ui-state:panel-open@puzzle', 'puzzle:load-failed']);
   expect([failed.puzzle.host, failed.puzzle.frame?.loadFailed]).toEqual([null, true]);
   failed.yields.dispose();
-  // Every frame cue of the four opens was emitted with its frame on screen.
-  for (const x of [r, w, failed]) {
+  // GM8h: the session's first device, at its room's arrival: its write shows nothing (no host), the chunk write shows its
+  // bar.
+  const deviceHost = deferredHost();
+  const v = deviceRig('dials', { loaders: { puzzleHost: deviceHost.loader } });
+  await inHall(v);
+  mark = v.cues.length;
+  v.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([v.puzzle.frame?.presentation, frameKeys(v, mark)]).toEqual(['view', ['ui-state:waiting@puzzle']]);
+  mark = v.cues.length;
+  deviceHost.land();
+  await settle();
+  expect(frameKeys(v, mark)).toEqual(['ui-state:waited@puzzle', 'ui-state:panel-open@puzzle', 'puzzle:opened']);
+  v.yields.dispose();
+  // Every frame cue of the five opens was emitted with its frame on screen.
+  for (const x of [r, w, failed, v]) {
     const unshown = x.cues.flatMap((e, i) => {
       const v = x.views[i];
       const frameCue = e.cue.kind === 'puzzle' || (e.cue.kind === 'ui-state' && e.cue.panel === 'puzzle' && e.cue.name === 'panel-open');
@@ -2738,6 +2767,17 @@ test('yields: the host hears every change of the shown frame', async () => {
   await settle();
   y.yields.dispose();
   expect(atBack).toEqual([{ id: shown }, null]);
+  // GM8h: a device view's bar never reports (it covers nothing; only a frame that covers the stage does), from its
+  // arrival through its session's end.
+  const d = deviceRig('dials');
+  const device: unknown[] = [];
+  d.host.frameShown = (f) => device.push(f);
+  await atDevice(d);
+  expect(device).toEqual([]);
+  // Non-vacuous: the device is on screen in its room, its host in.
+  expect([d.puzzle.frame?.presentation, d.puzzle.host]).toEqual(['view', HOST]);
+  d.yields.dispose();
+  expect(device).toEqual([]);
 });
 
 test('yields: every attempt starts through post', () => {
@@ -3433,6 +3473,8 @@ const FRAME_FIELD_CUES: { readonly [K in keyof PuzzleFrameView]-?: Covering } = 
   ui: CHUNK_KEYS,
   loadFailed: CHUNK_KEYS,
   retrying: { keys: (v) => [v === true ? 'ui-state:waiting@puzzle' : 'ui-state:waited@puzzle'] },
+  // GM8h: where the frame shows (in App's frame layer, or in its device's room) is its open's, never a later write's.
+  presentation: FIXED,
 };
 const LADDER_FIELD_CUES: { readonly [K in keyof HintLadderUiView]-?: Covering } = {
   tiers: RUNG_KEYS,
@@ -3826,6 +3868,28 @@ test('yields: every visible change of the puzzle view plays a cue', async () => 
     }
   }
 
+  // GM8h: a device in its room (the full sequence `rite`), its chunks in: its arrival, a part move, Hint over it and
+  // Back closing the hints, the press that completes the sequence and posts it, the wrong reply with its restart, and
+  // the zoom-out that hides it. A part here is an answer position (RULINGS 366 B2): GM8h2's widened Q5 moves the "a part
+  // move" step (and the restart's) for a sequence answer.
+  {
+    const r = deviceRig('rite', { parts: 2 });
+    const q = heldRequests(r);
+    r.puzzle.host = HOST;
+    await inHall(r);
+    await gate(r, log, [
+      ['the device view with its chunks in', () => r.yields.layer.ontap(key('hall.to_panel'))],
+      ['a part move', () => r.yields.host.onwork?.([1], false)],
+      ['Hint over the device', () => r.yields.host.onhint()],
+      ['Back closes the hints', () => r.screens.back()],
+      ["the full sequence's last press posts", () => r.yields.host.onwork?.([1, 0], false)],
+      ['answered wrong, the restart', () => q.attempt(WRONG)],
+      ['the zoom-out hides the device', () => r.yields.layer.onleaveview()],
+    ]);
+    expect([r.puzzle.frame, r.yields.world().puzzles[DEV]?.attempts, r.yields.world().puzzles[DEV]?.work]).toEqual([null, 1, []]);
+    r.yields.dispose();
+  }
+
   expect(log.problems).toEqual([]);
   // Non-vacuous: the views the gate met hold exactly the tables' fields, and every field with covering keys moved.
   const frameFields = Object.keys(FRAME_FIELD_CUES) as (keyof PuzzleFrameView)[];
@@ -3837,7 +3901,7 @@ test('yields: every visible change of the puzzle view plays a cue', async () => 
     ...ladderFields.filter((f) => 'keys' in LADDER_FIELD_CUES[f]).map((f) => `ladder.${f}`),
   ].sort();
   expect([...log.moved].sort()).toEqual(covered);
-  expect(log.steps).toBe(110);
+  expect(log.steps).toBe(117);
 });
 
 test('yields: a screens change closes a panel before it opens the next', async () => {
@@ -4146,5 +4210,1368 @@ const WAIT_CASES: { readonly [R in WaitRow]: WaitCase } = {
 test('yields: every wait of the views holds a motion', async () => {
   for (const [row, run] of Object.entries(WAIT_CASES)) {
     await run(row);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM8h: a device drawn inside its view room (engine plan §7.5 "Host", "Lifecycle", "Working state", "Full commit",
+// "Posting per reply kind", "Demonstration", "Attempts"). No registered type is a view before GM8a
+// (`puzzles/rules/index.ts`), so every device here is a fixture view type: the world is decoded with `DEVICE_TYPES` and
+// the sessions take them as `h.puzzleTypes` (D1's non-vacuity: a world decoded without them refuses the device).
+
+type PartsParams = { readonly parts: number };
+
+/** A fixture view type's data half: `parts` parts of 0..2, all 0 at the start; a saved work fits while it holds them. */
+function viewType<T extends string>(type: T, over: Partial<PuzzleTypeData<T, PartsParams>> = {}): PuzzleTypeData<T, PartsParams> {
+  return {
+    type,
+    check: 'commit',
+    goal: 'secret',
+    presentation: 'view',
+    wrong: 'posted',
+    commit: 'control',
+    decodeParams: (raw) => (typeof raw === 'object' && raw !== null && 'parts' in raw && typeof raw.parts === 'number' ? { ok: true, value: { parts: raw.parts } } : { ok: false, error: 'parts' }),
+    answerShape: (p) => ({ len: p.parts, max: 2 }),
+    initial: (p) => new Array<number>(p.parts).fill(0),
+    startShown: (p) => new Array<number>(p.parts).fill(0),
+    workFits: (p, work) => work.length === p.parts && work.every((v) => Number.isInteger(v) && v >= 0 && v <= 2),
+    ...over,
+  };
+}
+
+/** A configuration device posted by its commit part (`commit: 'control'`), its wrong posted: a `setting`. */
+const DIALS = viewType('dials');
+/** A configuration device that knows a wrong press itself (`wrong: 'local'`): no POST checks it. */
+const BELLS = viewType('bells', { wrong: 'local' });
+/**
+ * A sequence device (`commit: 'full'`): it starts empty, each press adds a position, and the press that holds every
+ * position posts; a saved work fits while it is no longer than the sequence.
+ */
+const RITE = viewType('rite', {
+  commit: 'full',
+  initial: () => [],
+  startShown: () => null,
+  workFits: (p, work) => work.length <= p.parts && work.every((v) => Number.isInteger(v) && v >= 0 && v <= 2),
+});
+/** A reach device with its goal shown and no wrong state: its UI reports a reached configuration (`onreach`). */
+const LATCH = viewType('latch', { check: 'reach', goal: 'shown', wrong: 'none' });
+/** A shown-goal reach device that demonstrates its goal (the parts 2, 0, 1) and knows a wrong press itself. */
+const CHIMES = viewType('chimes', { check: 'reach', goal: 'shown', wrong: 'local', demo: () => [2, 0, 1] });
+const DEVICE_TYPES: PuzzleTypes = [...PUZZLE_TYPES, DIALS, BELLS, RITE, LATCH, CHIMES];
+/** The device world's knobs: its device's parts, attempt limit and hint tiers, the type registry, its part decor. */
+type DeviceWorldOptions = { parts?: number; maxAttempts?: number | null; hintTiers?: number; types?: PuzzleTypes; decor?: boolean };
+const DEV = 'dev' as PuzzleLocalId;
+
+/**
+ * hall -> panel, a view of the hall whose `device` is `dial`: a zero-slot lock of the puzzle `dev`, of the fixture type
+ * `type` (its onFail gives the coin, so a failed run fires `fail:panel.dial`). The hall holds the code lock `chest` (the
+ * puzzle `gate`) and an exit to the knot `after`; the panel holds `safe`, a lock of the view-type puzzle `loose` that is
+ * not the room's device (a site the story gate refuses, `world/view-type-site`: here only to prove the runtime's own
+ * narrowing), and an exit to the knot `after`. `types` decodes it (default `DEVICE_TYPES`); with `decor`, the panel draws
+ * one lever per part, up while its part is 1 (GM8i's `part` atom, as a real device's parts are drawn).
+ */
+function deviceWorld(type: string, o: DeviceWorldOptions = {}): WorldPublic {
+  const parts = o.parts ?? 3;
+  const puzzle = (t: string, title: string, maxAttempts: number | null): Json => ({
+    type: t,
+    title: txt(title),
+    prompt: txt('prompt'),
+    closeup: null,
+    params: { parts },
+    maxAttempts,
+    giveUp: false,
+    solution: new Array<number>(parts).fill(1),
+    hints: Array.from({ length: o.hintTiers ?? 1 }, (_, i) => txt(`hint ${i + 1}`)),
+  });
+  const toKnot = (id: string): Json => ({ id, kind: 'exit', rect: RECT, label: txt(id), to: { story: 'after' }, lock: null, sfx: null });
+  const lever = (index: number): Json => ({
+    id: `lever${index}`,
+    prop: 'lever',
+    rect: [100 + 220 * index, 900, 160, 320],
+    z: 1,
+    states: { up: { prop: 'lever_up' } },
+    is: [{ when: { part: { puzzle: 'dev', index, is: 1 } }, state: 'up' }],
+  });
+  const raw = {
+    format: 1,
+    items: { coin: { name: txt('Монета'), desc: txt('d'), glyph: 'sun' } },
+    docs: {},
+    puzzles: { dev: puzzle(type, 'device', o.maxAttempts ?? null), loose: puzzle('dials', 'loose', null), gate: code(null, null) },
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: { bg: 'hall', title: txt('Hall'), onEnter: [], hotspots: [exit('to_panel', 'panel'), box('chest', lockOf([], 'gate')), toKnot('out')] },
+          panel: {
+            bg: 'cellar',
+            title: txt('Panel'),
+            onEnter: [],
+            hotspots: [box('dial', { ...lockOf([], 'dev'), onFail: [{ give: 'coin' }] }), box('safe', lockOf([], 'loose')), toKnot('leave')],
+            ...(o.decor === true ? { decor: Array.from({ length: parts }, (_, i) => lever(i)) } : {}),
+            view: { of: 'hall' },
+            device: 'dial',
+          },
+        },
+      },
+    },
+  };
+  const r = decodeWorldSource(raw, { types: o.types ?? DEVICE_TYPES });
+  if (!r.ok) {
+    throw new Error(`invariant: the device fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods, version: '8888888888888888' };
+}
+
+/** A rig over the device world of `type`, its sessions given `types` (default `DEVICE_TYPES`). */
+const deviceRig = (type: string, o: RigOptions & DeviceWorldOptions = {}): Rig =>
+  rig({ ...o, world: deviceWorld(type, o), puzzleTypes: o.types ?? DEVICE_TYPES });
+
+/** In the hall, then into the panel: the arrival opens the device. */
+async function atDevice(r: Rig): Promise<void> {
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect(roomOf(r)).toBe('panel');
+}
+
+test("yields: a frame is a view only for the shown room's device of a view type", async () => {
+  // D2 (RULINGS 363): a frame is `view` when its type's presentation is `view` and its open is the explore-mode open of
+  // the shown room's device, read when the open runs; every other open of a view type is an overlay, so a view instance
+  // never renders nowhere (both are sites the story gate refuses: `world/view-type-site`).
+  const r = deviceRig('dials');
+  await atDevice(r);
+  // The arrival's open: the shown room's device, of a view type; it pushes no `puzzle` overlay.
+  expect([r.puzzle.frame?.mode, r.puzzle.frame?.type, r.puzzle.frame?.title, r.puzzle.frame?.presentation]).toEqual(['explore', 'dials', 'device', 'view']);
+  expect(r.vm.screens.overlays.map((v) => v.kind)).toEqual([]);
+  // A view-type puzzle behind a lock that is not the room's device: an overlay, with its overlay pushed.
+  r.yields.layer.ontap(key('panel.safe'));
+  await settle();
+  expect([r.puzzle.frame?.title, r.puzzle.frame?.presentation]).toEqual(['loose', 'overlay']);
+  expect(r.vm.screens.overlays.map((v) => v.kind)).toEqual(['puzzle']);
+  r.yields.dispose();
+  // The device's own puzzle opened by a linear yield: an overlay.
+  const x = deviceRig('dials');
+  await x.yields.onYield({ kind: 'puzzle', puzzle: DEV, then: AFTER });
+  expect([x.puzzle.frame?.mode, x.puzzle.frame?.title, x.puzzle.frame?.presentation]).toEqual(['linear', 'device', 'overlay']);
+  x.yields.dispose();
+});
+
+/** The kinds on the screens stack, bottom first. */
+const overlaysOf = (r: Rig): string[] => r.vm.screens.overlays.map((v) => v.kind);
+
+/** The shown frame's id, which the test then holds the frame to. */
+function frameId(r: Rig): number {
+  const f = r.puzzle.frame;
+  if (f === null) {
+    throw new Error('expected a shown frame');
+  }
+  return f.id;
+}
+
+test('yields: hints opened in a device view keep the session and show the ladder', async () => {
+  // D3 (RULINGS 363): X8 closes an overlay frame whose `puzzle` overlay left the stack; a device pushes none, so the
+  // hints sheet over it is no Back and the frame stays with its session.
+  const r = deviceRig('dials');
+  await atDevice(r);
+  const id = frameId(r);
+  r.yields.host.onhint();
+  await settle();
+  expect(overlaysOf(r)).toEqual(['hints']);
+  expect([r.puzzle.frame?.id, r.puzzle.frame?.presentation]).toEqual([id, 'view']);
+  expect(r.puzzle.ladder).not.toBeNull();
+  r.yields.dispose();
+});
+
+test('yields: closing hints leaves the device open', async () => {
+  const r = deviceRig('dials');
+  await atDevice(r);
+  const id = frameId(r);
+  r.yields.host.onhint();
+  await settle();
+  r.screens.back(); // Back closes the sheet, never the device under it
+  await settle();
+  expect(overlaysOf(r)).toEqual([]);
+  expect([roomOf(r), r.puzzle.frame?.id, r.puzzle.ladder]).toEqual(['panel', id, null]);
+  // The session is still open: Try posts.
+  r.yields.host.ontry();
+  await settle();
+  expect(r.calls.attempts).toBe(1);
+  r.yields.dispose();
+});
+
+test('yields: the inventory over a device keeps the session', async () => {
+  const r = deviceRig('dials');
+  await atDevice(r);
+  const id = frameId(r);
+  r.yields.layer.oninventory();
+  await settle();
+  expect([overlaysOf(r), r.explore.panel, r.puzzle.frame?.id]).toEqual([['inventory'], { kind: 'inventory' }, id]);
+  r.screens.back();
+  await settle();
+  expect([overlaysOf(r), r.explore.panel, roomOf(r), r.puzzle.frame?.id]).toEqual([[], null, 'panel', id]);
+  r.yields.dispose();
+});
+
+test('yields: an overlay puzzle still closes when its overlay leaves the stack', async () => {
+  // X8 as built, for an overlay frame in the same world as a device: Back pops its `puzzle` overlay and closes it with
+  // no outcome.
+  const r = deviceRig('dials');
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  expect([r.puzzle.frame?.presentation, overlaysOf(r)]).toEqual(['overlay', ['puzzle']]);
+  const mark = r.cues.length;
+  r.screens.back();
+  await settle();
+  expect([r.puzzle.frame, overlaysOf(r), roomOf(r)]).toEqual([null, [], 'hall']);
+  expect(keysOf(r, mark).filter((k) => k.startsWith('puzzle:'))).toEqual(['puzzle:closed']);
+  r.yields.host.ontry(); // no session answers
+  await settle();
+  expect([r.calls.attempts, r.events]).toEqual([0, []]);
+  r.yields.dispose();
+});
+
+/** A device's run with a saved work (GM8i's part moves), seeded so a leave that lost it would show. */
+const SEEDED_RUN: PuzzleRun = { outcome: null, attempts: 1, hintsOpened: 0, work: [1, 0, 2] };
+
+test('yields: leaving a device view closes its session with no outcome and keeps its work', async () => {
+  // D3 (RULINGS 363): a zoom-out from the device's room hides the frame and closes its session (§7.5 "Lifecycle"); the
+  // close records no outcome and writes nothing, so the run keeps its work.
+  const r = deviceRig('dials');
+  await inHall(r);
+  r.yields.restore({ ...r.yields.world(), puzzles: { [DEV]: SEEDED_RUN } }, null, { kind: 'explore', section: MANOR });
+  await r.yields.onYield({ kind: 'explore', section: MANOR });
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([roomOf(r), r.puzzle.frame?.presentation, r.yields.world().puzzles[DEV]]).toEqual(['panel', 'view', SEEDED_RUN]);
+  const mark = r.cues.length;
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.explore.inView, r.puzzle.frame]).toEqual(['hall', false, null]);
+  // The zoom-out's own room effect hides it: the frame is gone at the move's cue, and its end cue comes before it.
+  const move = r.cues.findIndex((e, i) => i >= mark && e.cue.kind === 'move');
+  expect([move > mark, r.views[move]?.frame]).toEqual([true, null]);
+  expect(keysOf(r, mark).filter((k) => k.startsWith('puzzle:') || k.startsWith('move:'))).toEqual(['puzzle:closed', 'move:zoom-out']);
+  expect([r.events, r.yields.world().puzzles[DEV]]).toEqual([[], SEEDED_RUN]);
+  r.yields.host.ontry(); // the session is closed: no attempt
+  await settle();
+  expect(r.calls.attempts).toBe(0);
+  r.yields.dispose();
+});
+
+test('yields: Back from a device view leaves it in one press', async () => {
+  // The device pushes no overlay (`backScreen`), so the first Back is the view's own: one level up, the device closed.
+  const r = deviceRig('dials');
+  await atDevice(r);
+  expect([overlaysOf(r), r.vm.screens.backVisible]).toEqual([[], true]);
+  r.screens.back();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, overlaysOf(r)]).toEqual(['hall', null, []]);
+  r.yields.dispose();
+});
+
+test('yields: a zoom-out during a device POST hides the device at once and still applies a correct answer', async () => {
+  // D3: the zoom-out hides the frame at once (`hideFrame`: its one `puzzle:closed`) and the close waits for the POST,
+  // whose correct answer still reaches the world (X8's deferred close): the device's lock opens, with no cue of the
+  // hidden frame at the answer.
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const r = deviceRig('dials', { attemptGate: gate, attempts: [{ ok: true, value: { correct: true, solved: true, attemptsLeft: null, spent: false } }] });
+  await atDevice(r);
+  r.yields.host.ontry();
+  await settle();
+  expect([r.calls.attempts, r.puzzle.frame?.busy]).toEqual([1, true]);
+  const mark = r.cues.length;
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame]).toEqual(['hall', null]);
+  expect(keysOf(r, mark).filter((k) => k.startsWith('puzzle:') || k.startsWith('move:'))).toEqual(['puzzle:closed', 'move:zoom-out']);
+  const answered = r.cues.length;
+  release();
+  await settle();
+  expect(keysOf(r, answered).filter((k) => k.startsWith('puzzle:'))).toEqual([]);
+  expect([r.yields.world().puzzles[DEV]?.outcome, r.yields.world().open.includes(key('panel.dial'))]).toEqual(['solved', true]);
+  expect(r.events.map((e) => (e.kind === 'puzzle_ended' ? e.outcome : e.kind))).toEqual(['solved']);
+  r.yields.dispose();
+});
+
+test("yields: a room effect into a device's own room does not zoom it out", async () => {
+  // D3 (A8): the zoom-out keys on a `room` effect into another room. Driven through core's same-section entry, which
+  // pushes `room` into the room already shown and then its arrival: at that entry's `move` cue the device's frame is
+  // still the one shown; the arrival's own `puzzle` job then reopens the device after the move.
+  const r = deviceRig('dials');
+  await atDevice(r);
+  const id = frameId(r);
+  const mark = r.cues.length;
+  await r.yields.onYield({ kind: 'explore', section: MANOR });
+  await settle();
+  const at = r.cues.findIndex((e, i) => i >= mark && e.cue.kind === 'move');
+  expect(at).toBeGreaterThanOrEqual(0);
+  expect(r.views[at]?.frame?.id).toBe(id);
+  expect([roomOf(r), r.puzzle.frame?.presentation]).toEqual(['panel', 'view']);
+  r.yields.dispose();
+});
+
+/** An attempt's decisive answers. */
+const SOLVED: Result<AttemptResponse, ApiError> = { ok: true, value: { correct: true, solved: true, attemptsLeft: null, spent: false } };
+const POSTED_WRONG: Result<AttemptResponse, ApiError> = { ok: true, value: { correct: false, solved: false, attemptsLeft: null, spent: true } };
+
+/**
+ * The attempts held, each with the signal its POST was given (RULINGS 366 B9): a dropped session aborts its POST, so a
+ * test reads the abort itself, not only the answer's fate.
+ */
+function heldPosts(r: Rig): { signals: AbortSignal[]; answer: (v: Result<AttemptResponse, ApiError>) => void } {
+  const signals: AbortSignal[] = [];
+  const held: Array<(v: Result<AttemptResponse, ApiError>) => void> = [];
+  r.host.api.postAttempt = (_id, answer, o) => {
+    r.posted.push([...answer]);
+    if (o?.signal !== undefined) {
+      signals.push(o.signal);
+    }
+    return new Promise((resolve) => held.push(resolve));
+  };
+  return { signals, answer: (v) => held.shift()?.(v) };
+}
+
+test("yields: a correct answer landing after a zoom-out opens the device's lock", async () => {
+  // D3 defers the close (X8's): the zoom-out hides the device and its POST still answers; a correct answer reaches the
+  // world, the device's lock opens, and back in the room the device is done (its arrival opens no session).
+  const r = deviceRig('dials');
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.ontry();
+  await settle();
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted)]).toEqual(['hall', null, [false]]);
+  q.answer(SOLVED);
+  await settle();
+  expect([r.yields.world().puzzles[DEV]?.outcome, r.yields.world().open.includes(key('panel.dial'))]).toEqual(['solved', true]);
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([roomOf(r), r.puzzle.frame]).toEqual(['panel', null]);
+  expect(keysOf(r, mark)).toContain('module:devices:done');
+  r.yields.dispose();
+});
+
+test('yields: a story effect during a device POST drops the answer', async () => {
+  // D4 (C-2): `toStory` drops the open session first, so the knot never meets a late answer: the device's frame ends
+  // with its one `puzzle:closed`, its POST is aborted, and the correct answer changes nothing.
+  const r = deviceRig('dials');
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.ontry();
+  await settle();
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('panel.leave'));
+  await settle();
+  expect([r.entered.map((e) => e.knot), r.puzzle.frame, q.signals.map((s) => s.aborted)]).toEqual([['after'], null, [true]]);
+  q.answer(SOLVED);
+  await settle();
+  expect(keysOf(r, mark).filter((k) => k.startsWith('puzzle:'))).toEqual(['puzzle:closed']);
+  expect([r.events, r.yields.world().puzzles[DEV], r.yields.world().open.includes(key('panel.dial'))]).toEqual([[], undefined, false]);
+  r.yields.dispose();
+});
+
+test("yields: a story effect drops a hidden overlay puzzle's late answer", async () => {
+  // D4 for every frame: an X8 Back hides an overlay frame with its POST in flight (its session stays open), then a story
+  // exit runs the knot; the drop aborts the POST, so the late answer never lands after the knot started.
+  const r = deviceRig('dials');
+  const q = heldPosts(r);
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  r.yields.host.ontry();
+  await settle();
+  r.screens.back(); // X8: the overlay frame hides, its session waits for the POST
+  await settle();
+  expect([r.puzzle.frame, q.signals.map((s) => s.aborted)]).toEqual([null, [false]]);
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.out'));
+  await settle();
+  expect([r.entered.map((e) => e.knot), q.signals.map((s) => s.aborted)]).toEqual([['after'], [true]]);
+  q.answer(SOLVED);
+  await settle();
+  // A hidden frame's drop plays no second end cue (its `puzzle:closed` played at the Back).
+  expect(keysOf(r, mark).filter((k) => k.startsWith('puzzle:'))).toEqual([]);
+  expect([r.events, r.yields.world().puzzles['gate' as PuzzleLocalId]]).toEqual([[], undefined]);
+  r.yields.dispose();
+});
+
+test("yields: opening another puzzle during a hidden device's POST drops the device's late answer", async () => {
+  // H3 race 2: the zoom-out hides the device with its POST in flight; the chest's code lock opened in the parent room
+  // drops it (`openPuzzle`'s `dropPuzzle`): the POST is aborted and its late wrong answer counts no attempt.
+  const r = deviceRig('dials');
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.ontry();
+  await settle();
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted)]).toEqual(['hall', null, [false]]);
+  r.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  expect([r.puzzle.frame?.title, q.signals.map((s) => s.aborted)]).toEqual(['code', [true]]);
+  q.answer(POSTED_WRONG);
+  await settle();
+  expect([r.yields.world().puzzles[DEV], r.events]).toEqual([undefined, []]);
+  r.yields.dispose();
+});
+
+/** The puzzle cues after `mark`, as `name@index`. */
+const puzzleCuesOf = (r: Rig, mark: number): string[] =>
+  r.cues.slice(mark).flatMap((e) => (e.cue.kind === 'puzzle' ? [`${e.cue.name}@${String(e.cue.index)}`] : []));
+
+test('yields: the third local wrong input ends the device failed and fires its onFail', async () => {
+  // §7.5 "Attempts": a `wrong: 'local'` device's wrong press counts one attempt with no POST (`failLocal`, then
+  // `attempted`); the third of three ends it failed, and its lock's onFail runs (the coin; `fail:panel.dial`).
+  const r = deviceRig('bells', { maxAttempts: 3 });
+  await atDevice(r);
+  const mark = r.cues.length;
+  r.yields.host.onwork?.([1, 0, 0], true);
+  await settle();
+  expect([r.puzzle.frame?.answer, r.puzzle.frame?.line, r.puzzle.frame?.attemptsLeft, r.puzzle.frame?.busy]).toEqual([[1, 0, 0], 'wrong', 2, false]);
+  expect(puzzleCuesOf(r, mark)).toEqual(['input@0', 'wrong@null']);
+  r.yields.host.onwork?.([1, 1, 0], true);
+  await settle();
+  expect(r.puzzle.frame?.attemptsLeft).toBe(1);
+  r.yields.host.onwork?.([1, 1, 1], true);
+  await settle();
+  expect([r.puzzle.frame, r.calls.attempts]).toEqual([null, 0]);
+  expect(r.events.map((e) => (e.kind === 'puzzle_ended' ? e.outcome : e.kind))).toEqual(['failed']);
+  const w = r.yields.world();
+  expect([w.puzzles[DEV]?.outcome, w.puzzles[DEV]?.attempts, w.fired.includes('fail:panel.dial'), w.held]).toEqual(['failed', 3, true, ['coin']]);
+  r.yields.dispose();
+});
+
+test("yields: a device's commit part posts through Try", async () => {
+  // §7.5 "Commit" (C-17): a `commit: 'control'` device's commit part posts its working answer through `post`, Try's
+  // own path: `checking`, one POST, and none while it is in flight.
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const r = deviceRig('dials', { attemptGate: gate, attempts: [SOLVED] });
+  await atDevice(r);
+  r.yields.host.onwork?.([1, 0, 2], false);
+  const mark = r.cues.length;
+  r.yields.host.oncommit?.();
+  r.yields.host.oncommit?.(); // a second press while the first is in flight
+  await settle();
+  expect([r.posted, r.puzzle.frame?.busy, r.puzzle.frame?.line]).toEqual([[[1, 0, 2]], true, 'checking']);
+  expect(puzzleCuesOf(r, mark)).toEqual(['checking@null']);
+  release();
+  await settle();
+  expect([r.puzzle.frame, r.yields.world().puzzles[DEV]?.outcome]).toEqual([null, 'solved']);
+  r.yields.dispose();
+});
+
+test('yields: a wrong flag counts only for a local-wrong device', async () => {
+  // Saved-work F3a (RULINGS 368): `onwork`'s wrong flag is a `wrong: 'local'` device's own verdict (§7.5 "Attempts").
+  // (i) Such a device's wrong press counts one; one pressed while its reach POST is in flight counts nothing (the
+  // session is busy). (ii) A posted-wrong device's flag is ignored: the press is a move and nothing more. (iii) A full
+  // sequence's flag is ignored too, so its completing press still posts.
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const r = deviceRig('chimes', { maxAttempts: 3, attempts: [SOLVED], attemptGate: gate });
+  await atDevice(r);
+  const att = (x: Rig): number | undefined => x.yields.world().puzzles[DEV]?.attempts;
+  r.yields.host.onwork?.([1, 0, 0], true);
+  expect(['(i)', att(r), r.puzzle.frame?.attemptsLeft]).toEqual(['(i)', 1, 2]);
+  r.yields.host.onwork?.([2, 0, 1], false);
+  r.yields.host.onreach?.([2, 0, 1]);
+  r.yields.host.onwork?.([2, 2, 1], true); // a wrong press while the POST is in flight
+  expect(['(i)', r.posted, att(r), r.puzzle.frame?.attemptsLeft, r.yields.world().puzzles[DEV]?.work]).toEqual(['(i)', [[2, 0, 1]], 1, 2, [2, 2, 1]]);
+  release();
+  await settle();
+  expect(['(i)', att(r), r.yields.world().puzzles[DEV]?.outcome]).toEqual(['(i)', 1, 'solved']);
+  r.yields.dispose();
+  const d = deviceRig('dials', { maxAttempts: 3 });
+  await atDevice(d);
+  let mark = d.cues.length;
+  d.yields.host.onwork?.([1, 0, 0], true);
+  await settle();
+  expect(['(ii)', att(d), d.puzzle.frame?.line, d.puzzle.frame?.attemptsLeft, d.posted, puzzleCuesOf(d, mark)]).toEqual(['(ii)', 0, 'idle', 3, [], ['input@0']]);
+  d.yields.dispose();
+  const f = deviceRig('rite', { parts: 2, maxAttempts: 3, attempts: [SOLVED] });
+  await atDevice(f);
+  f.yields.host.onwork?.([1], false);
+  mark = f.cues.length;
+  f.yields.host.onwork?.([1, 0], true);
+  expect(['(iii)', att(f), f.posted, f.puzzle.frame?.line, puzzleCuesOf(f, mark)]).toEqual(['(iii)', 0, [[1, 0]], 'checking', ['input@1', 'checking@null']]);
+  await settle();
+  expect(['(iii)', f.puzzle.frame, f.yields.world().puzzles[DEV]?.outcome]).toEqual(['(iii)', null, 'solved']);
+  f.yields.dispose();
+});
+
+test("yields: a reach device's commit part posts only its reached work", async () => {
+  // Saved-work F3b (RULINGS 368): a device's commit part is its Try (§7.5 "Commit"), so it routes as Try does: a reach
+  // device posts its reached answer (`postReach`) and nothing while none is reached; a drawn, unreached work never
+  // posts (its wrong reply would be a mismatch that wipes the saved work).
+  const r = deviceRig('latch', { attempts: [NETWORK, SOLVED] });
+  await atDevice(r);
+  r.yields.host.onwork?.([1, 2, 0], false);
+  r.yields.host.oncommit?.();
+  await settle();
+  expect([r.posted, r.yields.world().puzzles[DEV]?.work, r.puzzle.frame?.line, r.vm.toasts]).toEqual([[], [1, 2, 0], 'idle', []]);
+  r.yields.host.onreach?.([1, 2, 0]);
+  await settle();
+  expect([r.posted, r.puzzle.frame?.line, r.puzzle.frame?.awaiting]).toEqual([[[1, 2, 0]], 'offline', true]);
+  r.yields.host.oncommit?.(); // the reached work, posted again
+  await settle();
+  expect([r.posted, r.puzzle.frame, r.yields.world().puzzles[DEV]?.outcome]).toEqual([
+    [
+      [1, 2, 0],
+      [1, 2, 0],
+    ],
+    null,
+    'solved',
+  ]);
+  r.yields.dispose();
+});
+
+test("yields: a type UI's refused input plays puzzle blocked on its part", async () => {
+  // D7 (Q4): a refused input changes nothing and plays `puzzle:blocked` on its part, through the host's `onblocked`.
+  const r = deviceRig('dials');
+  await atDevice(r);
+  const mark = r.cues.length;
+  r.yields.host.onblocked?.(2);
+  expect(puzzleCuesOf(r, mark)).toEqual(['blocked@2']);
+  expect([r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]]).toEqual([[0, 0, 0], undefined]);
+  r.yields.dispose();
+});
+
+test('yields: re-entering a device view continues from its saved work', async () => {
+  // §7.5 "Working state": each press is the run's work, and a new session of the device starts from it (`start`,
+  // while the type says it fits): a leave and a return lose nothing.
+  const r = deviceRig('dials');
+  await atDevice(r);
+  r.yields.host.onwork?.([1, 0, 0], false);
+  r.yields.host.onwork?.([1, 2, 0], false);
+  await settle();
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame]).toEqual(['hall', null]);
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([roomOf(r), r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work]).toEqual(['panel', [1, 2, 0], [1, 2, 0]]);
+  r.yields.dispose();
+});
+
+test("yields: a device's saved work always equals its session's answer", async () => {
+  // Q-a: the one write path dispatches inside the press, so `run.work` equals the session's answer when the press
+  // returns (never one press behind), whichever callback carried it.
+  const r = deviceRig('dials');
+  await atDevice(r);
+  const saved = (): unknown => r.yields.world().puzzles[DEV]?.work;
+  r.yields.host.onwork?.([1, 0, 0], false);
+  expect([saved(), r.puzzle.frame?.answer]).toEqual([[1, 0, 0], [1, 0, 0]]);
+  r.yields.host.onwork?.([1, 2, 0], false);
+  expect([saved(), r.puzzle.frame?.answer]).toEqual([[1, 2, 0], [1, 2, 0]]);
+  r.yields.host.onchange([0, 2, 0]);
+  expect([saved(), r.puzzle.frame?.answer]).toEqual([[0, 2, 0], [0, 2, 0]]);
+  await settle();
+  expect(saved()).toEqual([0, 2, 0]);
+  r.yields.dispose();
+});
+
+/**
+ * The part-target cues after `mark` (L3's `part` target): each `puzzle:input` with its index and each `work` fact with
+ * its id (`<puzzle>.<index>=<value>`). A part here is an answer position (RULINGS 366 B2): one per configuration index.
+ */
+const partCuesOf = (r: Rig, mark: number): string[] =>
+  r.cues.slice(mark).flatMap((e) => {
+    const c = e.cue;
+    if (c.kind === 'puzzle' && c.name === 'input') {
+      return [`puzzle:input@${String(c.index)}`];
+    }
+    return c.kind === 'fact' && c.fact.kind === 'work' ? [`fact:work:${c.change}@${c.fact.id}`] : [];
+  });
+
+test('yields: a device move redraws its part decor', async () => {
+  // Gates F2 (RULINGS 368): a device's parts are decor states over the `part` atom (GM8i), so a move redraws them:
+  // `moveWork` writes the run's work and queues the state batch (`drain`), whose `props` draw the moved lever up.
+  const r = deviceRig('dials', { decor: true });
+  await atDevice(r);
+  const up = (): boolean => JSON.stringify(r.stage().props).includes('lever_up');
+  expect([r.puzzle.frame?.presentation, up()]).toEqual(['view', false]);
+  const mark = r.batches.length;
+  r.yields.host.onwork?.([1, 0, 0], false);
+  await settle();
+  const drawn = r.batches.slice(mark).flat().filter((c) => c.kind === 'props');
+  expect([r.yields.world().puzzles[DEV]?.work, drawn.length > 0, up()]).toEqual([[1, 0, 0], true, true]);
+  r.yields.dispose();
+});
+
+test('yields: a device move during an intent draws its decor after the intent', async () => {
+  // Gates F2 (RULINGS 368; cut Q-a): a move's state batch drains through `h.queue`, which in GameSession waits for the
+  // intent in progress (`app/game.ts` `after`). Started directly, it would run a second `drain` loop over the one job
+  // list beside the intent's, and its `props` would draw inside that intent.
+  const r = deviceRig('dials', { decor: true });
+  await atDevice(r);
+  intentQueue(r);
+  let release: () => void = () => undefined;
+  const hold = new Promise<void>((res) => {
+    release = res;
+  });
+  const intent = r.host.tap(async () => {
+    await hold;
+  });
+  const mark = r.batches.length;
+  r.yields.host.onwork?.([1, 0, 0], false);
+  await settle();
+  const props = (): boolean => r.batches.slice(mark).flat().some((c) => c.kind === 'props');
+  const during = props();
+  release();
+  await intent;
+  await flushLate(r);
+  expect([during, props()]).toEqual([false, true]);
+  r.yields.dispose();
+});
+
+test("yields: a second device press during the first press's state batch draws after it", async () => {
+  // Gates F2, the reachable shape: nothing refuses a press while an intent runs (the explore layer's `inert` reads no
+  // intent), so a second press can land while the first press's state batch is still on screen (its load held). Its
+  // batch queues behind the first one: one scene batch at a time, both drawn, the run's work the second press's.
+  const r = deviceRig('dials', { decor: true, late: true });
+  const entered = r.yields.onYield({ kind: 'explore', section: MANOR });
+  await flushLate(r);
+  await entered;
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await flushLate(r);
+  expect([roomOf(r), r.puzzle.frame?.presentation]).toEqual(['panel', 'view']);
+  intentQueue(r);
+  const mark = r.batches.length;
+  const drawn = (): number => r.batches.slice(mark).filter((b) => b.some((c) => c.kind === 'props')).length;
+  r.yields.host.onwork?.([1, 0, 0], false);
+  await settle();
+  const first = drawn();
+  r.yields.host.onwork?.([1, 1, 0], false);
+  await settle();
+  const during = drawn();
+  await flushLate(r);
+  expect([first, during, drawn(), r.yields.world().puzzles[DEV]?.work]).toEqual([1, 1, 2, [1, 1, 0]]);
+  r.yields.dispose();
+});
+
+test("yields: a device's first move of one part plays one press on that part", async () => {
+  // D5 (A7, Q6 option (b)): a device move's `work` facts play no cue (the writer diffs a first move against no saved
+  // work, an `added` for every position); its one press per moved part is `puzzle:input`. A part is an answer position
+  // (a configuration answer's index; RULINGS 366 B2): GM8h2's widened Q5 moves these rows for a sequence answer.
+  const r = deviceRig('dials');
+  await atDevice(r);
+  // Case 1: the first move of position 1, with no saved work.
+  let mark = r.cues.length;
+  r.yields.host.onwork?.([0, 1, 0], false);
+  await settle();
+  expect(partCuesOf(r, mark)).toEqual(['puzzle:input@1']);
+  // Case 2: a second move, of position 2, from the saved work.
+  mark = r.cues.length;
+  r.yields.host.onwork?.([0, 1, 2], false);
+  await settle();
+  expect(partCuesOf(r, mark)).toEqual(['puzzle:input@2']);
+  expect(r.yields.world().puzzles[DEV]?.work).toEqual([0, 1, 2]);
+  r.yields.dispose();
+});
+
+test('yields: an equal answer is no move away on a reach frame', async () => {
+  // V2 (D12): `moveWork`'s move away needs a moved part: the answer the frame already shows keeps the reached answer
+  // awaiting, and Try re-posts it.
+  const r = await reachedAndPosted([NETWORK, NETWORK]);
+  await settle();
+  expect([r.puzzle.frame?.line, r.puzzle.frame?.awaiting]).toEqual(['offline', true]);
+  r.yields.host.onchange([...DRAWN]);
+  expect(r.puzzle.frame?.awaiting).toBe(true);
+  r.yields.host.ontry();
+  await settle();
+  expect(r.posted).toEqual([CANONICAL, CANONICAL]);
+  r.yields.dispose();
+});
+
+test('yields: zooming back into a device during its POST opens a new session at the saved work', async () => {
+  // H3 race 1 (RULINGS 366 B9, 368 L1): the zoom-out hides the device with its POST in flight; the zoom back in's `room`
+  // effect drops the hidden session at its dispatch (the POST aborted, its late answer dropped), and the arrival's open
+  // job opens a new one at the saved work.
+  const r = deviceRig('dials');
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.onwork?.([1, 0, 2], false);
+  r.yields.host.oncommit?.();
+  await settle();
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted)]).toEqual(['hall', null, [false]]);
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([roomOf(r), r.puzzle.frame?.answer, r.puzzle.frame?.busy]).toEqual(['panel', [1, 0, 2], false]);
+  expect(q.signals.map((s) => s.aborted)).toEqual([true]);
+  q.answer(SOLVED);
+  await settle();
+  expect([r.yields.world().puzzles[DEV]?.outcome, r.puzzle.frame?.answer, r.puzzle.frame?.line]).toEqual([null, [1, 0, 2], 'idle']);
+  r.yields.dispose();
+});
+
+/** Runs every late batch the rig holds, until none is waiting. */
+async function flushLate(r: Rig): Promise<void> {
+  for (let i = 0; i < 20; i += 1) {
+    await settle();
+    r.release();
+  }
+  await settle();
+}
+
+/**
+ * GameSession's intent queue in place of the rig's (`app/game.ts` `run` / `after`, its `tap` and `queue`): an intent
+ * starts in a microtask, a tap while one runs is refused, and `queue` waits for the whole intent in progress (a tap's
+ * open job included) before it runs.
+ */
+function intentQueue(r: Rig): void {
+  let busy: Promise<void> | null = null;
+  const run = (fn: () => Promise<void>): Promise<void> => {
+    const p = Promise.resolve().then(fn);
+    const clear = (): void => {
+      if (busy === tracked) {
+        busy = null;
+      }
+    };
+    const tracked: Promise<void> = p.then(clear, clear);
+    busy = tracked;
+    return p;
+  };
+  r.host.tap = (fn) => busy ?? run(fn);
+  r.host.queue = async (fn) => {
+    while (busy !== null) {
+      await busy;
+    }
+    return run(fn);
+  };
+}
+
+/** The outcomes of the `puzzle_ended` reports, in order. */
+const endedOf = (r: Rig): string[] => r.events.flatMap((e) => (e.kind === 'puzzle_ended' ? [e.outcome] : []));
+
+/**
+ * The device's arrival with every batch late (the zoom's transition and the room's loads held until released), the
+ * moves of `work` when given, a POST held by its commit part, then the zoom-out: the frame hidden, its session waiting
+ * for the POST.
+ */
+async function hiddenWithPost(r: Rig, q: ReturnType<typeof heldPosts>, order: string, work: readonly number[] | null = null): Promise<void> {
+  const entered = r.yields.onYield({ kind: 'explore', section: MANOR });
+  await flushLate(r);
+  await entered;
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await flushLate(r);
+  expect([roomOf(r), r.puzzle.frame?.presentation], order).toEqual(['panel', 'view']);
+  if (work !== null) {
+    r.yields.host.onwork?.(work, false);
+    await flushLate(r);
+  }
+  r.yields.host.oncommit?.();
+  await flushLate(r);
+  r.yields.layer.onleaveview();
+  await flushLate(r);
+  expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted)], order).toEqual(['hall', null, [false]]);
+}
+
+test("yields: a hidden device's late answer in the zoom-back-in window is dropped, in both intent orders", async () => {
+  // RULINGS 368 L1, option (B): the zoom back in's `room` effect drops the hidden session at its dispatch, so its POST is
+  // aborted before the zoom's room batch (the crossfade and the loads) and the arrival's open job run; a reply landing
+  // in that window is dropped (A8, P5), the job opens one idle session at the saved work, and the device ends once, by
+  // its own re-post. Both intent orders: the rig's (a queued job runs at once) and GameSession's.
+  for (const order of ['the rig', 'GameSession'] as const) {
+    const r = deviceRig('dials', { late: true });
+    if (order === 'GameSession') {
+      intentQueue(r);
+    }
+    const q = heldPosts(r);
+    await hiddenWithPost(r, q, order, [1, 0, 2]);
+    // The zoom back in, its room batch held: at its dispatch the hidden session is gone, its POST aborted.
+    r.yields.layer.ontap(key('hall.to_panel'));
+    await settle();
+    expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted)], order).toEqual(['panel', null, [true]]);
+    q.answer(SOLVED); // the old POST answers inside the window
+    await flushLate(r);
+    const run = r.yields.world().puzzles[DEV];
+    expect([run?.outcome, r.yields.world().open.includes(key('panel.dial')), endedOf(r)], order).toEqual([null, false, []]);
+    const f = r.puzzle.frame;
+    expect([f?.presentation, f?.line, f?.busy, f?.answer, r.yields.presence().puzzle], order).toEqual(['view', 'idle', false, [1, 0, 2], true]);
+    // The new session's own post ends the device, once.
+    r.yields.host.oncommit?.();
+    await settle();
+    q.answer(SOLVED);
+    await flushLate(r);
+    expect([r.posted, endedOf(r), r.yields.world().open.includes(key('panel.dial')), r.puzzle.frame], order).toEqual([[[1, 0, 2], [1, 0, 2]], ['solved'], true, null]);
+    r.yields.dispose();
+  }
+});
+
+test('yields: a late wrong at the limit in the zoom-back-in window is dropped and the device ends once', async () => {
+  // RULINGS 368 L1 (lifecycle M1): the same window with a posted wrong at the attempt limit. The dropped session's reply
+  // counts nothing; the open job's new session is idle, and its own wrong ends the device failed, reported once, its
+  // onFail's coin given once.
+  for (const order of ['the rig', 'GameSession'] as const) {
+    const r = deviceRig('dials', { late: true, maxAttempts: 1 });
+    if (order === 'GameSession') {
+      intentQueue(r);
+    }
+    const q = heldPosts(r);
+    await hiddenWithPost(r, q, order);
+    r.yields.layer.ontap(key('hall.to_panel'));
+    await settle();
+    expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted)], order).toEqual(['panel', null, [true]]);
+    q.answer(POSTED_WRONG);
+    await flushLate(r);
+    const w = r.yields.world();
+    expect([w.puzzles[DEV]?.attempts ?? 0, w.puzzles[DEV]?.outcome ?? null, endedOf(r), r.puzzle.frame?.line, w.held], order).toEqual([0, null, [], 'idle', []]);
+    r.yields.host.oncommit?.();
+    await settle();
+    q.answer(POSTED_WRONG);
+    await flushLate(r);
+    const x = r.yields.world();
+    expect([x.puzzles[DEV]?.outcome, endedOf(r), r.puzzle.frame, x.held], order).toEqual(['failed', ['failed'], null, ['coin']]);
+    r.yields.dispose();
+  }
+});
+
+test('yields: a posted wrong landing after a zoom-out counts once and is saved', async () => {
+  // Lifecycle M3 (RULINGS 368; 07's "session closed with the POST in flight" row): the zoom-out hides the device and its
+  // close waits for the POST (X8's deferred close). L1 keys on the device's own room: a `room` effect into another room
+  // (the hall's same-section entry) keeps the hidden session and its POST. Its posted wrong then counts one attempt with
+  // no frame cue, ends the session and is saved by the dirty debounce; at the limit it ends the device failed in the
+  // parent room, reported once, its onFail giving the coin there.
+  const r = deviceRig('dials', { maxAttempts: 3 });
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.oncommit?.();
+  await settle();
+  r.yields.layer.onleaveview();
+  await settle();
+  await r.yields.onYield({ kind: 'explore', section: MANOR });
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted)]).toEqual(['hall', null, [false]]);
+  const mark = r.cues.length;
+  const saves = (): number => r.log.filter((l) => l === 'autosave').length;
+  q.answer(POSTED_WRONG);
+  await settle();
+  const before = saves();
+  r.clock.advance(DIRTY_DEBOUNCE_MS);
+  const run = r.yields.world().puzzles[DEV];
+  expect([run?.attempts, run?.outcome, endedOf(r), puzzleCuesOf(r, mark), r.yields.presence().puzzle, saves() - before]).toEqual([1, null, [], [], false, 1]);
+  r.yields.dispose();
+  const x = deviceRig('dials', { maxAttempts: 1 });
+  const qx = heldPosts(x);
+  await atDevice(x);
+  x.yields.host.oncommit?.();
+  await settle();
+  x.yields.layer.onleaveview();
+  await settle();
+  const markx = x.cues.length;
+  qx.answer(POSTED_WRONG);
+  await settle();
+  const wx = x.yields.world();
+  expect([wx.room, wx.puzzles[DEV]?.outcome, endedOf(x), wx.held, puzzleCuesOf(x, markx), x.puzzle.frame]).toEqual(['hall', 'failed', ['failed'], ['coin'], [], null]);
+  x.yields.dispose();
+});
+
+test('yields: a mismatch landing after a zoom-out keeps the reached work for the re-entry', async () => {
+  // Lifecycle M3 (07's "session closed with the POST in flight" row): a reach post's wrong reply is a mismatch; landing
+  // after the zoom-out it meets a closed session (`attempted` returns at `open !== o`): no reset cue, no restart, nothing
+  // counted, and the reached work stays saved, so the re-entry opens at it.
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const r = deviceRig('latch');
+    const q = heldPosts(r);
+    await atDevice(r);
+    r.yields.host.onwork?.([2, 1, 0], false);
+    r.yields.host.onreach?.([2, 1, 0]);
+    await settle();
+    r.yields.layer.onleaveview();
+    await settle();
+    expect([r.posted, q.signals.map((s) => s.aborted)]).toEqual([[[2, 1, 0]], [false]]);
+    const mark = r.cues.length;
+    q.answer(WRONG);
+    await settle();
+    const run = r.yields.world().puzzles[DEV];
+    expect([run?.work, run?.attempts, run?.outcome, puzzleCuesOf(r, mark), r.yields.presence().puzzle]).toEqual([[2, 1, 0], 0, null, [], false]);
+    r.yields.layer.ontap(key('hall.to_panel'));
+    await settle();
+    expect([roomOf(r), r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work]).toEqual(['panel', [2, 1, 0], [2, 1, 0]]);
+    r.yields.dispose();
+  } finally {
+    errors.mockRestore();
+  }
+});
+
+test('yields: a full-length press sequence posts once', async () => {
+  // §7.5 "Full commit": the press that completes a `commit: 'full'` sequence posts it, through `post` (`checking`); a
+  // shorter sequence posts nothing, and a report while the post is in flight posts nothing more.
+  const r = deviceRig('rite', { parts: 2, attempts: [SOLVED] });
+  await atDevice(r);
+  expect(r.puzzle.frame?.answer).toEqual([]);
+  r.yields.host.onwork?.([1], false);
+  await settle();
+  expect(r.posted).toEqual([]);
+  const mark = r.cues.length;
+  r.yields.host.onwork?.([1, 0], false);
+  r.yields.host.onwork?.([1, 0], false);
+  expect([r.posted, r.puzzle.frame?.busy, r.puzzle.frame?.line]).toEqual([[[1, 0]], true, 'checking']);
+  expect(puzzleCuesOf(r, mark)).toEqual(['input@1', 'checking@null']);
+  await settle();
+  expect([r.posted, r.puzzle.frame, r.yields.world().puzzles[DEV]?.outcome]).toEqual([[[1, 0]], null, 'solved']);
+  r.yields.dispose();
+});
+
+test('yields: a full sequence rate-limited posts when the countdown ends', async () => {
+  // A 429 keeps the sequence whole; the countdown's zero posts it again through `ready` (`postFull`): one
+  // `puzzle:checking` at the zero, never `puzzle:ready`.
+  const r = deviceRig('rite', { parts: 2, attempts: [httpError(429, 2), SOLVED] });
+  await atDevice(r);
+  r.yields.host.onwork?.([1], false);
+  r.yields.host.onwork?.([1, 0], false);
+  await settle();
+  expect([r.posted, r.puzzle.frame?.line, r.puzzle.frame?.retryAfter, r.puzzle.frame?.answer]).toEqual([[[1, 0]], 'rate-limited', 2, [1, 0]]);
+  r.clock.advance(1000);
+  expect(r.posted).toEqual([[1, 0]]);
+  const mark = r.cues.length;
+  r.clock.advance(1000);
+  expect(r.posted).toEqual([
+    [1, 0],
+    [1, 0],
+  ]);
+  expect(puzzleCuesOf(r, mark)).toEqual(['checking@null']);
+  await settle();
+  expect([r.puzzle.frame, r.yields.world().puzzles[DEV]?.outcome]).toEqual([null, 'solved']);
+  r.yields.dispose();
+});
+
+test('yields: a wrong or offline full sequence restarts from initial', async () => {
+  // §7.5 "Full commit" and D15: a wrong or an offline reply to a full sequence plays its own cue, then the sequence
+  // starts over through the one write path: one light `puzzle:input` per position it clears, never `puzzle:reset`, and
+  // the saved work follows. `input@i` is an answer position (RULINGS 366 B2): GM8h2's widened Q5 moves these rows for a
+  // sequence answer.
+  const r = deviceRig('rite', { parts: 2, attempts: [POSTED_WRONG, NETWORK] });
+  await atDevice(r);
+  r.yields.host.onwork?.([1], false);
+  let mark = r.cues.length;
+  r.yields.host.onwork?.([1, 2], false);
+  await settle();
+  expect([r.posted, r.puzzle.frame?.line, r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work]).toEqual([[[1, 2]], 'wrong', [], []]);
+  expect(puzzleCuesOf(r, mark)).toEqual(['input@1', 'checking@null', 'wrong@null', 'input@0', 'input@1']);
+  r.yields.host.onwork?.([2], false);
+  mark = r.cues.length;
+  r.yields.host.onwork?.([2, 2], false);
+  await settle();
+  expect([r.posted.length, r.puzzle.frame?.line, r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work]).toEqual([2, 'offline', [], []]);
+  expect(puzzleCuesOf(r, mark)).toEqual(['input@1', 'checking@null', 'offline@null', 'input@0', 'input@1']);
+  r.yields.dispose();
+});
+
+test('yields: a full-length work seeded at open restarts without a post', async () => {
+  // A full sequence saved whole (its reply never came) is no answer: the open starts it over before any frame shows
+  // it, so with no POST and no part cue, and the saved work follows.
+  const r = deviceRig('rite', { parts: 2 });
+  await inHall(r);
+  r.yields.restore({ ...r.yields.world(), puzzles: { [DEV]: { outcome: null, attempts: 0, hintsOpened: 0, work: [1, 2] } } }, null, { kind: 'explore', section: MANOR });
+  await r.yields.onYield({ kind: 'explore', section: MANOR });
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([roomOf(r), r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work, r.posted]).toEqual(['panel', [], [], []]);
+  expect(partCuesOf(r, mark)).toEqual([]);
+  r.yields.dispose();
+});
+
+test('yields: a device whose workFits throws on its saved work opens at initial', async () => {
+  // Saved-work F2 (RULINGS 368): `instanceOf.start` treats a type's `workFits` that throws as a misfit, so a saved work
+  // the type cannot read opens the device at `initial()`, with no unhandled rejection and no story error (GM8a makes
+  // every `workFits` total; a throw here never fails the open).
+  const BOOM = viewType('boom', {
+    workFits: (p, work) => {
+      if (work.length !== p.parts) {
+        throw new Error('boom: misfit');
+      }
+      return true;
+    },
+  });
+  const r = deviceRig('boom', { types: [...DEVICE_TYPES, BOOM] });
+  await inHall(r);
+  r.yields.restore({ ...r.yields.world(), puzzles: { [DEV]: { outcome: null, attempts: 0, hintsOpened: 0, work: [1, 2] } } }, null, { kind: 'explore', section: MANOR });
+  await r.yields.onYield({ kind: 'explore', section: MANOR });
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([roomOf(r), r.puzzle.frame?.type, r.puzzle.frame?.presentation, r.puzzle.frame?.answer, r.log.filter((l) => l.startsWith('storyError'))]).toEqual([
+    'panel',
+    'boom',
+    'view',
+    [0, 0, 0],
+    [],
+  ]);
+  r.yields.dispose();
+});
+
+test('yields: a 429 with Retry-After 0 re-posts once after a second', async () => {
+  // D6 (V3): a Retry-After of 0 counts down from one second (the clamp in `puzzleError`), so the zero never re-posts
+  // at once; a reach device's reached answer posts again exactly once, at 1,000 ms.
+  const r = deviceRig('latch', { attempts: [httpError(429, 0), SOLVED] });
+  await atDevice(r);
+  r.yields.host.onreach?.([2, 1, 0]);
+  await settle();
+  expect([r.posted, r.puzzle.frame?.line, r.puzzle.frame?.retryAfter]).toEqual([[[2, 1, 0]], 'rate-limited', 1]);
+  r.clock.advance(999);
+  expect(r.posted.length).toBe(1);
+  r.clock.advance(1);
+  expect(r.posted).toEqual([
+    [2, 1, 0],
+    [2, 1, 0],
+  ]);
+  await settle();
+  expect([r.posted.length, r.puzzle.frame, r.yields.world().puzzles[DEV]?.outcome]).toEqual([2, null, 'solved']);
+  r.yields.dispose();
+});
+
+/** The demonstration steps after `mark`, as `demo@<part>`. */
+const demoOf = (r: Rig, mark: number): string[] => puzzleCuesOf(r, mark).filter((k) => k.startsWith('demo@'));
+
+test('yields: a demonstrating device plays its order once at open', async () => {
+  // §7.5 "Demonstration" (Q15h): a shown-goal device plays its type's order once, its first step `DEMO_STEP_MS` after
+  // its frame appeared (its `panel-open`), each step a `puzzle:demo` on its part, `DEMO_STEP_MS` apart.
+  const r = deviceRig('chimes');
+  await inHall(r);
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([roomOf(r), demoOf(r, mark), r.clock.pending(DEMO_STEP_MS)]).toEqual(['panel', [], 1]);
+  r.clock.advance(DEMO_STEP_MS - 1);
+  expect(demoOf(r, mark)).toEqual([]);
+  r.clock.advance(1);
+  expect(demoOf(r, mark)).toEqual(['demo@2']);
+  r.clock.advance(DEMO_STEP_MS * 2);
+  expect([demoOf(r, mark), r.clock.pending(DEMO_STEP_MS)]).toEqual([['demo@2', 'demo@0', 'demo@1'], 0]);
+  const keys = keysOf(r, mark);
+  expect(keys.indexOf('ui-state:panel-open')).toBeGreaterThanOrEqual(0);
+  expect(keys.indexOf('ui-state:panel-open')).toBeLessThan(keys.indexOf('puzzle:demo'));
+  r.clock.advance(DEMO_STEP_MS * 5); // once: nothing more
+  expect(demoOf(r, mark)).toHaveLength(3);
+  r.yields.dispose();
+});
+
+test('yields: the first input stops the demonstration and a wrong one replays it', async () => {
+  // The player's own press ends the demonstration; a wrong press that leaves the device open plays it again from its
+  // first step, `DEMO_PAUSE_MS` after the press.
+  const r = deviceRig('chimes', { maxAttempts: 3 });
+  await atDevice(r);
+  r.clock.advance(DEMO_STEP_MS);
+  let mark = r.cues.length;
+  expect(r.clock.pending(DEMO_STEP_MS)).toBe(1);
+  r.yields.host.onwork?.([2, 0, 0], false);
+  expect(r.clock.pending(DEMO_STEP_MS)).toBe(0);
+  r.clock.advance(DEMO_STEP_MS * 4);
+  expect(demoOf(r, mark)).toEqual([]);
+  mark = r.cues.length;
+  r.yields.host.onwork?.([2, 1, 0], true);
+  expect([r.puzzle.frame?.line, r.clock.pending(DEMO_PAUSE_MS)]).toEqual(['wrong', 1]);
+  r.clock.advance(DEMO_PAUSE_MS - 1);
+  expect(demoOf(r, mark)).toEqual([]);
+  r.clock.advance(1);
+  expect(demoOf(r, mark)).toEqual(['demo@2']);
+  r.clock.advance(DEMO_STEP_MS * 2);
+  expect(demoOf(r, mark)).toEqual(['demo@2', 'demo@0', 'demo@1']);
+  r.yields.dispose();
+});
+
+test('yields: the demo control plays its first step at once', async () => {
+  // §7.5 "Demonstration": the device's own replay control (the UI's `ondemo()`) plays the order from its first step at
+  // the tap, with no `DEMO_STEP_MS` lead-in (the open's delay is the frame's appearance, not the control's).
+  const r = deviceRig('chimes');
+  await atDevice(r);
+  r.yields.host.onwork?.([2, 0, 0], false); // the first input stops the opening demonstration
+  r.clock.advance(DEMO_STEP_MS * 4);
+  const mark = r.cues.length;
+  r.yields.host.ondemo?.();
+  expect([demoOf(r, mark), r.clock.pending(DEMO_STEP_MS)]).toEqual([['demo@2'], 1]); // step 0 now, step 1 pending
+  r.clock.advance(DEMO_STEP_MS * 2);
+  expect([demoOf(r, mark), r.clock.pending(DEMO_STEP_MS)]).toEqual([['demo@2', 'demo@0', 'demo@1'], 0]);
+  r.yields.dispose();
+});
+
+test('yields: the demo control replaces a running demonstration', async () => {
+  // One demonstration runner per `Open` (cut "one runner per `Open`"): `ondemo()` tapped mid-demonstration restarts the
+  // order from its first step and drops the running chain, so the order plays once more, not twice interleaved.
+  const r = deviceRig('chimes');
+  await atDevice(r);
+  const mark = r.cues.length;
+  r.clock.advance(DEMO_STEP_MS); // the opening demonstration's step 0
+  expect(demoOf(r, mark)).toEqual(['demo@2']);
+  r.yields.host.ondemo?.(); // replay tapped mid-demonstration: restarts the order, no second chain
+  expect(demoOf(r, mark)).toEqual(['demo@2', 'demo@2']);
+  r.clock.advance(DEMO_STEP_MS * 3);
+  expect(demoOf(r, mark)).toEqual(['demo@2', 'demo@2', 'demo@0', 'demo@1']);
+  expect(r.clock.pending(DEMO_STEP_MS)).toBe(0);
+  r.yields.dispose();
+});
+
+test('yields: a dropped device leaves no demo timer', async () => {
+  // D8: no demonstration step outlives its device. The drop sites `restore`, `chapterChanged` and `dispose` prove the
+  // drop's own stop (RULINGS 366 B10, O2); a zoom-out with no attempt in flight stops it at `hideFrame`, and the third
+  // local wrong at the press's first line, so those two do not prove the drop.
+  const sites: Array<[string, (r: Rig) => void]> = [
+    ['a restore', (r) => r.yields.restore(EMPTY_WORLD_STATE, null, null)],
+    ['a chapter change', (r) => r.yields.chapterChanged()],
+    ['dispose', (r) => r.yields.dispose()],
+    ['a zoom-out with no attempt in flight', (r) => r.yields.layer.onleaveview()],
+    [
+      'the third local wrong',
+      (r) => {
+        r.yields.host.onwork?.([1, 0, 0], true);
+        r.yields.host.onwork?.([1, 1, 0], true);
+        r.yields.host.onwork?.([1, 1, 1], true);
+      },
+    ],
+  ];
+  for (const [site, leave] of sites) {
+    const r = deviceRig('chimes', { maxAttempts: 3 });
+    await atDevice(r);
+    const pending = (): number => r.clock.pending(DEMO_STEP_MS) + r.clock.pending(DEMO_PAUSE_MS);
+    expect([site, pending()]).toEqual([site, 1]);
+    leave(r);
+    await settle();
+    expect([site, r.puzzle.frame, pending()]).toEqual([site, null, 0]);
+    r.yields.dispose();
+  }
+});
+
+test('yields: onreach stops the demonstration', async () => {
+  // A reached answer ends the demonstration (C-11: one step plays first, so the stop is seen).
+  const r = deviceRig('chimes');
+  await atDevice(r);
+  const mark = r.cues.length;
+  r.clock.advance(DEMO_STEP_MS);
+  expect(demoOf(r, mark)).toEqual(['demo@2']);
+  r.yields.host.onreach?.([2, 0, 1]);
+  expect(r.clock.pending(DEMO_STEP_MS)).toBe(0);
+  r.clock.advance(DEMO_STEP_MS * 4);
+  expect(demoOf(r, mark)).toEqual(['demo@2']);
+  r.yields.dispose();
+});
+
+test('yields: a zoom-out during a countdown ends the device and its countdown', async () => {
+  // D8: a 429 settled the attempt, so the zoom-out's close ends the session at once and its drop clears the countdown;
+  // nothing posts after it.
+  const r = deviceRig('latch', { attempts: [httpError(429, 3)] });
+  await atDevice(r);
+  r.yields.host.onreach?.([2, 1, 0]);
+  await settle();
+  expect([r.puzzle.frame?.line, r.clock.pending(1000)]).toEqual(['rate-limited', 1]);
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, r.clock.pending(1000)]).toEqual(['hall', null, 0]);
+  r.clock.advance(5000);
+  expect([r.posted.length, r.events]).toEqual([1, []]);
+  r.yields.dispose();
+});
+
+test('yields: a device hidden at a zoom-out leaves no demo timer', async () => {
+  // D8: a zoom-out with the reached answer's POST in flight hides the device while its session waits for the reply;
+  // the hide stops the demonstration, so no step is left pending for a hidden device.
+  const r = deviceRig('chimes');
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.onreach?.([2, 0, 1]);
+  r.yields.host.ondemo?.();
+  expect([q.signals.length, r.clock.pending(DEMO_STEP_MS)]).toEqual([1, 1]);
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted), r.clock.pending(DEMO_STEP_MS)]).toEqual(['hall', null, [false], 0]);
+  r.yields.dispose();
+});
+
+test('yields: a callback of a hidden device posts nothing, plays no cue and leaves no timer', async () => {
+  // Lifecycle M2 (RULINGS 368): a device hidden with its POST in flight keeps its session, so the host's callbacks still
+  // find it `open`; none of them posts, cues or schedules: `startDemo` does nothing for a hidden device, so a stale
+  // wrong press of its unmounted UI leaves no demonstration timer. (Such a press still writes the run's work through
+  // `moveWork`: a type UI never calls back after its destroy, lifecycle M2's rule for GM8a / GM8b.)
+  const r = deviceRig('chimes', { maxAttempts: 3 });
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.onreach?.([2, 0, 1]);
+  await settle();
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([r.puzzle.frame, r.yields.presence().puzzle, q.signals.map((s) => s.aborted)]).toEqual([null, true, [false]]);
+  const mark = r.cues.length;
+  const pending = (): number => r.clock.pending(DEMO_STEP_MS) + r.clock.pending(DEMO_PAUSE_MS);
+  const calls: Array<[string, () => void]> = [
+    ['ondemo', () => r.yields.host.ondemo?.()],
+    ['oncommit', () => r.yields.host.oncommit?.()],
+    ['onblocked', () => r.yields.host.onblocked?.(1)],
+    ['a stale wrong press', () => r.yields.host.onwork?.([1, 1, 1], true)],
+  ];
+  for (const [name, call] of calls) {
+    call();
+    expect(pending(), name).toBe(0);
+  }
+  r.clock.advance(DEMO_PAUSE_MS + DEMO_STEP_MS * 4);
+  await settle();
+  expect([r.posted.length, puzzleCuesOf(r, mark)]).toEqual([1, []]);
+  r.yields.dispose();
+});
+
+test('yields: a sheet over a device view stops its demonstration until the demo control replays it', async () => {
+  // Places F4 (RULINGS 368): a screen on the stack lies over the device's room (a view frame pushes none), so it covers
+  // the device: its opening stops the demonstration, no `puzzle:demo` plays while it covers, and the demo control does
+  // nothing then. Its close restarts nothing by itself; the demo control then replays the order from its first step.
+  const covers: Array<[string, (r: Rig) => void]> = [
+    ['the inventory', (r) => r.yields.layer.oninventory()],
+    ['the hint ladder', (r) => r.yields.host.onhint()],
+  ];
+  for (const [cover, open] of covers) {
+    const r = deviceRig('chimes');
+    await atDevice(r);
+    expect([cover, r.clock.pending(DEMO_STEP_MS)]).toEqual([cover, 1]);
+    const mark = r.cues.length;
+    open(r);
+    await settle();
+    expect([cover, overlaysOf(r).length, r.clock.pending(DEMO_STEP_MS)]).toEqual([cover, 1, 0]);
+    r.clock.advance(DEMO_STEP_MS * 3);
+    expect([cover, demoOf(r, mark)]).toEqual([cover, []]);
+    r.yields.host.ondemo?.();
+    expect([cover, demoOf(r, mark), r.clock.pending(DEMO_STEP_MS)]).toEqual([cover, [], 0]);
+    r.screens.back();
+    await settle();
+    r.clock.advance(DEMO_STEP_MS * 3);
+    expect([cover, overlaysOf(r), demoOf(r, mark)]).toEqual([cover, [], []]);
+    r.yields.host.ondemo?.();
+    expect([cover, demoOf(r, mark)]).toEqual([cover, ['demo@2']]);
+    r.clock.advance(DEMO_STEP_MS * 2);
+    expect([cover, demoOf(r, mark)]).toEqual([cover, ['demo@2', 'demo@0', 'demo@1']]);
+    r.yields.dispose();
+  }
+});
+
+test("yields: a full sequence's reply under a sheet restarts it with no part cue", async () => {
+  // Places F4, Q-C1 (RULINGS 368, 369): a part cue plays on a painted ghost of its part above every sheet (§8.5 "Hit
+  // areas"), so none plays while a sheet covers the device. A full sequence's wrong or offline reply landing under the
+  // inventory starts the sequence over (the saved work follows) with the reply's own frame cue and no `puzzle:input`;
+  // a refused input plays no `puzzle:blocked` then. Once the sheet closes, a press plays its part again.
+  const r = deviceRig('rite', { parts: 2 });
+  const q = heldPosts(r);
+  await atDevice(r);
+  const replies: Array<[string, Result<AttemptResponse, ApiError>]> = [
+    ['wrong', POSTED_WRONG],
+    ['offline', NETWORK],
+  ];
+  for (const [line, reply] of replies) {
+    r.yields.host.onwork?.([1], false);
+    r.yields.host.onwork?.([1, 2], false);
+    r.yields.layer.oninventory();
+    await settle();
+    expect([line, r.posted.at(-1), r.puzzle.frame?.busy, overlaysOf(r)]).toEqual([line, [1, 2], true, ['inventory']]);
+    const mark = r.cues.length;
+    q.answer(reply);
+    await settle();
+    expect([line, r.puzzle.frame?.line, r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work, puzzleCuesOf(r, mark)]).toEqual([
+      line,
+      line,
+      [],
+      [],
+      [`${line}@null`],
+    ]);
+    r.yields.host.onblocked?.(0);
+    expect([line, puzzleCuesOf(r, mark)]).toEqual([line, [`${line}@null`]]);
+    r.screens.back();
+    await settle();
+  }
+  const mark = r.cues.length;
+  r.yields.host.onwork?.([2], false);
+  r.yields.host.onblocked?.(1);
+  expect([overlaysOf(r), puzzleCuesOf(r, mark)]).toEqual([[], ['input@0', 'blocked@1']]);
+  r.yields.dispose();
+});
+
+test('yields: a device whose chunk failed plays no demonstration', async () => {
+  // Gates F3 (RULINGS 368): the demonstration starts only after a successful load; a failed type chunk or host chunk
+  // shows its Retry and plays nothing.
+  const failures: Array<[string, Partial<LazyChunks>]> = [
+    ['the type chunk', { puzzleUi: async () => CHUNK_OFFLINE }],
+    ['the host chunk', { puzzleHost: async () => CHUNK_OFFLINE }],
+  ];
+  for (const [chunk, loaders] of failures) {
+    const r = deviceRig('chimes', { loaders });
+    await inHall(r);
+    const mark = r.cues.length;
+    r.yields.layer.ontap(key('hall.to_panel'));
+    await settle();
+    expect([chunk, roomOf(r), r.puzzle.frame?.loadFailed]).toEqual([chunk, 'panel', true]);
+    r.clock.advance(DEMO_STEP_MS * 4);
+    expect([chunk, demoOf(r, mark), r.clock.pending(DEMO_STEP_MS)]).toEqual([chunk, [], 0]);
+    r.yields.dispose();
+  }
+});
+
+test("yields: a view frame's host Retry plays no yields control cue", async () => {
+  // C-18: a device whose host chunk failed shows its Retry in the room (ExploreView's notice, inside the explore root),
+  // and that root emits the control's cue; yields emits App's failed-host Retry cue for an overlay frame only.
+  const r = deviceRig('dials', { loaders: { puzzleHost: async () => CHUNK_OFFLINE } });
+  await atDevice(r);
+  expect([r.puzzle.host, r.puzzle.frame?.presentation, r.puzzle.frame?.loadFailed]).toEqual([null, 'view', true]);
+  const mark = r.cues.length;
+  // The in-room Retry's tap: the explore root emits its cue, then the control calls onretry.
+  r.explore.oncue?.({ cue: { kind: 'ui', control: 'puzzle-retry', item: null, index: null }, box: null, point: null, diff: [], el: null });
+  r.yields.host.onretry();
+  expect(r.puzzle.frame?.retrying, 'the reload runs').toBe(true);
+  await settle();
+  expect(r.cues.slice(mark).filter((e) => e.cue.kind === 'ui' && e.cue.control === 'puzzle-retry')).toHaveLength(1);
+  r.yields.dispose();
+});
+
+test("yields: a device's bar Try re-posts its reached work", async () => {
+  // An offline reply leaves a device's reached answer awaiting (§7.5 "Posting per reply kind"): its bar's Try posts it
+  // again through `postReach`, and a correct answer solves it.
+  const r = deviceRig('latch', { attempts: [NETWORK, SOLVED] });
+  await atDevice(r);
+  r.yields.host.onwork?.([2, 1, 0], false);
+  r.yields.host.onreach?.([2, 1, 0]);
+  await settle();
+  expect([r.posted, r.puzzle.frame?.line, r.puzzle.frame?.awaiting]).toEqual([[[2, 1, 0]], 'offline', true]);
+  r.yields.host.ontry();
+  await settle();
+  expect([r.posted, r.puzzle.frame, r.yields.world().puzzles[DEV]?.outcome]).toEqual([
+    [
+      [2, 1, 0],
+      [2, 1, 0],
+    ],
+    null,
+    'solved',
+  ]);
+  r.yields.dispose();
+});
+
+test('yields: a mismatch on a device restarts its work', async () => {
+  // A reach device's wrong reply is a mismatch (the content changed under this client): the frame returns to `initial()`
+  // with its one `puzzle:reset`, and the saved work follows it (D15: no part moves on screen, so no `puzzle:input`);
+  // the sticky toast asks for a restart in the UI language (V1).
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const r = deviceRig('latch', { attempts: [WRONG] });
+    r.vm.lang = 'en';
+    await atDevice(r);
+    r.yields.host.onwork?.([2, 1, 0], false);
+    expect(r.yields.world().puzzles[DEV]?.work).toEqual([2, 1, 0]);
+    const mark = r.cues.length;
+    r.yields.host.onreach?.([2, 1, 0]);
+    await settle();
+    expect(puzzleCuesOf(r, mark)).toEqual(['reached@null', 'checking@null', 'reset@null']);
+    expect([r.puzzle.frame?.answer, r.puzzle.frame?.awaiting, r.yields.world().puzzles[DEV]?.work]).toEqual([[0, 0, 0], false, [0, 0, 0]]);
+    expect(r.vm.toasts).toEqual([{ kind: 'note', key: 'mech.content_updated', message: 'The game was updated. Close it and open it again.', sticky: true }]);
+    expect(errors.mock.calls).toEqual([['yields: reach-mismatch', 'dev']]);
+    r.yields.dispose();
+  } finally {
+    errors.mockRestore();
   }
 });

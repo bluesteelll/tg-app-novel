@@ -32,7 +32,8 @@ import type {
 } from '../explore-view.svelte.ts';
 import { EXIT_PATH, GLYPH_PATHS } from '../glyphs.ts';
 import { createPuzzleView } from '../puzzle-view.svelte.ts';
-import type { PuzzleHostCallbacks } from '../puzzle-view.svelte.ts';
+import type { HintLadderUiView, PuzzleFrameView, PuzzleHostCallbacks, PuzzleView } from '../puzzle-view.svelte.ts';
+import PuzzleHost from '../puzzles/PuzzleHost.svelte';
 import type { CueStageProps } from '../state.svelte.ts';
 import ExploreView from './ExploreView.svelte';
 import exploreViewSource from './ExploreView.svelte?raw';
@@ -56,9 +57,12 @@ function spots(lang: Lang): HotspotView[] {
   ];
 }
 
-/** What a test sets: the language, the view store's fields and the layer's callbacks, each by name. */
+/**
+ * What a test sets: the language, the view store's fields and the layer's callbacks, each by name; GM8h: the puzzle
+ * store's fields (a device in the room) and its callbacks.
+ */
 type LayerOver = { lang?: Lang } & Partial<Pick<ExploreViewStore, 'hotspots' | 'reveal' | 'items' | 'docs' | 'lock' | 'panel' | 'selected' | 'inView'>> &
-  Partial<ExploreLayerActions>;
+  Partial<ExploreLayerActions> & { puzzle?: Partial<Pick<PuzzleView, 'host' | 'frame' | 'ladder'>>; puzzleActions?: Partial<PuzzleHostCallbacks> };
 
 /** The layer's props over a new view store with `over` written into it; a test writes the store as GameSession does. */
 function layerProps(over: LayerOver = {}): ExploreLayerProps {
@@ -81,7 +85,12 @@ function layerProps(over: LayerOver = {}): ExploreLayerProps {
     onretry: () => {},
     onusehint: () => {},
     ongetmore: () => {},
+    ...over.puzzleActions,
   };
+  const puzzle = createPuzzleView();
+  puzzle.host = over.puzzle?.host ?? null;
+  puzzle.frame = over.puzzle?.frame ?? null;
+  puzzle.ladder = over.puzzle?.ladder ?? null;
   return {
     lang,
     view,
@@ -98,7 +107,7 @@ function layerProps(over: LayerOver = {}): ExploreLayerProps {
       oncombine: over.oncombine ?? (() => {}),
       onleaveview: over.onleaveview ?? (() => {}),
     },
-    puzzle: createPuzzleView(),
+    puzzle,
     puzzleActions,
   };
 }
@@ -121,6 +130,120 @@ function declarationsFor(source: string, cls: string): Map<string, string> {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM8h: a device inside the room (engine plan §7.5 "Host"): the host in the room place after the hotspots, the ladder
+// as a room sheet, and the in-room Retry when the host chunk failed
+
+function must<T>(v: T | null | undefined, what: string): T {
+  if (v === null || v === undefined) {
+    throw new Error(`expected ${what}`);
+  }
+  return v;
+}
+
+/** A device's frame as yields writes it: an explore-mode view frame (the room place reads frame fields only). */
+const deviceFrame = (over: Partial<PuzzleFrameView> = {}): PuzzleFrameView => ({
+  id: 7,
+  mode: 'explore',
+  type: 'code',
+  title: 'The dial',
+  prompt: 'Turn it',
+  params: { dials: 4 },
+  answer: [0, 0, 0, 0],
+  busy: false,
+  line: 'idle',
+  attemptsLeft: null,
+  retryAfter: null,
+  awaiting: null,
+  giveUp: false,
+  hintTiers: 2,
+  ui: null,
+  loadFailed: false,
+  retrying: false,
+  presentation: 'view',
+  ...over,
+});
+/** A ladder over a device: tier 1 read, tier 2 to spend on, a wallet that can pay. */
+const DEVICE_LADDER: HintLadderUiView = {
+  tiers: [
+    { tier: 1, text: 'Count the notches', state: 'unlocked' },
+    { tier: 2, text: null, state: 'usable' },
+  ],
+  wallet: { cost: 1, balance: 2 },
+  busy: false,
+  failed: false,
+};
+
+/** `el`'s place among its parent's children. */
+const indexIn = (parent: Element, el: Element | null): number => (el === null ? -1 : [...parent.children].indexOf(el));
+/** `a` comes before `b` in document order. */
+const before = (a: Node, b: Node): boolean => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+test('explore: a view frame renders the device inside the room, under the explore sheets', async () => {
+  // The device is a child of `.room`, after the hotspots and before the ribbon and the bar, so the room's `inert` covers
+  // it whenever a sheet is up and the sheets, later siblings of `.room`, paint over it; App's frame layer never renders it.
+  const props = layerProps({ items: [SUN], docs: [LETTER], puzzle: { host: PuzzleHost, frame: deviceFrame() } });
+  const { container, unmount } = render(ExploreView, props);
+  await tick();
+  const room = must(container.querySelector('.room'), 'the room');
+  const device = must(container.querySelector('[data-cue-root="frame"]'), 'the device host');
+  expect(device.parentElement).toBe(room);
+  const hotspots = [...room.querySelectorAll(':scope > .hotspot')];
+  expect(hotspots).toHaveLength(3);
+  expect(indexIn(room, device)).toBeGreaterThan(indexIn(room, hotspots.at(-1) ?? null));
+  expect(indexIn(room, device)).toBeLessThan(indexIn(room, room.querySelector(':scope > [data-cue-ribbon]')));
+  expect(indexIn(room, device)).toBeLessThan(indexIn(room, room.querySelector(':scope > .bar')));
+  expect([room.hasAttribute('inert'), props.puzzle.covers]).toEqual([false, false]);
+  // The inventory opens over it: its sheet follows the room, which turns inert with the device in it.
+  props.view.panel = { kind: 'inventory' };
+  await tick();
+  const sheet = must(container.querySelector('.sheet[data-cue-panel="inventory"]'), 'the inventory sheet');
+  expect([before(room, sheet), room.hasAttribute('inert'), room.contains(device)]).toEqual([true, true, true]);
+  unmount();
+});
+
+test('explore: the ladder over a device is a sheet and the room is inert under it', async () => {
+  // The ladder of a device is the host in the ladder place, in a sheet after the explore sheets; the room, the device
+  // in it, is inert while it is up, and live again once Back closed it.
+  const props = layerProps({ puzzle: { host: PuzzleHost, frame: deviceFrame(), ladder: DEVICE_LADDER } });
+  const { container, unmount } = render(ExploreView, props);
+  await tick();
+  const room = must(container.querySelector('.room'), 'the room');
+  const ladder = must(container.querySelector('section.ladder'), 'the ladder');
+  const sheet = must(ladder.closest('.sheet'), "the ladder's sheet");
+  expect([sheet.parentElement?.matches('[data-cue-root]'), before(room, sheet), room.contains(ladder), room.hasAttribute('inert')]).toEqual([true, true, false, true]);
+  expect(room.querySelector('[data-cue-root="frame"]')).not.toBeNull();
+  props.puzzle.ladder = null;
+  await tick();
+  expect([container.querySelector('section.ladder'), room.hasAttribute('inert')]).toEqual([null, false]);
+  unmount();
+});
+
+test('explore: a view frame whose host failed shows Retry in the room', async () => {
+  // The puzzle-host chunk did not load: no host to show the device's bar, so the room shows the failure and Retry
+  // (App's failed-host block serves overlay frames only); Retry is off while it reloads.
+  const onretry = vi.fn();
+  const props = layerProps({ puzzle: { host: null, frame: deviceFrame({ loadFailed: true }) }, puzzleActions: { onretry } });
+  const { container, unmount } = render(ExploreView, props);
+  await tick();
+  const room = must(container.querySelector('.room'), 'the room');
+  const notice = must(room.querySelector(':scope > [data-cue-notice][data-cue-panel="puzzle"]'), 'the in-room notice');
+  expect(notice.getAttribute('role')).toBe('alert');
+  expect(notice.textContent).toContain(t('en', 'puzzle.load_failed'));
+  const retry = must(notice.querySelector<HTMLButtonElement>('button[data-cue="puzzle-retry"]'), 'Retry');
+  expect([retry.disabled, retry.textContent?.trim()]).toEqual([false, t('en', 'puzzle.retry')]);
+  await fireEvent.click(retry);
+  expect(onretry).toHaveBeenCalledTimes(1);
+  props.puzzle.frame = deviceFrame({ loadFailed: true, retrying: true });
+  await tick();
+  expect(must(container.querySelector<HTMLButtonElement>('[data-cue="puzzle-retry"]'), 'Retry').disabled).toBe(true);
+  // An overlay frame's failed host is App's block: the room shows none.
+  props.puzzle.frame = deviceFrame({ loadFailed: true, presentation: 'overlay' });
+  await tick();
+  expect(container.querySelector('[data-cue="puzzle-retry"]')).toBeNull();
+  unmount();
+});
 
 test('explore view: reveal shows outlines', async () => {
   // The store starts empty: no layer, no panel, no outline.
@@ -796,6 +919,10 @@ const CONTROL_STATES: readonly ControlState[] = [
   },
   { name: 'reader', over: { docs: [LETTER], panel: { kind: 'doc', doc: LETTER.id } } },
   { name: 'lock', over: { items: [COIN, SUN], lock: GATE, panel: { kind: 'lock' } } },
+  // GM8h: a device whose host chunk failed (the in-room Retry, at the device's place) and the ladder over a device (its
+  // sheet's controls, the room inert under it): both lie in the explore root, which emits them.
+  { name: 'device host failed', over: { items: [SUN], inView: true, puzzle: { host: null, frame: deviceFrame({ loadFailed: true }) } } },
+  { name: 'device ladder', over: { items: [SUN], inView: true, puzzle: { host: PuzzleHost, frame: deviceFrame(), ladder: DEVICE_LADDER } } },
 ];
 
 /** Every control a state shows a player, in document order: W1's non-vacuity, so a state that fails to render or a
@@ -825,6 +952,16 @@ const EXPECTED_CONTROLS: readonly Fired[] = [
   ['reader', 'doc-close', null, null],
   ['lock', 'lock-item', null, 'coin'],
   ['lock', 'lock-item', null, 'medal_sun'],
+  ['device host failed', 'bare-art', null, null],
+  ['device host failed', 'hotspot', null, null],
+  ['device host failed', 'hotspot', null, null],
+  ['device host failed', 'hotspot', null, null],
+  ['device host failed', 'puzzle-retry', null, null],
+  ['device host failed', 'ribbon-item', null, 'medal_sun'],
+  ['device host failed', 'view-leave', null, null],
+  ['device host failed', 'bar-inventory', null, null],
+  ['device host failed', 'bar-reveal', null, null],
+  ['device ladder', 'hint-use', 2, null],
 ];
 
 /** The controls a player can tap now: every `[data-cue]` element outside an inert subtree, in document order. */

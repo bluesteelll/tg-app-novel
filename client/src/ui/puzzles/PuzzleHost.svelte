@@ -11,6 +11,16 @@
   // its cue, and the notice, the status and the attempts lines carry their target markers. The root is attached in an
   // effect, as the explore layer's is (RULINGS 201 E1: no `use:` action): its controls emit to `oncue`, the session's
   // bus through yields, which moves each point from the root's px to the stage host's.
+  // GM8h (engine plan §7.5 "Host"): `place` picks where it renders. `frame` (the default, App's frame layer) is the
+  // overlay above. `room` is a device inside its room (ExploreView's `.room`): a full-bleed root that takes no tap, the
+  // compact bar anchored to the top in three rows (the title with Hint and, while a chunk failed, Retry, or Try while a
+  // reached answer awaits after an offline reply, the one case a device posts by hand; the status line, or the load
+  // notice in its place; the attempts), then the parts layer with the type UI: the bar comes first, so a screen reader
+  // meets the title first, and paints over the parts. No give-up (a lock puzzle cannot be abandoned); the root is the
+  // frame family's and the bar its frame marker. Its type UI is busy through a 429 countdown too: the bar has no Try
+  // that holds it, so the parts take no press until the countdown ends.
+  // `ladder` is the hint ladder alone, in a room sheet over a device, with no root: its controls emit through the
+  // innermost root around it, ExploreView's. It is that sheet's panel, so it pads itself past the safe area and scrolls.
   import { cueRoot } from '../../cues/root.ts';
   import type { GestureCue } from '../../cues/types.ts';
   import { t } from '../../i18n/index.ts';
@@ -31,6 +41,11 @@
     ongetmore,
     oncue,
     onreach,
+    onwork,
+    oncommit,
+    ondemo,
+    onblocked,
+    place = 'frame',
   }: PuzzleHostProps = $props();
 
   const uid = $props.id();
@@ -120,68 +135,123 @@
   }
 </script>
 
-{#if frame !== null}
+{#if place === 'ladder'}
+  {#if ladder !== null}
+    <div class="ladder-place">
+      <HintLadder {lang} {ladder} onuse={(tier) => onusehint(tier)} ongetmore={() => ongetmore()} />
+    </div>
+  {/if}
+{:else if frame !== null}
   {#key frame.id}
-    <section class="frame" bind:this={root} data-cue-root="frame" aria-labelledby="{uid}-title">
-      <div class="wrap" data-cue-frame data-cue-panel="puzzle">
-        <h2 id="{uid}-title">{frame.title}</h2>
-        <p class="prompt">{frame.prompt}</p>
-        <div class="body">
+    {#if place === 'room'}
+      <section class="device" bind:this={root} data-cue-root="frame" aria-labelledby="{uid}-title">
+        <div class="bar" data-cue-frame data-cue-panel="puzzle">
+          <div class="row">
+            <h2 id="{uid}-title" class="title">{frame.title}</h2>
+            {#if frame.hintTiers > 0}
+              <button type="button" data-cue="puzzle-hint" onclick={() => onhint()}>{t(lang, 'puzzle.hint')}</button>
+            {/if}
+            {#if frame.loadFailed}
+              <button type="button" data-cue="puzzle-retry" disabled={frame.retrying} onclick={() => onretry()}>{t(lang, 'puzzle.retry')}</button>
+            {:else if frame.awaiting === true && frame.line === 'offline'}
+              <button type="button" data-cue="puzzle-try" disabled={!canTry} onclick={() => ontry()}>{t(lang, 'puzzle.try')}</button>
+            {/if}
+          </div>
           {#if frame.loadFailed}
-            <div class="notice" data-cue-notice>
-              <p class="failed" role="alert">{t(lang, 'puzzle.load_failed')}</p>
-              <button type="button" data-cue="puzzle-retry" disabled={frame.retrying} onclick={() => onretry()}
-                >{t(lang, 'puzzle.retry')}</button
-              >
-            </div>
-          {:else if frame.ui !== null}
+            <p class="status failed" role="alert" data-cue-notice>{t(lang, 'puzzle.load_failed')}</p>
+          {:else}
+            <p class="status" role="status" data-cue-status>{status}</p>
+          {/if}
+          {#if frame.attemptsLeft !== null}
+            <p class="attempts" data-cue-attempts>{t(lang, 'puzzle.attempts_left', { n: frame.attemptsLeft })}</p>
+          {/if}
+        </div>
+        <div class="parts" data-cue-hit>
+          {#if frame.ui !== null}
             {@const Ui = frame.ui}
             <Ui
               params={frame.params}
               answer={frame.answer}
-              busy={frame.busy || ended}
+              busy={frame.busy || ended || frame.retryAfter !== null}
               {lang}
               {onchange}
               {item}
               {onreach}
+              {onwork}
+              {oncommit}
+              {ondemo}
+              {onblocked}
               oncue={gesture}
             />
           {/if}
         </div>
-        <p class="status" role="status" data-cue-status>{status}</p>
-        {#if frame.attemptsLeft !== null}
-          <p class="attempts" data-cue-attempts>{t(lang, 'puzzle.attempts_left', { n: frame.attemptsLeft })}</p>
-        {/if}
-        <div class="actions">
-          <button type="button" class="primary" data-cue="puzzle-try" disabled={!canTry} onclick={() => ontry()}
-            >{t(lang, 'puzzle.try')}</button
-          >
-          {#if frame.hintTiers > 0}
-            <button type="button" data-cue="puzzle-hint" onclick={() => onhint()}>{t(lang, 'puzzle.hint')}</button>
-          {/if}
-        </div>
-        {#if canGiveUp}
-          <div class="give-up">
-            {#if asking}
-              <div class="actions">
-                <p class="ask">{t(lang, 'puzzle.give_up_confirm')}</p>
-                <button type="button" data-cue="give-up-no" onclick={() => (askingFor = null)}>{t(lang, 'saves.no')}</button>
+      </section>
+    {:else}
+      <section class="frame" bind:this={root} data-cue-root="frame" aria-labelledby="{uid}-title">
+        <div class="wrap" data-cue-frame data-cue-panel="puzzle">
+          <h2 id="{uid}-title">{frame.title}</h2>
+          <p class="prompt">{frame.prompt}</p>
+          <div class="body">
+            {#if frame.loadFailed}
+              <div class="notice" data-cue-notice>
+                <p class="failed" role="alert">{t(lang, 'puzzle.load_failed')}</p>
+                <button type="button" data-cue="puzzle-retry" disabled={frame.retrying} onclick={() => onretry()}
+                  >{t(lang, 'puzzle.retry')}</button
+                >
               </div>
-              <div class="actions">
-                <button type="button" class="danger" data-cue="give-up-yes" onclick={giveUp}>{t(lang, 'puzzle.give_up_yes')}</button>
-              </div>
-            {:else}
-              <div class="actions">
-                <button type="button" data-cue="give-up-ask" onclick={ask}>{t(lang, 'puzzle.give_up')}</button>
-              </div>
+            {:else if frame.ui !== null}
+              {@const Ui = frame.ui}
+              <Ui
+                params={frame.params}
+                answer={frame.answer}
+                busy={frame.busy || ended}
+                {lang}
+                {onchange}
+                {item}
+                {onreach}
+                {onwork}
+                {oncommit}
+                {ondemo}
+                {onblocked}
+                oncue={gesture}
+              />
             {/if}
           </div>
-        {/if}
-        {#if ladder !== null}
-          <HintLadder {lang} {ladder} onuse={(tier) => onusehint(tier)} ongetmore={() => ongetmore()} />
-        {/if}
-      </div>
-    </section>
+          <p class="status" role="status" data-cue-status>{status}</p>
+          {#if frame.attemptsLeft !== null}
+            <p class="attempts" data-cue-attempts>{t(lang, 'puzzle.attempts_left', { n: frame.attemptsLeft })}</p>
+          {/if}
+          <div class="actions">
+            <button type="button" class="primary" data-cue="puzzle-try" disabled={!canTry} onclick={() => ontry()}
+              >{t(lang, 'puzzle.try')}</button
+            >
+            {#if frame.hintTiers > 0}
+              <button type="button" data-cue="puzzle-hint" onclick={() => onhint()}>{t(lang, 'puzzle.hint')}</button>
+            {/if}
+          </div>
+          {#if canGiveUp}
+            <div class="give-up">
+              {#if asking}
+                <div class="actions">
+                  <p class="ask">{t(lang, 'puzzle.give_up_confirm')}</p>
+                  <button type="button" data-cue="give-up-no" onclick={() => (askingFor = null)}>{t(lang, 'saves.no')}</button>
+                </div>
+                <div class="actions">
+                  <button type="button" class="danger" data-cue="give-up-yes" onclick={giveUp}>{t(lang, 'puzzle.give_up_yes')}</button>
+                </div>
+              {:else}
+                <div class="actions">
+                  <button type="button" data-cue="give-up-ask" onclick={ask}>{t(lang, 'puzzle.give_up')}</button>
+                </div>
+              {/if}
+            </div>
+          {/if}
+          {#if ladder !== null}
+            <HintLadder {lang} {ladder} onuse={(tier) => onusehint(tier)} ongetmore={() => ongetmore()} />
+          {/if}
+        </div>
+      </section>
+    {/if}
   {/key}
 {/if}
 
@@ -192,6 +262,94 @@
     height: 100%;
     /* App's frame layer passes taps through; the frame takes them back. */
     pointer-events: auto;
+  }
+
+  /*
+   * A device's root and parts layer cover the room yet take no tap, so a tap beside the device reaches the room under
+   * it (engine plan §7.5 "Host"); the bar takes its taps back here, each part in its type UI (`auto` on its own hit).
+   */
+  .device,
+  .parts {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+
+  /*
+   * The bar comes before the parts in the DOM (a screen reader meets the title first) yet paints and takes taps over
+   * them: the device is its own stacking context, so the bar's `z-index` orders it inside the device only, and the
+   * device as a whole keeps its place under the ribbon, the explore bar and every sheet.
+   */
+  .device {
+    isolation: isolate;
+  }
+
+  /*
+   * The bar sits under the Telegram header, in three rows: one button row that never wraps (44 px), the status clamped
+   * to two 18 px lines, the attempts line. Its height follows the status, 118 px at most (6 + 44 + 4 + 36 + 4 + 18 + 6),
+   * the most the device band is sized for (`DEVICE_BAR_CSS_H`, scripts/story/mechanics/devices.ts).
+   */
+  .bar {
+    position: absolute;
+    z-index: 1;
+    top: calc(var(--app-inset-top, 0px) + 8px);
+    right: 0;
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px calc(var(--app-inset-right, 0px) + 6px) 6px calc(var(--app-inset-left, 0px) + 6px);
+    pointer-events: auto;
+    background: var(--tg-theme-bg-color, #17171c);
+    color: var(--tg-theme-text-color, #fff);
+  }
+
+  .row {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 16px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .bar button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 8px 12px;
+  }
+
+  .bar .status,
+  .bar .attempts {
+    font-size: 14px;
+    line-height: 18px;
+  }
+
+  .bar .status {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+
+  /*
+   * The ladder place is its room sheet's panel: it pads itself past the safe area and scrolls, as every explore sheet
+   * does (Inventory.svelte), with no background of its own, so the sheet's backdrop stays around the ladder's card.
+   */
+  .ladder-place {
+    box-sizing: border-box;
+    height: 100%;
+    overflow-y: auto;
+    padding: calc(var(--app-inset-top, 0px) + 16px) calc(var(--app-inset-right, 0px) + 16px)
+      calc(var(--app-inset-bottom, 0px) + 16px) calc(var(--app-inset-left, 0px) + 16px);
   }
 
   .wrap {

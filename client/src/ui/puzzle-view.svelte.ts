@@ -54,6 +54,11 @@ export type PuzzleFrameView = {
    * result, so both Retry buttons (PuzzleHost's and App's failed-host block) are disabled only while a reload runs.
    */
   retrying: boolean;
+  /**
+   * Where the frame shows, fixed for the frame (engine plan §7.5 "Host"; GM8h): `overlay` in App's frame layer over the
+   * stage; `view` inside its device's room (ExploreView renders it), so it covers nothing and pushes no overlay.
+   */
+  presentation: 'overlay' | 'view';
 };
 
 /** The ladder as the session answered it, with the use in flight and its failure. */
@@ -81,6 +86,11 @@ export type PuzzleHostCallbacks = {
    * form. yields posts it once per solve; a commit frame ignores it. Optional: a host that opens no reach type needs none.
    */
   onreach?: (canonical: readonly number[]) => void;
+  /** A device type UI's part press, its commit part, its demonstration control and its refused input (§7.5; GM8h). */
+  onwork?: PuzzleUiProps['onwork'];
+  oncommit?: PuzzleUiProps['oncommit'];
+  ondemo?: PuzzleUiProps['ondemo'];
+  onblocked?: PuzzleUiProps['onblocked'];
 };
 
 /**
@@ -100,11 +110,25 @@ export function forwardHost(get: () => PuzzleHostCallbacks | undefined): PuzzleH
     ongetmore: () => get()?.ongetmore(),
     oncue: (e) => get()?.oncue?.(e),
     onreach: (c) => get()?.onreach?.(c),
+    onwork: (w, wrong) => get()?.onwork?.(w, wrong),
+    oncommit: () => get()?.oncommit?.(),
+    ondemo: () => get()?.ondemo?.(),
+    onblocked: (part) => get()?.onblocked?.(part),
   };
 }
 
-/** The props of the puzzle-host chunk's component (`ui/puzzles/PuzzleHost.svelte`). */
-export type PuzzleHostProps = { lang: Lang; frame: PuzzleFrameView | null; ladder: HintLadderUiView | null } & PuzzleHostCallbacks;
+/**
+ * Where the host renders (engine plan §7.5 "Host"; GM8h): `frame`, the overlay frame in App's frame layer; `room`, a
+ * device's compact bar and its parts layer inside its room (ExploreView); `ladder`, the hint ladder alone, in a room
+ * sheet over a device.
+ */
+export type HostPlace = 'frame' | 'room' | 'ladder';
+
+/**
+ * The props of the puzzle-host chunk's component (`ui/puzzles/PuzzleHost.svelte`). `place` is optional, `frame` when
+ * absent: App mounts the host without it (L4, RULINGS 363 A11).
+ */
+export type PuzzleHostProps = { lang: Lang; frame: PuzzleFrameView | null; ladder: HintLadderUiView | null; place?: HostPlace } & PuzzleHostCallbacks;
 
 /** The store; App.svelte renders `host` with `frame` and `ladder` while both `host` and `frame` are set. */
 export interface PuzzleView {
@@ -137,17 +161,18 @@ export function createPuzzleView(): PuzzleView {
 
 /**
  * The frame covers the stage: the stage layer under it is inert and App renders the frame layer (engine plan GM3w).
- * Every frame does today; a device drawn inside the room will not. A plain `boolean`, not a type predicate, so no
- * caller's narrowing changes when the body does.
+ * An overlay frame does; a device drawn inside its room does not (§7.5 "Host"), so App's frame layer never renders it.
+ * A plain `boolean`, not a type predicate, so no caller's narrowing changes when the body does.
  */
 export function coversStage(f: PuzzleFrameView | null): boolean {
-  return f !== null;
+  return f !== null && f.presentation === 'overlay';
 }
 
 /**
- * The overlay a frame puts on the screens stack: an exploration puzzle closes with BackButton; a linear puzzle is a
- * mode, not an overlay, so it shows none and one stray Back never abandons a branch (X8).
+ * The overlay a frame puts on the screens stack: an exploration overlay puzzle closes with BackButton; a linear puzzle
+ * is a mode, not an overlay, so it shows none and one stray Back never abandons a branch (X8); a device closes when its
+ * view is left (the root back), so it shows none either (§7.5 "Back").
  */
 export function backScreen(f: PuzzleFrameView): Screen | null {
-  return f.mode === 'explore' ? { kind: 'puzzle' } : null;
+  return f.mode === 'explore' && f.presentation === 'overlay' ? { kind: 'puzzle' } : null;
 }

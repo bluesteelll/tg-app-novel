@@ -79,6 +79,11 @@ export interface PuzzleSession {
   readonly mode: PuzzleMode;
   /** The instance's reply kind (engine plan §7.5): 'reach' posts the type UI's reported answer, 'commit' a Try's. */
   readonly check: 'commit' | 'reach';
+  /**
+   * The puzzle's instance (engine plan §7.1, §7.5; GM8h D1): the one the session was built with, from its deps' `types`,
+   * so the frame's presentation, commit, shape and demonstration agree with the start and the check the session uses.
+   */
+  readonly instance: PuzzleInstance;
   answer(): readonly number[];
   setAnswer(a: readonly number[]): void;
   /**
@@ -86,6 +91,12 @@ export interface PuzzleSession {
    * reply to a reach type's post is a `mismatch`: the answer resets to the start answer, with no attempt and no dispatch.
    */
   attempt(): Promise<Result<AttemptResult, PuzzleError>>;
+  /**
+   * A local wrong input (engine plan §7.5 "Attempts"; GM8h): a `wrong: 'local'` type's UI knows a press is wrong with
+   * no POST, so it counts here as a posted wrong does (one attempt, `attempt-failed`, the limit ends the session
+   * `failed`). `closed` once over; `busy` with an attempt in flight; `invalid` for a type whose wrong is not local.
+   */
+  failLocal(): Result<AttemptResult, PuzzleError>;
   /** `GET /api/puzzles/{id}`, single-flight; the texts stay in this session's memory. */
   hints(): Promise<Result<HintLadder, PuzzleError>>;
   /** The ladder as last learned, with the port's current wallet; no request. */
@@ -131,7 +142,8 @@ function puzzleError(e: ApiError): PuzzleError {
   switch (e.kind) {
     case 'http':
       if (e.status === 429) {
-        return { kind: 'rate-limited', retryAfterSecs: e.retryAfter ?? RETRY_AFTER_FALLBACK_S };
+        // D6 (V3): never under a second, so a Retry-After of 0 still counts down and re-posts once, not at once.
+        return { kind: 'rate-limited', retryAfterSecs: Math.max(1, e.retryAfter ?? RETRY_AFTER_FALLBACK_S) };
       }
       return e.status === 403 ? { kind: 'not-entitled' } : { kind: 'network' };
     case 'aborted':
@@ -154,7 +166,7 @@ class Session implements PuzzleSession {
   readonly check: 'commit' | 'reach';
   readonly #deps: PuzzleSessionDeps;
   readonly #puzzle: PublicPuzzle;
-  readonly #instance: PuzzleInstance;
+  readonly instance: PuzzleInstance;
   #answer: readonly number[];
   /** The saved run's attempts plus this session's wrong answers. */
   #attempts: number;
@@ -179,7 +191,7 @@ class Session implements PuzzleSession {
   constructor(deps: PuzzleSessionDeps, puzzle: PublicPuzzle, instance: PuzzleInstance) {
     this.#deps = deps;
     this.#puzzle = puzzle;
-    this.#instance = instance;
+    this.instance = instance;
     this.id = puzzleId(deps.chapter, deps.puzzle);
     this.local = deps.puzzle;
     this.mode = deps.mode;
@@ -208,7 +220,7 @@ class Session implements PuzzleSession {
     }
     const answer = this.#answer;
     // Type-agnostic: the shape the server checks too; whether an answer may be tried is the type UI's (its play half).
-    if (shapeProblem(answer, this.#instance.shape) !== null) {
+    if (shapeProblem(answer, this.instance.shape) !== null) {
       return err({ kind: 'invalid' });
     }
     const abort = new AbortController();
@@ -237,12 +249,30 @@ class Session implements PuzzleSession {
       this.#end('solved');
       return ok({ kind: 'correct' });
     }
-    if (this.#instance.check === 'reach') {
+    if (this.instance.check === 'reach') {
       // `solved` above stays the server's truth (the ladder's locked tiers read unavailable); `correct: false` here is
       // never the player's wrong: the device starts over, and nothing is counted or dispatched.
-      this.#answer = this.#instance.initial();
+      this.#answer = this.instance.initial();
       return ok({ kind: 'mismatch' });
     }
+    return this.#countWrong();
+  }
+
+  failLocal(): Result<AttemptResult, PuzzleError> {
+    if (this.#over()) {
+      return err({ kind: 'closed' });
+    }
+    if (this.#attempt !== null) {
+      return err({ kind: 'busy' });
+    }
+    if (this.instance.wrong !== 'local') {
+      return err({ kind: 'invalid' });
+    }
+    return this.#countWrong();
+  }
+
+  /** One wrong answer, posted or local: counted, dispatched, and the attempt limit ends the session `failed`. */
+  #countWrong(): Result<AttemptResult, PuzzleError> {
     this.#attempts += 1;
     this.#deps.dispatch({ kind: 'attempt-failed', puzzle: this.local });
     const max = this.#puzzle.maxAttempts;
