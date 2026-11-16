@@ -768,15 +768,23 @@ export function createGame(deps: GameDeps): Game {
 
   /**
    * Applies a visual batch after its blocking loads; resolves with the batch's own end (transitions, wait). `window`:
-   * the step's preload window, wanted at the batch's swap point (shots §5.8); none keeps the previous one.
+   * the step's preload window, wanted at the batch's swap point (shots §5.8); none keeps the previous one. `before`
+   * runs after the loads and before the batch is handed (SH7 D13: the handover's hold).
    */
-  const stage = async (s: Session, visual: readonly VisualCommand[], instant: boolean, window?: StageWindow): Promise<{ done: Promise<void> }> => {
+  const stage = async (
+    s: Session,
+    visual: readonly VisualCommand[],
+    instant: boolean,
+    window?: StageWindow,
+    before?: () => void,
+  ): Promise<{ done: Promise<void> }> => {
     const preview = s.entry !== 'none';
     const ids = imageIds(visual, { stage: scene.snapshot(), manifest: s.ch?.assets ?? null });
     if (ids.length > 0) {
       // F1 step 9: an asset that fails to load is skipped by the scene, and the story goes on.
       await scene.ensure(ids, s.abort.signal, { preview });
     }
+    before?.();
     // An entry's windowless stage hands the keep window, so its swap upgrades the previews (shots §5.8 step 3); the
     // first windowed stage ends the entry.
     const done = scene.apply(visual, { instant, window: window ?? (preview ? KEEP_WINDOW : undefined), preview });
@@ -848,7 +856,15 @@ export function createGame(deps: GameDeps): Game {
         s.backlog.splice(0, s.backlog.length - BACKLOG_MAX);
       }
     }
-    const shown = await stage(s, visual, instant, windowOf(s, ch, step));
+    const shown = await stage(s, visual, instant, windowOf(s, ch, step), () => {
+      // SH7 (D13, SH5a's V4): a handover's first knot holds its art (resident under next:<id>) under its own tag
+      // before the batch hands the window that ends the entry tag: a batch that takes no slot builds, and hands it, in
+      // the first microtask. enterKnot's first branch then finds no handover. An ended session takes none (B4).
+      if (session === s && step.kind !== 'end' && step.enteredKnot && s.handover === step.knot) {
+        s.handover = null;
+        hold(s, ch, step.knot);
+      }
+    });
     if (session !== s) {
       return;
     }

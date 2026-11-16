@@ -6553,3 +6553,36 @@ test("game: the scene receives the session's cue subscription", async () => {
   expect(typeof h.scene.cueSubs[0]).toBe('function');
   h.game.dispose();
 });
+
+/** ch2 whose first step stages nothing: its batch takes no slot, so the scene hands its window in the first microtask. */
+function bareCh2(): LoadedChapter {
+  return chapter(
+    'ch2',
+    ['-> study', '=== study ===', 'Two begins in the dark. #id:ch2.study.l001', '# bg: study', 'The lamp is lit. #id:ch2.study.l002', '-> END'],
+    { study: { assets: ['bg/study'], ending: true } },
+  );
+}
+
+test("game: a handover holds its first knot's art before the first window ends the entry tag", async () => {
+  const h = harness({ chapters: [manorCh1(), bareCh2()], owned: ['ch2'] });
+  await playManorCh1(h);
+  await h.game.advance(); // END: the change, then ch2's first line, whose batch stages nothing
+  expect(lineOf(h.vm)).toBe('ch2.study.l001');
+  const since = h.scene.calls.slice(h.scene.calls.indexOf('setChapter:ch2'));
+  // SH7 D13 (V4): the first knot's art is held under its own tag before the batch hands the window that ends next:ch2.
+  expect(since.filter((c) => /^(preload:preload:study|apply:|entry:)/.test(c))).toEqual(['preload:preload:study', 'apply:', 'entry:next:ch2']);
+  expect([...(h.scene.holders.get('preload:study') ?? [])]).toEqual(['bg/study']);
+  h.game.dispose();
+  // B4: a session that ends while its first step's loads wait takes no hold.
+  const g = harness({ chapters: [manorCh1(), manorCh2()], owned: ['ch2'] });
+  await playManorCh1(g);
+  const release = holdEnsure(g.scene);
+  const change = g.game.advance();
+  await settle();
+  expect(g.scene.calls).toContain('setChapter:ch2');
+  g.game.dispose();
+  release();
+  await change;
+  await settle();
+  expect(g.scene.calls.filter((c) => c === 'preload:preload:study')).toEqual([]);
+});
