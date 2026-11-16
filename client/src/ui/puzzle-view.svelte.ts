@@ -54,6 +54,11 @@ export type PuzzleFrameView = {
    * result, so both Retry buttons (PuzzleHost's and App's failed-host block) are disabled only while a reload runs.
    */
   retrying: boolean;
+  /**
+   * Where the frame shows, fixed for the frame (engine plan §7.5 "Host"; GM8h): `overlay` in App's frame layer over the
+   * stage; `view` inside its device's room (ExploreView renders it), so it covers nothing and pushes no overlay.
+   */
+  presentation: 'overlay' | 'view';
 };
 
 /** The ladder as the session answered it, with the use in flight and its failure. */
@@ -137,17 +142,18 @@ export function createPuzzleView(): PuzzleView {
 
 /**
  * The frame covers the stage: the stage layer under it is inert and App renders the frame layer (engine plan GM3w).
- * Every frame does today; a device drawn inside the room will not. A plain `boolean`, not a type predicate, so no
- * caller's narrowing changes when the body does.
+ * An overlay frame does; a device drawn inside its room does not (§7.5 "Host"), so App's frame layer never renders it.
+ * A plain `boolean`, not a type predicate, so no caller's narrowing changes when the body does.
  */
 export function coversStage(f: PuzzleFrameView | null): boolean {
-  return f !== null;
+  return f !== null && f.presentation === 'overlay';
 }
 
 /**
- * The overlay a frame puts on the screens stack: an exploration puzzle closes with BackButton; a linear puzzle is a
- * mode, not an overlay, so it shows none and one stray Back never abandons a branch (X8).
+ * The overlay a frame puts on the screens stack: an exploration overlay puzzle closes with BackButton; a linear puzzle
+ * is a mode, not an overlay, so it shows none and one stray Back never abandons a branch (X8); a device closes when its
+ * view is left (the root back), so it shows none either (§7.5 "Back").
  */
 export function backScreen(f: PuzzleFrameView): Screen | null {
-  return f.mode === 'explore' ? { kind: 'puzzle' } : null;
+  return f.mode === 'explore' && f.presentation === 'overlay' ? { kind: 'puzzle' } : null;
 }

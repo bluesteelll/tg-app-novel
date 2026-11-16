@@ -91,6 +91,7 @@ function frameOf(over: Partial<PuzzleFrameView> = {}): PuzzleFrameView {
     ui: CodeLock,
     loadFailed: false,
     retrying: false,
+    presentation: 'overlay',
     ...over,
   };
 }
@@ -462,10 +463,11 @@ test("puzzle-view: forwardHost reaches the current session's host and nothing af
   expect(calls).toEqual([]);
 });
 
-test('puzzle-view: coversStage is true for every frame today', () => {
+test('puzzle-view: coversStage is true for every overlay frame', () => {
   expect(coversStage(null)).toBe(false);
-  // A linear or an exploration puzzle, its type chunk loading or failed, an ended one: each covers the stage.
+  // A linear or an exploration overlay puzzle, its type chunk loading or failed, an ended one: each covers the stage.
   const frames = [frameOf(), frameOf({ mode: 'explore' }), frameOf({ ui: null }), frameOf({ ui: null, loadFailed: true }), frameOf({ line: 'solved' })];
+  expect(frames.map((f) => f.presentation)).toEqual(['overlay', 'overlay', 'overlay', 'overlay', 'overlay']);
   expect(frames.map((f) => coversStage(f))).toEqual([true, true, true, true, true]);
   // The store answers it for its frame at each read (App reads it there), following every write of the frame.
   const view = createPuzzleView();
@@ -474,6 +476,26 @@ test('puzzle-view: coversStage is true for every frame today', () => {
   expect(view.covers).toBe(true);
   view.frame = null;
   expect(view.covers).toBe(false);
+});
+
+test('puzzle-view: coversStage is false for a view frame', () => {
+  // Engine plan §7.5 "Host" (GM8h): a device is drawn inside its room, so the stage layer stays live under it and App's
+  // frame layer never renders it, whether its type chunk is in or failed; the store answers the same at each read.
+  const frames = [frameOf({ mode: 'explore', presentation: 'view' }), frameOf({ mode: 'explore', presentation: 'view', ui: null, loadFailed: true })];
+  expect(frames.map((f) => coversStage(f))).toEqual([false, false]);
+  const view = createPuzzleView();
+  view.frame = frameOf({ mode: 'explore', presentation: 'view' });
+  expect(view.covers).toBe(false);
+  view.frame = frameOf({ mode: 'explore' });
+  expect(view.covers).toBe(true);
+});
+
+test('puzzle-view: backScreen pushes no overlay for a view frame', () => {
+  // A device closes by leaving its view (the root back), never by a `puzzle` overlay: Back pops the stack's own
+  // overlays first (the ladder, the inventory) and then leaves the room. An overlay explore frame keeps its overlay.
+  expect(backScreen(frameOf({ mode: 'explore', presentation: 'view' }))).toBeNull();
+  expect(backScreen(frameOf({ mode: 'explore', presentation: 'overlay' }))).toEqual({ kind: 'puzzle' });
+  expect(backScreen(frameOf({ mode: 'linear', presentation: 'overlay' }))).toBeNull();
 });
 
 // ---------------------------------------------------------------------------------------------------------------

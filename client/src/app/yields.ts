@@ -16,7 +16,7 @@ import type { CueBus } from '../cues/bus.ts';
 import type { Cue, CueEvent, MoveHow, PuzzleCue, VisualDiff } from '../cues/types.ts';
 import type { ExploreController, createExploreController } from '../explore/controller.ts';
 import { project } from '../explore/project.ts';
-import { own, runReduce, worldIndex } from '../explore/reduce.ts';
+import { hotspotKey, own, runReduce, worldIndex } from '../explore/reduce.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { PuzzleOutcome, PuzzleRun, WorldState } from '../explore/state.ts';
@@ -260,6 +260,14 @@ type Open = {
    * set by the type UI's report, posted by `postReach`; null for a commit frame, and cleared by a move away.
    */
   reach: readonly number[] | null;
+  /**
+   * Where the frame shows (engine plan §7.5 "Lifecycle"; D2): `view` for a view type's explore-mode open of the shown
+   * room's device, drawn inside that room; `overlay` for every other open. Fixed for the open, as the frame's
+   * `presentation` is.
+   */
+  present: 'overlay' | 'view';
+  /** A view frame's room, the room shown when its open ran (D3); null for an overlay frame. */
+  room: RoomId | null;
 };
 
 /** The end cue of a dropped frame (`dropPuzzle`): the session's end, `closed` for a no-outcome drop, null at `dispose`. */
@@ -623,7 +631,7 @@ export function createYields(h: YieldsHost): Yields {
         screens.push({ kind: 'lock' }); // its `panel-open` is the screens diff's, here in this push (never held with a move)
         return;
       case 'puzzle':
-        jobs.push(() => openPuzzle(e.puzzle, 'explore', null));
+        jobs.push(() => openPuzzle(e.puzzle, 'explore', null, e.hotspot));
         return;
       case 'story':
         toStory(e.knot); // its fact cue is the writer's
@@ -1080,7 +1088,21 @@ export function createYields(h: YieldsHost): Yields {
     void h.queue(() => ended(o.local, outcome, o.mode, o.then, o.closeup && !o.hidden)); // the outcome is on screen
   };
 
-  const openPuzzle = async (local: PuzzleLocalId, mode: PuzzleMode, then: KnotName | null): Promise<void> => {
+  /**
+   * D2 (RULINGS 363): how a new frame shows, read when its open runs. In its room (`view`) only for a view type's
+   * explore-mode open of the shown room's device (`hotspot`, the open's own); every other open of a view type is an
+   * overlay (a site the story gate refuses, `world/view-type-site`), so a view instance never renders nowhere.
+   */
+  const presentOf = (s: PuzzleSession, mode: PuzzleMode, hotspot: HotspotKey | null, w: WorldPublic): Open['present'] => {
+    const room = world.room;
+    if (s.instance.presentation !== 'view' || mode !== 'explore' || hotspot === null || room === null) {
+      return 'overlay';
+    }
+    const device = own(w.mods.devices.device, room);
+    return device !== undefined && hotspot === hotspotKey(room, device) ? 'view' : 'overlay';
+  };
+
+  const openPuzzle = async (local: PuzzleLocalId, mode: PuzzleMode, then: KnotName | null, hotspot: HotspotKey | null): Promise<void> => {
     const ch = h.chapter();
     const w = ch?.world ?? null;
     const p = w !== null && Object.hasOwn(w.puzzles, local) ? w.puzzles[local] : undefined;
@@ -1101,7 +1123,23 @@ export function createYields(h: YieldsHost): Yields {
       h.storyError({ kind: 'load', message: `puzzle ${made.error.puzzle} has no session` });
       return;
     }
-    const o: Open = { session: made.value, port, local, mode, then, closeup: p.closeup !== null, id: ++frameSeq, hidden: false, appeared: false, loading: false, asked: null, reach: null };
+    const present = presentOf(made.value, mode, hotspot, w);
+    const o: Open = {
+      session: made.value,
+      port,
+      local,
+      mode,
+      then,
+      closeup: p.closeup !== null,
+      id: ++frameSeq,
+      hidden: false,
+      appeared: false,
+      loading: false,
+      asked: null,
+      reach: null,
+      present,
+      room: present === 'view' ? world.room : null,
+    };
     open = o;
     o.session.onEnd((e) => onEnd(o, e));
     if (p.closeup !== null) {
@@ -1128,6 +1166,7 @@ export function createYields(h: YieldsHost): Yields {
       ui: null,
       loadFailed: false,
       retrying: false,
+      presentation: o.present,
     };
     puzzle.frame = frame;
     appear(o); // shown at its write when the host chunk is in
@@ -1490,7 +1529,7 @@ export function createYields(h: YieldsHost): Yields {
         return;
       }
       if (y.kind === 'puzzle') {
-        await openPuzzle(y.puzzle, 'linear', y.then);
+        await openPuzzle(y.puzzle, 'linear', y.then, null);
       } else {
         await openSection(y.section);
       }

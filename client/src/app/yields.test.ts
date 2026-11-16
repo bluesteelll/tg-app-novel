@@ -2738,6 +2738,17 @@ test('yields: the host hears every change of the shown frame', async () => {
   await settle();
   y.yields.dispose();
   expect(atBack).toEqual([{ id: shown }, null]);
+  // GM8h: a device view's bar never reports (it covers nothing; only a frame that covers the stage does), from its
+  // arrival through its session's end.
+  const d = deviceRig('dials');
+  const device: unknown[] = [];
+  d.host.frameShown = (f) => device.push(f);
+  await atDevice(d);
+  expect(device).toEqual([]);
+  // Non-vacuous: the device is on screen in its room, its host in.
+  expect([d.puzzle.frame?.presentation, d.puzzle.host]).toEqual(['view', HOST]);
+  d.yields.dispose();
+  expect(device).toEqual([]);
 });
 
 test('yields: every attempt starts through post', () => {
@@ -3433,6 +3444,8 @@ const FRAME_FIELD_CUES: { readonly [K in keyof PuzzleFrameView]-?: Covering } = 
   ui: CHUNK_KEYS,
   loadFailed: CHUNK_KEYS,
   retrying: { keys: (v) => [v === true ? 'ui-state:waiting@puzzle' : 'ui-state:waited@puzzle'] },
+  // GM8h: where the frame shows (in App's frame layer, or in its device's room) is its open's, never a later write's.
+  presentation: FIXED,
 };
 const LADDER_FIELD_CUES: { readonly [K in keyof HintLadderUiView]-?: Covering } = {
   tiers: RUNG_KEYS,
@@ -4147,4 +4160,120 @@ test('yields: every wait of the views holds a motion', async () => {
   for (const [row, run] of Object.entries(WAIT_CASES)) {
     await run(row);
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM8h: a device drawn inside its view room (engine plan §7.5 "Host", "Lifecycle", "Working state", "Full commit",
+// "Posting per reply kind", "Demonstration", "Attempts"). No registered type is a view before GM8a
+// (`puzzles/rules/index.ts`), so every device here is a fixture view type: the world is decoded with `DEVICE_TYPES` and
+// the sessions take them as `h.puzzleTypes` (D1's non-vacuity: a world decoded without them refuses the device).
+
+type PartsParams = { readonly parts: number };
+
+/** A fixture view type's data half: `parts` parts of 0..2, all 0 at the start; a saved work fits while it holds them. */
+function viewType<T extends string>(type: T, over: Partial<PuzzleTypeData<T, PartsParams>> = {}): PuzzleTypeData<T, PartsParams> {
+  return {
+    type,
+    check: 'commit',
+    goal: 'secret',
+    presentation: 'view',
+    wrong: 'posted',
+    commit: 'control',
+    decodeParams: (raw) => (typeof raw === 'object' && raw !== null && 'parts' in raw && typeof raw.parts === 'number' ? { ok: true, value: { parts: raw.parts } } : { ok: false, error: 'parts' }),
+    answerShape: (p) => ({ len: p.parts, max: 2 }),
+    initial: (p) => new Array<number>(p.parts).fill(0),
+    startShown: (p) => new Array<number>(p.parts).fill(0),
+    workFits: (p, work) => work.length === p.parts && work.every((v) => Number.isInteger(v) && v >= 0 && v <= 2),
+    ...over,
+  };
+}
+
+/** A configuration device posted by its commit part (`commit: 'control'`), its wrong posted: a `setting`. */
+const DIALS = viewType('dials');
+const DEVICE_TYPES: PuzzleTypes = [...PUZZLE_TYPES, DIALS];
+const DEV = 'dev' as PuzzleLocalId;
+
+/**
+ * hall -> panel, a view of the hall whose `device` is `dial`: a zero-slot lock of the puzzle `dev`, of the fixture type
+ * `type` (its onFail gives the coin, so a failed run fires `fail:panel.dial`). The hall holds the code lock `chest` (the
+ * puzzle `gate`) and an exit to the knot `after`; the panel holds `safe`, a lock of the view-type puzzle `loose` that is
+ * not the room's device (a site the story gate refuses, `world/view-type-site`: here only to prove the runtime's own
+ * narrowing), and an exit to the knot `after`.
+ */
+function deviceWorld(type: string, o: { parts?: number; maxAttempts?: number | null; hintTiers?: number } = {}): WorldPublic {
+  const parts = o.parts ?? 3;
+  const puzzle = (t: string, title: string, maxAttempts: number | null): Json => ({
+    type: t,
+    title: txt(title),
+    prompt: txt('prompt'),
+    closeup: null,
+    params: { parts },
+    maxAttempts,
+    giveUp: false,
+    solution: new Array<number>(parts).fill(1),
+    hints: Array.from({ length: o.hintTiers ?? 1 }, (_, i) => txt(`hint ${i + 1}`)),
+  });
+  const toKnot = (id: string): Json => ({ id, kind: 'exit', rect: RECT, label: txt(id), to: { story: 'after' }, lock: null, sfx: null });
+  const raw = {
+    format: 1,
+    items: { coin: { name: txt('Монета'), desc: txt('d'), glyph: 'sun' } },
+    docs: {},
+    puzzles: { dev: puzzle(type, 'device', o.maxAttempts ?? null), loose: puzzle('dials', 'loose', null), gate: code(null, null) },
+    sections: {
+      manor: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: { bg: 'hall', title: txt('Hall'), onEnter: [], hotspots: [exit('to_panel', 'panel'), box('chest', lockOf([], 'gate')), toKnot('out')] },
+          panel: {
+            bg: 'cellar',
+            title: txt('Panel'),
+            onEnter: [],
+            hotspots: [box('dial', { ...lockOf([], 'dev'), onFail: [{ give: 'coin' }] }), box('safe', lockOf([], 'loose')), toKnot('leave')],
+            view: { of: 'hall' },
+            device: 'dial',
+          },
+        },
+      },
+    },
+  };
+  const r = decodeWorldSource(raw, { types: DEVICE_TYPES });
+  if (!r.ok) {
+    throw new Error(`invariant: the device fixture world decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods, version: '8888888888888888' };
+}
+
+/** A rig over the device world of `type`, its sessions given `DEVICE_TYPES`. */
+const deviceRig = (type: string, o: RigOptions & { parts?: number; maxAttempts?: number | null; hintTiers?: number } = {}): Rig =>
+  rig({ ...o, world: deviceWorld(type, o), puzzleTypes: DEVICE_TYPES });
+
+/** In the hall, then into the panel: the arrival opens the device. */
+async function atDevice(r: Rig): Promise<void> {
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect(roomOf(r)).toBe('panel');
+}
+
+test("yields: a frame is a view only for the shown room's device of a view type", async () => {
+  // D2 (RULINGS 363): a frame is `view` when its type's presentation is `view` and its open is the explore-mode open of
+  // the shown room's device, read when the open runs; every other open of a view type is an overlay, so a view instance
+  // never renders nowhere (both are sites the story gate refuses: `world/view-type-site`).
+  const r = deviceRig('dials');
+  await atDevice(r);
+  // The arrival's open: the shown room's device, of a view type; it pushes no `puzzle` overlay.
+  expect([r.puzzle.frame?.mode, r.puzzle.frame?.type, r.puzzle.frame?.title, r.puzzle.frame?.presentation]).toEqual(['explore', 'dials', 'device', 'view']);
+  expect(r.vm.screens.overlays.map((v) => v.kind)).toEqual([]);
+  // A view-type puzzle behind a lock that is not the room's device: an overlay, with its overlay pushed.
+  r.yields.layer.ontap(key('panel.safe'));
+  await settle();
+  expect([r.puzzle.frame?.title, r.puzzle.frame?.presentation]).toEqual(['loose', 'overlay']);
+  expect(r.vm.screens.overlays.map((v) => v.kind)).toEqual(['puzzle']);
+  r.yields.dispose();
+  // The device's own puzzle opened by a linear yield: an overlay.
+  const x = deviceRig('dials');
+  await x.yields.onYield({ kind: 'puzzle', puzzle: DEV, then: AFTER });
+  expect([x.puzzle.frame?.mode, x.puzzle.frame?.title, x.puzzle.frame?.presentation]).toEqual(['linear', 'device', 'overlay']);
+  x.yields.dispose();
 });

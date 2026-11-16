@@ -514,6 +514,54 @@ test('session: a wrong reply to a reach post is a mismatch and counts no attempt
   expect(s.ladder().tiers.map((t) => t.state)).toEqual(['unavailable', 'unavailable', 'unavailable']);
 });
 
+/**
+ * A fixture view type outside PUZZLE_TYPES (engine plan §7.5; no registered type is a view before GM8a): three knobs of
+ * 0..2, all 0 at the start, a wrong input its device sees itself, and a saved work that fits while it holds three knobs
+ * in range.
+ */
+const KNOBS: PuzzleTypeData<'knobs', { readonly knobs: number }> = {
+  type: 'knobs',
+  check: 'commit',
+  goal: 'secret',
+  presentation: 'view',
+  wrong: 'local',
+  commit: 'control',
+  decodeParams: () => ({ ok: true, value: { knobs: 3 } }),
+  answerShape: () => ({ len: 3, max: 2 }),
+  initial: () => [0, 0, 0],
+  startShown: () => [0, 0, 0],
+  workFits: (_p, work) => work.length === 3 && work.every((v) => Number.isInteger(v) && v >= 0 && v <= 2),
+};
+const VIEW_TYPES: PuzzleTypes = [...PUZZLE_TYPES, KNOBS];
+
+/** The code world with its gate re-typed as the knobs device (the cast: as the TUMBLER re-type above). */
+function knobsWorld(maxAttempts: number | null = null): WorldPublic {
+  const base = worldWith({ maxAttempts });
+  return { ...base, puzzles: { gate: { ...base.puzzles[pz('gate')], type: 'knobs', params: { knobs: 3 } } } } as unknown as WorldPublic;
+}
+
+test("session: a session's instance is its type's, from the types it was given", () => {
+  // D1 (RULINGS 363): the session exposes the one instance it was built with, from its deps' `types`, so a frame's
+  // presentation, commit, shape and demonstration can never disagree with the start and the check the session uses.
+  const { s } = rig({ world: knobsWorld(), types: VIEW_TYPES });
+  const { type, shape, check, goal, presentation, wrong, commit } = s.instance;
+  expect({ type, shape, check, goal, presentation, wrong, commit, initial: s.instance.initial(), demo: s.instance.demo() }).toEqual({
+    type: 'knobs',
+    shape: { len: 3, max: 2 },
+    check: 'commit',
+    goal: 'secret',
+    presentation: 'view',
+    wrong: 'local',
+    commit: 'control',
+    initial: [0, 0, 0],
+    demo: null,
+  });
+  expect(s.check).toBe(s.instance.check);
+  // Without the fixture in `types` the same world opens no session; a code puzzle's session holds the code instance.
+  expect(puzzleInstance({ type: 'knobs', params: { knobs: 3 } })).toBeNull();
+  expect([rig().s.instance.type, rig().s.instance.presentation]).toEqual(['code', 'overlay']);
+});
+
 test('session: a 25-cell answer posts', async () => {
   // No client cap (engine plan §7.4): the session checks the instance's shape only, so a 5 x 5 grid's fill posts whole;
   // the build's answer bound (the server's) is the one cap. The grid: the cyclic square with its diagonal blank.
