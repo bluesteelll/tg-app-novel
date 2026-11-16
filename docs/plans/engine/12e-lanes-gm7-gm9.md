@@ -35,7 +35,7 @@
   the move away's reach-only scope and `onreach`'s first-report guard; GREEN and APPROVED at `789bf1e`, RULINGS 339);
   vitest 1986 by name (+13); engine +431 B (sample 1.390), puzzle-host 2,652 B; the pre-merge lenses found no product
   defect (RULINGS 341). Round 7's GM6c2 branch: GM6c2 was not merged, so GM6c2's cut routes the zero's non-posting
-  branch (`yields.ts:1157-1160`) through `settle` ([per-player §5](../per-player/05-client-half.md)). Carries:
+  branch (`yields.ts:1157-1160`; `countdown`'s zero branch is `yields.ts:1285-1291` on `172e47e`) through `settle` ([per-player §5](../per-player/05-client-half.md)). Carries:
   `carry.md` "GM7r carries" (V3, a Retry-After of 0, must close in GM8h).
 - **Commits:** (1) `session: a reach puzzle posts once per solve and none per stroke` (red: TS2339 `onreach`);
   round 5: `reach: the edge reports a reached start once and each later turn to reached once` (red: TS2307 `reach.ts`;
@@ -94,7 +94,8 @@
   refused` became GM7g's `story: a 49-cell path passes the answer bound`. Carried (`carry.md` "GM7p carries"): Solver F3
   to GM7g (taken there as its own commit C6, `9b5a00b`, RULINGS 354 Q3), A1 and A3 to GM7g (taken there as rider R1,
   `114483b`), A2 on to GM8a (RULINGS 354 Q4); N1, F1, F2, CQ-e and the real-layout e2e to GM8d; V3, Q4, Q5 and the stale comments
-  to GM8h; Q6 and review M1 to GM9p; Q8 (dead-end pruning) to the first lane whose path search stops at its bound, or
+  to GM8h (Changed by RULINGS 363, 366, 375 (as of `172e47e`; docs lane `docs-errata-21`, group A): GM8h took V3, Q4's host half and the stale
+  `controls.test.ts` comment; Q4's reporters and Q5 are GM8h2's, RULINGS 363 S1, C1); Q6 and review M1 to GM9p; Q8 (dead-end pruning) to the first lane whose path search stops at its bound, or
   GM8d (RULINGS 352 G5).
 - **Commits:** (1) rules + canonical (`path: a reversed path posts its canonical form`); the path UI reports through
   GM7r's `reachEdge` (round 5, W3: `path: a stroke that reaches the end reports once`); (2) lints (two-solution and
@@ -137,7 +138,8 @@
   path or grid open); Q8 is re-routed (G5). The numerals 1..6 and the cells' look are placeholders for GM8d's art. Rows:
   engine +418 B (sample 0.871; R 2.306 after it), GridPuzzle's root closure 1,470 B; e2e 111 / 111 at r1 (RULINGS
   355). Carried (`carry.md` "GM7g carries"): solver N1 and review M1 / M2 to the grid files' next holder (GM8d unless
-  another lane takes them first), A2 to GM8a, O3 / F3's twins / stack O1 / O3 to GM8h, N2 to GM9p, N3 to the next
+  another lane takes them first), A2 to GM8a, O3 / F3's twins / stack O1 / O3 to GM8h (Changed by RULINGS 363, 375 (as of `172e47e`; docs lane `docs-errata-21`, group A): O3, F3's twins and stack O3 are
+  GM8h2's, RULINGS 363 C1; stack O1 goes to the next `PuzzleHost.svelte` holder, GM8h's Addendum A13, still open), N2 to GM9p, N3 to the next
   world-lint holder.
 - **Commits:** `story: a grid with two solutions is refused`, `grid: reached on the unique fill`, round 5: `story: a
   grid whose given cells fill it is refused` (the `world/reach-solution` start clause through a real type; a green
@@ -191,7 +193,8 @@
   stays 496: at the 360 px design width (Q67) the same formula gives 448, so the 320 px value is the stricter. **No world
   holds a device yet**; GM8a makes the first real view type. Rows: engine +437 B (sample 1.748; R 2.027 after it),
   explore-ui +514, cue-stage +36; e2e 111 / 111 at fix1 (RULINGS 361). Carried (`carry.md` "GM8i carries"): D5's
-  fallback set, Q6's first-write burst and the type-dependent checks to GM8h (before GM8d); Q1 (c), Q-2 (b), P3 and
+  fallback set, Q6's first-write burst and the type-dependent checks to GM8h (before GM8d) (Changed by RULINGS 363, 366, 375 (as of `172e47e`; docs lane `docs-errata-21`, group A):
+  GM8h closed Q6, D5-c (the `part` target) and the type-dependent checks; D5-a/b, the device's box, are GM8h2's, RULINGS 363 S1, C1); Q1 (c), Q-2 (b), P3 and
   review M1 / M3 to GM8a; R1 to GM8d or the next `explore/reconcile.ts` holder; Q-F2 to the next `world.ts` / `story.ts`
   holder; Q-F3 to the next `scripts/story/mechanics/conditions.ts` holder; review M2 to the next `softlock.ts` /
   `clues.ts` holder; D-a to the next `rules/devices.ts` holder.
@@ -241,7 +244,7 @@
   place the bar is the frame's wrapper (it carries `data-cue-frame` and `data-cue-panel="puzzle"`; the host's root
   carries neither), so RULINGS 135 (b)'s root invariant holds in a view);
   the bar's own rules `min-height: 44px` (with `padding: 10px 12px`) on its buttons and `line-height: 18px` on its
-  status and attempts lines, overriding the frame's 48 px button rule (`PuzzleHost.svelte:179-189`), so the bar is
+  status and attempts lines, overriding the frame's 48 px button rule (`PuzzleHost.svelte:179-189`; `:426-436` on `172e47e`), so the bar is
   6 + 44 + 4 + 2 x 18 + 4 + 18 + 6 = 118 <= 120 at 320 px; `onretry`'s App-block control cue narrowed to
   `o.present === 'overlay'`; the state gate's script gains the view frame's steps. Lock unchanged (11). **Round 10
   (critique_engine_r9 W1; the critic's `hotspot` question):** the view frame's appearance goes through GM3p's
@@ -281,7 +284,37 @@
   disabled button; its cut decides whether it is "a refused cell", and `onblocked` needs `PathPuzzle.svelte` and
   `GridPuzzle.svelte`), F3's twins, stack O1 / O3, `causeOf`'s `'fail'` verb, the type-dependent checks and the
   `DEVICE_TOP_INSET_CSS` verification; GM8i booked 0.32 of the explore-ui joint +0.3, and GM8h restates its +0.1 at its
-  cut (the row is 13,101 B, 899 B under the 14.0 KB trigger).
+  cut (the row is 13,101 B, 899 B under the 14.0 KB trigger). Changed by RULINGS 363, 366, 375 (as of `172e47e`; docs lane `docs-errata-21`, group A): of this list GM8h
+  closed Q6, V3, Q4's host half and D5-c; D5-a/b, Q65, Q4's reporters, Q5, F3's twins, O3 and M7 are GM8h2's (RULINGS 363 S1, C1;
+  stack O1 goes to the next `PuzzleHost.svelte` holder, Addendum A13); `DEVICE_TOP_INSET_CSS`'s verification is GM8a's (RULINGS 366 B3, D13).
+- **Ruled since: RULINGS 363, 366, 368, 372** (as of `172e47e`; docs lane `docs-errata-21`, group A) — **GM8h is merged** (`4471fbf`, lane A, beside SH6 in lane C,
+  RULINGS 363 S3, 365; its pre-merge lenses held the merge for a fix round, fix1, RULINGS 368). **Lock 15:** 13 at the launch (RULINGS 363 L1-L3: the 11
+  above plus `client/src/cues/controls.test.ts`, one comment-only hunk, and `client/src/cues/stage/index.ts`, the `part` target only), +2
+  in fix1 (RULINGS 368: `client/src/ui/App.svelte`, the QuickBar's mount condition only, and `client/src/ui/screens.svelte.test.ts`, its
+  source pin); all 15 changed (`git diff --stat f7acea2 4471fbf`). The plan's "No `App.svelte`" above held until fix1. **The split (RULINGS
+  363 S1):** this lane is the host of §7.5; the before-GM8d cue must-closes that need files outside its lock are **GM8h2**
+  `gm8h2-mech-device-cues`, before GM8a and GM8d (RULINGS 375 S3; its launch rulings are `gm8h2-rulings.md`): D5-a/b (the device's box on a
+  zoom-in, a resume or an event return), Q65, Q4's reporters, Q5 (widened to every answer whose values are part indices, RULINGS 366 B7),
+  F3's twins, stack O3 and M7. Q65's seam wording (RULINGS 234, [08b](08b-interactions-mechanism-presenters.md)) stays as written until
+  GM8h2 merges (RULINGS 375 D1). **Closed here:** Q6 (the first-write burst), V3, Q4's host half, D5-c (`fact:work:*` presses land on the
+  part, `client/src/cues/stage/index.ts` `partIndex` and the `part` case) and the type-dependent checks. **E terms as ruled:** E_engine **0.45**
+  (RULINGS 366; STOP +1,412 B at R 2.027: the cut's itemization superseded N16's joint remainder, so the remaining engine terms went from 5.401 to
+  5.741), E_explore **0.1** (outside the joint 0.3 that GM8i spent; its STOP was +732 B, and the 14.0 KB trigger stands), puzzle-host **0.52**,
+  E_cue **0.05** (STOP +601 B; RULINGS 366), entry +0.1 KB. **As merged** (main `4471fbf`; rows by module identity): engine **208,730** (+701,
+  sample 0.701 / 0.45 = **1.558**, so the engine R is 1.748 at n 25, RULINGS 372), explore-ui **13,406** (+305; 594 B under the 14.0 KB
+  trigger), puzzle-host **2,989** (+345), cue-stage **6,204** (+68), entry **39,132** (-37), first line **247,862**, all JS **289,725**, first
+  load ch1 **301,227**; 112 rows, 111 PASS, 0 FAIL, 1 PENDING; vitest 2209 by `7528d98` (74 new names and one declared rename, RULINGS 372);
+  e2e 111 / 111 at fix1. **fix1** (RULINGS 368, 372): a move back into a hidden device's room drops that session at the dispatch (L1,
+  option (B)); no QuickBar while a view frame is shown; the ladder place pads past the safe area and scrolls; no demonstration and no part
+  cue under a covering sheet (Q-C1, RULINGS 369); a wrong flag is a local-wrong device's, and a reach commit part posts its reached work; a
+  `workFits` that throws is a misfit; the decor redraw and the room place's callbacks are pinned. **As built, the plan's text above
+  corrected:** commit (1) writes `presentation` into the frame literal (a `yields.ts` line, the cut's D1), the component tests run on happy-dom
+  and read the source declarations (D10), T32 landed in commit (3), and the lane is 15 files, not 11. **Carried** (`carry.md` "GM8h
+  carries"): GM8h2's items above; GM8a (`DEVICE_TOP_INSET_CSS` by 07 §7.5's rule, a total `workFits` over each view type's codec, the
+  hotspot-band lint, a type UI never calling back after its destroy); the next `explore/reconcile.ts` holder or GM8a (a refused saved work
+  stays in `run.work` until the first move); GM8d (the device world's hit-test row, A9: the view frame is drawn after the crossfade ends,
+  Q-C2: `.device-failed`'s side insets); the next holder of `ui/puzzle-view.svelte.ts` / `yields.ts` (three stale doc comments: `PuzzleView`'s,
+  `shownFrame`'s and the mismatch comment; and a conjunct no input can falsify, among the declared equivalent mutants). Q54 gained its device rows in `172e47e`.
 - **Commits:** (1) `puzzle-view: coversStage is false for a view frame` (red: GM3w's `f !== null`), `puzzle-view:
   backScreen pushes no overlay for a view frame`; reconcile r2 (RC-W5; design-shots I-7): GM3p's `yields: the host
   hears every change of the shown frame` gains the case "a device view's bar never reports" (`frameShown` reports a
@@ -290,7 +323,7 @@
   **M-RCy**, the `coversStage` test dropped from GM3p's report); (2) `explore: a view frame renders the device inside the room, under
   the explore sheets` (red: no device slot), `explore: the ladder over a device is a sheet and the room is inert under
   it`, `explore: a view frame whose host failed shows Retry in the room`, `puzzle-host: a room-place host offers no
-  give-up`; (3) W2's tests (§7.5; red on main's rule at `yields.ts:852-854`); `device: leaving the view closes it with no
+  give-up`; (3) W2's tests (§7.5; red on main's rule at `yields.ts:852-854`; the X8 close is `yields.ts:1763-1770` on `172e47e`); `device: leaving the view closes it with no
   outcome and keeps its work`, `device: Back from a device view leaves in one press`; (4) m9: `yields: a correct
   answer landing after a zoom-out opens the device's lock`, `yields: a story effect during a device POST drops the
   answer`; (5) W2 (round 3): `session: a local wrong input counts one attempt and the limit ends the session failed`

@@ -268,8 +268,11 @@ The door was open. #id:ch1.room.d00r
 - **Arguments:** `<bg>` — a key of `bg` in `assets/catalog.json`.
 - **Options:** `t` default `cut` (the shots plan's cut verb); `ms` default `500`, range 0–10000.
   - `cut`: instant.
-  - `crossfade`: the new background fades in **over** the old one (no dip), then the old one is destroyed (today's
-    dissolve; the exact dissolve between shots is the shots plan's SH6).
+  - `crossfade`: the new background fades in **over** the old one (no dip), then the old one is destroyed. Changed by
+    RULINGS 365, 367, 371, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A): between two shots of a shot chapter (§14.1), in time, it is the exact dissolve (SH6,
+    `b0ef547`): the old stage's pixels are held in a snapshot and the new shot is built opaque under it. If the memory
+    reservation for that snapshot is refused, it is the plain crossfade above (new over old), and a legacy chapter (ch1-ch3, no
+    shot list) always is.
   - `fade`: through black — black fades in (ms/2), the background is swapped, black fades out (ms/2).
 - **Effect:** replaces the background; characters and CG stay.
 - **Validation:** `tag/unknown-asset`; `batch/conflict` with another `bg` or a `scene` in the same batch.
@@ -418,8 +421,16 @@ The archive was colder than I remembered. #id:ch2.archive.c0ld
   build names the expression's sprite like a `show`'s (the chapter's manifest and the knot's preload). A `face` of a
   character that is not on stage changes nothing. On a shot chapter (§14.1; as built, SH4) a `face` changes that cast
   member's drawn face in the shot in effect: the new expression's layers fade in over the old ones over `ms`, which
-  retire whole at the fade's end; a face back at its rest fades out to the plate, which shows the rest
-  (`client/src/scene/executor.ts:566-598`). The batch first ensures the shot's face file (its talk file is taken, never
+  retire whole at the fade's end; a face back at its rest fades out to the plate, which shows the rest. Changed by
+  RULINGS 365, 367, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A): since SH6 (`b0ef547`) a timed `face` in a batch with no `scene` that keeps the shot on stage (no `bg`, or a `bg` `t=cut` onto it) is drawn as one patch, a flat snapshot of the faces'
+  box that fades in over the old drawing (`patchFaces`, `client/src/scene/executor.ts:939-985`); if the patch cannot be
+  reserved or the shot has no rig, the layer crossfade above stands (K7: new over old, never a symmetric fade). In a batch
+  whose `bg` is a `t=crossfade` to another shot, the faces change with the `bg`: at once under the dissolve's snapshot, or
+  with the new shot as it fades in when the dissolve is not made (`executor.ts:1227-1269`). A `scene` or a `bg t=fade` changes the
+  faces at once (at the black of a timed dip, `:1199`, `:1222`), and a `bg` cut to another shot draws that shot's faces with it (`:767`, `:1271-1279`).
+  A `bg t=crossfade` onto the shot already on stage (a take, which returns the camera to rest) keeps the shot and makes no
+  patch: its faces follow the layer crossfade above over their time (K7; `executor.ts:1227-1269`, `swaps` is set only at `:1277`). No patch
+  is made in any of these. The batch first ensures the shot's face file (its talk file is taken, never
   awaited), and a face whose sheet or face file could not be had draws the rest face and logs a skip. On a shot chapter the build
   names no asset for a `face` (§8): its drawn files are the shot pass's (§14.4).
 - **Validation:** `tag/unknown-asset` (character or expression); with a shot list, `shot/char-absent` (the character
@@ -444,8 +455,11 @@ ally: But I am glad you came. #id:ch1.cafe.f4c1
   - `pull`: back to the rest framing; `ms` default `1200`.
   - `pan`: `to` required — `left`, `right` or a character of the catalog; `ms` default `1800`.
 - **Effect:** sets the shot's framing. It holds until the next `cam: pull`, `bg` or `scene`, each of which returns to
-  rest (a `cam` in the same batch then sets the new framing), and it is saved with the stage. Today the framing is
-  held in the stage state only; the shots plan's SH6 draws it.
+  rest (a `cam` in the same batch then sets the new framing), and it is saved with the stage. Changed by RULINGS 365,
+  367, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A): since SH6 (`b0ef547`) the framing is drawn: the stage's world is moved and scaled over `ms`
+  (power1.inOut). The push does **not** honour reduced motion yet: the scene has no reduced-motion input, the flag lives in
+  the UI only (`vm.reducedMotion`, `client/src/app/boot.ts:636`), and the rule that shortens or skips it is SH7's
+  (OPEN-QUESTIONS Q71).
 - **Validation:** `tag/missing-arg` (`pan` without `to`); `tag/bad-arg` (an unknown move, `z` out of range, an option
   the move does not take); `tag/unknown-asset` (a `to` that is neither a character nor its move's own word: `center`
   for `push`, `left` / `right` for `pan`); with a shot list, a character `to` is checked by `shot/char-absent` and
@@ -566,8 +580,8 @@ fixed:
    waits for the longest one. A `face` applies after the batch's `hide` and `show`: the expression change of a
    character on stage (a `show` without `at`); a `show` of the same character in the batch governs its timing (a
    `t=cut` show makes it instant, else the show's `ms`), while the state still follows this order, so the `face`'s
-   expression is the one that stays (`client/src/scene/executor.ts:1011-1017`). A `cam` sets the framing after the
-   batch's `scene` or `bg` returned it to rest; it is held in the stage state, not drawn yet (the shots plan's SH6). `anim` and `fx` reach the scene and
+   expression is the one that stays (`client/src/scene/executor.ts:1291-1297`). A `cam` sets the framing after the
+   batch's `scene` or `bg` returned it to rest; it is held in the stage state and drawn (SH6, `b0ef547`). `anim` and `fx` reach the scene and
    are not drawn yet (SH8); `think` stays with GameSession (SH7). The shots plan's drawn order is
    [shots §3.1](plans/shots/03-story-dsl.md#3-the-story-dsl): `scene`, `bg`, `face`, `cam`, `cg`, props,
    `anim` / `fx`, `wait`.
@@ -963,17 +977,24 @@ tables, like every module code ([AUTHORING "Module and type lint codes"](AUTHORI
   (`client/src/mechanics/rules/search.ts:271-273`). **Action `device-moved`:** `{ puzzle, work }`, verb `device`, at
   the device key; a no-op unless the session is live, in its room, with no knot pending, and every value is a
   non-negative safe integer with no hole (`client/src/mechanics/rules/devices.ts:82-93`).
+- **Where a device plays** (Changed by RULINGS 363, 366, 368, 372 (as of `172e47e`; docs lane `docs-errata-21`, group A); GM8h, `4471fbf`): a device puzzle's view presentation
+  is drawn inside the view room, in the room's place, not as a sheet over the story. The host's bar is anchored to the top of
+  that place and carries Hint, Retry after a failed chunk and, only after an offline reply, Try; the hint ladder opens as a sheet; and the QuickBar is
+  hidden while a device view is up. A story author adds nothing for this: the room's `device` key and the puzzle's type
+  decide it.
 - **Cues:** `fact:work:*` (`press`, 240 ms, target `part`, no haptic), `module:devices:done` (`glint`, 420 ms, target
   `box`), `module:devices:jammed` (`jam`, 480 ms, target `box`, haptic error)
-  (`client/src/cues/stage/motions.ts:174-175`, `:233-234`).
+  (`client/src/cues/stage/motions.ts:174-175`, `:233-234`). Changed by RULINGS 363, 375 (as of `172e47e`; docs lane `docs-errata-21`, group A): the `part` target is
+  resolved by GM8h (`client/src/cues/stage/index.ts:89-95`, `:162-167`), but a device's own move plays no `fact:work:*`
+  cue, and routing the `module:devices:*` cues to the box is GM8h2's.
 - **Codes** (`client/scripts/story/mechanics/devices.ts:28-43`, all E): `world/view-type-site`, `world/device-type`,
   `world/device-parts-frame` (registered; its check is GM8a's), `world/device-closeup`, `world/device-failed-state`,
   `world/device-object`, `world/device-when`, `world/device-alone`, `world/device-unlock`, `world/device-part`.
 - **The band:** every part's top edge must lie at or below `DEVICE_BAND_Y` = 64 + ceil((8 + 120 + 0) x 1080 / 320) =
   **496** canonical px (500 at a top inset of 1 CSS px). At the 360 px design width (OPEN-QUESTIONS Q67) the formula
   gives 448, so 496 is the stricter value (`client/scripts/story/mechanics/devices.ts:47-66`).
-- **No world holds a device yet.** No registered puzzle type is a view type; GM8a makes the first one, so a device
-  cannot be authored before GM8a.
+- **No world holds a device yet.** No registered puzzle type is a view type; GM8a makes the first one and GM8d the first
+  device world, so a device cannot be authored before GM8a (GM8h built the host that will draw it, RULINGS 368, 372).
 
 **Seeded playthroughs:**
 - **Runs** — 200 runs per chapter (seeds 1–200, mulberry32), random choice index, step cap 5,000.
@@ -1175,3 +1196,31 @@ be in effect after its batch's cut.
   the action happened in). (3) `npm --prefix client run story -- --strict` is red on the demo by design:
   `--strict` turns the eight `shot/undeclared` warnings into errors until `story/shots.json` declares those shots
   (no gate runs `--strict`).
+
+### 14.5 Worked example: the lamp knot of ch4 (SH6)
+
+Added by RULINGS 365, 367, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A). The knot `lamp` of `story/ch4/main.ink` uses two of the three SH6 effects: the camera push and
+the exact dissolve back to a shot. Its one `face:` sits in the dissolve's batch, so it changes at once under the snapshot and
+is not a face patch (§6 `face`); no batch of ch4 exercises the patch. Only its tags and line IDs are shown (the lines are story text and not quoted here); `ch4` is a paid chapter
+(`story/chapters.json`), so its text and its art are served after an entitlement check and are not in the public bundle.
+
+```text
+# scene: lamp_wide              (the wide shot; keeper at rest "worried")
+# bgm: storm
+ch4.lamp.a001 ... ch4.lamp.a003  (lines in the wide shot)
+# bg: lamp_keeper_cu            (t=cut: a cut to the close shot, the same room)
+ch4.lamp.a004
+# cam: push to=keeper           (the framing moves toward the keeper over ms; SH6 draws it)
+ch4.lamp.a005 ... ch4.lamp.a009  (lines, then the two choices ch4.lamp.c001 / ch4.lamp.c002 with their lines a010-a014)
+ch4.lamp.a015                    (the gather)
+# bg: lamp_lens_insert          (the insert shot, no cast; a cut, so the push is over)
+ch4.lamp.a016
+# bg: lamp_keeper_cu t=crossfade  (back to the close shot: the exact dissolve between two shots)
+# face: keeper smile            (changes with the dissolve, at once under its snapshot; the rest face is "worried")
+ch4.lamp.a017 ... ch4.lamp.a019
+```
+
+The three shots are declared in `story/shots.json` (`lamp_wide` frame `wide`, `lamp_keeper_cu` frame `close`, `lamp_lens_insert`
+frame `insert` with an empty cast) in the location `lamp_room`. What each tag does on a shot chapter is in §6 (`bg`, `face`,
+`cam`) and what the shot pass checks is in §14.3. The insert plate `bg/lamp_lens_insert` is a paid asset of ch4, and its budget
+row is `image bg/lamp_lens_insert`.

@@ -575,7 +575,7 @@
   `layerIn` / `layerOut` transitions on the PuzzleHost root, `puzzle:*` cues from yields (`onchange` diffs with index,
   `attempted`, hints), the reveal. Round 5: `puzzle:offline` from `attempted`'s `network` / `not-entitled` branch
   (`yields.ts:658-661`), `puzzle:rate-limited` from each `countdown` tick (`:619-630`), and `data-cue-status` on
-  PuzzleHost's status line (`PuzzleHost.svelte:81`). Round 6 (critique_engine_r5 W3): `puzzle:ready` at the
+  PuzzleHost's status line (`PuzzleHost.svelte:81`; now `client/src/ui/puzzles/PuzzleHost.svelte:220`, the bar's `:163`, as of `172e47e`, docs lane `docs-errata-21`, group A). Round 6 (critique_engine_r5 W3): `puzzle:ready` at the
   countdown's zero (every frame of this lane's types is `commit: 'control'`, so the zero never posts here; GM7r adds the
   `ready(o)` choice) and from `attempted`'s `closed` / `invalid` branch (`:662-666`; round 7: `busy` leaves it, m3),
   which also sets `line: 'idle'` (found in round 6: today that branch leaves `checking` on screen). **Round 7 (critique_engine_r6 W1,
