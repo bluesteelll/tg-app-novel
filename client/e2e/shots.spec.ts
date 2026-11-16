@@ -4,19 +4,22 @@
 // manifest), and a reload restores the face from the server's autosave. The colours are the asset tool's placeholder
 // fills (scripts/assets/shots.ts): an expression's layer is hsl(hue, 45%, 55%), its hue from assets/catalog.json.
 // Lane SH5a (shots §5.8): the step windows in ch1, a cut whose plate the window asked for ahead and the rooms' windows.
+// Lane SH6 (shots §5.5, §5.7): the lamp knot's dissolve back to the close-up, the keeper's push and each step's window
+// bound on the live texture bytes.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { APIRequestContext, Page } from '@playwright/test';
+import sharp from 'sharp';
 
 import { t } from '../src/i18n/index.ts';
-import { overscan, restFraming } from '../src/scene/shot-view.ts';
+import { camFraming, overscan, restFraming, zoomRange } from '../src/scene/shot-view.ts';
 import { decodeAssetCatalog, decodeAssetManifest } from '../src/story/catalog.ts';
 import type { AssetManifest, HalfFile, ImageEntry } from '../src/story/catalog.ts';
 import { decodeLook, decodeShotRigs, stepWindow } from '../src/story/shots.ts';
 import type { Box, LookIndex, Member, ShotRig } from '../src/story/shots.ts';
-import type { AssetId, BgId, CharId, ExprId } from '../src/story/staging.ts';
+import type { AssetId, BgId, CamState, CharId, ExprId } from '../src/story/staging.ts';
 import {
   ANSWER_SETTLE_MS,
   atRest,
@@ -49,6 +52,10 @@ const UID_NON_OWNER = 1205;
 /** Fresh dev users of the half-tier entry (shots §5.8 "Entry at the half tier"): F5 and F6. */
 const UID_SHARPEN = 1206;
 const UID_ENTRY_CUT = 1207;
+/** Fresh dev users of the lamp knot's transitions (lane SH6): the dissolve, the push and the window bound. */
+const UID_DISSOLVE = 1208;
+const UID_PUSH = 1209;
+const UID_WINDOW = 1210;
 const CLOSE_UP = 'lamp_keeper_cu' as BgId; // a shot id of story/shots.json
 const KEEPER = 'keeper' as CharId; // a cast id of story/cast.json
 const SMILE = 'smile' as ExprId; // an expression of assets/catalog.json
@@ -75,6 +82,16 @@ type WindowScene = {
   warmBytes: number;
   /** Records started from their half file on a full-tier registry and not yet upgraded (lane SH5b). */
   previews: number;
+  /** The transition targets as the GPU ledger counts them, live and since mount (lane SH6, CH D30). */
+  targets?: number;
+  targetBytes?: number;
+  targetsCreated?: number;
+  targetsDestroyed?: number;
+  /** Live transient reservations (a dissolve's or a patch's target while it runs) and their bytes. */
+  reservations?: number;
+  reservedBytes?: number;
+  /** Dissolves and patches that fell back to the container-alpha crossfade (cumulative, CH D15). */
+  flatRefused?: number;
 };
 
 /** `__novelDebug.stats().scene` with its window fields. */
@@ -499,8 +516,9 @@ type Drawn = { t: number; previews: number };
 
 /**
  * For the next document: every GL clear, with the scene's `previews` at that moment. Pixi clears the back buffer once
- * per rendered frame (its renderer's `clear` defaults to `clearBeforeRender`), and the app renders to no other target,
- * so each clear is a drawn frame.
+ * per rendered frame (its renderer's `clear` defaults to `clearBeforeRender`), and nothing renders to another target in
+ * this test (a dissolve or a face patch would: lane SH6): `targetsCreated` stays 0, asserted at its end, so each clear
+ * is a drawn frame.
  */
 async function recordFrames(page: Page): Promise<void> {
   await page.addInitScript(() => {
@@ -630,6 +648,8 @@ test('shots: a resume shows the half tier first and sharpens', async ({ page, re
   );
   // The at-rest bound (cut Q2): the wide shot's plate and sheet are live at their full size.
   expect(rest.liveBytes, `liveBytes at rest against the full ${WIDE_PLATE} and ${WIDE_SHEET}`).toBeGreaterThanOrEqual(plate.decodedBytes + sheet.decodedBytes);
+  // The frame count above holds only while no clear was a target's (recordFrames): no transition target was made.
+  expect(rest.targetsCreated, 'transition targets made in this test').toBe(0);
   // Principle 0: the half file is gated like the full one.
   for (const [uid, status] of [
     [UID_SHARPEN, 200],
@@ -737,4 +757,314 @@ test("shots: after an entry the first cut's half files are requested beside the 
   await Promise.all(holds.map((h) => h.release()));
   await expect.poll(async () => (await windowScene(page)).previews, { timeout: LINE_MS, message: 'every preview sharpened' }).toBe(0);
   await atRest(page);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The lamp knot's transitions (lane SH6, cut commit 8): a016 cuts to the lens insert, a017 dissolves back to the
+// close-up with the smile through one render target, and a005 pushes in on the keeper.
+
+/** a016's `# bg: lamp_lens_insert`: the insert the knot cuts to and dissolves away from. */
+const LENS_INSERT = 'bg/lamp_lens_insert' as AssetId;
+/** a005's `# cam: push to=keeper`, with the tag's default zoom (story/tags.ts). */
+const PUSH: CamState = { kind: 'push', to: KEEPER, z: 110 };
+/** The knot's last line before the dawn (story/ch4/main.ink `lamp`). */
+const LAMP_LAST = 'ch4.lamp.a019';
+
+/**
+ * Q8: the lamp knot's SH6 staging as the build under test compiles it (the paid story and its look), checked before
+ * E1-E3 run, so a red below is never a missing tag: the push, the cut to the insert, and the dissolve back.
+ */
+function ch4Story(): void {
+  const story = readFileSync(path.join(CLIENT_DIR, '..', 'server', 'content', 'chapters', 'ch4', 'story.json'), 'utf8');
+  for (const tag of ['cam: push to=keeper', 'bg: lamp_lens_insert', 'bg: lamp_keeper_cu t=crossfade']) {
+    if (!story.includes(tag)) {
+      throw new Error(`fixture shape absent: ch4's compiled story has no \`# ${tag}\``);
+    }
+  }
+  if (!(stepWindow(ch4Look(), 'ch4.lamp.a016')?.need ?? []).includes(LENS_INSERT)) {
+    throw new Error(`fixture shape absent: ch4.lamp.a016's window does not need ${LENS_INSERT}`);
+  }
+}
+
+/** The dialogue as helpers.ts readPlay reads it (not exported there): its line, whether it reveals, the choices. */
+type Shown = { line: string | null; revealing: boolean; choices: string[] };
+
+function shownNow(page: Page): Promise<Shown> {
+  return page.evaluate((): Shown => {
+    const box = document.querySelector<HTMLElement>('.dialogue');
+    const on = box !== null && !box.hidden;
+    return {
+      line: on ? box.getAttribute('data-line-id') : null,
+      revealing: on && (box.querySelector('[data-reveal="rest"]')?.textContent ?? '') !== '',
+      choices: [...document.querySelectorAll('.choices button')].map((b) => b.getAttribute('data-line-id') ?? ''),
+    };
+  });
+}
+
+/** The canvas as the page shows it (overlays included, as stagePixel reads it), in CSS px from its top left. */
+async function canvasShot(page: Page): Promise<{ w: number; h: number; at: (x: number, y: number) => Rgba }> {
+  const box = await page.locator('canvas').boundingBox();
+  if (box === null) {
+    throw new Error('no canvas on the page');
+  }
+  const png = await page.screenshot({ clip: box, scale: 'css' });
+  const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const at = (x: number, y: number): Rgba => {
+    const i = (y * info.width + x) * 4;
+    return [data[i] ?? 0, data[i + 1] ?? 0, data[i + 2] ?? 0, data[i + 3] ?? 0];
+  };
+  return { w: info.width, h: info.height, at };
+}
+
+const rgb = (c: Rgba): Rgb => [c[0], c[1], c[2]];
+
+test('shots: a dissolve leaves no target alive', async ({ page, request }) => {
+  // E1 (shots §5.5): a017's `bg: lamp_keeper_cu t=crossfade` dissolves the insert into the close-up through one render
+  // target; at rest the ledger has counted it made and destroyed (Pixi's destroy event, CH D30) and no reservation is
+  // left in the registry's transient band.
+  test.setTimeout(300_000);
+  ch4Story();
+  await grantChapter(request, UID_DISSOLVE, 'chapter:ch4');
+  await launch(page, UID_DISSOLVE);
+  await play(page, 'stories.start');
+  await toTheCloseUp(page);
+  await reachLine(page, 'ch4.lamp.a017', { 'ch4.lamp.c001': 0 });
+  await atRest(page);
+  const s = await windowScene(page);
+  console.log(
+    `shots E1: at a017 targets ${s.targets} (${s.targetBytes} B), made ${s.targetsCreated}, destroyed ${s.targetsDestroyed}, ` +
+      `reservations ${s.reservations} (${s.reservedBytes} B), flatRefused ${s.flatRefused}`,
+  );
+  // First: a refusal falls back to the container crossfade, which makes no target; the counts below would say so less plainly.
+  expect(s.flatRefused, 'a refused dissolve on the e2e stage is a finding').toBe(0);
+  expect(s.targetsCreated ?? 0, 'targets made by the dissolve').toBeGreaterThan(0);
+  expect(s.targetsDestroyed, 'targets destroyed against those made').toBe(s.targetsCreated);
+  expect(s.targets, 'live targets at rest').toBe(0);
+  expect(s.targetBytes, 'live target bytes at rest').toBe(0);
+  expect(s.reservations, 'live reservations at rest').toBe(0);
+  expect(s.reservedBytes, 'reserved bytes at rest').toBe(0);
+});
+
+test("shots: a push frames the keeper's face", async ({ page, request }) => {
+  // E2 (shots §5.7, cut D6): a005's push, computed here through camFraming as F1 computes the rest through restFraming,
+  // is what the stage draws once the move is over. The keeper is worried at a004 and a005, the rest the plate itself
+  // shows (no face layer), so on a placeholder plate her face is the plate's own flat colour. The sample is a plate
+  // point q, in her face box where the plate draws a face there, else the plate point nearest her head that the push
+  // moves across an edge of the plate: its stage point p = push(q) shows another colour at rest (read from the page,
+  // no hue assumption) and q's under the push. With the push not applied, p keeps the other colour.
+  test.setTimeout(300_000);
+  ch4Story();
+  const rigs = decodeShotRigs(ch4Manifest().shots);
+  const rig = rigs.ok ? rigs.value.get(CLOSE_UP) : undefined;
+  const keeper = rig?.cast.find((c) => c.char === KEEPER);
+  const face = keeper?.face ?? null;
+  if (rig === undefined || keeper === undefined || face === null) {
+    throw new Error("fixture shape absent: ch4's manifest has no face member keeper in the close-up");
+  }
+  await grantChapter(request, UID_PUSH, 'chapter:ch4');
+  await launch(page, UID_PUSH);
+  await play(page, 'stories.start');
+  await toTheCloseUp(page);
+  const box = await page.locator('canvas').boundingBox();
+  if (box === null) {
+    throw new Error('no canvas on the page');
+  }
+  const stage = { w: box.width, h: box.height };
+  // Either tier frames it alike: 1.10 is inside both zoom ranges, so the push is cover x 1.10 whatever the session's tier.
+  for (const half of [false, true]) {
+    const z = zoomRange(rig, stage, 1, half);
+    expect(z.min <= 1.1 && 1.1 <= z.max, `the zoom range ${z.min}..${z.max} (half ${half}) at ${stage.w} x ${stage.h} holds 1.10`).toBe(true);
+  }
+  const rest = restFraming(rig, stage, 1, false);
+  const push = camFraming(rig, stage, 1, false, PUSH);
+  const toStage = (f: { x: number; y: number; k: number }, q: readonly [number, number]): [number, number] => [
+    Math.round(f.x + q[0] * f.k),
+    Math.round(f.y + q[1] * f.k),
+  ];
+  const toPlate = (f: { x: number; y: number; k: number }, p: readonly [number, number]): [number, number] => [(p[0] - f.x) / f.k, (p[1] - f.y) / f.k];
+  // The push frames her: her head centred across the stage, every face layer box whole on it, 1.10 / z0 times larger.
+  const head = face.head;
+  expect(Math.abs(push.x + (head[0] + head[2] / 2) * push.k - stage.w / 2), "the keeper's head centred across the stage").toBeLessThan(0.5);
+  const layers = Object.values(face.exprs).flatMap((e) => (e.layer === null ? [] : [e.layer.at]));
+  expect(layers.length, "the keeper's face layer boxes").toBeGreaterThan(0);
+  for (const [x, y, w, h] of layers) {
+    const [x0, y0] = toStage(push, [x, y]);
+    const [x1, y1] = toStage(push, [x + w, y + h]);
+    expect([x0 >= 0, y0 >= 0, x1 <= stage.w, y1 <= stage.h], `the face box ${x}, ${y}, ${w}, ${h} whole under the push`).toEqual([true, true, true, true]);
+  }
+  expect(push.k / rest.k, 'the push over the rest').toBeCloseTo(1.1 / overscan(rig, stage, 1, false), 9);
+
+  // At a004, the close-up at rest: the candidate points, read from one shot of the canvas.
+  await stillScene(page);
+  await revealed(page);
+  const shot = await canvasShot(page);
+  expect([shot.w, shot.h], 'the canvas shot in CSS px').toEqual([Math.round(stage.w), Math.round(stage.h)]);
+  // Between the overlays (the quick bar at the top, the dialogue at the bottom), each with a margin.
+  const quick = await page.locator('nav.quick').boundingBox();
+  const dialogue = await page.locator('.dialogue').boundingBox();
+  const top = (quick === null ? 0 : quick.y + quick.height - box.y) + 4;
+  const bottom = Math.min(shot.h, (dialogue?.y ?? Number.POSITIVE_INFINITY) - box.y) - 4;
+  const r = Math.ceil(6 * rest.k); // 6 plate px at the rest scale, in stage px
+  const onStage = ([x, y]: readonly [number, number]): boolean => x >= r && x < shot.w - r && y >= top + r && y < bottom - r;
+  const steady = ([x, y]: readonly [number, number]): boolean => {
+    const c = rgb(shot.at(x, y));
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (!within(shot.at(x + dx, y + dy), c, 10)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+  const off = (boxes: readonly Box[], [x, y]: readonly [number, number]): boolean =>
+    boxes.every(([bx, by, bw, bh]) => x < bx - 6 || x >= bx + bw + 6 || y < by - 6 || y >= by + bh + 6);
+  const motion = Object.values(face.exprs).flatMap(({ motion: m }) => [
+    m.blink.half.at,
+    m.blink.closed.at,
+    m.accent.at,
+    ...m.talk.map((t) => t.at),
+    ...(m.joint ? [m.joint.half.at, m.joint.closed.at] : []),
+  ]);
+  const hair = keeper.hair.map((h) => h.member.at);
+  const { body } = keeper;
+  const ry = body.rot === 0 ? body.ry : Math.max(body.rx, body.ry);
+  const rx = body.rot === 0 ? body.rx : ry;
+  const figure: Box = [body.cx - rx, body.cy - ry, 2 * rx, 2 * ry];
+  // q off every motion and hair member; what the rest frame shows at p off her face, her figure and those members.
+  const qOff = [...motion, ...hair];
+  const pOff = [...qOff, ...layers, figure, ...(keeper.figure === null ? [] : [keeper.figure.at])];
+  const inFace = (q: readonly [number, number]): boolean => !off(layers.map(([x, y, w, h]): Box => [x + 12, y + 12, w - 24, h - 24]), q);
+  const centre = [head[0] + head[2] / 2, head[1] + head[3] / 2] as const;
+  type Pick = { q: [number, number]; p: [number, number]; atQ: [number, number]; face: boolean; gap: number };
+  const picks: Pick[] = [];
+  for (let qy = 0; qy <= rig.h; qy += 2) {
+    for (let qx = 0; qx <= rig.w; qx += 2) {
+      const q: [number, number] = [qx, qy];
+      const p = toStage(push, q);
+      const atQ = toStage(rest, q);
+      if (!onStage(p) || !onStage(atQ) || !off(qOff, q) || !off(pOff, toPlate(rest, p))) {
+        continue;
+      }
+      if (distance(shot.at(...p), rgb(shot.at(...atQ))) > 40 && steady(p) && steady(atQ)) {
+        picks.push({ q, p, atQ, face: inFace(q), gap: Math.hypot(qx - centre[0], qy - centre[1]) });
+      }
+    }
+  }
+  const inside = picks.filter((c) => c.face);
+  const pick = (inside.length > 0 ? inside : picks).reduce<Pick | null>((a, b) => (a === null || b.gap < a.gap ? b : a), null);
+  if (pick === null) {
+    throw new Error('fixture shape absent: no plate point the push moves to a stage point the rest frame shows in another colour');
+  }
+  const [px, py] = pick.p;
+  const [fx, fy] = pick.atQ;
+  const atQ = rgb(await stagePixel(page, fx, fy));
+  const before = await stagePixel(page, px, py);
+  console.log(
+    `shots E2: rest ${JSON.stringify(rest)}, push ${JSON.stringify(push)}; ${picks.length} candidates, ${inside.length} in the face box; ` +
+      `q ${pick.q.join(', ')} (${pick.face ? 'face box' : 'plate edge'}) shows ${atQ.join(', ')} at ${fx}, ${fy}; p ${px}, ${py} shows ${before.join(', ')} at rest`,
+  );
+  expect(distance(before, atQ), `p ${px}, ${py} at rest (${before.join(', ')}) against q at rest (${atQ.join(', ')})`).toBeGreaterThan(40);
+
+  // a005's batch is the push: reachLine returns at its line at rest (the move over), atRest once nothing loads.
+  await reachLine(page, 'ch4.lamp.a005');
+  await atRest(page);
+  const below = await page.locator('.dialogue').boundingBox();
+  expect((below?.y ?? Number.POSITIVE_INFINITY) - box.y, 'the dialogue at a005 below the sample').toBeGreaterThan(py + r);
+  const above = await page.locator('nav.quick').boundingBox();
+  expect(above === null ? 0 : above.y + above.height - box.y, 'the quick bar at a005 above the sample').toBeLessThan(py - r);
+  const after = await stagePixel(page, px, py);
+  expect(within(after, atQ, 10), `p ${px}, ${py} under the push: ${after.join(', ')} against q's ${atQ.join(', ')}`).toBe(true);
+});
+
+test("shots: live texture bytes stay within each step's window bound across the lamp knot", async ({ page, request }) => {
+  // E3 (shots §5.8, 09d:63-69, cut D7): at each line from a001 to a019, once the scheduler is idle and nothing moves
+  // (no window pending, no load, no timeline, no preview), the live texture bytes are within the full size of the
+  // step's window, need, warm and hope (budget.ts decoded: the decoded bytes plus the larger file), and no reservation
+  // is live: a017's dissolve has released the insert and its target by its rest.
+  test.setTimeout(300_000);
+  ch4Story();
+  const look = ch4Look();
+  const manifest = ch4Manifest();
+  await grantChapter(request, UID_WINDOW, 'chapter:ch4');
+  await launch(page, UID_WINDOW);
+  await play(page, 'stories.start');
+  await reachLine(page, 'ch3.lighthouse.l008', { 'ch3.shore.c001': 1 });
+  await reachLine(page, 'ch3.lighthouse_stairs.t011', { 'ch3.lighthouse.c001': 1 });
+  await reachLine(page, LAMP_LINE);
+
+  type Row = { line: string; live: number; bound: number; reservations: number; ids: number };
+  const rows: Row[] = [];
+  for (let step = 0; ; step++) {
+    if (step >= 40) {
+      throw new Error(`${LAMP_LAST} not reached in 40 steps`);
+    }
+    let now: Shown = { line: null, revealing: false, choices: [] };
+    await expect
+      .poll(
+        async () => {
+          now = await shownNow(page);
+          return now.choices.length > 0 || (now.line !== null && !now.revealing);
+        },
+        { timeout: LINE_MS, message: 'a line or a choice set' },
+      )
+      .toBe(true);
+    if (now.choices.length > 0) {
+      // c001, the crank: the knot's one choice.
+      expect(now.choices[0], 'the lamp knot choice').toBe('ch4.lamp.c001');
+      const set = now.choices.join(' ');
+      await page.locator('.choices button').nth(0).tap();
+      await expect.poll(async () => (await shownNow(page)).choices.join(' '), { timeout: LINE_MS, message: 'the pick in ch4.lamp.c001' }).not.toBe(set);
+      continue;
+    }
+    const line = now.line ?? '';
+    const seen: { s: WindowScene | null } = { s: null };
+    await expect
+      .poll(
+        async () => {
+          const s = await windowScene(page);
+          seen.s = s;
+          return s.window.pending + s.pendingLoads + s.activeTimelines + s.previews;
+        },
+        { timeout: LINE_MS, intervals: [250], message: `the scheduler idle at ${line}` },
+      )
+      .toBe(0);
+    const s = seen.s;
+    const w = stepWindow(look, line);
+    if (s === null || w === null) {
+      throw new Error(`fixture shape absent: ch4's look has no window for ${line}`);
+    }
+    const ids = [...new Set([...w.need, ...w.warm, ...w.hope])];
+    let bound = 0;
+    for (const id of ids) {
+      const e = manifest.assets[id];
+      if (e?.kind !== 'image') {
+        throw new Error(`fixture shape absent: ${line}'s window lists ${id}, not an image of ch4's manifest`);
+      }
+      bound += e.decodedBytes + Math.max(e.avif.bytes, e.webp.bytes);
+    }
+    rows.push({ line, live: s.liveBytes, bound, reservations: s.reservations ?? -1, ids: ids.length });
+    if (line === LAMP_LAST) {
+      break;
+    }
+    await page.locator('.dialogue .tap').tap();
+    await expect
+      .poll(
+        async () => {
+          const x = await shownNow(page);
+          return x.line !== line || x.choices.length > 0;
+        },
+        { timeout: LINE_MS, message: `the step after ${line}` },
+      )
+      .toBe(true);
+  }
+  console.log(`shots E3: line, liveBytes, bound (ids), reservations\n${rows.map((x) => `  ${x.line} ${x.live} ${x.bound} (${x.ids}) ${x.reservations}`).join('\n')}`);
+  const lines = rows.map((x) => x.line);
+  for (const l of ['ch4.lamp.a004', 'ch4.lamp.a005', 'ch4.lamp.a016', 'ch4.lamp.a017', LAMP_LAST]) {
+    expect(lines, `the walk sampled ${l}`).toContain(l);
+  }
+  expect(
+    rows.filter((x) => x.live > x.bound || x.reservations !== 0),
+    'steps whose live texture bytes pass their window bound, or with a live reservation',
+  ).toEqual([]);
 });
