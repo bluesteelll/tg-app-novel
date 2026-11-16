@@ -422,9 +422,11 @@ The archive was colder than I remembered. #id:ch2.archive.c0ld
   character that is not on stage changes nothing. On a shot chapter (§14.1; as built, SH4) a `face` changes that cast
   member's drawn face in the shot in effect: the new expression's layers fade in over the old ones over `ms`, which
   retire whole at the fade's end; a face back at its rest fades out to the plate, which shows the rest. Changed by
-  RULINGS 365, 367, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A): since SH6 (`b0ef547`) a timed `face` is drawn as one patch, a flat snapshot of the faces'
+  RULINGS 365, 367, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A): since SH6 (`b0ef547`) a timed `face` in a batch with no `bg` crossfade is drawn as one patch, a flat snapshot of the faces'
   box that fades in over the old drawing (`patchFaces`, `client/src/scene/executor.ts:939-985`); if the patch cannot be
-  reserved or the shot has no rig, the layer crossfade above stands (K7: new over old, never a symmetric fade). The batch first ensures the shot's face file (its talk file is taken, never
+  reserved or the shot has no rig, the layer crossfade above stands (K7: new over old, never a symmetric fade). In a batch
+  whose `bg` is a `t=crossfade` to another shot, the faces change with the `bg`: at once under the dissolve's snapshot, or by
+  the layer crossfade when the dissolve is not made (`executor.ts:1227-1269`); no patch is made there. The batch first ensures the shot's face file (its talk file is taken, never
   awaited), and a face whose sheet or face file could not be had draws the rest face and logs a skip. On a shot chapter the build
   names no asset for a `face` (§8): its drawn files are the shot pass's (§14.4).
 - **Validation:** `tag/unknown-asset` (character or expression); with a shot list, `shot/char-absent` (the character
@@ -574,7 +576,7 @@ fixed:
    waits for the longest one. A `face` applies after the batch's `hide` and `show`: the expression change of a
    character on stage (a `show` without `at`); a `show` of the same character in the batch governs its timing (a
    `t=cut` show makes it instant, else the show's `ms`), while the state still follows this order, so the `face`'s
-   expression is the one that stays (`client/src/scene/executor.ts:1011-1017`). A `cam` sets the framing after the
+   expression is the one that stays (`client/src/scene/executor.ts:1291-1297`). A `cam` sets the framing after the
    batch's `scene` or `bg` returned it to rest; it is held in the stage state and drawn (SH6, `b0ef547`). `anim` and `fx` reach the scene and
    are not drawn yet (SH8); `think` stays with GameSession (SH7). The shots plan's drawn order is
    [shots §3.1](plans/shots/03-story-dsl.md#3-the-story-dsl): `scene`, `bg`, `face`, `cam`, `cg`, props,
@@ -973,7 +975,7 @@ tables, like every module code ([AUTHORING "Module and type lint codes"](AUTHORI
   non-negative safe integer with no hole (`client/src/mechanics/rules/devices.ts:82-93`).
 - **Where a device plays** (Changed by RULINGS 363, 366, 368, 372 (as of `172e47e`; docs lane `docs-errata-21`, group A); GM8h, `4471fbf`): a device puzzle's view presentation
   is drawn inside the view room, in the room's place, not as a sheet over the story. The host's bar is anchored to the top of
-  that place and carries Try, Retry and Hint (with an offline Try); the hint ladder opens as a sheet; and the QuickBar is
+  that place and carries Hint, Retry after a failed chunk and, only after an offline reply, Try; the hint ladder opens as a sheet; and the QuickBar is
   hidden while a device view is up. A story author adds nothing for this: the room's `device` key and the puzzle's type
   decide it.
 - **Cues:** `fact:work:*` (`press`, 240 ms, target `part`, no haptic), `module:devices:done` (`glint`, 420 ms, target
@@ -1193,21 +1195,24 @@ be in effect after its batch's cut.
 
 ### 14.5 Worked example: the lamp knot of ch4 (SH6)
 
-Added by RULINGS 365, 367, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A). The knot `lamp` of `story/ch4/main.ink` is the one place that uses the three SH6
-effects together. Only its tags and line IDs are shown (the lines are story text and not quoted here); `ch4` is a paid chapter
+Added by RULINGS 365, 367, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A). The knot `lamp` of `story/ch4/main.ink` uses two of the three SH6 effects: the camera push and
+the exact dissolve back to a shot. Its one `face:` sits in the dissolve's batch, so it changes at once under the snapshot and
+is not a face patch (§6 `face`); no batch of ch4 exercises the patch. Only its tags and line IDs are shown (the lines are story text and not quoted here); `ch4` is a paid chapter
 (`story/chapters.json`), so its text and its art are served after an entitlement check and are not in the public bundle.
 
 ```text
 # scene: lamp_wide              (the wide shot; keeper at rest "worried")
 # bgm: storm
 ch4.lamp.a001 ... ch4.lamp.a003  (lines in the wide shot)
-# bg: lamp_keeper_cu            (t=cut: a take of the close shot, the same room)
+# bg: lamp_keeper_cu            (t=cut: a cut to the close shot, the same room)
+ch4.lamp.a004
 # cam: push to=keeper           (the framing moves toward the keeper over ms; SH6 draws it)
-ch4.lamp.a004 ... ch4.lamp.a015  (lines, then the two choices ch4.lamp.c001 / ch4.lamp.c002)
+ch4.lamp.a005 ... ch4.lamp.a009  (lines, then the two choices ch4.lamp.c001 / ch4.lamp.c002 with their lines a010-a014)
+ch4.lamp.a015                    (the gather)
 # bg: lamp_lens_insert          (the insert shot, no cast; a cut, so the push is over)
 ch4.lamp.a016
 # bg: lamp_keeper_cu t=crossfade  (back to the close shot: the exact dissolve between two shots)
-# face: keeper smile            (a timed face change: the patch of SH6; the rest face is "worried")
+# face: keeper smile            (changes with the dissolve, at once under its snapshot; the rest face is "worried")
 ch4.lamp.a017 ... ch4.lamp.a019
 ```
 

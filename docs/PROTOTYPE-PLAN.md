@@ -3361,7 +3361,7 @@ engine-lever candidate is measured once Ledger 4 or Ledger 1 is within 2.0 KB (R
 Running: the docs lane `docs-errata-21` (from `172e47e`, in lane C, RULINGS 376); no code lane runs; two lanes at most
 while the machine's resets recur (RULINGS 255, 276, 338). "To go": no lane of this table; the rest of the planned block,
 in the one order of [engine §12 Order and conflicts](plans/engine/12f-order-and-conflicts.md#order-and-conflicts):
-GM8h2 next in lane A (its row: after GM8h, merged; it runs before GM8a and GM8d, RULINGS 375 S3), then GM8a -> GM8b ->
+GM8h2 next in lane A (its place: after GM8h, merged, its lanes-table row coming with its own docs lane; it runs before GM8a and GM8d, RULINGS 375 S3), then GM8a -> GM8b ->
 GM8d -> GM9r (RULINGS 241). In lane C, GM9p (after GM8i and GM7g, RULINGS 352 N5), shots SH7 (after SH6 and SH5b) and
 per-player GM6c1a are ready by their rows, and no ruling slots any of them. L2 stays shelved (its return line, entry
 headroom < 0.5 KB, does not hold: 0.845 KB left, RULINGS 374) and the preload-priority lane carried.

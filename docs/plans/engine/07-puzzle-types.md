@@ -322,7 +322,7 @@ export interface PuzzleTypeLint<P> {
     (`enterSection`, `:97-98`) and the event return (`eventReturned`, `:121-122`). The plan's `reduce.ts:322` / `:332` /
     `:354` are these sites, its `reduce.ts:370` / `:373` is `lockTap` (`core.ts:139-146`, the `puzzle` effect `:142`, the
     `lock` effect `:144`), its `reduce.ts:572-577` / `:598-618` are `actions` (`core.ts:447-479`, the tap list `:466`)
-    and `successors` (`client/src/mechanics/rules/search.ts:38-61`), its `yields.ts:540` / `:555` are `yields.ts:986` / 
+    and `successors` (`client/src/mechanics/rules/search.ts:38-61`), its `yields.ts:540` / `:555` are `yields.ts:986` /
     `:1062`, and its `graph.ts:601-606` is `client/scripts/story/graph.ts:682-686` (GM8i cut 1.1, re-located on
     `b0b1b41`);
   - `device-moved` (`applyDevices`, `rules/devices.ts:82-93`): a no-op outside a section's room, while a knot is
@@ -550,10 +550,10 @@ export interface PuzzleTypeLint<P> {
   zoom-out and a reload`.
 - **Full commit (round 4, m8; `ritual`).** After `onwork`, when `commit === 'full'` and `session.answer().length ===
   shape.len`, yields posts through `post(o)` (round 8: GM3p's one attempt starter, out of `ontry`'s body,
-  `ontry` `yields.ts:1504-1509` through `commitTry` :1453; `post` :1367-1376 (re-located on `172e47e`; were `:687-695`, :1233-1242): `busy`, `checking`, `puzzle:checking`, `attempt()`; per-player R-E28). While `busy`
+  `ontry` `yields.ts:1504-1509` through `commitTry` :1453; `post` :1367-1376 (re-located on `172e47e`, docs lane `docs-errata-21`, group A; were `:687-695`, :1233-1242 as of `f6487fc`, docs lane `docs-errata-19`, group A): `busy`, `checking`, `puzzle:checking`, `attempt()`; per-player R-E28). While `busy`
   or `retryAfter !== null` it does not post and the type UI ignores presses (its `busy` prop; a press on a full-length
   sequence is refused by the play half with `puzzle:blocked`, motion `shake`); **when the 429 countdown reaches zero**
-  (`countdown`, `yields.ts:1282-1298`, re-located on `172e47e`; were `:619-630`, :1152-1167) yields posts the still-full answer once. One rule covers the rest: **a
+  (`countdown`, `yields.ts:1282-1298`, re-located on `172e47e`, docs lane `docs-errata-21`, group A; were `:619-630`, :1152-1167 as of `f6487fc`, docs lane `docs-errata-19`, group A) yields posts the still-full answer once. One rule covers the rest: **a
   full-length unposted answer posts when the session can post** (after the last press and at the countdown's end; a
   full-length `work` seeded at open, which only a reload during a POST or a countdown leaves in a save, restarts
   through `restartWork` instead of posting, because the save cannot tell whether that POST reached the server and a
