@@ -4258,8 +4258,8 @@ const LATCH = viewType('latch', { check: 'reach', goal: 'shown', wrong: 'none' }
 /** A shown-goal reach device that demonstrates its goal (the parts 2, 0, 1) and knows a wrong press itself. */
 const CHIMES = viewType('chimes', { check: 'reach', goal: 'shown', wrong: 'local', demo: () => [2, 0, 1] });
 const DEVICE_TYPES: PuzzleTypes = [...PUZZLE_TYPES, DIALS, BELLS, RITE, LATCH, CHIMES];
-/** The device world's knobs: its device's parts, attempt limit and hint tiers, and the type registry it decodes with. */
-type DeviceWorldOptions = { parts?: number; maxAttempts?: number | null; hintTiers?: number; types?: PuzzleTypes };
+/** The device world's knobs: its device's parts, attempt limit and hint tiers, the type registry, its part decor. */
+type DeviceWorldOptions = { parts?: number; maxAttempts?: number | null; hintTiers?: number; types?: PuzzleTypes; decor?: boolean };
 const DEV = 'dev' as PuzzleLocalId;
 
 /**
@@ -4267,7 +4267,8 @@ const DEV = 'dev' as PuzzleLocalId;
  * `type` (its onFail gives the coin, so a failed run fires `fail:panel.dial`). The hall holds the code lock `chest` (the
  * puzzle `gate`) and an exit to the knot `after`; the panel holds `safe`, a lock of the view-type puzzle `loose` that is
  * not the room's device (a site the story gate refuses, `world/view-type-site`: here only to prove the runtime's own
- * narrowing), and an exit to the knot `after`. `types` decodes it (default `DEVICE_TYPES`).
+ * narrowing), and an exit to the knot `after`. `types` decodes it (default `DEVICE_TYPES`); with `decor`, the panel draws
+ * one lever per part, up while its part is 1 (GM8i's `part` atom, as a real device's parts are drawn).
  */
 function deviceWorld(type: string, o: DeviceWorldOptions = {}): WorldPublic {
   const parts = o.parts ?? 3;
@@ -4283,6 +4284,14 @@ function deviceWorld(type: string, o: DeviceWorldOptions = {}): WorldPublic {
     hints: Array.from({ length: o.hintTiers ?? 1 }, (_, i) => txt(`hint ${i + 1}`)),
   });
   const toKnot = (id: string): Json => ({ id, kind: 'exit', rect: RECT, label: txt(id), to: { story: 'after' }, lock: null, sfx: null });
+  const lever = (index: number): Json => ({
+    id: `lever${index}`,
+    prop: 'lever',
+    rect: [100 + 220 * index, 900, 160, 320],
+    z: 1,
+    states: { up: { prop: 'lever_up' } },
+    is: [{ when: { part: { puzzle: 'dev', index, is: 1 } }, state: 'up' }],
+  });
   const raw = {
     format: 1,
     items: { coin: { name: txt('Монета'), desc: txt('d'), glyph: 'sun' } },
@@ -4299,6 +4308,7 @@ function deviceWorld(type: string, o: DeviceWorldOptions = {}): WorldPublic {
             title: txt('Panel'),
             onEnter: [],
             hotspots: [box('dial', { ...lockOf([], 'dev'), onFail: [{ give: 'coin' }] }), box('safe', lockOf([], 'loose')), toKnot('leave')],
+            ...(o.decor === true ? { decor: Array.from({ length: parts }, (_, i) => lever(i)) } : {}),
             view: { of: 'hall' },
             device: 'dial',
           },
@@ -4783,6 +4793,21 @@ const partCuesOf = (r: Rig, mark: number): string[] =>
     }
     return c.kind === 'fact' && c.fact.kind === 'work' ? [`fact:work:${c.change}@${c.fact.id}`] : [];
   });
+
+test('yields: a device move redraws its part decor', async () => {
+  // Gates F2 (RULINGS 368): a device's parts are decor states over the `part` atom (GM8i), so a move redraws them:
+  // `moveWork` writes the run's work and queues the state batch (`drain`), whose `props` draw the moved lever up.
+  const r = deviceRig('dials', { decor: true });
+  await atDevice(r);
+  const up = (): boolean => JSON.stringify(r.stage().props).includes('lever_up');
+  expect([r.puzzle.frame?.presentation, up()]).toEqual(['view', false]);
+  const mark = r.batches.length;
+  r.yields.host.onwork?.([1, 0, 0], false);
+  await settle();
+  const drawn = r.batches.slice(mark).flat().filter((c) => c.kind === 'props');
+  expect([r.yields.world().puzzles[DEV]?.work, drawn.length > 0, up()]).toEqual([[1, 0, 0], true, true]);
+  r.yields.dispose();
+});
 
 test("yields: a device's first move of one part plays one press on that part", async () => {
   // D5 (A7, Q6 option (b)): a device move's `work` facts play no cue (the writer diffs a first move against no saved
