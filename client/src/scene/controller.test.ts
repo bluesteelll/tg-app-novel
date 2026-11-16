@@ -2,13 +2,19 @@
 // mounted controller; `apply` and `restore` are `applyStep` and `restoreStep` over the mounted parts, run here over the
 // real executor and a load-only registry at the full tier, on a stage adapter that draws nothing.
 // The step options matrix (fix3) pins both functions' option handling against an explicit model, cell by cell.
+// The render seam (lane SH6): the layers, the Pixi adapter's targets and the ledger, over real Pixi display objects and
+// a renderer that records each render (no WebGL in node).
+import { Container, Rectangle, Sprite } from 'pixi.js';
+import type { Texture } from 'pixi.js';
 import { expect, test } from 'vitest';
 
 import type { HalfFile, ImageEntry, Result } from '../story/catalog.ts';
-import type { AssetId, BgId, CgId, CharId, ExprId, PropId } from '../story/staging.ts';
-import { applyStep, restoreStep } from './controller.ts';
+import type { AssetId, BgId, CgId, ChapterId, CharId, ExprId, PropId } from '../story/staging.ts';
+import { applyStep, chapterStep, createLayers, pixiAdapter, restoreStep, targetKit } from './controller.ts';
 import { createExecutor } from './executor.ts';
 import type { Executor, GroupRef, SceneSnapshot, StageAdapter, VisualCommand } from './executor.ts';
+import { createGpuLedger, snapshotPlan } from './flatten.ts';
+import type { FlatPlan } from './flatten.ts';
 import { ENSURE_HOLDER, KEEP_WINDOW } from './preload.ts';
 import type { StageWindow } from './preload.ts';
 import { createAssetRegistry } from './registry.ts';
@@ -421,4 +427,132 @@ test("controller: a step's options matrix (D7): the executor's options and scope
   for (const cell of CELLS) {
     expect.soft(await observe(cell), label(cell)).toEqual(expected(cell));
   }
+});
+
+test('controller: a chapter change completes the running batch before the scheduler takes the new chapter', async () => {
+  // Carry S5 (SH5b r5-2): the old chapter's batch reports its window into the old chapter, then the scheduler moves.
+  const p = parts();
+  const log: string[] = [];
+  const dip: VisualCommand = { kind: 'scene', bg: 'x' as BgId, t: 'fade', ms: 800 };
+  const done = p.executor.apply([dip], { instant: false, window: W });
+  // Built and running: its swap point is at black, 400 ms away.
+  expect(await settledWithin(done, MICROTASKS)).toBe(false);
+  expect(p.windows).toEqual([]);
+  chapterStep(
+    { executor: p.executor, scheduler: { setChapter: (m) => log.push(`setChapter ${m.chapterId}: windows ${p.windows.length}`) } },
+    { chapterId: 'ch2' as ChapterId, assets: {} },
+  );
+  expect(log).toEqual(['setChapter ch2: windows 1']);
+  expect(p.windows).toEqual([W]);
+  expect(await settledWithin(done, MICROTASKS)).toBe(true);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The render seam (lane SH6 D1, D8, D28; shots §5.5): `world` holds the stage under the transition layer, and a target
+// is made, counted by the ledger, rendered once and shown, or refused with nothing left; only `dropTarget` frees one.
+
+/** One render as the renderer was asked for it: the container, the target and the transform as [a, b, c, d, tx, ty]. */
+type Render = { readonly container: Container; readonly target: Texture; readonly transform: readonly number[]; readonly clear: boolean };
+
+/** Layers on a bare stage and the Pixi adapter over them, with a kit whose renderer records; `gate.open` is the gate. */
+function seam() {
+  const renders: Render[] = [];
+  const gate = { open: true };
+  const ledger = createGpuLedger();
+  const stage = new Container();
+  const layers = createLayers({ stage });
+  const renderer = {
+    render: (o: { container: Container; target: Texture; transform: { a: number; b: number; c: number; d: number; tx: number; ty: number }; clear: boolean }) => {
+      const m = o.transform;
+      renders.push({ container: o.container, target: o.target, transform: [m.a, m.b, m.c, m.d, m.tx, m.ty], clear: o.clear });
+    },
+  };
+  const kit = targetKit({ renderer }, () => gate.open, ledger);
+  const adapter = pixiAdapter({ screen: new Rectangle(0, 0, 390, 844) }, layers, kit);
+  return { stage, layers, adapter, renders, gate, ledger };
+}
+const PHONE = snapshotPlan({ w: 390, h: 844 }, 2);
+
+test('controller: the world holds bg, props and chars as one render group under the transition layer, cg and fx', () => {
+  const { stage, layers } = seam();
+  expect(stage.children.map((c) => [layers.world, layers.flat, layers.cg, layers.fx].indexOf(c))).toEqual([0, 1, 2, 3]);
+  expect(layers.world.children.map((c) => [layers.bg, layers.props, layers.chars].indexOf(c))).toEqual([0, 1, 2]);
+  expect([layers.world.isRenderGroup, layers.flat.isRenderGroup]).toEqual([true, false]);
+  // At rest the world is at identity: a shot root's rest framing stays on its anchor (D1, the delta only).
+  expect([layers.world.x, layers.world.y, layers.world.scale.x, layers.world.scale.y]).toEqual([0, 0, 1, 1]);
+});
+
+test('controller: a snapshot renders the world once into a device-px target the ledger tracks', () => {
+  const { layers, adapter, renders, ledger } = seam();
+  const f = adapter.flatten?.(PHONE, { kind: 'screen' }) ?? null;
+  expect(f).not.toBeNull();
+  expect(renders).toHaveLength(1);
+  const [r] = renders;
+  expect(r?.container).toBe(layers.world);
+  expect([r?.target.source.pixelWidth, r?.target.source.pixelHeight, r?.target.source.resolution, r?.clear]).toEqual([780, 1688, 1, true]);
+  // The stage in device px, from its top left.
+  expect(r?.transform).toEqual([2, 0, 0, 2, 0, 0]);
+  expect(ledger.stats()).toEqual({ targets: 1, targetBytes: 5_266_560, targetsCreated: 1, targetsDestroyed: 0 });
+  // Shown above the world at 1 / scale, so it covers the stage exactly.
+  const [s] = layers.flat.children;
+  expect(layers.flat.children).toHaveLength(1);
+  expect(s instanceof Sprite ? [s.texture === r?.target, s.x, s.y, s.scale.x, s.scale.y] : null).toEqual([true, 0, 0, 0.5, 0.5]);
+  // Review O2: a world delta written just before, with no frame between, is in the transform (a held push's frame).
+  adapter.world?.({ x: -10, y: -20, scale: 1.1 });
+  expect([layers.world.x, layers.world.y, layers.world.scale.x]).toEqual([-10, -20, 1.1]);
+  adapter.flatten?.(PHONE, { kind: 'screen' });
+  expect(renders[1]?.transform).toEqual([2.2, 0, 0, 2.2, -20, -40]);
+});
+
+test('controller: dropping a snapshot destroys its target and the ledger sees it go', () => {
+  const { layers, adapter, renders, ledger } = seam();
+  const f = adapter.flatten?.(PHONE, { kind: 'screen' }) ?? null;
+  const target = renders[0]?.target;
+  const [s] = layers.flat.children;
+  if (f === null || target === undefined || s === undefined) {
+    throw new Error('invariant: the snapshot was made');
+  }
+  adapter.dropTarget?.(f);
+  // The sprite, then the target with its source: Pixi's destroy event is what the ledger counts down on.
+  expect([s.destroyed, target.destroyed]).toEqual([true, true]);
+  expect(layers.flat.children).toEqual([]);
+  expect(ledger.stats()).toEqual({ targets: 0, targetBytes: 0, targetsCreated: 1, targetsDestroyed: 1 });
+});
+
+test('controller: a closed render gate refuses a snapshot and leaves no target', () => {
+  const { layers, adapter, renders, ledger, gate } = seam();
+  gate.open = false;
+  expect(adapter.flatten?.(PHONE, { kind: 'screen' })).toBeNull();
+  expect(renders).toEqual([]);
+  // Made, counted and destroyed at once: no path leaves a target the ledger does not see.
+  expect(ledger.stats()).toEqual({ targets: 0, targetBytes: 0, targetsCreated: 1, targetsDestroyed: 1 });
+  expect(layers.flat.children).toEqual([]);
+  // An adapter with no kit (adapter.svelte.test.ts's two-argument form) makes nothing.
+  const bare = pixiAdapter({ screen: new Rectangle(0, 0, 390, 844) }, createLayers({ stage: new Container() }));
+  expect(bare.flatten?.(PHONE, { kind: 'screen' })).toBeNull();
+  expect(ledger.stats().targetsCreated).toBe(1);
+});
+
+test('controller: a patch renders its rect of the world in device px at its plate place', () => {
+  const { layers, adapter, renders, ledger } = seam();
+  const root = adapter.anchor('bg', 'bg/lamp');
+  adapter.world?.({ x: 5, y: -8, scale: 1.2 });
+  const plan: FlatPlan = { w: 64, h: 80, bytes: 64 * 80 * 4, scale: 2, origin: { x: 100.5, y: 200 } };
+  const f = adapter.flatten?.(plan, { kind: 'group', parent: root.content, x: 30, y: 40, k: 0.25, z: 7 }) ?? null;
+  expect(f).not.toBeNull();
+  // The world's delta, then the stage px from the rect's top left, at the resolution.
+  const [r] = renders;
+  expect(r?.container).toBe(layers.world);
+  expect(r?.transform).toEqual([2.4, 0, 0, 2.4, -191, -416]);
+  expect([r?.target.source.pixelWidth, r?.target.source.pixelHeight]).toEqual([64, 80]);
+  expect(ledger.stats()).toMatchObject({ targets: 1, targetBytes: 20_480 });
+  // Shown in the root's content at its plate place, scaled back to plate px, above the parts.
+  const content = layers.bg.children[0]?.children[0]?.children[0]?.children[0];
+  const [s] = content?.children ?? [];
+  expect(s instanceof Sprite ? [s.texture === r?.target, s.x, s.y, s.scale.x, s.zIndex] : null).toEqual([true, 30, 40, 0.25, 7]);
+  if (f !== null) {
+    adapter.dropTarget?.(f);
+  }
+  expect(content?.children).toEqual([]);
+  expect(ledger.stats()).toMatchObject({ targets: 0, targetsDestroyed: 1 });
 });

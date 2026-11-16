@@ -10,9 +10,11 @@ import type { Box, Size } from '../geom/cover.ts';
 import type { ImageEntry, Result } from '../story/catalog.ts';
 import type { Box as Box4, ShotRig } from '../story/shots.ts';
 import type { AssetId, BgId, CharId, ExprId, PropId, PropPlacement, PropsCommand, Rect, Slot, StagingCommand, StagingSnapshot } from '../story/staging.ts';
+import { snapshotPlan } from './flatten.ts';
+import type { FlatPlan } from './flatten.ts';
 import { backdropPlacement, charPlacement, propPlacement } from './layout.ts';
 import type { StageWindow } from './preload.ts';
-import type { AssetError, AssetRegistry, TextureHandle } from './registry.ts';
+import type { AssetError, AssetRegistry, ReservationId, TextureHandle } from './registry.ts';
 import type { RenderLoop, Ticker } from './render-loop.ts';
 import { faceLayers, facesOf, restFraming, shotSlots } from './shot-view.ts';
 
@@ -59,6 +61,15 @@ export type Layer = 'bg' | 'props' | 'chars' | 'cg';
  * left; `z` orders a node among its siblings (char groups, prop anchors, the sprites in a `content`).
  */
 export type Placement = { x?: number; y?: number; w?: number; h?: number; alpha?: number; z?: number; scale?: number };
+/** A transition target's sprite (shots §5.5): `set` writes its alpha; only `dropTarget` frees it, with its target. */
+export type FlatRef = SpriteRef & { readonly flat: true };
+/**
+ * Where a target shows: over the whole stage in the transition layer above the world (`screen`, at 1 / plan.scale), or
+ * as a patch in a shot root's `content` at plate px (x, y), scaled by `k` (plate px per target px), at z `z`.
+ */
+export type FlatPlace =
+  | { readonly kind: 'screen' }
+  | { readonly kind: 'group'; readonly parent: GroupRef; readonly x: number; readonly y: number; readonly k: number; readonly z: number };
 
 /** The stage the executor drives; GSAP tweens plain proxies and writes them through `set` (K7). */
 export interface StageAdapter<T> {
@@ -76,6 +87,15 @@ export interface StageAdapter<T> {
   set(target: SpriteRef | GroupRef, p: Placement): void;
   /** The alpha of the full-stage black rect (fade through black). */
   fx(alpha: number): void;
+  /** The camera's delta on the world container (stage px; identity at rest). */
+  world?(p: { x: number; y: number; scale: number }): void;
+  /**
+   * One render of the world into a new target (flatten.ts plan), shown at `place`; null when refused (no target left).
+   * Absent: a stage that draws no target (every transition falls back).
+   */
+  flatten?(plan: FlatPlan, place: FlatPlace): FlatRef | null;
+  /** The sprite, then the target with its source: the only path that frees a target. */
+  dropTarget?(f: FlatRef): void;
 }
 
 export interface Executor<T> {
@@ -114,7 +134,8 @@ export interface Executor<T> {
    * (debugPropRects adds the page offset).
    */
   propRects(): ReadonlyArray<{ prop: PropId } & Box>;
-  stats(): { activeTimelines: number };
+  /** `flatRefused` (cumulative): dissolves and patches that fell back to the container-alpha crossfade (CH D15). */
+  stats(): { activeTimelines: number; flatRefused: number };
   /** Kills every timeline, settles every pending apply, destroys every sprite and releases every `scene:*` holder. */
   destroy(): void;
 }
@@ -137,12 +158,19 @@ export type ExecutorDeps<T> = {
   shots?: { rigs(): Rigs; half(): boolean };
   /**
    * A batch's window at its swap point (shots §5.8): the sweep that releases the old shot's holders has run. The swap
-   * point is at black for `scene:` and `bg t=fade`, when the old root retires for a `bg t=crossfade`, right after the
-   * build for any other batch, and at the batch's end when it settles first. Once per batch with a window.
+   * point is at black for `scene:` and `bg t=fade`, when the old root retires for a container-alpha `bg t=crossfade`,
+   * right after the snapshot render for the exact dissolve, right after the build for any other batch, and at the
+   * batch's end when it settles first. Once per batch with a window; never at `destroy()`, after which the scheduler
+   * is destroyed too.
    */
   swapped?(w: StageWindow): void;
-  /** A sweep outside a swap point released a holder: room a refused preload may now take. */
+  /**
+   * A sweep outside a swap point, or the end of a transition's target, released a holder or a reservation: room a
+   * refused preload may now take.
+   */
   released?(): void;
+  /** The GPU generation (controller.ts): a target rendered under an older one lost its pixels in a context change. */
+  gen?(): number;
 };
 type Rigs = ReadonlyMap<BgId, ShotRig> | null;
 
@@ -294,6 +322,8 @@ type PropAnchor<T> = { readonly node: AnchorRef; readonly rect: Rect; views: Pro
 /** A visual on its way out: destroyed when its transition ends, when its batch finishes, or by destroy(). */
 type Retiree<T> = { readonly views: readonly View<T>[]; readonly group: GroupRef | null };
 type Timeline = ReturnType<typeof gsap.timeline>;
+/** A live transition target: its sprite, its reservation and the GPU generation it was rendered under. */
+type Flat = { readonly ref: FlatRef; readonly rid: ReservationId; readonly gen: number };
 type Batch<T> = {
   readonly cmds: readonly VisualCommand[];
   readonly target: SceneSnapshot;
@@ -330,6 +360,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   const chars = new Map<CharId, CharView<T>>();
   /** Prop anchors by key, in the last props command's order (E-P7): every pass over them walks the draw order. */
   const anchors = new Map<string, PropAnchor<T>>();
+  /** The live transition targets (one batch builds at a time, so they are the running batch's). */
+  const flats = new Set<Flat>();
+  let flatRefused = 0;
 
   /** The record behind `h` has ended (failed its revive): the registry no longer names this handle (identity rule). */
   const ended = (h: TextureHandle<T>): boolean => registry.current(h.id) !== h;
@@ -451,6 +484,42 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   const swap = (b: Batch<T>): void => {
     if (b.window !== null) {
       sweepFor(b);
+    }
+  };
+
+  /**
+   * One transition target (shots §5.5 step 1; CH D14, D15): `plan.bytes` reserved under `holder` in the transient band,
+   * then the world rendered once into it; null (the caller falls back, counted) when the stage draws no target, the
+   * reservation is refused or the render gate is closed.
+   */
+  const makeFlat = (holder: string, plan: FlatPlan, place: FlatPlace): Flat | null => {
+    if (adapter.flatten !== undefined) {
+      const r = registry.reserve(holder, plan.bytes);
+      if (r.ok) {
+        const ref = adapter.flatten(plan, place);
+        if (ref !== null) {
+          const f: Flat = { ref, rid: r.value, gen: deps.gen?.() ?? 0 };
+          flats.add(f);
+          return f;
+        }
+        registry.unreserve(r.value);
+      }
+    }
+    flatRefused += 1;
+    return null;
+  };
+  /**
+   * A target's end, once: its sprite and target freed by the adapter that made it (a rebind completes first), its
+   * reservation returned, and the room reported (T6) unless the executor is being destroyed (review O4).
+   */
+  const dropFlat = (f: Flat, report = true): void => {
+    if (!flats.delete(f)) {
+      return;
+    }
+    adapter.dropTarget?.(f.ref);
+    registry.unreserve(f.rid);
+    if (report) {
+      deps.released?.();
     }
   };
 
@@ -688,7 +757,10 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     } else {
       loop.requestRender();
     }
-    // Batches build one at a time, so whatever still retires belongs to this one.
+    // Batches build one at a time, so whatever still retires, and every live target, belongs to this one.
+    for (const f of [...flats]) {
+      dropFlat(f);
+    }
     for (const r of [...retiring]) {
       retireNow(r);
     }
@@ -707,6 +779,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     const sec = (ms: number): number => (b.instant ? 0 : Math.max(0, ms) / 1000);
     /** The swap point comes later than the build: at black, or when the old root retires. */
     let later = false;
+    /** The exact dissolve's target: the swap point is right after its render, whether or not a window is reported. */
+    let flat: Flat | null = null;
     /**
      * The batch's handle for a slot only while its record is live, read in the same step as the sprite it makes,
      * also at a fade's midpoint (identity rule item 1). Else the slot is built as a skipped visual.
@@ -976,24 +1050,41 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       } else if (bgCmd !== undefined && bgCmd.t === 'crossfade') {
         const id = want.get('bg') ?? null;
         const h = handleFor('bg');
-        if ((bg?.handle.id ?? null) !== id && h !== undefined) {
-          // New over old, never a symmetric fade (K7); the old one is destroyed when the new one is opaque. Another
-          // shot is the dissolve's fallback: the new root over the old, which retires whole (shots §5.5).
-          const old = bg;
-          bg = backdrop('bg', h, 0, shotOf());
-          if (old === null) {
-            fade(bg.node.anchor, 0, 1, bgCmd.ms);
+        const old = bg;
+        if ((old?.handle.id ?? null) !== id && h !== undefined) {
+          // D2: another shot of a shot chapter over a root on stage, in time, is the exact dissolve (shots §5.5): the
+          // target holds the old stage's pixels, so the old root goes now and the new one is built opaque under it.
+          flat = old !== null && b.rigs !== null && sec(bgCmd.ms) > 0 ? makeFlat('flat:dissolve', snapshotPlan(adapter.size(), resolution), { kind: 'screen' }) : null;
+          if (flat !== null && old !== null) {
+            const f = flat;
+            destroyBackdrop(old);
+            bg = null;
+            try {
+              bg = backdrop('bg', h, 1, shotOf());
+            } catch (e) {
+              dropFlat(f);
+              throw e;
+            }
+            fade(f.ref, 1, 0, bgCmd.ms, () => dropFlat(f));
           } else {
-            const retireOld = retireBackdrop(old);
-            later = true;
-            fade(bg.node.anchor, 0, 1, bgCmd.ms, () => {
-              retireOld();
-              swap(b);
-            });
+            // New over old, never a symmetric fade (K7); the old one is destroyed when the new one is opaque. The
+            // dissolve's fallback (CH D15) and the legacy crossfade: the new root over the old, which retires whole.
+            bg = backdrop('bg', h, 0, shotOf());
+            if (old === null) {
+              fade(bg.node.anchor, 0, 1, bgCmd.ms);
+            } else {
+              const retireOld = retireBackdrop(old);
+              later = true;
+              fade(bg.node.anchor, 0, 1, bgCmd.ms, () => {
+                retireOld();
+                swap(b);
+              });
+            }
           }
         }
-        syncFaces();
-        syncProps(bgCmd.ms);
+        // Under a target the faces and props change at once: it covers the old ones, and a fade under it would show late.
+        syncFaces(flat !== null);
+        syncProps(flat === null ? bgCmd.ms : 0);
       } else {
         swapBg();
         syncFaces();
@@ -1057,7 +1148,10 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       }
     }
 
-    if (!later) {
+    if (flat !== null) {
+      // The old shot's holders go with the snapshot (§5.5 step 3), reported as the swap or as a release.
+      sweepFor(b);
+    } else if (!later) {
       swap(b);
     }
 
@@ -1240,7 +1334,14 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
           continue;
         }
         const group = adapter.group(cv.char);
-        const view = again(cv.view, 'chars', group);
+        // A sprite that throws takes its fresh group with it (newChar's rule; carry E2).
+        let view: View<T>;
+        try {
+          view = again(cv.view, 'chars', group);
+        } catch (e) {
+          adapter.dropGroup(group);
+          throw e;
+        }
         chars.set(cv.char, { char: cv.char, group, at: cv.at, view });
         placeCharSprite(view);
         adapter.set(group, { ...groupAt(cv.at, view), alpha: 1 });
@@ -1276,6 +1377,12 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     reacquire() {
       if (destroyed) {
         return;
+      }
+      // A target rendered under an older GPU generation lost its pixels (revive-flow.ts): its batch ends now. One
+      // rendered on the restored context stays (review O3).
+      const gen = deps.gen?.();
+      if ([...flats].some((f) => gen === undefined || f.gen < gen)) {
+        complete();
       }
       if (shownViews().some((v) => ended(v.handle))) {
         // No transition may write to a view after it is gone: every running batch ends first (its retirees with it).
@@ -1340,7 +1447,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       return [...anchors.values()].flatMap((a) => a.views.map((v) => ({ prop: v.prop, ...v.box })));
     },
     stats() {
-      return { activeTimelines: active.size };
+      return { activeTimelines: active.size, flatRefused };
     },
     destroy() {
       if (destroyed) {
@@ -1358,6 +1465,10 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       }
       unfinished.length = 0;
       active.clear();
+      // Before the roots, which a patch lives in; no release is reported (S4's rule for the swap, review O4).
+      for (const f of [...flats]) {
+        dropFlat(f, false);
+      }
       for (const r of [...retiring]) {
         retireNow(r);
       }
