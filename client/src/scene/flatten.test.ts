@@ -2,7 +2,7 @@
 // Pixi value; the Pixi half (a real TextureSource emitting `destroy`) is pinned in controller.test.ts.
 import { expect, test } from 'vitest';
 
-import { createGpuLedger, snapshotPlan } from './flatten.ts';
+import { createGpuLedger, patchPlan, snapshotPlan } from './flatten.ts';
 import type { GpuObject } from './flatten.ts';
 import source from './flatten.ts?raw';
 import { MAX_TEXTURE_PX } from './registry.ts';
@@ -47,6 +47,32 @@ function fakeGpuObject(): GpuObject & { emit(event: 'destroy'): void } {
     },
   };
 }
+
+test('flatten: a patch plan is its plate rect in device px, null past 2048', () => {
+  // On the device grid: plate (100, 200) 60 x 40 at k 0.5 from (10, 20), r 2, is device (120, 240) 60 x 40; the sprite
+  // goes back at the rect's plate place, one target px per device px.
+  expect(patchPlan([100, 200, 60, 40], { x: 10, y: 20, k: 0.5 }, 2)).toEqual({
+    plan: { w: 60, h: 40, bytes: 9_600, scale: 2, origin: { x: 60, y: 120 } },
+    x: 100,
+    y: 200,
+    k: 1,
+  });
+  // Off the grid (review O2): device x 2.1 to 6.6 and y 1.5 to 6 snap out to 2 to 7 and 1 to 6, the sprite at the
+  // snapped edge in plate px, so the patch covers the rect.
+  const p = patchPlan([1, 1, 3, 3], { x: 0.3, y: 0, k: 0.75 }, 2);
+  expect(p === null ? null : [p.plan.w, p.plan.h, p.plan.bytes, p.plan.origin.x, p.plan.origin.y]).toEqual([5, 5, 100, 1, 0.5]);
+  expect(p?.x).toBeCloseTo(0.7 / 0.75, 12);
+  expect(p?.y).toBeCloseTo(0.5 / 0.75, 12);
+  expect(p?.k).toBeCloseTo(1 / 1.5, 12);
+  // A whole product with float error is not grown by a pixel.
+  // (x0 0.29 x 100 = 28.999999999999996, y1 0.3 x 100 = 30.000000000000004.)
+  expect(patchPlan([0.29, 0.1, 0.01, 0.2], { x: 0, y: 0, k: 100 }, 1)?.plan).toMatchObject({ w: 1, h: 20, origin: { x: 29, y: 10 } });
+  // 2048 device px is a target; one more, or nothing, is none.
+  expect(patchPlan([0, 0, 1024, 10], { x: 0, y: 0, k: 1 }, 2)?.plan).toMatchObject({ w: MAX_TEXTURE_PX, h: 20 });
+  expect(patchPlan([0, 0, 1024.5, 10], { x: 0, y: 0, k: 1 }, 2)).toBeNull();
+  expect(patchPlan([0, 0, 10, 1025], { x: 0, y: 0, k: 1 }, 2)).toBeNull();
+  expect(patchPlan([5, 5, 0, 10], { x: 0, y: 0, k: 1 }, 2)).toBeNull();
+});
 
 test('flatten: the ledger drops a target only on its destroy event', () => {
   const ledger = createGpuLedger();

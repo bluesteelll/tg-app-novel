@@ -10,7 +10,7 @@ import type { Box, Size } from '../geom/cover.ts';
 import type { ImageEntry, Result } from '../story/catalog.ts';
 import type { Box as Box4, ShotRig } from '../story/shots.ts';
 import type { AssetId, BgId, CharId, ExprId, PropId, PropPlacement, PropsCommand, Rect, Slot, StagingCommand, StagingSnapshot } from '../story/staging.ts';
-import { snapshotPlan } from './flatten.ts';
+import { patchPlan, snapshotPlan } from './flatten.ts';
 import type { FlatPlan } from './flatten.ts';
 import { backdropPlacement, charPlacement, propPlacement } from './layout.ts';
 import type { StageWindow } from './preload.ts';
@@ -207,6 +207,18 @@ function slotsOf(s: SceneSnapshot, rigs: Rigs): Map<string, AssetId> {
   return out;
 }
 
+/** The smallest box holding both (plate px). */
+function unionBox(a: Box4, b: Box4): Box4 {
+  const x = Math.min(a[0], b[0]);
+  const y = Math.min(a[1], b[1]);
+  return [x, y, Math.max(a[0] + a[2], b[0] + b[2]) - x, Math.max(a[1] + a[3], b[1] + b[3]) - y];
+}
+
+/** The same expression for the same characters. */
+function sameFaces(a: ReadonlyMap<CharId, ExprId>, b: ReadonlyMap<CharId, ExprId>): boolean {
+  return a.size === b.size && [...a].every(([c, x]) => b.get(c) === x);
+}
+
 function find<K extends VisualCommand['kind']>(
   cmds: readonly VisualCommand[],
   kind: K,
@@ -297,15 +309,22 @@ type Hold<T> = Promise<Result<TextureHandle<T>, AssetError>>;
 /**
  * A hold entry: the acquire, and the handle of the record it is bound to (identity rule item 2): the live record `take`
  * joined, read by `registry.current` right after the acquire, else the handle the acquire resolved with; null until
- * then, and for a take that could not acquire.
+ * then, and for a take that could not acquire. `failed`: the acquire settled with an error (a resolve miss is the
+ * manifest's and never is), the only entry a face change may take again (lane SH6 B2).
  */
-type Held<T> = { readonly hold: Hold<T>; bound: TextureHandle<T> | null };
+type Held<T> = { readonly hold: Hold<T>; bound: TextureHandle<T> | null; failed: boolean };
 type View<T> = { readonly slot: string; readonly handle: TextureHandle<T>; readonly sprite: SpriteRef };
 /**
  * A part of a shot root (shots §5.1): a face's expression group (`expr`) or a member's figure plane (null), one node
- * over the plate whose sprites draw frames of the records their views hold (the sheet, the face file).
+ * over the plate whose sprites draw frames of the records their views hold (the sheet, the face file). `area`: the
+ * union of its sprites' plate boxes (a face patch covers it, S15).
  */
-type Part<T> = { readonly char: CharId; readonly expr: ExprId | null; readonly group: GroupRef; readonly views: readonly View<T>[] };
+type Part<T> = { readonly char: CharId; readonly expr: ExprId | null; readonly group: GroupRef; readonly views: readonly View<T>[]; readonly area: Box4 };
+/**
+ * One face's change on a shot root (K7, S15): the group it leaves (`out` destroys it, once) and the group it shows (none:
+ * back to the rest the plate shows), over `ms`.
+ */
+type FaceSwap<T> = { readonly old: Part<T> | undefined; readonly next: Part<T> | undefined; readonly out: (() => void) | undefined; readonly ms: number };
 /** A bg or a CG in its own anchor (a crossfade holds two); a shot's bg is its root, with its parts by key. */
 type BackdropView<T> = View<T> & { readonly node: AnchorRef; readonly shot?: { readonly rig: ShotRig; readonly parts: Map<string, Part<T>> } };
 /** The slot's live handle for a shot part, or undefined (its record is not live: the part is not drawn). */
@@ -363,6 +382,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   /** The live transition targets (one batch builds at a time, so they are the running batch's). */
   const flats = new Set<Flat>();
   let flatRefused = 0;
+  /** B2 (W1): the face slots taken again since the shot on stage was entered; each at most once per entry. */
+  const retaken = new Set<string>();
 
   /** The record behind `h` has ended (failed its revive): the registry no longer names this handle (identity rule). */
   const ended = (h: TextureHandle<T>): boolean => registry.current(h.id) !== h;
@@ -381,15 +402,16 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     }
     const entry = resolve(id);
     if (!entry.ok) {
-      byId.set(id, { hold: Promise.resolve(entry), bound: null });
+      byId.set(id, { hold: Promise.resolve(entry), bound: null, failed: false });
       return Promise.resolve(entry);
     }
     const hold = registry.acquire(id, holder, { entry: entry.value, priority: 'visible' });
-    const held: Held<T> = { hold, bound: registry.current(id) };
+    const held: Held<T> = { hold, bound: registry.current(id), failed: false };
     void hold.then((r) => {
       if (r.ok && held.bound === null) {
         held.bound = r.value;
       }
+      held.failed = !r.ok;
     });
     byId.set(id, held);
     return hold;
@@ -625,19 +647,35 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         adapter.set(sprite, { x, y, w, h: ht });
       }
     } catch (e) {
-      destroyPart({ char, expr, group, views });
+      destroyPart({ char, expr, group, views, area: [0, 0, 0, 0] });
       throw e;
     }
     // Members back to front; a figure plane under its member's face.
     adapter.set(group, { z: 2 * rig.cast.findIndex((m) => m.char === char) + (expr === null ? 1 : 2) });
-    return { char, expr, group, views };
+    return { char, expr, group, views, area: drawn.map((d) => d.at).reduce(unionBox) };
+  };
+  /** K7: the new group fades in over the old one, or the old one out to the rest; the old one goes at the end. */
+  const crossfadeFace = (fade: Fade, s: FaceSwap<T>): void => {
+    if (s.next !== undefined) {
+      fade(s.next.group, 0, 1, s.ms, s.out);
+    } else if (s.old !== undefined) {
+      fade(s.old.group, 1, 0, s.ms, s.out);
+    }
   };
   /**
    * A shot root's parts to `faces` (K7): a missing figure plane is drawn; per face whose expression changed, the new
    * group fades in over the old one, which retires whole at the fade's end; a face back to its rest (the plate shows
-   * it) or whose file is not live fades its group out. Only a changed face's groups are touched.
+   * it) or whose file is not live fades its group out. Only a changed face's groups are touched. With `swaps`, each
+   * change is built and listed there instead of faded (the batch patches them, S15).
    */
-  const drawFaces = (v: BackdropView<T>, faces: ReadonlyMap<CharId, ExprId>, handleOf: HandleOf<T>, fade: Fade, msOf: (c: CharId) => number): void => {
+  const drawFaces = (
+    v: BackdropView<T>,
+    faces: ReadonlyMap<CharId, ExprId>,
+    handleOf: HandleOf<T>,
+    fade: Fade,
+    msOf: (c: CharId) => number,
+    swaps?: FaceSwap<T>[],
+  ): void => {
     const shot = v.shot;
     if (shot === undefined) {
       return;
@@ -656,13 +694,20 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         continue;
       }
       const next = x === null ? undefined : part(v, shot.rig, m.char, x, handleOf);
+      if (next === undefined && old === undefined) {
+        continue;
+      }
       const out = old === undefined ? undefined : retire(old.views, old.group);
       if (next !== undefined) {
         shot.parts.set(key, next);
-        fade(next.group, 0, 1, msOf(m.char), out);
-      } else if (old !== undefined) {
+      } else {
         shot.parts.delete(key);
-        fade(old.group, 1, 0, msOf(m.char), out);
+      }
+      const s: FaceSwap<T> = { old, next, out, ms: msOf(m.char) };
+      if (swaps === undefined) {
+        crossfadeFace(fade, s);
+      } else {
+        swaps.push(s);
       }
     }
   };
@@ -781,6 +826,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     let later = false;
     /** The exact dissolve's target: the swap point is right after its render, whether or not a window is reported. */
     let flat: Flat | null = null;
+    /** The face changes the batch patches (S15): listed by a batch whose props change at once, patched at the end. */
+    let swaps: FaceSwap<T>[] | null = null;
     /**
      * The batch's handle for a slot only while its record is live, read in the same step as the sprite it makes,
      * also at a fade's midpoint (identity rule item 1). Else the slot is built as a skipped visual.
@@ -800,13 +847,69 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       const rig = target.bg === null ? undefined : b.rigs?.get(target.bg);
       return rig && { rig, faces: facesOf(target), handleOf: shotHandle };
     };
-    /** The faces of the shot on stage to the target's, over each face command's time (200 ms by default). */
-    const syncFaces = (now = false): void => {
+    /**
+     * The faces of the shot on stage to the target's, over each face command's time (200 ms by default); with `swaps`,
+     * built and listed for patchFaces.
+     */
+    const syncFaces = (now = false, swaps?: FaceSwap<T>[]): void => {
       if (bg !== null) {
         const msOf = (c: CharId): number =>
           now ? 0 : (b.cmds.find((x): x is Extract<VisualCommand, { kind: 'face' }> => x.kind === 'face' && x.char === c)?.ms ?? 200);
-        drawFaces(bg, facesOf(target), shotHandle, fade, msOf);
+        drawFaces(bg, facesOf(target), shotHandle, fade, msOf, swaps);
       }
+    };
+    /**
+     * S15 (shots §5.5, D9, review O1): each timed face change on the shot root as an exact patch, the union of its old
+     * and new groups' boxes rendered at the after-state into a target in the root's content above every part. Every
+     * changed face is set to its after-state, every patch rendered, then every face back at its before-state; a patch
+     * fades in over its face's time, and at its end the new group shows, the old one goes and the target is dropped. A
+     * face whose patch is refused (no target member, no room in the band, past the cap, a closed render gate) takes
+     * K7, counted in `flatRefused`; one with no time changes at once.
+     */
+    const patchFaces = (swaps: readonly FaceSwap<T>[]): void => {
+      const root = bg;
+      const rig = root?.shot?.rig;
+      const show = (p: Part<T> | undefined, alpha: number): void => {
+        if (p !== undefined) {
+          adapter.set(p.group, { alpha });
+        }
+      };
+      const timed = (s: FaceSwap<T>): boolean => sec(s.ms) > 0;
+      if (root === null || rig === undefined || adapter.flatten === undefined || !swaps.some(timed)) {
+        for (const s of swaps) {
+          flatRefused += timed(s) ? 1 : 0;
+          crossfadeFace(fade, s);
+        }
+        return;
+      }
+      const at = restFraming(rig, adapter.size(), resolution, deps.shots?.half() ?? false);
+      for (const s of swaps) {
+        show(s.old, 0);
+        show(s.next, 1);
+      }
+      const made = swaps.map((s): Flat | null => {
+        const area = [s.old?.area, s.next?.area].filter((x): x is Box4 => x !== undefined).reduce(unionBox);
+        const p = timed(s) ? patchPlan(area, at, resolution) : null;
+        if (p === null) {
+          flatRefused += timed(s) ? 1 : 0;
+          return null;
+        }
+        return makeFlat('flat:patch', p.plan, { kind: 'group', parent: root.node.content, x: p.x, y: p.y, k: p.k, z: 2 * rig.cast.length + 1 });
+      });
+      swaps.forEach((s, i) => {
+        const f = made[i] ?? null;
+        show(s.old, 1);
+        if (f === null) {
+          crossfadeFace(fade, s);
+          return;
+        }
+        show(s.next, 0);
+        fade(f.ref, 0, 1, s.ms, () => {
+          show(s.next, 1);
+          s.out?.();
+          dropFlat(f);
+        });
+      });
     };
 
     /** Tweens an alpha from → to from t = 0; with no time it is set at once and `onEnd` runs now. */
@@ -1087,7 +1190,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         syncProps(flat === null ? bgCmd.ms : 0);
       } else {
         swapBg();
-        syncFaces();
+        // A face change fades no props here: its patch renders once the batch's instant changes are written (S15).
+        swaps = [];
+        syncFaces(false, swaps);
         syncProps(0);
       }
 
@@ -1145,6 +1250,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
           cg = backdrop('cg', h, 0);
           fade(cg.node.anchor, 0, 1, ms, old === null ? undefined : retire([old], old.node.anchor));
         }
+      }
+      if (swaps !== null) {
+        patchFaces(swaps);
       }
     }
 
@@ -1231,16 +1339,39 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   /**
    * The logical stage moves to `target`; every slot whose id changes is taken now. `covered`: the slots a CG covers are
    * taken by a second instant batch chained behind this one, which this batch does not wait for (restore with a CG).
+   * B2 (W1, E1 lifetime): a batch that changes a face on a shot takes again its sheet or a face file whose take failed,
+   * at most once per slot per entry of the shot (a bg to another id, or a restore: `entry`); every other slot, and every
+   * legacy chapter, keeps its failed take until its id changes.
    */
-  const enqueue = (cmds: readonly VisualCommand[], target: SceneSnapshot, instant: boolean, rigs: Rigs, window: StageWindow | null, covered = false): Promise<void> => {
-    const before = slotsOf(logical, logicalRigs);
+  const enqueue = (
+    cmds: readonly VisualCommand[],
+    target: SceneSnapshot,
+    instant: boolean,
+    rigs: Rigs,
+    window: StageWindow | null,
+    covered = false,
+    entry = false,
+  ): Promise<void> => {
+    const prev = logical;
+    const before = slotsOf(prev, logicalRigs);
     logical = target;
     logicalRigs = rigs;
+    if (entry || prev.bg !== target.bg) {
+      retaken.clear();
+    }
+    const faced = target.bg !== null && rigs?.has(target.bg) === true && !sameFaces(facesOf(prev), facesOf(target));
+    const failed = (slot: string, id: AssetId): boolean => holds.get(holderOf(slot))?.get(id)?.failed === true;
     const takes = new Map<string, Hold<T>>();
     const under = new Map<string, Hold<T>>();
     for (const [slot, id] of slotsOf(target, rigs)) {
+      const into = covered && slot !== 'cg' ? under : takes;
       if (before.get(slot) !== id) {
-        takeFor(covered && slot !== 'cg' ? under : takes, slot, id);
+        takeFor(into, slot, id);
+      } else if (faced && (slot === 'sheet' || slot.startsWith('face:')) && !retaken.has(slot) && failed(slot, id)) {
+        // Waited on as a first take is: a face drawn from it needs it.
+        retaken.add(slot);
+        holds.get(holderOf(slot))?.delete(id);
+        takeFor(into, slot, id);
       }
     }
     const done = queue(cmds, target, instant, takes, rigs, window);
@@ -1277,7 +1408,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       }
       complete();
       // A CG covers the stage: the restore waits for it alone (a covered plate loading late shows nothing new).
-      return enqueue([], copy(s), true, deps.shots?.rigs() ?? null, null, s.cg !== null);
+      return enqueue([], copy(s), true, deps.shots?.rigs() ?? null, null, s.cg !== null, true);
     },
     snapshot() {
       return copy(logical);
