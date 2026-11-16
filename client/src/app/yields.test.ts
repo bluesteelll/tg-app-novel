@@ -37,7 +37,7 @@ import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DecodeOptions } from '../world/decode.ts';
 import type { DocId, HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
 import type { WaitRow } from '../requests.test.ts';
-import { DEMO_PAUSE_MS, DEMO_STEP_MS, ROOM_FADE_MS, TAKE_FADE_MS, VIEW_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
+import { DEMO_PAUSE_MS, DEMO_STEP_MS, DIRTY_DEBOUNCE_MS, ROOM_FADE_MS, TAKE_FADE_MS, VIEW_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
 import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
 import yieldsSource from './yields.ts?raw';
 
@@ -4751,8 +4751,9 @@ test('yields: an equal answer is no move away on a reach frame', async () => {
 });
 
 test('yields: zooming back into a device during its POST opens a new session at the saved work', async () => {
-  // H3 race 1 (RULINGS 366 B9): the zoom-out hides the device with its POST in flight; the zoom back in re-arrives, and
-  // its open drops the hidden session (the POST aborted, its late answer dropped) and opens a new one at the saved work.
+  // H3 race 1 (RULINGS 366 B9, 368 L1): the zoom-out hides the device with its POST in flight; the zoom back in's `room`
+  // effect drops the hidden session at its dispatch (the POST aborted, its late answer dropped), and the arrival's open
+  // job opens a new one at the saved work.
   const r = deviceRig('dials');
   const q = heldPosts(r);
   await atDevice(r);
@@ -4770,6 +4771,197 @@ test('yields: zooming back into a device during its POST opens a new session at 
   await settle();
   expect([r.yields.world().puzzles[DEV]?.outcome, r.puzzle.frame?.answer, r.puzzle.frame?.line]).toEqual([null, [1, 0, 2], 'idle']);
   r.yields.dispose();
+});
+
+/** Runs every late batch the rig holds, until none is waiting. */
+async function flushLate(r: Rig): Promise<void> {
+  for (let i = 0; i < 20; i += 1) {
+    await settle();
+    r.release();
+  }
+  await settle();
+}
+
+/**
+ * GameSession's intent queue in place of the rig's (`app/game.ts` `run` / `after`, its `tap` and `queue`): an intent
+ * starts in a microtask, a tap while one runs is refused, and `queue` waits for the whole intent in progress (a tap's
+ * open job included) before it runs.
+ */
+function intentQueue(r: Rig): void {
+  let busy: Promise<void> | null = null;
+  const run = (fn: () => Promise<void>): Promise<void> => {
+    const p = Promise.resolve().then(fn);
+    const clear = (): void => {
+      if (busy === tracked) {
+        busy = null;
+      }
+    };
+    const tracked: Promise<void> = p.then(clear, clear);
+    busy = tracked;
+    return p;
+  };
+  r.host.tap = (fn) => busy ?? run(fn);
+  r.host.queue = async (fn) => {
+    while (busy !== null) {
+      await busy;
+    }
+    return run(fn);
+  };
+}
+
+/** The outcomes of the `puzzle_ended` reports, in order. */
+const endedOf = (r: Rig): string[] => r.events.flatMap((e) => (e.kind === 'puzzle_ended' ? [e.outcome] : []));
+
+/**
+ * The device's arrival with every batch late (the zoom's transition and the room's loads held until released), the
+ * moves of `work` when given, a POST held by its commit part, then the zoom-out: the frame hidden, its session waiting
+ * for the POST.
+ */
+async function hiddenWithPost(r: Rig, q: ReturnType<typeof heldPosts>, order: string, work: readonly number[] | null = null): Promise<void> {
+  const entered = r.yields.onYield({ kind: 'explore', section: MANOR });
+  await flushLate(r);
+  await entered;
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await flushLate(r);
+  expect([roomOf(r), r.puzzle.frame?.presentation], order).toEqual(['panel', 'view']);
+  if (work !== null) {
+    r.yields.host.onwork?.(work, false);
+    await flushLate(r);
+  }
+  r.yields.host.oncommit?.();
+  await flushLate(r);
+  r.yields.layer.onleaveview();
+  await flushLate(r);
+  expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted)], order).toEqual(['hall', null, [false]]);
+}
+
+test("yields: a hidden device's late answer in the zoom-back-in window is dropped, in both intent orders", async () => {
+  // RULINGS 368 L1, option (B): the zoom back in's `room` effect drops the hidden session at its dispatch, so its POST is
+  // aborted before the zoom's room batch (the crossfade and the loads) and the arrival's open job run; a reply landing
+  // in that window is dropped (A8, P5), the job opens one idle session at the saved work, and the device ends once, by
+  // its own re-post. Both intent orders: the rig's (a queued job runs at once) and GameSession's.
+  for (const order of ['the rig', 'GameSession'] as const) {
+    const r = deviceRig('dials', { late: true });
+    if (order === 'GameSession') {
+      intentQueue(r);
+    }
+    const q = heldPosts(r);
+    await hiddenWithPost(r, q, order, [1, 0, 2]);
+    // The zoom back in, its room batch held: at its dispatch the hidden session is gone, its POST aborted.
+    r.yields.layer.ontap(key('hall.to_panel'));
+    await settle();
+    expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted)], order).toEqual(['panel', null, [true]]);
+    q.answer(SOLVED); // the old POST answers inside the window
+    await flushLate(r);
+    const run = r.yields.world().puzzles[DEV];
+    expect([run?.outcome, r.yields.world().open.includes(key('panel.dial')), endedOf(r)], order).toEqual([null, false, []]);
+    const f = r.puzzle.frame;
+    expect([f?.presentation, f?.line, f?.busy, f?.answer, r.yields.presence().puzzle], order).toEqual(['view', 'idle', false, [1, 0, 2], true]);
+    // The new session's own post ends the device, once.
+    r.yields.host.oncommit?.();
+    await settle();
+    q.answer(SOLVED);
+    await flushLate(r);
+    expect([r.posted, endedOf(r), r.yields.world().open.includes(key('panel.dial')), r.puzzle.frame], order).toEqual([[[1, 0, 2], [1, 0, 2]], ['solved'], true, null]);
+    r.yields.dispose();
+  }
+});
+
+test('yields: a late wrong at the limit in the zoom-back-in window is dropped and the device ends once', async () => {
+  // RULINGS 368 L1 (lifecycle M1): the same window with a posted wrong at the attempt limit. The dropped session's reply
+  // counts nothing; the open job's new session is idle, and its own wrong ends the device failed, reported once, its
+  // onFail's coin given once.
+  for (const order of ['the rig', 'GameSession'] as const) {
+    const r = deviceRig('dials', { late: true, maxAttempts: 1 });
+    if (order === 'GameSession') {
+      intentQueue(r);
+    }
+    const q = heldPosts(r);
+    await hiddenWithPost(r, q, order);
+    r.yields.layer.ontap(key('hall.to_panel'));
+    await settle();
+    expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted)], order).toEqual(['panel', null, [true]]);
+    q.answer(POSTED_WRONG);
+    await flushLate(r);
+    const w = r.yields.world();
+    expect([w.puzzles[DEV]?.attempts ?? 0, w.puzzles[DEV]?.outcome ?? null, endedOf(r), r.puzzle.frame?.line, w.held], order).toEqual([0, null, [], 'idle', []]);
+    r.yields.host.oncommit?.();
+    await settle();
+    q.answer(POSTED_WRONG);
+    await flushLate(r);
+    const x = r.yields.world();
+    expect([x.puzzles[DEV]?.outcome, endedOf(r), r.puzzle.frame, x.held], order).toEqual(['failed', ['failed'], null, ['coin']]);
+    r.yields.dispose();
+  }
+});
+
+test('yields: a posted wrong landing after a zoom-out counts once and is saved', async () => {
+  // Lifecycle M3 (RULINGS 368; 07's "session closed with the POST in flight" row): the zoom-out hides the device and its
+  // close waits for the POST (X8's deferred close). L1 keys on the device's own room: a `room` effect into another room
+  // (the hall's same-section entry) keeps the hidden session and its POST. Its posted wrong then counts one attempt with
+  // no frame cue, ends the session and is saved by the dirty debounce; at the limit it ends the device failed in the
+  // parent room, reported once, its onFail giving the coin there.
+  const r = deviceRig('dials', { maxAttempts: 3 });
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.oncommit?.();
+  await settle();
+  r.yields.layer.onleaveview();
+  await settle();
+  await r.yields.onYield({ kind: 'explore', section: MANOR });
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, q.signals.map((s) => s.aborted)]).toEqual(['hall', null, [false]]);
+  const mark = r.cues.length;
+  const saves = (): number => r.log.filter((l) => l === 'autosave').length;
+  q.answer(POSTED_WRONG);
+  await settle();
+  const before = saves();
+  r.clock.advance(DIRTY_DEBOUNCE_MS);
+  const run = r.yields.world().puzzles[DEV];
+  expect([run?.attempts, run?.outcome, endedOf(r), puzzleCuesOf(r, mark), r.yields.presence().puzzle, saves() - before]).toEqual([1, null, [], [], false, 1]);
+  r.yields.dispose();
+  const x = deviceRig('dials', { maxAttempts: 1 });
+  const qx = heldPosts(x);
+  await atDevice(x);
+  x.yields.host.oncommit?.();
+  await settle();
+  x.yields.layer.onleaveview();
+  await settle();
+  const markx = x.cues.length;
+  qx.answer(POSTED_WRONG);
+  await settle();
+  const wx = x.yields.world();
+  expect([wx.room, wx.puzzles[DEV]?.outcome, endedOf(x), wx.held, puzzleCuesOf(x, markx), x.puzzle.frame]).toEqual(['hall', 'failed', ['failed'], ['coin'], [], null]);
+  x.yields.dispose();
+});
+
+test('yields: a mismatch landing after a zoom-out keeps the reached work for the re-entry', async () => {
+  // Lifecycle M3 (07's "session closed with the POST in flight" row): a reach post's wrong reply is a mismatch; landing
+  // after the zoom-out it meets a closed session (`attempted` returns at `open !== o`): no reset cue, no restart, nothing
+  // counted, and the reached work stays saved, so the re-entry opens at it.
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const r = deviceRig('latch');
+    const q = heldPosts(r);
+    await atDevice(r);
+    r.yields.host.onwork?.([2, 1, 0], false);
+    r.yields.host.onreach?.([2, 1, 0]);
+    await settle();
+    r.yields.layer.onleaveview();
+    await settle();
+    expect([r.posted, q.signals.map((s) => s.aborted)]).toEqual([[[2, 1, 0]], [false]]);
+    const mark = r.cues.length;
+    q.answer(WRONG);
+    await settle();
+    const run = r.yields.world().puzzles[DEV];
+    expect([run?.work, run?.attempts, run?.outcome, puzzleCuesOf(r, mark), r.yields.presence().puzzle]).toEqual([[2, 1, 0], 0, null, [], false]);
+    r.yields.layer.ontap(key('hall.to_panel'));
+    await settle();
+    expect([roomOf(r), r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work]).toEqual(['panel', [2, 1, 0], [2, 1, 0]]);
+    r.yields.dispose();
+  } finally {
+    errors.mockRestore();
+  }
 });
 
 test('yields: a full-length press sequence posts once', async () => {

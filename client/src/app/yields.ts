@@ -618,10 +618,15 @@ export function createYields(h: YieldsHost): Yields {
         // D3 (RULINGS 363 A8; engine plan §7.5 "Lifecycle"): a move out of a shown device's room closes the device: the
         // frame goes at once, before the move plays, and the session at its end (an attempt in flight still answers),
         // with no outcome. A `room` effect into the device's own room (core's same-section entry) keeps it.
+        // L1 (RULINGS 368): a move back into a hidden device's room drops that session here, at the re-arrival's dispatch:
+        // its POST is aborted, so a reply landing before the arrival's open job runs (after the zoom's batch) is dropped,
+        // and the job opens a new session at the saved work (A8). Its `puzzle:closed` played at its hide.
         const o = open;
         if (o !== null && o.present === 'view' && !o.hidden && e.room !== o.room) {
           hideFrame(o);
           o.session.close();
+        } else if (o !== null && o.present === 'view' && o.hidden && e.room === o.room) {
+          dropPuzzle(null);
         }
         const how: MoveHow = e.how === 'zoom-in' || e.how === 'zoom-out' ? e.how : scope.how;
         const box = e.how === 'zoom-out' && e.via === null && w !== null ? exitBoxInto(w, e.from) : scope.box;
