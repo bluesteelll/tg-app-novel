@@ -4723,6 +4723,35 @@ test('yields: a late answer for a lock in a room left emits no cue at the lock',
   r.yields.dispose();
 });
 
+test('yields: a late cue outside an entry plays only at a hotspot of the room shown', async () => {
+  // GM8h2 D1 (Q65), RULINGS 384 D3: a world cue outside every entry (the controller's listener called late) takes
+  // `send`'s direct path, which emits it only when its hotspot's room is the room shown. In the hall the hall's desk
+  // plays and the cellar's exit does not; after the walk to the cellar, the other way round.
+  const listener: { fn: Parameters<ExploreController['onEffect']>[0] | null } = { fn: null };
+  const create: ExploreChunk['create'] = (deps) => {
+    const real = createExploreController(deps);
+    return {
+      ...real,
+      onEffect: (fn) => {
+        listener.fn = fn;
+        return real.onEffect(fn);
+      },
+    };
+  };
+  const r = rig({ world: cueWorld(), create });
+  await inHall(r);
+  const late = (at: string): string[] => {
+    const mark = r.cues.length;
+    listener.fn?.({ kind: 'cue', cue: coreCue('look', key(at), null) });
+    return atHotspot(r, mark, at);
+  };
+  expect([roomOf(r), late('hall.desk'), late('cellar.to_hall')]).toEqual(['hall', ['module:core:look'], []]);
+  r.yields.layer.ontap(key('hall.to_cellar'));
+  await settle();
+  expect([roomOf(r), late('cellar.to_hall'), late('hall.desk')]).toEqual(['cellar', ['module:core:look'], []]);
+  r.yields.dispose();
+});
+
 test('yields: an at-less box cue is still emitted', async () => {
   // GM8h2 D2 / D3: a box cue at no hotspot (a linear puzzle's end: `puzzle-ended`'s cause has no lock) has no subject,
   // so D1 never drops it; it plays as today (G-2, carried to SH10). Delivered as the early cue of a walk from the hall,
