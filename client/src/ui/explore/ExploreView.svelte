@@ -137,8 +137,11 @@
   {/if}
   {#if viewing && puzzle.ladder !== null && puzzle.host !== null}
     {@const Host = puzzle.host}
-    <!-- The hint ladder over a device: a sheet like the explore panels, its controls in this family. -->
-    <div class="sheet">
+    <!-- The hint ladder over a device: a sheet like the explore panels, its controls in this family. It is the room
+         place's hints panel (GM8h2 D13(1)): the panel's open and close land on the sheet, the first hints panel. The
+         `ladder`, `tier` and `alert` targets and a hint request's hold (`waiting` / `waited`) land on the card, as in
+         the frame place: each takes the leaf hints panel, the card inside this sheet (RULINGS 382 C1, 384 D1). -->
+    <div class="sheet" data-cue-panel="hints">
       <Host place="ladder" {lang} {frame} ladder={puzzle.ladder} {...puzzleActions} />
     </div>
   {/if}

@@ -1530,8 +1530,9 @@ test('controller: Back disarms when the way back goes absent', () => {
 
 /** hall -> panel: panel is a view of the hall whose device hotspot `dial` carries a zero-slot lock with the code puzzle
  *  `dial` (the arrival hook keys on the `device` key only, so it is live under the default types), beside a look and a
- *  lockless object `crate`; the hall's lockless object `dial` shares the device's id (fix1, gates F1). */
-function devicePanel(): WorldPublic {
+ *  lockless object `crate`; the hall's lockless object `dial` shares the device's id (fix1, gates F1). `dialRect` is the
+ *  device's own rect (default the shared `RECT`). */
+function devicePanel(dialRect: readonly number[] = RECT): WorldPublic {
   return world({
     puzzles: { dial: code(null) },
     sections: {
@@ -1539,7 +1540,10 @@ function devicePanel(): WorldPublic {
         start: 'hall',
         rooms: {
           hall: room('hall', [exit('to_panel', 'panel'), look('vase'), object('dial', null)]),
-          panel: { ...viewRoom('panel', 'hall', [object('dial', lock([], 'dial')), look('plate'), object('crate', null)]), device: 'dial' },
+          panel: {
+            ...viewRoom('panel', 'hall', [{ ...object('dial', lock([], 'dial')), rect: dialRect }, look('plate'), object('crate', null)]),
+            device: 'dial',
+          },
         },
       },
     },
@@ -1593,4 +1597,31 @@ test("device: a device's own end does not re-arrive", () => {
   h.c.dispatch(tap('hall.to_panel'));
   expect(h.c.state().room).toBe('panel');
   expect(log).toEqual(['puzzle panel.dial', 'devices:done@panel.dial']);
+});
+
+test("controller: deviceBox is the shown room's device in the hotspot form", () => {
+  // GM8h2 D5: a device draws no button, so its cues read its box on demand, in the form a hotspot's button takes (the
+  // cover mapping with the minimum tap target); only the shown room's device, and only while the stage has a size.
+  // The device's rect is its own and small (the shared RECT maps above 44 px, where the minimum target is a no-op).
+  const dialRect = [100, 200, 20, 20] as const;
+  const h = harness(devicePanel(dialRect));
+  h.c.enter(sec('dev'), EMPTY_WORLD_STATE);
+  // The hall has no device: its own `dial` (the device's id) is a button, never a device box; another room's device
+  // is none either.
+  expect([h.c.deviceBox(k('hall.dial')), h.c.deviceBox(k('panel.dial'))]).toEqual([null, null]);
+  h.c.dispatch(tap('hall.to_panel'));
+  expect(h.c.state().room).toBe('panel');
+  // Computed here from the device's rect, not read from the controller. Non-vacuous: the minimum target grows the bare
+  // mapping, so a box without it differs from the expected one.
+  const mapped = toStage(dialRect, cover(S390, ROOM_SOURCE));
+  const expected = minTarget(mapped, MIN_TARGET_PX);
+  expect(expected).not.toEqual(mapped);
+  expect(h.c.deviceBox(k('panel.dial'))).toEqual(expected);
+  // Any other key of the room, and no key, are no device.
+  expect([h.c.deviceBox(k('panel.crate')), h.c.deviceBox(k('panel.plate')), h.c.deviceBox(null)]).toEqual([null, null, null]);
+  // A stage with no size draws no box, as it draws no button.
+  h.host.clientWidth = 0;
+  h.host.clientHeight = 0;
+  h.ro.fire();
+  expect([h.c.deviceBox(k('panel.dial')), h.view.hotspots]).toEqual([null, []]);
 });

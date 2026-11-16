@@ -12,7 +12,8 @@ import { GLYPH_PATHS } from '../../ui/glyphs.ts';
 import type { Glyph, ItemId } from '../../world/types.ts';
 import { loadPuzzleUi, PUZZLE_UI } from '../registry.ts';
 import type { PuzzleUiProps } from '../registry.ts';
-import type { PuzzleType } from '../rules/index.ts';
+import { PUZZLE_TYPES, puzzleInstance } from '../rules/index.ts';
+import type { PuzzleType, PuzzleTypes } from '../rules/index.ts';
 import CodeLock from './CodeLock.svelte';
 import codeLockSource from './CodeLock.svelte?raw';
 import GridPuzzle from './GridPuzzle.svelte';
@@ -93,6 +94,19 @@ function declarationsFor(source: string, cls: string): Map<string, string> {
 }
 
 const px = (value: string | undefined): number => Number(/^(\d+(?:\.\d+)?)px$/.exec(value ?? '')?.[1] ?? Number.NaN);
+
+test("code: each dial button's cue index is its dial", () => {
+  // GM8h2 D17: a dial's up and down presses emit `ui` cues whose index is the button's `data-cue-index` (cues/root.ts):
+  // its dial, the part its digit marks.
+  const { container } = render(CodeLock, props());
+  const marks = [...container.querySelectorAll('button[data-cue]')].map((b) => [b.getAttribute('data-cue'), b.getAttribute('data-cue-index')]);
+  expect(marks).toEqual(
+    [0, 1, 2, 3].flatMap((i) => [
+      ['dial-up', String(i)],
+      ['dial-down', String(i)],
+    ]),
+  );
+});
 
 test('code: dial buttons at least 48 px', () => {
   // happy-dom computes no layout: the rule is read from the source, and the rendered buttons carry its class.
@@ -202,6 +216,34 @@ test('puzzles: every type UI marks its parts', async () => {
     expect(marks, type).toEqual(Array.from({ length: f.parts }, (_, i) => String(i)));
     unmount();
   }
+});
+
+/**
+ * Per registered type, the part a `puzzle:input` index names (RULINGS 384 D4; GM8h2 D9): `'position'` for a
+ * configuration that starts full-length (a dial, a slot, a cell), `'value'` for an answer that starts empty (a press
+ * list, a path: the index is the part pressed or drawn). yields reads the kind from the start (`initial()` empty: by
+ * value), so a type declares its kind here (a missing entry is a tsc error) and a start that disagrees fails below.
+ */
+const INDEX_KINDS: { readonly [T in PuzzleType]: 'position' | 'value' } = {
+  code: 'position',
+  order: 'position',
+  path: 'value',
+  grid: 'position',
+};
+
+test('puzzles: every registered type declares its index kind and its start gives that kind', () => {
+  const registered: PuzzleTypes = PUZZLE_TYPES;
+  const kinds: Readonly<Record<string, 'position' | 'value'>> = INDEX_KINDS;
+  const fixtures: Readonly<Record<string, { readonly params: unknown }>> = PART_FIXTURES;
+  // Every registered type has an entry, and the table names no other.
+  expect(registered.map((r) => r.type).sort()).toEqual(Object.keys(kinds).sort());
+  // yields' derivation on the instance it reads, built from the params that render the type's parts.
+  const derived = registered.map((r) => {
+    const p = r.decodeParams(fixtures[r.type]?.params);
+    const instance = p.ok ? puzzleInstance({ type: r.type, params: p.value }) : null;
+    return [r.type, instance === null ? 'no instance' : instance.initial().length === 0 ? 'value' : 'position'];
+  });
+  expect(derived).toEqual(registered.map((r) => [r.type, kinds[r.type]]));
 });
 
 test('registry: each type loads its own component', async () => {
@@ -672,6 +714,20 @@ test('path: a pointer event after unmount reports nothing', () => {
   expect([d.changes, d.cues, d.reports]).toEqual([[[0], [0, 1]], ['path-stroke@0', 'path-stroke@1'], []]);
 });
 
+test("path: each cell's cue index is its cell", () => {
+  // GM8h2 D17 (the twin of grid's Gates F3 row): a cell's activation emits a `ui` cue whose index is the element's
+  // `data-cue-index`, so each open cell's index is its cell, its part, as rendered; a blocked cell is no button.
+  const d = drawn({ params: { cols: 3, rows: 2, ends: [0, 3], blocked: [4] } });
+  const marks = [...d.view.container.querySelectorAll('button.cell')].map((b) => [b.getAttribute('data-cue'), b.getAttribute('data-cue-part'), b.getAttribute('data-cue-index')]);
+  expect(marks).toEqual([0, 1, 2, 3, 5].map((i) => ['path-cell', String(i), String(i)]));
+});
+
+test('path: a long-press on the stroke surface opens no callout', () => {
+  // GM8h2 D14 (M7): iOS opens its callout on a long-press, and a stroke that starts with a hold would lose its pointer
+  // to it. Every pointer lands on the surface (the cells take none); happy-dom has no callout, so the pin reads the source.
+  expect(declarationsFor(pathSource, 'surface').get('-webkit-touch-callout')).toBe('none');
+});
+
 test("path: the drawn line, its tint and the surface's label", () => {
   // D8 as built, on a grid that is not square so a mix-up of rows and columns shows: the line runs through the drawn
   // cells' centres in grid units (column, then row), each drawn cell carries the tint, and the surface is named by the
@@ -682,6 +738,98 @@ test("path: the drawn line, its tint and the surface's label", () => {
   const surface = d.view.container.querySelector('[data-cue-gesture="path-stroke"]');
   const label = surface?.getAttribute('aria-labelledby') ?? '';
   expect(d.view.container.querySelector(`[id="${label}"]`)?.textContent).toBe(mechT(d.p.lang, 'mech.path_rule'));
+});
+
+// The refusals (GM8h2 D7): a cell a step cannot take goes to `onblocked` (yields plays `puzzle:blocked` on it). On P32's
+// reached line (end 3), every cell but 4 (the back-step) and 3 (the end) is refused.
+
+/** A drawn PathPuzzle whose `onblocked` records the refused parts. */
+function refusing(over: Partial<PuzzleUiProps> = {}) {
+  const blocked: number[] = [];
+  const d = drawn({ onblocked: (part: number) => blocked.push(part), ...over });
+  return { ...d, blocked };
+}
+
+test('path: a drag across refused cells reports once', () => {
+  // A live stroke from the reached line's end through three refused cells: one report, its first refused cell.
+  const d = refusing({ answer: P32_SOLVE });
+  const s = rig(d);
+  s.at('pointerdown', 3);
+  for (const c of [0, 1, 2]) {
+    s.at('pointermove', c);
+  }
+  s.at('pointerup', 2);
+  expect([d.blocked, d.changes]).toEqual([[0], []]);
+});
+
+test('path: a refusal after a step reports again', () => {
+  // Refused (0), the line's end entered again (3: no refusal), a back-step (4), refused again (1, already held).
+  const d = refusing({ answer: P32_SOLVE });
+  const s = rig(d);
+  s.at('pointerdown', 3);
+  for (const c of [0, 3, 4, 1]) {
+    s.at('pointermove', c);
+  }
+  expect([d.blocked, d.changes]).toEqual([[0, 1], [[0, 1, 2, 5, 4]]]);
+});
+
+test('path: each stroke reports its own refusal', () => {
+  // RULINGS 380 B6: the flag is the pointer's, reset at its down: two live strokes, each crossing a refused cell, two
+  // reports.
+  const d = refusing({ answer: P32_SOLVE });
+  const s = rig(d);
+  for (const stroke of [1, 2]) {
+    s.at('pointerdown', 3, stroke);
+    s.at('pointermove', 0, stroke);
+    s.at('pointerup', 0, stroke);
+  }
+  expect([d.blocked, d.changes]).toEqual([[0, 0], []]);
+});
+
+test('path: each refused tap reports', () => {
+  // A refused down starts no stroke and reports once, as a tap on a refused cell; the next tap reports its own.
+  const d = refusing({ answer: [0] });
+  const s = rig(d);
+  for (const c of [5, 4]) {
+    s.at('pointerdown', c);
+    s.at('pointerup', c);
+  }
+  expect([d.blocked, d.changes, s.surface.hasPointerCapture(1)]).toEqual([[5, 4], [], false]);
+});
+
+test('path: each refused press reports', async () => {
+  // A cell's own activation (a keyboard or an assistive press) is one input each: two presses, two reports.
+  const d = refusing({ answer: [0] });
+  await fireEvent.click(d.cell(5));
+  await fireEvent.click(d.cell(5));
+  expect([d.blocked, d.changes]).toEqual([[5, 5], []]);
+});
+
+test('path: a busy input reports no refusal', async () => {
+  // A live stroke, then busy: its move into a refused cell, a down on a refused cell and a press report nothing.
+  const d = refusing({ answer: P32_SOLVE });
+  const s = rig(d);
+  s.at('pointerdown', 3);
+  d.p.busy = true;
+  flushSync();
+  s.at('pointermove', 0);
+  s.at('pointerup', 0);
+  s.at('pointerdown', 1);
+  s.at('pointerup', 1);
+  await fireEvent.click(d.cell(1));
+  expect([d.blocked, d.changes]).toEqual([[], []]);
+});
+
+test("path: the line's end is no refusal", async () => {
+  // RULINGS 377 A10 (Notes 8): the finger on the line's end is no refusal: a down on it starts a stroke, a press on it
+  // changes nothing; neither reports.
+  const d = refusing({ answer: [0, 1] });
+  const s = rig(d);
+  s.at('pointerdown', 1);
+  expect(s.surface.hasPointerCapture(1)).toBe(true);
+  s.at('pointerup', 1);
+  await fireEvent.click(d.cell(1));
+  expect([d.blocked, d.changes]).toEqual([[], []]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -880,6 +1028,11 @@ test('grid: the board selects no text', () => {
   expect([wrappers[0]?.querySelectorAll('button.cell').length, wrappers[0]?.querySelectorAll('button.symbol').length]).toEqual([4, 3]);
 });
 
+test('grid: a long-press on a cell or a symbol opens no callout', () => {
+  // GM8h2 D14 (M7): on the buttons themselves, the long-press's targets, not by inheritance from the board.
+  expect(['cell', 'symbol'].map((cls) => declarationsFor(gridSource, cls).get('-webkit-touch-callout'))).toEqual(['none', 'none']);
+});
+
 test('grid: cells and symbols at least 48 px', () => {
   // happy-dom computes no layout: the rules are read from the source, and every rendered button carries one of them.
   const d = filled();
@@ -933,6 +1086,14 @@ test('grid: a grid that is not square names and lays out its cells by row and co
   // The control: the square G22's track repeats its own side, so a count written into the template fails one of the two.
   const square = filled().view.container.querySelector<HTMLElement>('.cells');
   expect(square?.style.getPropertyValue('grid-template-columns')).toBe('repeat(2, minmax(48px, 1fr))');
+});
+
+test('grid: the column track and the cell names follow the columns, not the symbols', () => {
+  // GM8h2 D17 (grid M1): every other grid fixture has as many symbols as columns, so a swap of the two cannot show. On
+  // 2 x 2 with three symbols, the track repeats the column count and cell 2 is row 2, column 1.
+  const d = filled({ params: { rows: 2, cols: 2, symbols: 3, given: [0, 0, 0, 0] }, answer: [0, 0, 0, 0] });
+  const track = d.view.container.querySelector<HTMLElement>('.cells')?.style.getPropertyValue('grid-template-columns');
+  expect([track, d.cell(2).getAttribute('aria-label')]).toEqual(['repeat(2, minmax(48px, 1fr))', mechT(d.p.lang, 'mech.grid_empty', { r: 2, c: 1 })]);
 });
 
 test("grid: each cell's cue index is its board index", () => {

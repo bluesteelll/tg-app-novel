@@ -8,14 +8,16 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type { AttemptResponse, PuzzleStatus } from '../api/generated/api.ts';
 import type { ApiError, Clock } from '../api/http.ts';
 import type { AudioCommand } from '../audio/manager.ts';
+import { CUE_MOTIONS, motionOf } from '../cues/stage/motions.ts';
 import type { Cue, CueEvent } from '../cues/types.ts';
-import { createExploreController } from '../explore/controller.ts';
+import { MIN_TARGET_PX, createExploreController } from '../explore/controller.ts';
 import type { ExploreController } from '../explore/controller.ts';
 import type { ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
 import type { PuzzleRun, WorldState } from '../explore/state.ts';
-import { ROOM_SOURCE, cover, toStage } from '../geom/cover.ts';
+import { ROOM_SOURCE, cover, minTarget, toStage } from '../geom/cover.ts';
 import { mechT } from '../i18n/mechanics.ts';
+import type { CauseVerb, FactKind, MechanicId } from '../mechanics/contract.ts';
 import type { ChunkError, PuzzleUiProps } from '../puzzles/registry.ts';
 import { PUZZLE_TYPES } from '../puzzles/rules/index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from '../puzzles/rules/index.ts';
@@ -35,10 +37,11 @@ import { createViewModel } from '../ui/state.svelte.ts';
 import type { CueStageProps } from '../ui/state.svelte.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { DecodeOptions } from '../world/decode.ts';
-import type { DocId, HotspotKey, ItemId, WorldPublic } from '../world/types.ts';
+import type { DocId, HotspotKey, ItemId, RoomId, WorldPublic } from '../world/types.ts';
 import type { WaitRow } from '../requests.test.ts';
 import { DEMO_PAUSE_MS, DEMO_STEP_MS, DIRTY_DEBOUNCE_MS, ROOM_FADE_MS, TAKE_FADE_MS, VIEW_FADE_MS, coreCue, createYields, heldBy } from './yields.ts';
 import type { ExploreChunk, LazyChunks, Yields, YieldsHost } from './yields.ts';
+import * as yieldsModule from './yields.ts';
 import yieldsSource from './yields.ts?raw';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -918,8 +921,9 @@ test('yields: dispose leaves no cue subscriber', async () => {
   };
   const r = rig({ create });
   await inHall(r);
-  // A late look cue (the writer's record; a `look` effect itself plays no cue).
-  const looked: ExploreEffect = { kind: 'cue', cue: coreCue('look', 'study.desk' as HotspotKey, null) };
+  // A late look cue (the writer's record; a `look` effect itself plays no cue), at a hotspot of the hall, the room shown
+  // (GM8h2 D1: a late cue at another room's hotspot plays nothing).
+  const looked: ExploreEffect = { kind: 'cue', cue: coreCue('look', 'hall.box' as HotspotKey, null) };
   // Control: while the session lives, such an effect reaches the scene role.
   const before = r.cues.length;
   listener.fn?.(looked);
@@ -3870,8 +3874,8 @@ test('yields: every visible change of the puzzle view plays a cue', async () => 
 
   // GM8h: a device in its room (the full sequence `rite`), its chunks in: its arrival, a part move, Hint over it and
   // Back closing the hints, the press that completes the sequence and posts it, the wrong reply with its restart, and
-  // the zoom-out that hides it. A part here is an answer position (RULINGS 366 B2): GM8h2's widened Q5 moves the "a part
-  // move" step (and the restart's) for a sequence answer.
+  // the zoom-out that hides it. The part is the position for a position-indexed answer, the value for a value-indexed
+  // one (RULINGS 366 B2; GM8h2 D9): a sequence's "a part move" step (and the restart's) cues the part pressed.
   {
     const r = deviceRig('rite', { parts: 2 });
     const q = heldRequests(r);
@@ -4258,9 +4262,31 @@ const LATCH = viewType('latch', { check: 'reach', goal: 'shown', wrong: 'none' }
 /** A shown-goal reach device that demonstrates its goal (the parts 2, 0, 1) and knows a wrong press itself. */
 const CHIMES = viewType('chimes', { check: 'reach', goal: 'shown', wrong: 'local', demo: () => [2, 0, 1] });
 const DEVICE_TYPES: PuzzleTypes = [...PUZZLE_TYPES, DIALS, BELLS, RITE, LATCH, CHIMES];
+/**
+ * A reach press list (GM8h2 D11): it starts empty, each press adds the part pressed (a value below `parts`, so every
+ * value is a part a composed pin can resolve), it demonstrates its goal (the parts 2, 0, 1) and knows a wrong press
+ * itself. Passed by `types` beside `DEVICE_TYPES` (BOOM's form), so no rig on them changes. No composed pin reuses RITE
+ * at `parts: 2`, whose values reach 2.
+ */
+const CHANT = viewType('chant', {
+  check: 'reach',
+  goal: 'shown',
+  wrong: 'local',
+  initial: () => [],
+  startShown: () => null,
+  demo: () => [2, 0, 1],
+  answerShape: (p) => ({ len: p.parts, max: p.parts - 1 }),
+  workFits: (p, w) => w.length <= p.parts && w.every((v) => Number.isInteger(v) && v >= 0 && v < p.parts),
+});
+const CHANT_TYPES: PuzzleTypes = [...DEVICE_TYPES, CHANT];
 /** The device world's knobs: its device's parts, attempt limit and hint tiers, the type registry, its part decor. */
 type DeviceWorldOptions = { parts?: number; maxAttempts?: number | null; hintTiers?: number; types?: PuzzleTypes; decor?: boolean };
 const DEV = 'dev' as PuzzleLocalId;
+/** The device hotspot's own rect (GM8h2 D5): apart from every other hotspot's `RECT`, so a box read off the exit taken or
+ *  any other button can never pass for the device's. */
+const DIAL_RECT = [300, 700, 240, 300] as const;
+/** The device's box on the rig's 360 x 640 stage host, in the hotspots' form (cover, then the minimum tap target). */
+const DIAL_BOX = minTarget(toStage(DIAL_RECT, cover({ w: 360, h: 640 }, ROOM_SOURCE)), MIN_TARGET_PX);
 
 /**
  * hall -> panel, a view of the hall whose `device` is `dial`: a zero-slot lock of the puzzle `dev`, of the fixture type
@@ -4307,7 +4333,7 @@ function deviceWorld(type: string, o: DeviceWorldOptions = {}): WorldPublic {
             bg: 'cellar',
             title: txt('Panel'),
             onEnter: [],
-            hotspots: [box('dial', { ...lockOf([], 'dev'), onFail: [{ give: 'coin' }] }), box('safe', lockOf([], 'loose')), toKnot('leave')],
+            hotspots: [{ ...box('dial', { ...lockOf([], 'dev'), onFail: [{ give: 'coin' }] }), rect: DIAL_RECT }, box('safe', lockOf([], 'loose')), toKnot('leave')],
             ...(o.decor === true ? { decor: Array.from({ length: parts }, (_, i) => lever(i)) } : {}),
             view: { of: 'hall' },
             device: 'dial',
@@ -4555,7 +4581,257 @@ test("yields: a correct answer landing after a zoom-out opens the device's lock"
   await settle();
   expect([roomOf(r), r.puzzle.frame]).toEqual(['panel', null]);
   expect(keysOf(r, mark)).toContain('module:devices:done');
+  // GM8h2 D5: the arrival's cue plays on the device it names, not on the exit the zoom-in took.
+  expect(r.cues.slice(mark).find((e) => keyOf(e.cue) === 'module:devices:done')?.box).toEqual(DIAL_BOX);
   r.yields.dispose();
+});
+
+/** The device world's state with its device ended `outcome` (a solved device's lock open), in `room`. */
+const endedAt = (r: Rig, outcome: 'solved' | 'failed', room: string, pendingStory: readonly KnotName[] = []): WorldState => ({
+  ...r.yields.world(),
+  room: room as RoomId,
+  pendingStory,
+  puzzles: { [DEV]: { outcome, attempts: 1, hintsOpened: 0 } },
+  open: outcome === 'solved' ? [key('panel.dial')] : [],
+});
+
+/** The `devices` module cues after `mark`, with their boxes. */
+const deviceCuesOf = (r: Rig, mark: number): Array<[string, CueEvent['box']]> =>
+  r.cues.slice(mark).flatMap((e): Array<[string, CueEvent['box']]> => (e.cue.kind === 'module' && e.cue.module === 'devices' ? [[keyOf(e.cue), e.box]] : []));
+
+test("yields: a device's module cue lands on the device box", async () => {
+  // GM8h2 D5: the arrival at an ended device plays `module:devices:done` / `:jammed` at the device's key, caused by the
+  // move (the zoom-in's exit; a resume's or an event return's nothing). A device draws no button, so the cue reads the
+  // device's own box, however the room was reached.
+  for (const [outcome, name] of [
+    ['solved', 'module:devices:done'],
+    ['failed', 'module:devices:jammed'],
+  ] as const) {
+    // A zoom-in from the hall.
+    const z = deviceRig('dials');
+    await inHall(z);
+    z.yields.restore(endedAt(z, outcome, 'hall'), null, { kind: 'explore', section: MANOR });
+    await z.yields.onYield({ kind: 'explore', section: MANOR });
+    let mark = z.cues.length;
+    z.yields.layer.ontap(key('hall.to_panel'));
+    await settle();
+    expect([outcome, 'zoom-in', roomOf(z), deviceCuesOf(z, mark)]).toEqual([outcome, 'zoom-in', 'panel', [[name, DIAL_BOX]]]);
+    z.yields.dispose();
+    // A resume onto the device's room.
+    const s = deviceRig('dials');
+    await inHall(s);
+    const returning = { ...endedAt(s, outcome, 'panel'), pendingStory: [AFTER] };
+    s.yields.restore(endedAt(s, outcome, 'panel'), null, { kind: 'explore', section: MANOR });
+    mark = s.cues.length;
+    await s.yields.onYield({ kind: 'explore', section: MANOR });
+    await settle();
+    expect([outcome, 'resume', roomOf(s), deviceCuesOf(s, mark)]).toEqual([outcome, 'resume', 'panel', [[name, DIAL_BOX]]]);
+    s.yields.dispose();
+    // An event return into it, in a fresh session (a reload inside a knot the room ran): the knot's own yield.
+    const e = deviceRig('dials');
+    e.yields.restore(returning, null, null);
+    await e.yields.onYield({ kind: 'explore', section: MANOR });
+    await settle();
+    expect([outcome, 'return', roomOf(e), e.yields.world().pendingStory, deviceCuesOf(e, 0)]).toEqual([outcome, 'return', 'panel', [], [[name, DIAL_BOX]]]);
+    e.yields.dispose();
+  }
+});
+
+/** The keys of the fact and module cues after `mark` caused at (a fact) or naming (a module cue) hotspot `k`. */
+const atHotspot = (r: Rig, mark: number, k: string): string[] =>
+  r.cues.slice(mark).flatMap((e) => ((e.cue.kind === 'fact' ? e.cue.cause.at : e.cue.kind === 'module' ? e.cue.at : null) === k ? [keyOf(e.cue)] : []));
+
+test("yields: the cue subject table is motions.ts's box rows", () => {
+  // GM8h2 D2 (RULINGS 377 A4): yields drops a world cue whose subject is off screen (D1); its subject is the hotspot of a
+  // `box` row of the stage's motion table, which the engine may not import. Read through the namespace, so a missing
+  // export fails here by assertion. Every fact and module key, under the default cause and each `byCause` variant: the
+  // subject is the cue's hotspot exactly when its motion lands on `box`. No other kind of cue has one.
+  expect(typeof yieldsModule.cueSubject).toBe('function');
+  const at = key('hall.box');
+  const drift: string[] = [];
+  let subjects = 0;
+  let variants = 0;
+  for (const [k, spec] of Object.entries(CUE_MOTIONS)) {
+    const [kind, a = '', b = ''] = k.split(':');
+    const verbs: CauseVerb[] = ['tap', ...(Object.keys(spec.byCause ?? {}) as CauseVerb[])];
+    const cues: Array<[string, Cue]> =
+      kind === 'fact'
+        ? verbs.map((verb) => [`${k}@${verb}`, { kind: 'fact', fact: { kind: a as FactKind, id: 'x' }, change: b === 'added' ? 'added' : 'removed', cause: { verb, at, item: null, via: null } }])
+        : kind === 'module'
+          ? [[k, { kind: 'module', module: a as MechanicId, name: b, at, item: null }]]
+          : [];
+    variants += Math.max(0, cues.length - 1);
+    cues.forEach(([name, c], i) => {
+      const box = motionOf(c).target === 'box';
+      subjects += box && i === 0 ? 1 : 0; // the default row (`tap`), not a variant
+      if (yieldsModule.cueSubject(c) !== (box ? at : null)) {
+        drift.push(name);
+      }
+    });
+  }
+  const others: Cue[] = [
+    { kind: 'move', from: null, to: null, via: at, how: 'zoom-in' },
+    { kind: 'ui', control: 'hotspot', item: null, index: null },
+    { kind: 'ui-state', name: 'waiting', panel: null, item: null },
+    { kind: 'puzzle', puzzle: DRAWER, name: 'input', index: 0 },
+  ];
+  expect([drift, others.map((c) => yieldsModule.cueSubject(c))]).toEqual([[], [null, null, null, null]]);
+  // The floor: the table's 24 box rows were seen, and its three `byCause` variants.
+  expect([subjects, variants]).toEqual([24, 3]);
+});
+
+test("yields: a hidden device's late answer emits no cue at its device", async () => {
+  // GM8h2 D1 (Q65), T14's case: the zoom-out hides the device with its POST in flight, and the correct answer lands
+  // while the hall is shown. The device's lock opens, and no cue plays at the device, which is not on screen.
+  const r = deviceRig('dials');
+  const q = heldPosts(r);
+  await atDevice(r);
+  r.yields.host.ontry();
+  await settle();
+  r.yields.layer.onleaveview();
+  await settle();
+  expect([roomOf(r), r.puzzle.frame]).toEqual(['hall', null]);
+  const mark = r.cues.length;
+  q.answer(SOLVED);
+  await settle();
+  expect([r.yields.world().puzzles[DEV]?.outcome, r.yields.world().open.includes(key('panel.dial'))]).toEqual(['solved', true]);
+  expect(atHotspot(r, mark, 'panel.dial')).toEqual([]);
+  r.yields.dispose();
+});
+
+test('yields: a late answer for a lock in a room left emits no cue at the lock', async () => {
+  // GM8h2 D1, RULINGS 377 A2 (Q65's own case): an X8 Back hides the drawer's frame with its POST in flight, the player
+  // walks to the cellar, and the correct answer lands there. The chest's lock opens, and no cue plays at the chest,
+  // which is not on screen.
+  const answer = deferred<void>();
+  const r = rig({ world: cueWorld(), attempts: [RIGHT], attemptGate: answer.promise });
+  await inHall(r);
+  r.yields.layer.ontap(key('hall.chest'));
+  await settle();
+  r.yields.host.ontry();
+  await settle();
+  r.screens.back();
+  await settle();
+  r.yields.layer.ontap(key('hall.to_cellar'));
+  await settle();
+  expect([roomOf(r), r.puzzle.frame, r.calls.attempts]).toEqual(['cellar', null, 1]);
+  const mark = r.cues.length;
+  answer.resolve();
+  await settle();
+  expect([r.yields.world().puzzles[DRAWER]?.outcome, r.yields.world().open.includes(key('hall.chest'))]).toEqual(['solved', true]);
+  expect(atHotspot(r, mark, 'hall.chest')).toEqual([]);
+  r.yields.dispose();
+});
+
+test('yields: a late cue outside an entry plays only at a hotspot of the room shown', async () => {
+  // GM8h2 D1 (Q65), RULINGS 384 D3: a world cue outside every entry (the controller's listener called late) takes
+  // `send`'s direct path, which emits it only when its hotspot's room is the room shown. In the hall the hall's desk
+  // plays and the cellar's exit does not; after the walk to the cellar, the other way round.
+  const listener: { fn: Parameters<ExploreController['onEffect']>[0] | null } = { fn: null };
+  const create: ExploreChunk['create'] = (deps) => {
+    const real = createExploreController(deps);
+    return {
+      ...real,
+      onEffect: (fn) => {
+        listener.fn = fn;
+        return real.onEffect(fn);
+      },
+    };
+  };
+  const r = rig({ world: cueWorld(), create });
+  await inHall(r);
+  const late = (at: string): string[] => {
+    const mark = r.cues.length;
+    listener.fn?.({ kind: 'cue', cue: coreCue('look', key(at), null) });
+    return atHotspot(r, mark, at);
+  };
+  expect([roomOf(r), late('hall.desk'), late('cellar.to_hall')]).toEqual(['hall', ['module:core:look'], []]);
+  r.yields.layer.ontap(key('hall.to_cellar'));
+  await settle();
+  expect([roomOf(r), late('cellar.to_hall'), late('hall.desk')]).toEqual(['cellar', ['module:core:look'], []]);
+  r.yields.dispose();
+});
+
+test('yields: an at-less box cue is still emitted', async () => {
+  // GM8h2 D2 / D3: a box cue at no hotspot (a linear puzzle's end: `puzzle-ended`'s cause has no lock) has no subject,
+  // so D1 never drops it; it plays as today (G-2, carried to SH10). Delivered as the early cue of a walk from the hall,
+  // the form of `an arrival's fact cues play with its move at the batch start`.
+  const solved: Cue = { kind: 'fact', fact: { kind: 'solved', id: 'drawer' }, change: 'added', cause: { verb: 'solve', at: null, item: null, via: null } };
+  const create: ExploreChunk['create'] = (deps) => {
+    const real = createExploreController(deps);
+    return {
+      ...real,
+      onEffect: (fn) =>
+        real.onEffect((e) => {
+          if (e.kind === 'room' && e.how === 'walk') {
+            fn({ kind: 'cue', cue: solved });
+          }
+          fn(e);
+        }),
+    };
+  };
+  const r = rig({ world: cueWorld(), create });
+  await inHall(r);
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_cellar'));
+  await settle();
+  expect([roomOf(r), r.cues.slice(mark).filter((e) => e.cue === solved).length]).toEqual(['cellar', 1]);
+  r.yields.dispose();
+});
+
+test("yields: a resumed section's held device cue plays although no room was shown", async () => {
+  // GM8h2 D1 (RULINGS 380 B2): `restore` leaves no room shown, so a resume's held cues play by their job's room alone:
+  // the solved device's arrival cue at its key is emitted.
+  const r = deviceRig('dials');
+  await inHall(r);
+  r.yields.restore(endedAt(r, 'solved', 'panel'), null, { kind: 'explore', section: MANOR });
+  const mark = r.cues.length;
+  await r.yields.onYield({ kind: 'explore', section: MANOR });
+  await settle();
+  expect([roomOf(r), atHotspot(r, mark, 'panel.dial')]).toEqual(['panel', ['module:devices:done']]);
+  r.yields.dispose();
+});
+
+test('yields: a fact cue at the shown device lands on the device box', async () => {
+  // GM8h2 D5: a device's own facts (a local wrong's attempt, a posted solve, a failed limit's end and its onFail's fire)
+  // are caused at its lock, the device hotspot, which draws no button: they land on the device's box.
+  const atDial = (r: Rig, mark: number): Array<[string, CueEvent['box']]> =>
+    r.cues
+      .slice(mark)
+      .flatMap((e): Array<[string, CueEvent['box']]> => (e.cue.kind === 'fact' && e.cue.cause.at === 'panel.dial' && e.cue.fact.kind !== 'held' ? [[keyOf(e.cue), e.box]] : []));
+  const r = deviceRig('bells', { maxAttempts: 3, attempts: [SOLVED] });
+  await atDevice(r);
+  let mark = r.cues.length;
+  r.yields.host.onwork?.([1, 0, 0], true);
+  await settle();
+  expect(['a local wrong', atDial(r, mark)]).toEqual(['a local wrong', [['fact:attempt:added', DIAL_BOX]]]);
+  mark = r.cues.length;
+  r.yields.host.oncommit?.();
+  await settle();
+  expect(['a posted solve', r.yields.world().puzzles[DEV]?.outcome, atDial(r, mark)]).toEqual([
+    'a posted solve',
+    'solved',
+    [
+      ['fact:solved:added', DIAL_BOX],
+      ['fact:open:added', DIAL_BOX],
+    ],
+  ]);
+  r.yields.dispose();
+  const f = deviceRig('bells', { maxAttempts: 1 });
+  await atDevice(f);
+  mark = f.cues.length;
+  f.yields.host.onwork?.([1, 0, 0], true);
+  await settle();
+  expect(['a failed limit', f.yields.world().puzzles[DEV]?.outcome, atDial(f, mark)]).toEqual([
+    'a failed limit',
+    'failed',
+    [
+      ['fact:attempt:added', DIAL_BOX],
+      ['fact:failed:added', DIAL_BOX],
+      ['fact:fired:added', DIAL_BOX],
+    ],
+  ]);
+  f.yields.dispose();
 });
 
 test('yields: a story effect during a device POST drops the answer', async () => {
@@ -4704,7 +4980,7 @@ test('yields: a wrong flag counts only for a local-wrong device', async () => {
   f.yields.host.onwork?.([1], false);
   mark = f.cues.length;
   f.yields.host.onwork?.([1, 0], true);
-  expect(['(iii)', att(f), f.posted, f.puzzle.frame?.line, puzzleCuesOf(f, mark)]).toEqual(['(iii)', 0, [[1, 0]], 'checking', ['input@1', 'checking@null']]);
+  expect(['(iii)', att(f), f.posted, f.puzzle.frame?.line, puzzleCuesOf(f, mark)]).toEqual(['(iii)', 0, [[1, 0]], 'checking', ['input@0', 'checking@null']]);
   await settle();
   expect(['(iii)', f.puzzle.frame, f.yields.world().puzzles[DEV]?.outcome]).toEqual(['(iii)', null, 'solved']);
   f.yields.dispose();
@@ -4783,7 +5059,8 @@ test("yields: a device's saved work always equals its session's answer", async (
 
 /**
  * The part-target cues after `mark` (L3's `part` target): each `puzzle:input` with its index and each `work` fact with
- * its id (`<puzzle>.<index>=<value>`). A part here is an answer position (RULINGS 366 B2): one per configuration index.
+ * its id (`<puzzle>.<index>=<value>`). For an input, the part is the position for a position-indexed answer, the value
+ * for a value-indexed one (RULINGS 366 B2; GM8h2 D9).
  */
 const partCuesOf = (r: Rig, mark: number): string[] =>
   r.cues.slice(mark).flatMap((e) => {
@@ -4862,8 +5139,9 @@ test("yields: a second device press during the first press's state batch draws a
 
 test("yields: a device's first move of one part plays one press on that part", async () => {
   // D5 (A7, Q6 option (b)): a device move's `work` facts play no cue (the writer diffs a first move against no saved
-  // work, an `added` for every position); its one press per moved part is `puzzle:input`. A part is an answer position
-  // (a configuration answer's index; RULINGS 366 B2): GM8h2's widened Q5 moves these rows for a sequence answer.
+  // work, an `added` for every position); its one press per moved part is `puzzle:input`. The part is the position for
+  // a position-indexed answer, the value for a value-indexed one (RULINGS 366 B2; GM8h2 D9): a configuration's is its
+  // position.
   const r = deviceRig('dials');
   await atDevice(r);
   // Case 1: the first move of position 1, with no saved work.
@@ -4877,6 +5155,110 @@ test("yields: a device's first move of one part plays one press on that part", a
   await settle();
   expect(partCuesOf(r, mark)).toEqual(['puzzle:input@2']);
   expect(r.yields.world().puzzles[DEV]?.work).toEqual([0, 1, 2]);
+  r.yields.dispose();
+});
+
+test("yields: a press list's press cues the pressed part", async () => {
+  // GM8h2 D9: a sequence starts empty (`initial()` is []), so its answer's values are its parts: each press cues the
+  // part pressed, not the position it filled.
+  const r = deviceRig('rite', { parts: 2, attempts: [SOLVED] });
+  await atDevice(r);
+  let mark = r.cues.length;
+  r.yields.host.onwork?.([1], false);
+  expect(['[] -> [1]', partCuesOf(r, mark)]).toEqual(['[] -> [1]', ['puzzle:input@1']]);
+  mark = r.cues.length;
+  r.yields.host.onwork?.([1, 0], false);
+  expect(['[1] -> [1, 0]', partCuesOf(r, mark)]).toEqual(['[1] -> [1, 0]', ['puzzle:input@0']]);
+  await settle();
+  r.yields.dispose();
+});
+
+test("yields: a path's drawn cells are the parts its input cues", async () => {
+  // GM8h2 D9 / D10: a path starts empty, so its answer's values are its parts, the cells drawn. Drawn from the cell 3
+  // end (RULINGS 380 B9 O1), every cell differs from its position, so each step tells a part from a position. A retrace
+  // cues the cell it leaves; an end-touch restart cues each changed position's old cell, then its new one, once each.
+  const trail: Json = {
+    type: 'path',
+    title: txt('trail'),
+    prompt: txt('prompt'),
+    closeup: null,
+    params: { cols: 2, rows: 2, ends: [3, 1], blocked: [] },
+    maxAttempts: null,
+    giveUp: false,
+    solution: [3, 2, 0, 1],
+    hints: [txt('hint')],
+  };
+  const r = rig({ world: cueWorld({ trail }) });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: 'trail' as PuzzleLocalId, then: AFTER });
+  expect(r.puzzle.frame?.type).toBe('path');
+  const step = (a: number[]): string[] => {
+    const mark = r.cues.length;
+    r.yields.host.onchange(a);
+    return partCuesOf(r, mark);
+  };
+  // A one-step extension cues exactly one part (D18's yields half).
+  expect(['steps', step([3]), step([3, 2]), step([3, 2, 0])]).toEqual(['steps', ['puzzle:input@3'], ['puzzle:input@2'], ['puzzle:input@0']]);
+  expect(['retrace', step([3, 2])]).toEqual(['retrace', ['puzzle:input@0']]);
+  step([3, 2, 0]);
+  expect(['end-touch', step([1])]).toEqual(['end-touch', ['puzzle:input@3', 'puzzle:input@1', 'puzzle:input@2', 'puzzle:input@0']]);
+  r.yields.dispose();
+});
+
+test('yields: a restart cues each part that went dark once', async () => {
+  // GM8h2 D10: a full sequence's wrong reply starts it over; a part pressed twice went dark once, so it cues once.
+  const r = deviceRig('rite', { parts: 2, attempts: [POSTED_WRONG] });
+  await atDevice(r);
+  r.yields.host.onwork?.([1], false);
+  r.yields.host.onwork?.([1, 1], false);
+  const mark = r.cues.length;
+  await settle();
+  expect([r.puzzle.frame?.answer, puzzleCuesOf(r, mark)]).toEqual([[], ['wrong@null', 'input@1']]);
+  r.yields.dispose();
+});
+
+test("yields: a reach press list's press cues the pressed part", async () => {
+  // GM8h2 D9 / D11: a reach press list starts empty too, so its press cues the part pressed.
+  const r = deviceRig('chant', { types: CHANT_TYPES });
+  await atDevice(r);
+  const mark = r.cues.length;
+  r.yields.host.onwork?.([2], false);
+  expect(partCuesOf(r, mark)).toEqual(['puzzle:input@2']);
+  r.yields.dispose();
+});
+
+test("yields: a reach press list's press cue and its demo name the same part", async () => {
+  // GM8h2 D11: the demonstration lights the goal's parts in order (`puzzle:demo`); pressing the same parts in the same
+  // order cues each press on the part the demonstration lit.
+  const r = deviceRig('chant', { types: CHANT_TYPES });
+  await inHall(r);
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  r.clock.advance(DEMO_STEP_MS * 3);
+  const lit = demoOf(r, mark).map((k) => k.slice('demo@'.length));
+  const pressed: string[] = [];
+  for (const work of [[2], [2, 0], [2, 0, 1]]) {
+    const at = r.cues.length;
+    r.yields.host.onwork?.(work, false);
+    pressed.push(...puzzleCuesOf(r, at).flatMap((k) => (k.startsWith('input@') ? [k.slice('input@'.length)] : [])));
+  }
+  expect([lit, pressed]).toEqual([
+    ['2', '0', '1'],
+    ['2', '0', '1'],
+  ]);
+  r.yields.dispose();
+});
+
+test("yields: a reach press list's restart cues the parts that went dark", async () => {
+  // GM8h2 D10 / D11: a local wrong press that resets the list (the type UI's work back to []) cues each part that went
+  // dark, the parts pressed, not the positions; the press itself is `puzzle:wrong` (GM8b's ButtonDevice shows it).
+  const r = deviceRig('chant', { types: CHANT_TYPES });
+  await atDevice(r);
+  r.yields.host.onwork?.([2], false);
+  r.yields.host.onwork?.([2, 0], false);
+  const mark = r.cues.length;
+  r.yields.host.onwork?.([], true);
+  expect([partCuesOf(r, mark), puzzleCuesOf(r, mark).includes('wrong@null')]).toEqual([['puzzle:input@2', 'puzzle:input@0'], true]);
   r.yields.dispose();
 });
 
@@ -5076,6 +5458,12 @@ test('yields: a posted wrong landing after a zoom-out counts once and is saved',
   await settle();
   const wx = x.yields.world();
   expect([wx.room, wx.puzzles[DEV]?.outcome, endedOf(x), wx.held, puzzleCuesOf(x, markx), x.puzzle.frame]).toEqual(['hall', 'failed', ['failed'], ['coin'], [], null]);
+  // GM8h2 D1, D2, D4: the device is not on screen, so its own facts play nothing; the coin's gift plays on the ribbon
+  // (no subject), so it still flies; its `got` toast is an effect, never dropped.
+  const fromDial = atHotspot(x, markx, 'panel.dial');
+  expect(fromDial).toContain('fact:held:added');
+  expect(fromDial.filter((k) => k !== 'fact:held:added')).toEqual([]);
+  expect(notes(x)).toContainEqual(['got', 'Монета']);
   x.yields.dispose();
 });
 
@@ -5121,7 +5509,7 @@ test('yields: a full-length press sequence posts once', async () => {
   r.yields.host.onwork?.([1, 0], false);
   r.yields.host.onwork?.([1, 0], false);
   expect([r.posted, r.puzzle.frame?.busy, r.puzzle.frame?.line]).toEqual([[[1, 0]], true, 'checking']);
-  expect(puzzleCuesOf(r, mark)).toEqual(['input@1', 'checking@null']);
+  expect(puzzleCuesOf(r, mark)).toEqual(['input@0', 'checking@null']);
   await settle();
   expect([r.posted, r.puzzle.frame, r.yields.world().puzzles[DEV]?.outcome]).toEqual([[[1, 0]], null, 'solved']);
   r.yields.dispose();
@@ -5152,9 +5540,9 @@ test('yields: a full sequence rate-limited posts when the countdown ends', async
 
 test('yields: a wrong or offline full sequence restarts from initial', async () => {
   // §7.5 "Full commit" and D15: a wrong or an offline reply to a full sequence plays its own cue, then the sequence
-  // starts over through the one write path: one light `puzzle:input` per position it clears, never `puzzle:reset`, and
-  // the saved work follows. `input@i` is an answer position (RULINGS 366 B2): GM8h2's widened Q5 moves these rows for a
-  // sequence answer.
+  // starts over through the one write path: one light `puzzle:input` per part that went dark, once each (D10), never
+  // `puzzle:reset`, and the saved work follows. The part is the position for a position-indexed answer, the value for a
+  // value-indexed one (RULINGS 366 B2; GM8h2 D9): a sequence's is the part pressed.
   const r = deviceRig('rite', { parts: 2, attempts: [POSTED_WRONG, NETWORK] });
   await atDevice(r);
   r.yields.host.onwork?.([1], false);
@@ -5162,13 +5550,13 @@ test('yields: a wrong or offline full sequence restarts from initial', async () 
   r.yields.host.onwork?.([1, 2], false);
   await settle();
   expect([r.posted, r.puzzle.frame?.line, r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work]).toEqual([[[1, 2]], 'wrong', [], []]);
-  expect(puzzleCuesOf(r, mark)).toEqual(['input@1', 'checking@null', 'wrong@null', 'input@0', 'input@1']);
+  expect(puzzleCuesOf(r, mark)).toEqual(['input@2', 'checking@null', 'wrong@null', 'input@1', 'input@2']);
   r.yields.host.onwork?.([2], false);
   mark = r.cues.length;
   r.yields.host.onwork?.([2, 2], false);
   await settle();
   expect([r.posted.length, r.puzzle.frame?.line, r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work]).toEqual([2, 'offline', [], []]);
-  expect(puzzleCuesOf(r, mark)).toEqual(['input@1', 'checking@null', 'offline@null', 'input@0', 'input@1']);
+  expect(puzzleCuesOf(r, mark)).toEqual(['input@2', 'checking@null', 'offline@null', 'input@2']);
   r.yields.dispose();
 });
 
@@ -5490,7 +5878,7 @@ test("yields: a full sequence's reply under a sheet restarts it with no part cue
   const mark = r.cues.length;
   r.yields.host.onwork?.([2], false);
   r.yields.host.onblocked?.(1);
-  expect([overlaysOf(r), puzzleCuesOf(r, mark)]).toEqual([[], ['input@0', 'blocked@1']]);
+  expect([overlaysOf(r), puzzleCuesOf(r, mark)]).toEqual([[], ['input@2', 'blocked@1']]);
   r.yields.dispose();
 });
 

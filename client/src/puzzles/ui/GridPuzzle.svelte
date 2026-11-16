@@ -148,8 +148,10 @@
     gap: 4px;
   }
 
+  /* M7: on the buttons themselves, the long-press's targets, a long-press opens no iOS callout. */
   .cell,
   .symbol {
+    -webkit-touch-callout: none;
     min-width: 48px;
     min-height: 48px;
     margin: 0;
