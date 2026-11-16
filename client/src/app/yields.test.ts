@@ -3874,8 +3874,8 @@ test('yields: every visible change of the puzzle view plays a cue', async () => 
 
   // GM8h: a device in its room (the full sequence `rite`), its chunks in: its arrival, a part move, Hint over it and
   // Back closing the hints, the press that completes the sequence and posts it, the wrong reply with its restart, and
-  // the zoom-out that hides it. A part here is an answer position (RULINGS 366 B2): GM8h2's widened Q5 moves the "a part
-  // move" step (and the restart's) for a sequence answer.
+  // the zoom-out that hides it. The part is the position for a position-indexed answer, the value for a value-indexed
+  // one (RULINGS 366 B2; GM8h2 D9): a sequence's "a part move" step (and the restart's) cues the part pressed.
   {
     const r = deviceRig('rite', { parts: 2 });
     const q = heldRequests(r);
@@ -4262,6 +4262,23 @@ const LATCH = viewType('latch', { check: 'reach', goal: 'shown', wrong: 'none' }
 /** A shown-goal reach device that demonstrates its goal (the parts 2, 0, 1) and knows a wrong press itself. */
 const CHIMES = viewType('chimes', { check: 'reach', goal: 'shown', wrong: 'local', demo: () => [2, 0, 1] });
 const DEVICE_TYPES: PuzzleTypes = [...PUZZLE_TYPES, DIALS, BELLS, RITE, LATCH, CHIMES];
+/**
+ * A reach press list (GM8h2 D11): it starts empty, each press adds the part pressed (a value below `parts`, so every
+ * value is a part a composed pin can resolve), it demonstrates its goal (the parts 2, 0, 1) and knows a wrong press
+ * itself. Passed by `types` beside `DEVICE_TYPES` (BOOM's form), so no rig on them changes. No composed pin reuses RITE
+ * at `parts: 2`, whose values reach 2.
+ */
+const CHANT = viewType('chant', {
+  check: 'reach',
+  goal: 'shown',
+  wrong: 'local',
+  initial: () => [],
+  startShown: () => null,
+  demo: () => [2, 0, 1],
+  answerShape: (p) => ({ len: p.parts, max: p.parts - 1 }),
+  workFits: (p, w) => w.length <= p.parts && w.every((v) => Number.isInteger(v) && v >= 0 && v < p.parts),
+});
+const CHANT_TYPES: PuzzleTypes = [...DEVICE_TYPES, CHANT];
 /** The device world's knobs: its device's parts, attempt limit and hint tiers, the type registry, its part decor. */
 type DeviceWorldOptions = { parts?: number; maxAttempts?: number | null; hintTiers?: number; types?: PuzzleTypes; decor?: boolean };
 const DEV = 'dev' as PuzzleLocalId;
@@ -4934,7 +4951,7 @@ test('yields: a wrong flag counts only for a local-wrong device', async () => {
   f.yields.host.onwork?.([1], false);
   mark = f.cues.length;
   f.yields.host.onwork?.([1, 0], true);
-  expect(['(iii)', att(f), f.posted, f.puzzle.frame?.line, puzzleCuesOf(f, mark)]).toEqual(['(iii)', 0, [[1, 0]], 'checking', ['input@1', 'checking@null']]);
+  expect(['(iii)', att(f), f.posted, f.puzzle.frame?.line, puzzleCuesOf(f, mark)]).toEqual(['(iii)', 0, [[1, 0]], 'checking', ['input@0', 'checking@null']]);
   await settle();
   expect(['(iii)', f.puzzle.frame, f.yields.world().puzzles[DEV]?.outcome]).toEqual(['(iii)', null, 'solved']);
   f.yields.dispose();
@@ -5013,7 +5030,8 @@ test("yields: a device's saved work always equals its session's answer", async (
 
 /**
  * The part-target cues after `mark` (L3's `part` target): each `puzzle:input` with its index and each `work` fact with
- * its id (`<puzzle>.<index>=<value>`). A part here is an answer position (RULINGS 366 B2): one per configuration index.
+ * its id (`<puzzle>.<index>=<value>`). For an input, the part is the position for a position-indexed answer, the value
+ * for a value-indexed one (RULINGS 366 B2; GM8h2 D9).
  */
 const partCuesOf = (r: Rig, mark: number): string[] =>
   r.cues.slice(mark).flatMap((e) => {
@@ -5092,8 +5110,9 @@ test("yields: a second device press during the first press's state batch draws a
 
 test("yields: a device's first move of one part plays one press on that part", async () => {
   // D5 (A7, Q6 option (b)): a device move's `work` facts play no cue (the writer diffs a first move against no saved
-  // work, an `added` for every position); its one press per moved part is `puzzle:input`. A part is an answer position
-  // (a configuration answer's index; RULINGS 366 B2): GM8h2's widened Q5 moves these rows for a sequence answer.
+  // work, an `added` for every position); its one press per moved part is `puzzle:input`. The part is the position for
+  // a position-indexed answer, the value for a value-indexed one (RULINGS 366 B2; GM8h2 D9): a configuration's is its
+  // position.
   const r = deviceRig('dials');
   await atDevice(r);
   // Case 1: the first move of position 1, with no saved work.
@@ -5107,6 +5126,110 @@ test("yields: a device's first move of one part plays one press on that part", a
   await settle();
   expect(partCuesOf(r, mark)).toEqual(['puzzle:input@2']);
   expect(r.yields.world().puzzles[DEV]?.work).toEqual([0, 1, 2]);
+  r.yields.dispose();
+});
+
+test("yields: a press list's press cues the pressed part", async () => {
+  // GM8h2 D9: a sequence starts empty (`initial()` is []), so its answer's values are its parts: each press cues the
+  // part pressed, not the position it filled.
+  const r = deviceRig('rite', { parts: 2, attempts: [SOLVED] });
+  await atDevice(r);
+  let mark = r.cues.length;
+  r.yields.host.onwork?.([1], false);
+  expect(['[] -> [1]', partCuesOf(r, mark)]).toEqual(['[] -> [1]', ['puzzle:input@1']]);
+  mark = r.cues.length;
+  r.yields.host.onwork?.([1, 0], false);
+  expect(['[1] -> [1, 0]', partCuesOf(r, mark)]).toEqual(['[1] -> [1, 0]', ['puzzle:input@0']]);
+  await settle();
+  r.yields.dispose();
+});
+
+test("yields: a path's drawn cells are the parts its input cues", async () => {
+  // GM8h2 D9 / D10: a path starts empty, so its answer's values are its parts, the cells drawn. Drawn from the cell 3
+  // end (RULINGS 380 B9 O1), every cell differs from its position, so each step tells a part from a position. A retrace
+  // cues the cell it leaves; an end-touch restart cues each changed position's old cell, then its new one, once each.
+  const trail: Json = {
+    type: 'path',
+    title: txt('trail'),
+    prompt: txt('prompt'),
+    closeup: null,
+    params: { cols: 2, rows: 2, ends: [3, 1], blocked: [] },
+    maxAttempts: null,
+    giveUp: false,
+    solution: [3, 2, 0, 1],
+    hints: [txt('hint')],
+  };
+  const r = rig({ world: cueWorld({ trail }) });
+  await r.yields.onYield({ kind: 'puzzle', puzzle: 'trail' as PuzzleLocalId, then: AFTER });
+  expect(r.puzzle.frame?.type).toBe('path');
+  const step = (a: number[]): string[] => {
+    const mark = r.cues.length;
+    r.yields.host.onchange(a);
+    return partCuesOf(r, mark);
+  };
+  // A one-step extension cues exactly one part (D18's yields half).
+  expect(['steps', step([3]), step([3, 2]), step([3, 2, 0])]).toEqual(['steps', ['puzzle:input@3'], ['puzzle:input@2'], ['puzzle:input@0']]);
+  expect(['retrace', step([3, 2])]).toEqual(['retrace', ['puzzle:input@0']]);
+  step([3, 2, 0]);
+  expect(['end-touch', step([1])]).toEqual(['end-touch', ['puzzle:input@3', 'puzzle:input@1', 'puzzle:input@2', 'puzzle:input@0']]);
+  r.yields.dispose();
+});
+
+test('yields: a restart cues each part that went dark once', async () => {
+  // GM8h2 D10: a full sequence's wrong reply starts it over; a part pressed twice went dark once, so it cues once.
+  const r = deviceRig('rite', { parts: 2, attempts: [POSTED_WRONG] });
+  await atDevice(r);
+  r.yields.host.onwork?.([1], false);
+  r.yields.host.onwork?.([1, 1], false);
+  const mark = r.cues.length;
+  await settle();
+  expect([r.puzzle.frame?.answer, puzzleCuesOf(r, mark)]).toEqual([[], ['wrong@null', 'input@1']]);
+  r.yields.dispose();
+});
+
+test("yields: a reach press list's press cues the pressed part", async () => {
+  // GM8h2 D9 / D11: a reach press list starts empty too, so its press cues the part pressed.
+  const r = deviceRig('chant', { types: CHANT_TYPES });
+  await atDevice(r);
+  const mark = r.cues.length;
+  r.yields.host.onwork?.([2], false);
+  expect(partCuesOf(r, mark)).toEqual(['puzzle:input@2']);
+  r.yields.dispose();
+});
+
+test("yields: a reach press list's press cue and its demo name the same part", async () => {
+  // GM8h2 D11: the demonstration lights the goal's parts in order (`puzzle:demo`); pressing the same parts in the same
+  // order cues each press on the part the demonstration lit.
+  const r = deviceRig('chant', { types: CHANT_TYPES });
+  await inHall(r);
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  r.clock.advance(DEMO_STEP_MS * 3);
+  const lit = demoOf(r, mark).map((k) => k.slice('demo@'.length));
+  const pressed: string[] = [];
+  for (const work of [[2], [2, 0], [2, 0, 1]]) {
+    const at = r.cues.length;
+    r.yields.host.onwork?.(work, false);
+    pressed.push(...puzzleCuesOf(r, at).flatMap((k) => (k.startsWith('input@') ? [k.slice('input@'.length)] : [])));
+  }
+  expect([lit, pressed]).toEqual([
+    ['2', '0', '1'],
+    ['2', '0', '1'],
+  ]);
+  r.yields.dispose();
+});
+
+test("yields: a reach press list's restart cues the parts that went dark", async () => {
+  // GM8h2 D10 / D11: a local wrong press that resets the list (the type UI's work back to []) cues each part that went
+  // dark, the parts pressed, not the positions; the press itself is `puzzle:wrong` (GM8b's ButtonDevice shows it).
+  const r = deviceRig('chant', { types: CHANT_TYPES });
+  await atDevice(r);
+  r.yields.host.onwork?.([2], false);
+  r.yields.host.onwork?.([2, 0], false);
+  const mark = r.cues.length;
+  r.yields.host.onwork?.([], true);
+  expect([partCuesOf(r, mark), puzzleCuesOf(r, mark).includes('wrong@null')]).toEqual([['puzzle:input@2', 'puzzle:input@0'], true]);
   r.yields.dispose();
 });
 
@@ -5357,7 +5480,7 @@ test('yields: a full-length press sequence posts once', async () => {
   r.yields.host.onwork?.([1, 0], false);
   r.yields.host.onwork?.([1, 0], false);
   expect([r.posted, r.puzzle.frame?.busy, r.puzzle.frame?.line]).toEqual([[[1, 0]], true, 'checking']);
-  expect(puzzleCuesOf(r, mark)).toEqual(['input@1', 'checking@null']);
+  expect(puzzleCuesOf(r, mark)).toEqual(['input@0', 'checking@null']);
   await settle();
   expect([r.posted, r.puzzle.frame, r.yields.world().puzzles[DEV]?.outcome]).toEqual([[[1, 0]], null, 'solved']);
   r.yields.dispose();
@@ -5388,9 +5511,9 @@ test('yields: a full sequence rate-limited posts when the countdown ends', async
 
 test('yields: a wrong or offline full sequence restarts from initial', async () => {
   // §7.5 "Full commit" and D15: a wrong or an offline reply to a full sequence plays its own cue, then the sequence
-  // starts over through the one write path: one light `puzzle:input` per position it clears, never `puzzle:reset`, and
-  // the saved work follows. `input@i` is an answer position (RULINGS 366 B2): GM8h2's widened Q5 moves these rows for a
-  // sequence answer.
+  // starts over through the one write path: one light `puzzle:input` per part that went dark, once each (D10), never
+  // `puzzle:reset`, and the saved work follows. The part is the position for a position-indexed answer, the value for a
+  // value-indexed one (RULINGS 366 B2; GM8h2 D9): a sequence's is the part pressed.
   const r = deviceRig('rite', { parts: 2, attempts: [POSTED_WRONG, NETWORK] });
   await atDevice(r);
   r.yields.host.onwork?.([1], false);
@@ -5398,13 +5521,13 @@ test('yields: a wrong or offline full sequence restarts from initial', async () 
   r.yields.host.onwork?.([1, 2], false);
   await settle();
   expect([r.posted, r.puzzle.frame?.line, r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work]).toEqual([[[1, 2]], 'wrong', [], []]);
-  expect(puzzleCuesOf(r, mark)).toEqual(['input@1', 'checking@null', 'wrong@null', 'input@0', 'input@1']);
+  expect(puzzleCuesOf(r, mark)).toEqual(['input@2', 'checking@null', 'wrong@null', 'input@1', 'input@2']);
   r.yields.host.onwork?.([2], false);
   mark = r.cues.length;
   r.yields.host.onwork?.([2, 2], false);
   await settle();
   expect([r.posted.length, r.puzzle.frame?.line, r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work]).toEqual([2, 'offline', [], []]);
-  expect(puzzleCuesOf(r, mark)).toEqual(['input@1', 'checking@null', 'offline@null', 'input@0', 'input@1']);
+  expect(puzzleCuesOf(r, mark)).toEqual(['input@2', 'checking@null', 'offline@null', 'input@2']);
   r.yields.dispose();
 });
 
@@ -5726,7 +5849,7 @@ test("yields: a full sequence's reply under a sheet restarts it with no part cue
   const mark = r.cues.length;
   r.yields.host.onwork?.([2], false);
   r.yields.host.onblocked?.(1);
-  expect([overlaysOf(r), puzzleCuesOf(r, mark)]).toEqual([[], ['input@0', 'blocked@1']]);
+  expect([overlaysOf(r), puzzleCuesOf(r, mark)]).toEqual([[], ['input@2', 'blocked@1']]);
   r.yields.dispose();
 });
 

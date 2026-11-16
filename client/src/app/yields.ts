@@ -579,9 +579,9 @@ export function createYields(h: YieldsHost): Yields {
     scope = AT_ONCE;
     // D1 (A1): a cue held to the entry's move plays at its batch's start, over the room it enters and the room it leaves
     // (two moves in one entry: the first's); any other plays now, over the room shown. A late reply's cue at a room left
-    // plays nothing (Q65).
+    // plays nothing (Q65). The diff is known once the entry has run.
     const rooms = shownOf(s.job === null ? [shown] : [s.job.room, s.job.from]);
-    const cues = (s.cues ?? []).filter((e) => onScreen(e.cue, rooms)).map((e) => ({ ...e, diff: s.diff })); // the diff is known once the entry has run
+    const cues = (s.cues ?? []).filter((e) => onScreen(e.cue, rooms)).map((e) => ({ ...e, diff: s.diff }));
     if (s.job !== null) {
       s.job.cues = cues;
     } else {
@@ -1015,8 +1015,9 @@ export function createYields(h: YieldsHost): Yields {
   };
 
   /**
-   * The frame is on screen (engine plan §8.1 point 8): App's frame layer renders the host component, or the failed-host
-   * block; before either, the layer is an empty `div`.
+   * The frame is on screen (engine plan §8.1 point 8): the host component renders, or the failed-host block, in App's
+   * frame layer for an overlay frame and in ExploreView's room place for a view frame (`presentation`); before either,
+   * the place is empty.
    */
   const shownFrame = (): boolean => puzzle.frame !== null && (puzzle.host !== null || puzzle.frame.loadFailed);
   /** The shown-frame test: a cue of `o`'s frame plays only while it is the open, appeared, unhidden frame on screen. */
@@ -1392,8 +1393,9 @@ export function createYields(h: YieldsHost): Yields {
           return;
         case 'mismatch':
           // A reach post answered wrong: the content changed under this client (engine plan §7.4). The device returns
-          // to its start answer through its one reset cue; nothing was counted, so nothing is saved; the sticky toast
-          // asks for a restart, and the console keeps the trace (no report).
+          // to its start answer through its one reset cue; nothing was counted, so no autosave here (a device's saved
+          // work follows its reset below); the sticky toast asks for a restart, and the console keeps the trace (no
+          // report).
           o.reach = null;
           setFrame(o, { busy: false, line: 'idle', answer: o.session.answer(), awaiting: false });
           puzzleCue(o, 'reset');
@@ -1456,9 +1458,9 @@ export function createYields(h: YieldsHost): Yields {
     o.session.instance.commit === 'full' && o.session.answer().length === o.session.instance.shape.len && post(o);
 
   /**
-   * A device starts over (§7.5 "Full commit", D15): its type's `initial()` through the one write path, so each moved
-   * position plays its light `puzzle:input` (never `puzzle:reset`: the reply's own cue said why) and the saved work
-   * follows.
+   * A device starts over (§7.5 "Full commit", D15): its type's `initial()` through the one write path, so each part that
+   * moved or went dark plays its light `puzzle:input` once (never `puzzle:reset`: the reply's own cue said why) and the
+   * saved work follows.
    */
   const restartWork = (o: Open): void => {
     moveWork(o, o.session.instance.initial());
@@ -1487,8 +1489,8 @@ export function createYields(h: YieldsHost): Yields {
 
   /**
    * The one write path of a working answer (engine plan §7.5 "One write path"; GM8h): the session's answer, the move
-   * away from a reached answer, the frame, then one `puzzle:input` per moved part in index order. A type UI's
-   * `onchange` and a device's `onwork` both come through here.
+   * away from a reached answer, the frame, then one `puzzle:input` per part the move names, in the order the changed
+   * positions first name them. A type UI's `onchange` and a device's `onwork` both come through here.
    */
   const moveWork = (o: Open, a: readonly number[]): void => {
     // The frame's answer is the drawn one; after a reach post the session holds the canonical form (Q6).
@@ -1507,9 +1509,20 @@ export function createYields(h: YieldsHost): Yields {
       o.reach = null;
     }
     setFrame(o, away ? { answer: now, awaiting: false } : { answer: now });
-    // One cue per changed part, in index order.
+    // GM8h2 D9 / D10: a type that starts full-length (a configuration) names a part by its position; one that starts
+    // empty (a sequence, a ritual, a path) by its value, so a changed position names the part it left, then the part it
+    // took. Each part plays once.
+    const valued = o.session.instance.initial().length === 0;
+    const parts: number[] = [];
     for (const i of changed) {
-      puzzleCue(o, 'input', i);
+      for (const part of valued ? [was[i], now[i]] : [i]) {
+        if (part !== undefined && !parts.includes(part)) {
+          parts.push(part);
+        }
+      }
+    }
+    for (const part of parts) {
+      puzzleCue(o, 'input', part);
     }
     if (o.present === 'view') {
       // A device's working answer is its saved work (§7.5 "Working state"; Q-a): written inside the press, so `run.work`

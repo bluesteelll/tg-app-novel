@@ -84,7 +84,10 @@ const elOf = (el: Element | null): Resolved => (el === null ? null : { el });
 
 /**
  * The part a cue names (§8.5 "Cue targets"; GM8h L3): a `puzzle` cue's index, or a `work` fact's, read from its id
- * (`<puzzle>.<index>=<value>`, the writer's); else null. A part is an answer position (RULINGS 366 B2).
+ * (`<puzzle>.<index>=<value>`, the writer's); else null. A `puzzle:input` index is the part the input names: the
+ * position for a position-indexed answer, the value for a value-indexed one (RULINGS 366 B2; GM8h2 D9). A `work`
+ * fact's id names an answer position, which is its part for a position-indexed device; no production path emits one
+ * (yields filters a device move's `work` facts).
  */
 function partIndex(c: Cue): number | null {
   if (c.kind === 'puzzle') {

@@ -834,6 +834,21 @@ test('stage: a haptic plays only on top of a motion', async () => {
   expect(s.haptics).toEqual(['notify:success', 'notify:error']);
 });
 
+test('stage: one path step plays one haptic', async () => {
+  // GM8h2 D18 (RULINGS 377 A5): a path's cell step is one input. Its gesture pulse (`ui:path-stroke`, declared with no
+  // haptic) and its `puzzle:input` roll on the same part play together, with one light haptic between them.
+  const s = mounted();
+  const place = element('div', { 'data-cue-root': 'frame' }, ROOT);
+  element('div', { 'data-cue-frame': '' }, HOTSPOT, place);
+  const cell = element('button', { 'data-cue-part': '3' }, HOTSPOT, place);
+  s.bus.emit(event({ kind: 'ui', control: 'path-stroke', item: null, index: 3 }, null, cell));
+  s.bus.emit(event({ kind: 'puzzle', puzzle: P, name: 'input', index: 3 }));
+  await settle();
+  expect(s.played()).toEqual(['ui:path-stroke', 'puzzle:input']);
+  expect(cueMotions().map((r) => r.el)).toEqual([cell, cell]);
+  expect([s.haptics, s.fallbacks()]).toEqual([['impact:light'], 0]);
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // The family roots' entrance and exit (RULINGS 195: F2-F7, F10)
 
