@@ -4192,7 +4192,19 @@ function viewType<T extends string>(type: T, over: Partial<PuzzleTypeData<T, Par
 const DIALS = viewType('dials');
 /** A configuration device that knows a wrong press itself (`wrong: 'local'`): no POST checks it. */
 const BELLS = viewType('bells', { wrong: 'local' });
-const DEVICE_TYPES: PuzzleTypes = [...PUZZLE_TYPES, DIALS, BELLS];
+/**
+ * A sequence device (`commit: 'full'`): it starts empty, each press adds a position, and the press that holds every
+ * position posts; a saved work fits while it is no longer than the sequence.
+ */
+const RITE = viewType('rite', {
+  commit: 'full',
+  initial: () => [],
+  startShown: () => null,
+  workFits: (p, work) => work.length <= p.parts && work.every((v) => Number.isInteger(v) && v >= 0 && v <= 2),
+});
+/** A reach device with its goal shown and no wrong state: its UI reports a reached configuration (`onreach`). */
+const LATCH = viewType('latch', { check: 'reach', goal: 'shown', wrong: 'none' });
+const DEVICE_TYPES: PuzzleTypes = [...PUZZLE_TYPES, DIALS, BELLS, RITE, LATCH];
 const DEV = 'dev' as PuzzleLocalId;
 
 /**
@@ -4704,5 +4716,104 @@ test('yields: zooming back into a device during its POST opens a new session at 
   q.answer(SOLVED);
   await settle();
   expect([r.yields.world().puzzles[DEV]?.outcome, r.puzzle.frame?.answer, r.puzzle.frame?.line]).toEqual([null, [1, 0, 2], 'idle']);
+  r.yields.dispose();
+});
+
+test('yields: a full-length press sequence posts once', async () => {
+  // §7.5 "Full commit": the press that completes a `commit: 'full'` sequence posts it, through `post` (`checking`); a
+  // shorter sequence posts nothing, and a report while the post is in flight posts nothing more.
+  const r = deviceRig('rite', { parts: 2, attempts: [SOLVED] });
+  await atDevice(r);
+  expect(r.puzzle.frame?.answer).toEqual([]);
+  r.yields.host.onwork?.([1], false);
+  await settle();
+  expect(r.posted).toEqual([]);
+  const mark = r.cues.length;
+  r.yields.host.onwork?.([1, 0], false);
+  r.yields.host.onwork?.([1, 0], false);
+  expect([r.posted, r.puzzle.frame?.busy, r.puzzle.frame?.line]).toEqual([[[1, 0]], true, 'checking']);
+  expect(puzzleCuesOf(r, mark)).toEqual(['input@1', 'checking@null']);
+  await settle();
+  expect([r.posted, r.puzzle.frame, r.yields.world().puzzles[DEV]?.outcome]).toEqual([[[1, 0]], null, 'solved']);
+  r.yields.dispose();
+});
+
+test('yields: a full sequence rate-limited posts when the countdown ends', async () => {
+  // A 429 keeps the sequence whole; the countdown's zero posts it again through `ready` (`postFull`): one
+  // `puzzle:checking` at the zero, never `puzzle:ready`.
+  const r = deviceRig('rite', { parts: 2, attempts: [httpError(429, 2), SOLVED] });
+  await atDevice(r);
+  r.yields.host.onwork?.([1], false);
+  r.yields.host.onwork?.([1, 0], false);
+  await settle();
+  expect([r.posted, r.puzzle.frame?.line, r.puzzle.frame?.retryAfter, r.puzzle.frame?.answer]).toEqual([[[1, 0]], 'rate-limited', 2, [1, 0]]);
+  r.clock.advance(1000);
+  expect(r.posted).toEqual([[1, 0]]);
+  const mark = r.cues.length;
+  r.clock.advance(1000);
+  expect(r.posted).toEqual([
+    [1, 0],
+    [1, 0],
+  ]);
+  expect(puzzleCuesOf(r, mark)).toEqual(['checking@null']);
+  await settle();
+  expect([r.puzzle.frame, r.yields.world().puzzles[DEV]?.outcome]).toEqual([null, 'solved']);
+  r.yields.dispose();
+});
+
+test('yields: a wrong or offline full sequence restarts from initial', async () => {
+  // §7.5 "Full commit" and D15: a wrong or an offline reply to a full sequence plays its own cue, then the sequence
+  // starts over through the one write path: one light `puzzle:input` per position it clears, never `puzzle:reset`, and
+  // the saved work follows. `input@i` is an answer position (RULINGS 366 B2): GM8h2's widened Q5 moves these rows for a
+  // sequence answer.
+  const r = deviceRig('rite', { parts: 2, attempts: [POSTED_WRONG, NETWORK] });
+  await atDevice(r);
+  r.yields.host.onwork?.([1], false);
+  let mark = r.cues.length;
+  r.yields.host.onwork?.([1, 2], false);
+  await settle();
+  expect([r.posted, r.puzzle.frame?.line, r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work]).toEqual([[[1, 2]], 'wrong', [], []]);
+  expect(puzzleCuesOf(r, mark)).toEqual(['input@1', 'checking@null', 'wrong@null', 'input@0', 'input@1']);
+  r.yields.host.onwork?.([2], false);
+  mark = r.cues.length;
+  r.yields.host.onwork?.([2, 2], false);
+  await settle();
+  expect([r.posted.length, r.puzzle.frame?.line, r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work]).toEqual([2, 'offline', [], []]);
+  expect(puzzleCuesOf(r, mark)).toEqual(['input@1', 'checking@null', 'offline@null', 'input@0', 'input@1']);
+  r.yields.dispose();
+});
+
+test('yields: a full-length work seeded at open restarts without a post', async () => {
+  // A full sequence saved whole (its reply never came) is no answer: the open starts it over before any frame shows
+  // it, so with no POST and no part cue, and the saved work follows.
+  const r = deviceRig('rite', { parts: 2 });
+  await inHall(r);
+  r.yields.restore({ ...r.yields.world(), puzzles: { [DEV]: { outcome: null, attempts: 0, hintsOpened: 0, work: [1, 2] } } }, null, { kind: 'explore', section: MANOR });
+  await r.yields.onYield({ kind: 'explore', section: MANOR });
+  const mark = r.cues.length;
+  r.yields.layer.ontap(key('hall.to_panel'));
+  await settle();
+  expect([roomOf(r), r.puzzle.frame?.answer, r.yields.world().puzzles[DEV]?.work, r.posted]).toEqual(['panel', [], [], []]);
+  expect(partCuesOf(r, mark)).toEqual([]);
+  r.yields.dispose();
+});
+
+test('yields: a 429 with Retry-After 0 re-posts once after a second', async () => {
+  // D6 (V3): a Retry-After of 0 counts down from one second (the clamp in `puzzleError`), so the zero never re-posts
+  // at once; a reach device's reached answer posts again exactly once, at 1,000 ms.
+  const r = deviceRig('latch', { attempts: [httpError(429, 0), SOLVED] });
+  await atDevice(r);
+  r.yields.host.onreach?.([2, 1, 0]);
+  await settle();
+  expect([r.posted, r.puzzle.frame?.line, r.puzzle.frame?.retryAfter]).toEqual([[[2, 1, 0]], 'rate-limited', 1]);
+  r.clock.advance(999);
+  expect(r.posted.length).toBe(1);
+  r.clock.advance(1);
+  expect(r.posted).toEqual([
+    [2, 1, 0],
+    [2, 1, 0],
+  ]);
+  await settle();
+  expect([r.posted.length, r.puzzle.frame, r.yields.world().puzzles[DEV]?.outcome]).toEqual([2, null, 'solved']);
   r.yields.dispose();
 });

@@ -142,7 +142,8 @@ function puzzleError(e: ApiError): PuzzleError {
   switch (e.kind) {
     case 'http':
       if (e.status === 429) {
-        return { kind: 'rate-limited', retryAfterSecs: e.retryAfter ?? RETRY_AFTER_FALLBACK_S };
+        // D6 (V3): never under a second, so a Retry-After of 0 still counts down and re-posts once, not at once.
+        return { kind: 'rate-limited', retryAfterSecs: Math.max(1, e.retryAfter ?? RETRY_AFTER_FALLBACK_S) };
       }
       return e.status === 403 ? { kind: 'not-entitled' } : { kind: 'network' };
     case 'aborted':

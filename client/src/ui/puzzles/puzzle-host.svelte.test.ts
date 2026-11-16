@@ -304,6 +304,19 @@ test("puzzle-host: a type UI's refused input reaches onblocked", () => {
   }
 });
 
+test('puzzle-host: a room-place host holds its type UI busy during a countdown', async () => {
+  // D16: a device has no Try to hold, so in the room place its type UI is busy through a 429 countdown too; the overlay
+  // place keeps `frame.busy || ended` (its Try holds the countdown).
+  const counting = frameOf({ ui: EMITTER, mode: 'explore', presentation: 'view', line: 'rate-limited', retryAfter: 3 });
+  const room = render(PuzzleHost, { ...hostProps({ frame: counting }), place: 'room' });
+  expect(must(emitted.at(-1), 'the room UI props').busy).toBe(true);
+  await room.rerender({ frame: { ...counting, line: 'idle', retryAfter: null } });
+  expect(must(emitted.at(-1), 'the room UI props').busy).toBe(false);
+  room.unmount();
+  render(PuzzleHost, hostProps({ frame: { ...counting, presentation: 'overlay' } }));
+  expect(must(emitted.at(-1), 'the overlay UI props').busy).toBe(false);
+});
+
 test('puzzle-host: the status line is a cue target', () => {
   // Engine plan §8.5 "Cue targets" (`status`): the status line, and only it, carries the marker the frame's
   // `puzzle:checking` / `wrong` / `offline` / `rate-limited` / `ready` rows land on.

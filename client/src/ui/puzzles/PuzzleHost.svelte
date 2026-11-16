@@ -14,7 +14,8 @@
   // GM8h (engine plan §7.5 "Host"): `place` picks where it renders. `frame` (the default, App's frame layer) is the
   // overlay above. `room` is a device inside its room (ExploreView's `.room`): a full-bleed root that takes no tap, the
   // parts layer with the type UI, and the compact bar anchored to the top (title, Hint, the status line, the attempts;
-  // no give-up: a lock puzzle cannot be abandoned); the root is the frame family's and the bar its frame marker.
+  // no give-up: a lock puzzle cannot be abandoned); the root is the frame family's and the bar its frame marker. Its type
+  // UI is busy through a 429 countdown too: a device has no Try to hold, so its parts take no press then.
   // `ladder` is the hint ladder alone, in a room sheet over a device, with no root: its controls emit through the
   // innermost root around it, ExploreView's.
   import { cueRoot } from '../../cues/root.ts';
@@ -145,7 +146,7 @@
             <Ui
               params={frame.params}
               answer={frame.answer}
-              busy={frame.busy || ended}
+              busy={frame.busy || ended || frame.retryAfter !== null}
               {lang}
               {onchange}
               {item}

@@ -1159,6 +1159,11 @@ export function createYields(h: YieldsHost): Yields {
     };
     open = o;
     o.session.onEnd((e) => onEnd(o, e));
+    if (o.session.instance.commit === 'full' && o.session.answer().length === o.session.instance.shape.len) {
+      // A full sequence saved whole (its reply never came: a zoom-out, a reload) is no answer to post: it starts over,
+      // before any frame shows it, so with no cue and no post.
+      restartWork(o);
+    }
     if (p.closeup !== null) {
       await held([{ kind: 'cg', cg: p.closeup, t: 'fade', ms: CLOSEUP_FADE_MS }], [], { box: null });
       if (open !== o) {
@@ -1197,9 +1202,10 @@ export function createYields(h: YieldsHost): Yields {
 
   /**
    * The countdown's zero hook (engine plan §7.5 round 6): posts what is ready to post and says whether it posted - a
-   * reach frame's reached answer (`postReach`); a `commit: 'control'` frame posts nothing (Try opens as built).
+   * full-commit device's whole sequence (`postFull`), a reach frame's reached answer (`postReach`); a
+   * `commit: 'control'` frame posts nothing (Try opens as built).
    */
-  const ready = (o: Open): boolean => postReach(o);
+  const ready = (o: Open): boolean => postFull(o) || postReach(o);
 
   /**
    * A 429's countdown (GameSession owns it): one cue per second, its index the seconds left. At zero exactly one cue:
@@ -1240,6 +1246,7 @@ export function createYields(h: YieldsHost): Yields {
         case 'wrong':
           setFrame(o, { busy: false, line: 'wrong', attemptsLeft: r.value.attemptsLeft });
           puzzleCue(o, 'wrong');
+          restartFull(o);
           h.autosave(); // F9: the attempts count survives a reload
           return;
         case 'mismatch':
@@ -1266,6 +1273,7 @@ export function createYields(h: YieldsHost): Yields {
       case 'not-entitled':
         setFrame(o, { busy: false, line: 'offline' });
         puzzleCue(o, 'offline');
+        restartFull(o);
         return;
       case 'busy':
         return; // another attempt is in flight: its own reply settles the frame
@@ -1295,6 +1303,29 @@ export function createYields(h: YieldsHost): Yields {
     puzzleCue(o, 'checking');
     void o.session.attempt().then((r) => attempted(o, r)); // the session answers with a Result; the frame shows it
     return true;
+  };
+
+  /**
+   * A full-commit device's post (engine plan §7.5 "Full commit"; GM8h): its sequence posts, through `post(o)` (so it
+   * refuses as `post` does), once it holds every position; false before that. Every full type is a view type.
+   */
+  const postFull = (o: Open): boolean =>
+    o.session.instance.commit === 'full' && o.session.answer().length === o.session.instance.shape.len && post(o);
+
+  /**
+   * A device starts over (§7.5 "Full commit", D15): its type's `initial()` through the one write path, so each moved
+   * position plays its light `puzzle:input` (never `puzzle:reset`: the reply's own cue said why) and the saved work
+   * follows.
+   */
+  const restartWork = (o: Open): void => {
+    moveWork(o, o.session.instance.initial());
+  };
+
+  /** A full sequence that did not solve (a wrong or an offline reply) starts over; any other frame keeps its answer. */
+  const restartFull = (o: Open): void => {
+    if (o.session.instance.commit === 'full') {
+      restartWork(o);
+    }
   };
 
   /**
@@ -1366,7 +1397,9 @@ export function createYields(h: YieldsHost): Yields {
       if (wrong) {
         // A `wrong: 'local'` device's wrong press (§7.5 "Attempts"): counted as a posted wrong is, through `attempted`.
         attempted(o, o.session.failLocal());
+        return;
       }
+      postFull(o); // a full-commit device posts the press that completes its sequence
     },
     oncommit: () => {
       const o = open;
