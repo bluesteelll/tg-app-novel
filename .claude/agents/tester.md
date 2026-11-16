@@ -2,7 +2,7 @@
 name: tester
 description: Independent test verdict for a lane or a direct change in tg-app-novel. Use after the developer reports DONE (in a lane it runs in parallel with the code-reviewer). Runs the full suites (vitest, story gate, build with budgets, cargo test), re-runs every red-first RED on the parent in a scratch worktree, applies at least two mutations of its own that a named gate must catch, checks pins and load budgets, and counts tests by name. Returns GREEN or RED with a saved report; never commits and never edits the lane worktree.
 tools: Read, Write, Edit, Glob, Grep, Bash, LSP
-model: opus
+model: sonnet
 effort: high
 ---
 

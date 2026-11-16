@@ -52,11 +52,43 @@ README lists this project's gate lines and budgets. The lane header's TOKEN ECON
 
 ## Model routing
 
-**Every role runs on Opus** (`model: opus` in each `.claude/agents/*.md`) — owner rule inherited from
-boyko-engine (RULINGS 2). **One exception:** the `tester` runs on Sonnet through the lane script's per-call
-`model` (`testerModel`, default `'sonnet'`); `code-reviewer`, `results-analyst` and every verifier stay Opus.
-Watch the escape rate of Sonnet-tester GREENs: a defect found after a GREEN (by review, triage, the owner or in
-Telegram) is logged in the lane's report dir, and a pattern is a reason to put the tester back on Opus.
+**The split** (owner, 2026-11-16: "a bit less Opus, a bit more Sonnet"; before it, every role but the tester ran
+on Opus, the owner rule inherited from boyko-engine, RULINGS 2):
+
+- **Opus**, the thinking and checking roles:
+  - architect, architecture-critic, developer;
+  - code-reviewer, triage included;
+  - results-analyst;
+  - project-analyst for audits and pre-merge lenses;
+  - every verifier and adversarial refuter;
+  - the spec drafter.
+- **Sonnet**, the gathering and writing roles:
+  - tester;
+  - the scouts: the lane's per-round context pack and the three launch-pack scouts. The pack critic stays Opus.
+  - researcher;
+  - doc-writer. The docs lanes' verifiers stay Opus, and the link check stays.
+  - narrative-designer. Stories are MVP placeholders with one mechanical verifier.
+  - the spec workflow's fixer.
+
+Each Sonnet role's output is re-checked by a later Opus stage. That is the condition for moving a role.
+
+**How the model is applied.** It is set per call:
+
+- in the lane script, through the `MODEL` map in `.claude/workflows/lane.js` plus the `testerModel` and `scoutModel`
+  args (both default `'sonnet'`);
+- in the orchestrator's own workflow scripts, as `model: 'sonnet'` on those calls.
+
+The `model:` frontmatter of `.claude/agents/*.md` mirrors the split for direct Agent calls. An `inlineRoles` run
+never reads it.
+
+**Watch the escape rate of every Sonnet role.** An escape is an error a later Opus stage or the owner catches:
+
+- a GREEN later refuted by review, triage, the owner or in Telegram;
+- a pack cite that is wrong;
+- a doc claim a verifier refutes;
+- a spec fix that re-opens a finding.
+
+Each escape is logged in the lane's report dir. A pattern is a reason to put that role back on Opus.
 
 **Effort** (owner, inherited): `xhigh` for architect, architecture-critic, developer, code-reviewer,
 results-analyst, project-analyst; `high` for tester, researcher, doc-writer, narrative-designer. Set in the
@@ -218,7 +250,7 @@ answers with a structured verdict (`verdict`, `report`, `head`, `summary`), so n
 | cut | architect | CUT READY / CUT BLOCKED |
 | critique | architecture-critic | APPROVED / CHANGES_REQUESTED + critical/important counts |
 | implement, fix | developer | DONE / STOPPED |
-| pack | project-analyst (scout, effort high) | DONE / STOPPED |
+| pack | project-analyst (scout, Sonnet, effort high) | DONE / STOPPED |
 | test | tester (Sonnet) | GREEN / RED |
 | review | code-reviewer | APPROVED / CHANGES_REQUESTED + critical/important counts |
 | triage | code-reviewer as adversarial verifier | DONE + `confirmed`; per item CONFIRMED / REFUTED / DEFERRED-OUT-OF-SCOPE |
@@ -230,7 +262,7 @@ answers with a structured verdict (`verdict`, `report`, `head`, `summary`), so n
   Triage tries to refute every finding; `confirmed = 0` returns to the orchestrator, who rules on any remaining red.
 - The loop ends clean when the tester is GREEN and the reviewer reports 0 critical + 0 important.
 - Args: `name, branch, base (sha), wt, spec (path), lock, others`; optional `trunk` (default `main`), `gates`,
-  `resumeNote`, `stopAfter`, `pack` (default true), `testerModel` (default `'sonnet'`), `inlineRoles` (default
+  `resumeNote`, `stopAfter`, `pack` (default true), `testerModel` and `scoutModel` (default `'sonnet'`), `inlineRoles` (default
   false; true when this session started before `.claude/agents/*.md` existed or last changed — see the lane.js
   header).
 

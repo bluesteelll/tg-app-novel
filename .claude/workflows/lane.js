@@ -10,6 +10,7 @@ export const meta = {
 // args: name, branch, base (sha), wt (worktree path), spec (path), lock (files/dirs the lane owns), others (other open
 // lanes + their lock sets), trunk (default 'main'), gates (default: CLAUDE.md gate list), resumeNote, stopAfter
 // ('cut'|'critique'), pack (default true), testerModel (default 'sonnet', owner rule inherited from boyko-engine),
+// scoutModel (default 'sonnet': the per-round context-pack scout; owner, 2026-11-16),
 // inlineRoles (default false; true when the session started before the .claude/agents files existed or changed).
 const A = args || {}
 const ORCH = 'D:/tmp/novel-orch/'
@@ -42,10 +43,14 @@ const RATED = { critical: { type: 'integer' }, important: { type: 'integer' } }
 // xhigh, the rest high; mirrors the `effort:` frontmatter of .claude/agents/*.md so a workflow never inherits the
 // session's effort.
 const EFFORT = { architect: 'xhigh', 'architecture-critic': 'xhigh', developer: 'xhigh', 'code-reviewer': 'xhigh', 'results-analyst': 'xhigh', 'project-analyst': 'xhigh', tester: 'high', researcher: 'high', 'doc-writer': 'high', 'narrative-designer': 'high' }
+// Model per role (owner, 2026-11-16: less Opus, more Sonnet): the gathering and writing roles run on Sonnet, every
+// thinking and checking role stays on the session's Opus. Mirrors the `model:` frontmatter of .claude/agents/*.md,
+// which an inlineRoles run never reads. A per-call opts.model still wins (testerModel, scoutModel).
+const MODEL = { tester: 'sonnet', researcher: 'sonnet', 'doc-writer': 'sonnet', 'narrative-designer': 'sonnet' }
 // inlineRoles: agents defined in .claude/agents/ are registered only at session start, so in the session that
 // created or changed them agentType lookups fail ("Agent type ... not found"). Then the role file is read inline.
 const roleLine = (type) => A.inlineRoles ? `YOUR ROLE DEFINITION: first read D:/claude/tg-app-novel/.claude/agents/${type}.md completely and act as that agent (its rules, prohibitions and report template bind you).\n` : ''
-const run = (label, ph, type, schema, body, opts) => agent(`${roleLine(type)}${HDR}\n${body}`, Object.assign({ label, phase: ph, schema }, A.inlineRoles ? {} : { agentType: type }, EFFORT[type] ? { effort: EFFORT[type] } : {}, opts || {}))
+const run = (label, ph, type, schema, body, opts) => agent(`${roleLine(type)}${HDR}\n${body}`, Object.assign({ label, phase: ph, schema }, A.inlineRoles ? {} : { agentType: type }, EFFORT[type] ? { effort: EFFORT[type] } : {}, MODEL[type] ? { model: MODEL[type] } : {}, opts || {}))
 const brief = (r) => r ? { verdict: r.verdict, report: r.report, head: r.head, critical: r.critical, important: r.important, confirmed: r.confirmed } : null
 
 phase('Cut')
@@ -68,7 +73,7 @@ const verify = async (round, since) => {
   let packLine = ''
   if (A.pack !== false) {
     const p = await run(`pack-r${round}`, ph, 'project-analyst', S(['DONE', 'STOPPED']),
-      `ROLE: scout for round ${round} (read-only on the repo; write only the pack). Write ${SP}pack_r${round}.md (<= 15k tokens) for the tester and the reviewer: git log --oneline and git diff --stat ${since}..HEAD; per changed file the line ranges that matter and why; the gates and red-firsts ${round === 1 ? SP + 'cut.md names' : 'the fix touches (' + SP + 'fix_r' + (round - 1) + '.md)'} with their exact commands and predicted reds; which pins may move and which must not; open points from ${round === 1 ? SP + 'impl.md' : SP + 'triage_r' + (round - 1) + '.md'}. Facts with file:line only, no opinions.`, { effort: 'high' })
+      `ROLE: scout for round ${round} (read-only on the repo; write only the pack). Write ${SP}pack_r${round}.md (<= 15k tokens) for the tester and the reviewer: git log --oneline and git diff --stat ${since}..HEAD; per changed file the line ranges that matter and why; the gates and red-firsts ${round === 1 ? SP + 'cut.md names' : 'the fix touches (' + SP + 'fix_r' + (round - 1) + '.md)'} with their exact commands and predicted reds; which pins may move and which must not; open points from ${round === 1 ? SP + 'impl.md' : SP + 'triage_r' + (round - 1) + '.md'}. Facts with file:line only, no opinions.`, { effort: 'high', model: A.scoutModel || 'sonnet' })
     if (p && p.verdict === 'DONE') packLine = `START from the context pack ${SP}pack_r${round}.md, written for this round; open other files only for what it does not answer.\n`
   }
   const [test, review] = await parallel([
