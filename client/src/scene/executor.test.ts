@@ -10,6 +10,7 @@ import type { AssetId, BgId, CamState, CgId, CharId, ExprId, PropId, Rect, Slot 
 import { createExecutor } from './executor.ts';
 import type { ExecutorDeps, Layer, Placement, StageAdapter, VisualCommand } from './executor.ts';
 import { patchPlan } from './flatten.ts';
+import type { FaceState, MotionKit } from './motion/animator.ts';
 import type { FlatPlan } from './flatten.ts';
 import { backdropPlacement, propPlacement } from './layout.ts';
 import type { StageWindow } from './preload.ts';
@@ -3223,5 +3224,434 @@ test('executor: a crossfade onto the shot on stage returns a held camera to rest
   expect(lastWorld(h.worlds)).toEqual(REST);
   expect('cam' in h.ex.snapshot()).toBe(false);
   expect(h.log.filter((x) => x.startsWith('flatten:'))).toEqual([]);
+  h.ex.destroy();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Faces in motion (lane SH7, D3, D5, D8): once the motion kit is set, each face of the shot on stage has a group of its
+// drawn expression's motion members over its part, drawn from the records its own slots hold, and a discrete source on
+// the loop that shows the animator's states. A fake kit lets each test set a face's state by hand.
+
+/**
+ * A face member whose rest blink, accent (and, with `joint`, joint) members sit in the shot's sheet, as the asset tool
+ * packs them, and whose mouths stay in its talk file (A14); its other expressions are castMember's (the face file).
+ */
+function castMotionMember(shot: string, c: string, at: Box4, joint = false): CastRig & { char: CharId } {
+  const m = castMember(shot, c, at);
+  const face = m.face;
+  const rest = face?.exprs[face.rest];
+  if (face === null || rest === undefined) {
+    throw new Error('invariant: castMember draws a face with its rest');
+  }
+  const sheet = `sheet/${shot}`;
+  const eyes: Box4 = [at[0] + 40, at[1] + 60, 80, 30];
+  const motion = {
+    blink: { half: mem(sheet, [300, 0, 80, 30], eyes), closed: mem(sheet, [300, 30, 80, 30], eyes) },
+    talk: rest.motion.talk,
+    accent: mem(sheet, [300, 60, 80, 20], [at[0] + 40, at[1] + 30, 80, 20]),
+    ...(joint ? { joint: { half: mem(sheet, [300, 80, 80, 30], eyes), closed: mem(sheet, [300, 110, 80, 30], eyes) } } : {}),
+  };
+  return { ...m, face: { ...face, exprs: { ...face.exprs, [face.rest]: { layer: null, motion } } } };
+}
+const MOTION_RIGS: ReadonlyMap<BgId, ShotRig> = new Map([
+  ['lamp' as BgId, shotRig([castMotionMember('lamp', 'ally', ALLY_AT), castMotionMember('lamp', 'stranger', [700, 500, 160, 200])])],
+  ['lamp_cu' as BgId, shotRig([castMotionMember('lamp_cu', 'ally', [400, 600, 300, 380])])],
+]);
+const MOTION: { rigs(): ReadonlyMap<BgId, ShotRig>; half(): boolean } = { rigs: () => MOTION_RIGS, half: () => false };
+
+/** A face the test drives: the state it shows, the talk calls and listener cues it got. */
+type FakeFace = {
+  readonly set: { readonly talk: readonly unknown[] };
+  state: FaceState;
+  readonly talks: Array<{ on: boolean; forMs?: number; think?: boolean }>;
+  heard: number;
+};
+const OPEN: FaceState = { eyes: 'open', accent: false, mouth: null };
+function fakeKit(): { readonly kit: MotionKit; readonly faces: FakeFace[] } {
+  const faces: FakeFace[] = [];
+  const kit: MotionKit = {
+    face: (set) => {
+      const f: FakeFace = { set, state: OPEN, talks: [], heard: 0 };
+      faces.push(f);
+      return {
+        talk: (on, o) => {
+          f.talks.push({ on, ...o });
+        },
+        heard: () => {
+          f.heard += 1;
+        },
+        sample: () => f.state,
+        nextChangeMs: () => 1_000,
+      };
+    },
+    talkMaxMs: 20_000,
+  };
+  return { kit, faces };
+}
+/** The one face a kit made for a character: the kit makes them in cast order, so a test names the index. */
+function faceAt(faces: readonly FakeFace[], i: number): FakeFace {
+  const f = faces[i];
+  if (f === undefined) {
+    throw new Error(`invariant: face ${i} was made`);
+  }
+  return f;
+}
+
+/** A loop the test drives: `run` plays display frames, each firing the due timers and then one tick. */
+function drivenLoop() {
+  let clock = 0;
+  const listeners = new Set<() => void>();
+  let id = 0;
+  const timers = new Map<number, { at: number; fn: () => void }>();
+  const loop = createRenderLoop({
+    ticker: {
+      add: (fn) => {
+        listeners.add(fn);
+      },
+      remove: (fn) => {
+        listeners.delete(fn);
+      },
+    },
+    render: () => {},
+    now: () => clock,
+    timer: {
+      set: (fn, ms) => {
+        id += 1;
+        timers.set(id, { at: clock + ms, fn });
+        return id;
+      },
+      clear: (h) => {
+        timers.delete(h as number); // the handle `set` returned
+      },
+    },
+  });
+  const run = (ms: number): void => {
+    const end = clock + ms;
+    while (clock < end) {
+      clock = Math.min(end, clock + 1000 / 60);
+      for (const [k, t] of [...timers].sort((a, b) => a[1].at - b[1].at)) {
+        if (t.at <= clock && timers.delete(k)) {
+          t.fn();
+        }
+      }
+      for (const fn of [...listeners]) {
+        fn();
+      }
+    }
+  };
+  return { loop, run };
+}
+
+/** The live motion groups' nodes, in creation order. */
+const motionNodes = (h: ReturnType<typeof harness>): Node[] => h.liveNodes().filter((x) => x.role === 'node' && x.key.startsWith('motion:'));
+/** A face's motion members in draw order, each as its frame (`<file>#<box>`) and alpha. */
+function membersOf(h: ReturnType<typeof harness>, c: string): Array<{ frame: string; alpha: number | undefined; node: Node }> {
+  const g = h.liveNodes().find((x) => x.role === 'node' && x.key === `motion:${c}`);
+  return g === undefined ? [] : h.drawOrder(g).map((x) => ({ frame: (x.tex?.url ?? '').replace('/assets/', ''), alpha: x.p.alpha, node: x }));
+}
+const shownOf = (h: ReturnType<typeof harness>, c: string): string[] => membersOf(h, c).filter((m) => m.alpha === 1).map((m) => m.frame);
+const ALLY_REST = ['sheet_lamp.avif#300,60,80,20', 'sheet_lamp.avif#300,0,80,30', 'sheet_lamp.avif#300,30,80,30', 'talk_lamp_ally_neutral.avif#0,0,40,20'];
+
+test('executor: a shot built before the motion kit shows rest faces and gains its sources when the kit lands', async () => {
+  const d = drivenLoop();
+  const h = harness(S390, d.loop, MOTION);
+  const { kit, faces } = fakeKit();
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  // No kit: the plate shows both faces at rest, the sheet is not taken, no group, no source.
+  expect(motionNodes(h)).toEqual([]);
+  expect([h.loadsOf('sheet/lamp'), d.loop.stats().ambientSources]).toEqual([0, 0]);
+  h.ex.setMotion(kit);
+  await flush();
+  // O1: the logical stage's motion slot is taken now, once for both faces, and each face gains its group and source.
+  expect(h.loadsOf('sheet/lamp')).toBe(1);
+  expect(motionNodes(h).map((x) => x.key)).toEqual(['motion:ally', 'motion:stranger']);
+  expect(d.loop.stats().ambientSources).toBe(2);
+  expect(faces.map((f) => f.set.talk.length)).toEqual([1, 1]);
+  // Built hidden (A15): the rest's members from the sheet's record and the mouth from the talk file.
+  expect(membersOf(h, 'ally').map((m) => [m.frame, m.alpha])).toEqual(ALLY_REST.map((f) => [f, 0]));
+  // The source shows the animator's state at its next change.
+  const ally = faceAt(faces, 0);
+  ally.state = { eyes: 'closed', accent: true, mouth: 0 };
+  d.run(1_100);
+  expect(shownOf(h, 'ally')).toEqual(['sheet_lamp.avif#300,60,80,20', 'sheet_lamp.avif#300,30,80,30', 'talk_lamp_ally_neutral.avif#0,0,40,20']);
+  expect(h.ex.blinks?.()).toBe(1);
+  ally.state = OPEN;
+  d.run(1_000);
+  expect(shownOf(h, 'ally')).toEqual([]);
+  h.ex.destroy();
+  expect(d.loop.stats().ambientSources).toBe(0);
+  expect(h.liveNodes()).toEqual([]);
+  // Arm: a kit landing after a restore (F5's restore-first session).
+  const r = drivenLoop();
+  const g = harness(S390, r.loop, MOTION);
+  await g.ex.restore({ bg: 'lamp' as BgId, cg: null, chars: [], props: [] });
+  g.ex.setMotion(fakeKit().kit);
+  await flush();
+  expect(motionNodes(g).map((x) => x.key)).toEqual(['motion:ally', 'motion:stranger']);
+  expect(r.loop.stats().ambientSources).toBe(2);
+  g.ex.destroy();
+});
+
+test("executor: a face's animator leaves with its shot", async () => {
+  const d = drivenLoop();
+  const h = harness(S390, d.loop, MOTION);
+  h.ex.setMotion(fakeKit().kit);
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  expect(d.loop.stats().ambientSources).toBe(2);
+  // A cut: the old shot's groups go with its root; the new shot's one face gains its own.
+  h.log.length = 0;
+  await h.ex.apply([bg('lamp_cu', 'cut')], NOW);
+  await flush();
+  expect(h.log.indexOf('drop:motion:ally')).toBeLessThan(h.log.indexOf('drop:bg/lamp'));
+  expect(motionNodes(h).map((x) => x.key)).toEqual(['motion:ally']);
+  expect(d.loop.stats().ambientSources).toBe(1);
+  // A legacy bg: no shot, no face, no source.
+  await h.ex.apply([scene('cafe', 'cut')], NOW);
+  await flush();
+  expect(motionNodes(h)).toEqual([]);
+  expect(d.loop.stats().ambientSources).toBe(0);
+  h.ex.destroy();
+  expect(h.liveNodes()).toEqual([]);
+});
+
+test('executor: a rest-only shot takes its sheet for motion and never waits on it', async () => {
+  const h = harness(S390, quietLoop(), MOTION);
+  h.ex.setMotion(fakeKit().kit);
+  const go = h.deferLoad('sheet/lamp');
+  const cut = track(h.ex.apply([scene('lamp', 'cut')], NOW));
+  await flush();
+  // The batch ended while the sheet still loads: the motion slot is taken and not awaited.
+  expect(cut.done).toBe(true);
+  expect(h.loadsOf('sheet/lamp')).toBe(1);
+  expect(h.live('bg').map((x) => x.key)).toEqual(['lamp']);
+  expect(motionNodes(h)).toEqual([]);
+  // Its landing builds the groups.
+  go();
+  await flush();
+  expect(motionNodes(h).map((x) => x.key)).toEqual(['motion:ally', 'motion:stranger']);
+  // Held under the motion slot's own holder (one take for both faces).
+  h.registry.releaseHolder('scene:motion:sheet/lamp');
+  expect(h.releasedOf('sheet/lamp')).toBe(1);
+  h.ex.destroy();
+});
+
+test("executor: a face's motion retires whole at its expression change, the patch's fade included", async () => {
+  const h = harness(S390, quietLoop(), MOTION, undefined, 'draw');
+  h.ex.setMotion(fakeKit().kit);
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  const stranger = one(h.liveNodes().filter((x) => x.key === 'motion:stranger'));
+  h.log.length = 0;
+  const change = track(h.ex.apply([face('ally', 'smile')], NOW));
+  await flush();
+  // At the change's start the rest group leaves whole, before the new part is built and the patch renders.
+  expect(h.log.slice(0, 6)).toEqual([
+    'destroy:bg:sheet/lamp',
+    'destroy:bg:sheet/lamp',
+    'destroy:bg:sheet/lamp',
+    'destroy:bg:talk/lamp/ally/neutral',
+    'drop:motion:ally',
+    'node:face:ally',
+  ]);
+  expect(h.flats()).toHaveLength(1);
+  advance(100);
+  await flush();
+  // Through the fade no member of either set shows.
+  expect(motionNodes(h).map((x) => x.key)).toEqual(['motion:stranger']);
+  expect(stranger.alive).toBe(true);
+  advance(150);
+  await flush();
+  expect(change.done).toBe(true);
+  // After it the smile's own set, from the face file and its talk file.
+  expect(membersOf(h, 'ally').map((m) => m.frame)).toEqual([
+    'face_lamp_ally_smile.avif#2,0,1,1',
+    'face_lamp_ally_smile.avif#0,0,1,1',
+    'face_lamp_ally_smile.avif#1,0,1,1',
+    'talk_lamp_ally_smile.avif#0,0,40,20',
+  ]);
+  // W5: a talk take held past the fade's start lands inside it; the group still waits for the batch's end.
+  const talk = h.deferLoad('talk/lamp/ally/worried');
+  const worried = track(h.ex.apply([face('ally', 'worried')], NOW));
+  await flush();
+  advance(100);
+  talk();
+  await flush();
+  expect(worried.done).toBe(false);
+  expect(membersOf(h, 'ally')).toEqual([]);
+  advance(150);
+  await flush();
+  expect(worried.done).toBe(true);
+  expect(membersOf(h, 'ally').map((m) => m.frame)).toEqual([
+    'face_lamp_ally_worried.avif#2,0,1,1',
+    'face_lamp_ally_worried.avif#0,0,1,1',
+    'face_lamp_ally_worried.avif#1,0,1,1',
+    'talk_lamp_ally_worried.avif#0,0,40,20',
+  ]);
+  // And a kit landing mid-fade builds nothing before the batch ends.
+  const k = harness(S390, quietLoop(), MOTION, undefined, 'draw');
+  await k.ex.apply([scene('lamp', 'cut')], NOW);
+  const late = track(k.ex.apply([face('ally', 'smile')], NOW));
+  await flush();
+  advance(100);
+  k.ex.setMotion(fakeKit().kit);
+  await flush();
+  expect(motionNodes(k)).toEqual([]);
+  advance(150);
+  await flush();
+  expect(late.done).toBe(true);
+  expect(motionNodes(k).map((x) => x.key)).toEqual(['motion:ally', 'motion:stranger']);
+  k.ex.destroy();
+  h.ex.destroy();
+  expect(h.liveNodes()).toEqual([]);
+});
+
+test("executor: a face's motion members draw the accent, then the eyes, then the mouth", async () => {
+  const rigs: ReadonlyMap<BgId, ShotRig> = new Map([['lamp' as BgId, shotRig([castMotionMember('lamp', 'ally', ALLY_AT, true)])]]);
+  const d = drivenLoop();
+  const h = harness(S390, d.loop, { rigs: () => rigs, half: () => false });
+  const { kit, faces } = fakeKit();
+  h.ex.setMotion(kit);
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  // C6: back to front, so a mouth wins any box a joint member overlaps.
+  const accent = 'sheet_lamp.avif#300,60,80,20';
+  const [half, closed, jointHalf, jointClosed] = ['300,0', '300,30', '300,80', '300,110'].map((b) => `sheet_lamp.avif#${b},80,30`);
+  const mouth = 'talk_lamp_ally_neutral.avif#0,0,40,20';
+  expect(membersOf(h, 'ally').map((m) => m.frame)).toEqual([accent, half, closed, jointHalf, jointClosed, mouth]);
+  // Over its face's part (z 2), under the next member's figure plane (z 3), in the root's content.
+  expect(one(motionNodes(h)).p.z).toBe(2.5);
+  const [first] = membersOf(h, 'ally');
+  expect(first === undefined ? [] : h.rolesAbove(first.node)).toEqual(['node', 'content', 'motion', 'depth', 'anchor', 'layer']);
+  // The eyes close on the accent: the joint pair, not the blink pair.
+  const f = faceAt(faces, 0);
+  f.state = { eyes: 'closed', accent: true, mouth: 0 };
+  d.run(1_100);
+  expect(shownOf(h, 'ally')).toEqual([accent, jointClosed, mouth]);
+  f.state = { eyes: 'half', accent: false, mouth: null };
+  d.run(1_000);
+  expect(shownOf(h, 'ally')).toEqual([half]);
+  expect(h.ex.blinks?.()).toBe(1);
+  h.ex.destroy();
+});
+
+test("executor: a rebind rebuilds a face's motion and a failed revive removes its source", async () => {
+  const d = drivenLoop();
+  const h = harness(S390, d.loop, MOTION);
+  h.ex.setMotion(fakeKit().kit);
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  expect(d.loop.stats().ambientSources).toBe(2);
+  // The production order (W2): a failed revive with no rebind (a restored context), then the flow's reacquire, before
+  // the resume frame: no group sprite stays over the ended record, and the sources go.
+  await failOnRevive(h, 'sheet/lamp');
+  h.ex.reacquire();
+  expect(motionNodes(h)).toEqual([]);
+  expect(h.live('bg').filter((x) => x.tex !== null && h.freed.has(x.tex)).map((x) => x.key)).toEqual([]);
+  expect(d.loop.stats().ambientSources).toBe(0);
+  // The re-taken motion slot rebuilds them by its own landing, on the new record.
+  await flush();
+  expect(h.loadsOf('sheet/lamp')).toBe(2);
+  expect(motionNodes(h).map((x) => x.key)).toEqual(['motion:ally', 'motion:stranger']);
+  expect(membersOf(h, 'ally').filter((m) => m.node.tex !== null && h.freed.has(m.node.tex))).toEqual([]);
+  expect(d.loop.stats().ambientSources).toBe(2);
+  // While a batch still waits on its loads (the groups' own sync waits for its end), the reacquire still takes them off
+  // at once.
+  const go = h.deferLoad('face/lamp/ally/smile');
+  const waiting = track(h.ex.apply([face('ally', 'smile')], NOW));
+  await flush();
+  expect(waiting.done).toBe(false);
+  h.setGen(3);
+  expect(await h.registry.revive(3, noAbort()).visible).toBe('done');
+  h.ex.reacquire();
+  expect(motionNodes(h)).toEqual([]);
+  expect(d.loop.stats().ambientSources).toBe(0);
+  go();
+  await flush();
+  h.ex.complete();
+  await flush();
+  expect(waiting.done).toBe(true);
+  await h.ex.apply([face('ally', 'neutral')], { instant: true });
+  await flush();
+  expect(motionNodes(h).map((x) => x.key).sort()).toEqual(['motion:ally', 'motion:stranger']);
+  // A re-take that fails too: no group without its chain's members, and no source.
+  h.setGen(4);
+  expect(await h.registry.revive(4, noAbort()).visible).toBe('done');
+  expect(h.registry.current(asId('sheet/lamp'))).toBe(null);
+  h.failLoad('sheet/lamp');
+  h.ex.reacquire();
+  await flush();
+  expect(motionNodes(h)).toEqual([]);
+  expect(d.loop.stats().ambientSources).toBe(0);
+  h.ex.destroy();
+  // Arm: a rebind re-creates every group on the new stage and moves the sources there.
+  const r = drivenLoop();
+  const g = harness(S390, r.loop, MOTION);
+  g.ex.setMotion(fakeKit().kit);
+  await g.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  const fresh = recordingStage(S390, g.freed);
+  g.ex.rebind(fresh.adapter);
+  expect(fresh.liveNodes().filter((x) => x.role === 'node').map((x) => x.key)).toEqual(['motion:ally', 'motion:stranger']);
+  expect(r.loop.stats().ambientSources).toBe(2);
+  // Arm: a relayout keeps the group and its source, and its members move with the root's framing.
+  const member = fresh.liveNodes().find((x) => x.role === 'sprite' && x.tex?.url.endsWith('#300,0,80,30') === true);
+  const box = member === undefined ? undefined : fresh.worldBox(member);
+  fresh.stage.size = { w: 412, h: 915 };
+  g.ex.relayout();
+  expect(member?.alive).toBe(true);
+  expect(member === undefined ? undefined : fresh.worldBox(member)).not.toEqual(box);
+  expect(r.loop.stats().ambientSources).toBe(2);
+  // Arm: a rebind after a failed revive of the sheet leaves no group, and no source.
+  await failOnRevive(g, 'sheet/lamp');
+  const other = recordingStage(S390, g.freed);
+  g.ex.rebind(other.adapter);
+  expect(other.liveNodes().filter((x) => x.key.startsWith('motion:'))).toEqual([]);
+  expect(r.loop.stats().ambientSources).toBe(0);
+  g.ex.destroy();
+});
+
+test("executor: frozen holds a face's motion and leaves a camera move, a cut and a dissolve running", async () => {
+  const d = drivenLoop();
+  const h = harness(S390, d.loop, MOTION, undefined, 'draw');
+  const { kit, faces } = fakeKit();
+  h.ex.setMotion(kit);
+  d.loop.setAnimation({ frozen: true });
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  // Built and counted, held: nothing shows and no blink is counted.
+  expect(d.loop.stats().ambientSources).toBe(2);
+  for (const f of faces) {
+    f.state = { eyes: 'closed', accent: true, mouth: 0 };
+  }
+  d.run(3_000);
+  expect([shownOf(h, 'ally'), shownOf(h, 'stranger'), h.ex.blinks?.()]).toEqual([[], [], 0]);
+  // The camera still moves over its time.
+  const push = track(h.ex.apply([camera({ kind: 'push', to: 'ally' as CharId, z: 120 })], NOW));
+  await flush();
+  advance(1200);
+  expect(lastWorld(h.worlds)?.scale).toBeGreaterThan(1);
+  expect(push.done).toBe(false);
+  h.ex.complete();
+  await flush();
+  // A cut runs, and the exact dissolve makes its target and fades it over its time.
+  await h.ex.apply([bg('lamp_cu', 'cut')], NOW);
+  await flush();
+  const dissolve = track(h.ex.apply([bg('lamp', 'crossfade', 500)], NOW));
+  await flush();
+  expect(h.flats()).toHaveLength(1);
+  advance(250);
+  expect(dissolve.done).toBe(false);
+  advance(300);
+  await flush();
+  expect(dissolve.done).toBe(true);
+  expect(shownOf(h, 'ally')).toEqual([]);
+  // Live again: the faces show their states at the next change.
+  d.loop.setAnimation({ frozen: false });
+  for (const f of faces) {
+    f.state = { eyes: 'closed', accent: false, mouth: null };
+  }
+  d.run(1_100);
+  expect(shownOf(h, 'ally')).toEqual(['sheet_lamp.avif#300,30,80,30']);
   h.ex.destroy();
 });

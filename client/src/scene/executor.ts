@@ -3,6 +3,8 @@
 // complete() = progress(1), timelines killed on completion. It drives a StageAdapter (Pixi in controller.ts, a recording
 // fake in tests) and takes textures from the registry under one holder per slot (`scene:bg`, `scene:cg`,
 // `scene:char:<id>`, `scene:prop:<id>`). The only importer of gsap (arch rule); GSAP core only, plain proxies (K7).
+// Once the motion kit is set (lane SH7, D1), each face of the shot on stage has a motion group: its expression's motion
+// members over its part, an animator, and a discrete source on the render loop that shows their states.
 import { gsap } from 'gsap/gsap-core';
 
 import { ROOM_SOURCE } from '../geom/cover.ts';
@@ -14,10 +16,11 @@ import { patchPlan, snapshotPlan } from './flatten.ts';
 import type { FlatPlan } from './flatten.ts';
 import { backdropPlacement, charPlacement, propPlacement } from './layout.ts';
 import type { StageWindow } from './preload.ts';
+import type { FaceAnimator, FaceState, MotionKit } from './motion/animator.ts';
 import type { AssetError, AssetRegistry, ReservationId, TextureHandle } from './registry.ts';
-import type { RenderLoop, Ticker } from './render-loop.ts';
-import { CAM_MS, camFraming, faceLayers, facesOf, restFraming, shotSlots, worldOf } from './shot-view.ts';
-import type { WorldDelta } from './shot-view.ts';
+import type { AmbientSource, RenderLoop, Ticker } from './render-loop.ts';
+import { CAM_MS, camFraming, faceLayers, faceMotion, facesOf, motionSlots, restFraming, shotSlots, worldOf } from './shot-view.ts';
+import type { MotionPlan, WorldDelta } from './shot-view.ts';
 
 /** GSAP's ticker for the render loop: one clock for tweens and frames (K6); tweens update before the frame draws. */
 export const gsapTicker: Ticker = {
@@ -140,6 +143,13 @@ export interface Executor<T> {
   propRects(): ReadonlyArray<{ prop: PropId } & Box>;
   /** `flatRefused` (cumulative): dissolves and patches that fell back to the container-alpha crossfade (CH D15). */
   stats(): { activeTimelines: number; flatRefused: number };
+  /**
+   * The motion kit landed (D1): the logical stage's motion slots are taken (unawaited) and each face of the shot on stage
+   * gains its motion group, hidden until its source is stepped. Once; nothing waits on it.
+   */
+  setMotion(kit: MotionKit): void;
+  /** Blink members (`closed`) shown on a live texture since the executor was made (D8's counter, A13 (c)). */
+  blinks?(): number;
   /** Kills every timeline, settles every pending apply, destroys every sprite and releases every `scene:*` holder. */
   destroy(): void;
 }
@@ -190,12 +200,18 @@ const slotOf = (holder: string): string => holder.slice('scene:'.length);
 
 /**
  * Slot → asset id of a snapshot (STAGING-DSL §8 ids, as scripts/story/graph.ts maps commands). On a shot (its bg has a
- * rig) the plate, sheet and face slots are the shot view's (§5.2) and no character has a sprite slot.
+ * rig) the plate, sheet and face slots are the shot view's (§5.2) and no character has a sprite slot; with `motion` (the
+ * kit is set) its motion-only slots too (D3).
  */
-function slotsOf(s: SceneSnapshot, rigs: Rigs): Map<string, AssetId> {
+function slotsOf(s: SceneSnapshot, rigs: Rigs, motion = false): Map<string, AssetId> {
   // The brands are earned upstream: parseTags and the world decoder accept only ids the catalog lists.
   const rig = s.bg === null ? undefined : rigs?.get(s.bg);
   const out = rig === undefined ? new Map<string, AssetId>() : shotSlots(rig, s);
+  if (rig !== undefined && motion) {
+    for (const [slot, id] of motionSlots(rig, s)) {
+      out.set(slot, id);
+    }
+  }
   if (rig === undefined && s.bg !== null) {
     out.set('bg', `bg/${s.bg}` as AssetId);
   }
@@ -334,6 +350,26 @@ type Part<T> = { readonly char: CharId; readonly expr: ExprId | null; readonly g
  * back to the rest the plate shows), over `ms`.
  */
 type FaceSwap<T> = { readonly old: Part<T> | undefined; readonly next: Part<T> | undefined; readonly out: (() => void) | undefined; readonly ms: number };
+/**
+ * One motion member of a face's group: its plan role, its index among the group's mouths (talk), the sprite drawing its
+ * frame of the record its own slot holds (D3), and whether it shows.
+ */
+type MotionMember<T> = { readonly role: MotionPlan['role']; readonly index: number; readonly view: View<T>; shown: boolean };
+/**
+ * A face's motion (D3, D5): the members of its drawn expression's set in one node over the shot root's content, above
+ * the face's part; its animator; and `off`, its source's removal from the loop.
+ */
+type MotionGroup<T> = {
+  readonly root: BackdropView<T>;
+  readonly char: CharId;
+  readonly expr: ExprId;
+  readonly node: GroupRef;
+  readonly members: readonly MotionMember<T>[];
+  readonly animator: FaceAnimator;
+  off: () => void;
+};
+/** A group is built only with its eyes and brows (C3); the joint pair and the mouths are drawn when live. */
+const REQUIRED: ReadonlySet<MotionPlan['role']> = new Set(['accent', 'blink.half', 'blink.closed']);
 /** A bg or a CG in its own anchor (a crossfade holds two); a shot's bg is its root, with its parts by key. */
 type BackdropView<T> = View<T> & { readonly node: AnchorRef; readonly shot?: { readonly rig: ShotRig; readonly parts: Map<string, Part<T>> } };
 /** The slot's live handle for a shot part, or undefined (its record is not live: the part is not drawn). */
@@ -396,6 +432,13 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   /** The drawn camera (S20): the world's delta as last written, and the move the last built batch framed. */
   let world: WorldDelta = REST_WORLD;
   let drawnCam: CamState = REST_CAM;
+  /** The motion kit once it landed (D1): until then faces stay at rest and no motion slot is taken. */
+  let kit: MotionKit | null = null;
+  /** The motion groups of the shot on stage, by character. */
+  const groups = new Map<CharId, MotionGroup<T>>();
+  let blinks = 0;
+  /** The slots of a stage, its motion-only ones included once the kit is set. */
+  const slots = (s: SceneSnapshot, rigs: Rigs): Map<string, AssetId> => slotsOf(s, rigs, kit !== null);
 
   /** The record behind `h` has ended (failed its revive): the registry no longer names this handle (identity rule). */
   const ended = (h: TextureHandle<T>): boolean => registry.current(h.id) !== h;
@@ -429,14 +472,26 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     return hold;
   };
   /**
-   * Takes a slot for a batch. A talk file is motion (SH7 draws it), never awaited (shots §5.2): it is held under its
-   * `scene:talk:<c>` holder from the batch on, and kept out of `takes`, so its load never delays a line.
+   * Takes a slot for a batch. A talk file and a motion-only slot are motion, never awaited (shots §5.2, D3): each is held
+   * under its own holder (`scene:talk:<c>`, `scene:motion:<file>`) from the batch on and kept out of `takes`, so its load
+   * never delays a line; its landing builds the motion that waited for it (D5).
    */
   const takeFor = (takes: Map<string, Hold<T>>, slot: string, id: AssetId): void => {
     const hold = take(slot, id);
-    if (!slot.startsWith('talk:')) {
+    if (slot.startsWith('talk:') || slot.startsWith('motion:')) {
+      landing(slot, id, hold);
+    } else {
       takes.set(slot, hold);
     }
+  };
+  /** An unawaited take's landing: the groups follow, while the entry is still the one taken (no later re-take). */
+  const landing = (slot: string, id: AssetId, hold: Hold<T>): void => {
+    const held = holds.get(holderOf(slot))?.get(id);
+    void hold.then(() => {
+      if (held !== undefined && holds.get(holderOf(slot))?.get(id) === held) {
+        syncMotion();
+      }
+    });
   };
 
   /** A shot root's part views (none for a legacy backdrop). */
@@ -458,6 +513,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     for (const r of retiring) {
       out.push(...r.views);
     }
+    for (const g of groups.values()) {
+      out.push(...g.members.map((m) => m.view));
+    }
     return out;
   };
 
@@ -472,11 +530,11 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     const add = (slot: string, id: AssetId): void => {
       keep.add(`${holderOf(slot)}\n${id}`);
     };
-    for (const [slot, id] of slotsOf(logical, logicalRigs)) {
+    for (const [slot, id] of slots(logical, logicalRigs)) {
       add(slot, id);
     }
     for (const b of unfinished) {
-      for (const [slot, id] of slotsOf(b.target, b.rigs)) {
+      for (const [slot, id] of slots(b.target, b.rigs)) {
         add(slot, id);
       }
     }
@@ -566,8 +624,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     p.views.forEach(destroyView);
     adapter.dropGroup(p.group);
   };
-  /** A shot root's parts first, then the sprite, then its anchor (dropGroup's order). */
+  /** A shot root's motion groups and parts first, then the sprite, then its anchor (dropGroup's order). */
   const destroyBackdrop = (v: BackdropView<T>): void => {
+    dropMotionOf(v);
     v.shot?.parts.forEach(destroyPart);
     v.shot?.parts.clear();
     destroyView(v);
@@ -595,14 +654,168 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     retiring.add(r);
     return () => retireNow(r);
   };
-  /** A backdrop with its shot's parts (each part before the root, so no node is dropped over a live sprite). */
+  /**
+   * A backdrop with its shot's parts (each part before the root, so no node is dropped over a live sprite); its motion
+   * groups go now, at the change's start (O2), not with the root's fade.
+   */
   const retireBackdrop = (v: BackdropView<T>): (() => void) => {
+    dropMotionOf(v);
     const parts = [...(v.shot?.parts.values() ?? [])].map((p) => retire(p.views, p.group));
     const root = retire([v], v.node.anchor);
     return () => {
       parts.forEach((f) => f());
       root();
     };
+  };
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Motion groups (lane SH7, D3, D5): one per face of the shot on stage once the kit is set, built hidden at the next
+  // point where no batch is unfinished, so no member of one expression shows while another's set does (O2, W5).
+
+  /** The group's sprites, its node and its source; the textures stay held until sweep() finds them unused. */
+  const dropMotion = (g: MotionGroup<T>): void => {
+    if (groups.get(g.char) !== g) {
+      return;
+    }
+    groups.delete(g.char);
+    g.off();
+    g.members.forEach((m) => destroyView(m.view));
+    adapter.dropGroup(g.node);
+  };
+  const dropMotionOf = (v: BackdropView<T>): void => {
+    for (const g of [...groups.values()]) {
+      if (g.root === v) {
+        dropMotion(g);
+      }
+    }
+  };
+  /**
+   * The expression whose motion a face of the shot shows: its rest while it has no part, or its part's own expression,
+   * whichever is the logical one; null when the drawn set is another (a part whose file failed leaves the rest drawn).
+   */
+  const motionExpr = (shot: NonNullable<BackdropView<T>['shot']>, char: CharId): ExprId | null => {
+    const face = shot.rig.cast.find((m) => m.char === char)?.face ?? null;
+    if (face === null) {
+      return null;
+    }
+    const want = facesOf(logical).get(char);
+    const x = want !== undefined && Object.hasOwn(face.exprs, want) ? want : face.rest;
+    const drawn = shot.parts.get(`face:${char}`)?.expr ?? face.rest;
+    return drawn === x ? x : null;
+  };
+  /** The members a state shows: the accent, one eyes state (the joint's while the accent shows), one mouth. */
+  const showFace = (g: MotionGroup<T>, s: FaceState): void => {
+    const joint = s.accent && g.members.some((m) => m.role === 'joint.half');
+    const eyes = s.eyes === 'open' ? null : `${joint ? 'joint' : 'blink'}.${s.eyes}`;
+    for (const m of g.members) {
+      const on = m.role === 'accent' ? s.accent : m.role === 'talk' ? s.mouth === m.index : m.role === eyes;
+      // C3: a member over an ended record is never shown (the identity rule; reacquire takes the group off).
+      if (on === m.shown || (on && ended(m.view.handle))) {
+        continue;
+      }
+      adapter.set(m.view.sprite, { alpha: on ? 1 : 0 });
+      m.shown = on;
+      if (on && (m.role === 'blink.closed' || m.role === 'joint.closed')) {
+        blinks += 1;
+      }
+    }
+  };
+  /** Back to the rest the face's part (or the plate) shows; true when a member was showing. */
+  const hideFace = (g: MotionGroup<T>): boolean => {
+    let hid = false;
+    for (const m of g.members) {
+      if (m.shown) {
+        adapter.set(m.view.sprite, { alpha: 0 });
+        m.shown = false;
+        hid = true;
+      }
+    }
+    return hid;
+  };
+  /**
+   * `char`'s group on the shot root, from the records its own slots hold (D3): a rest member from its `motion:<file>`
+   * slot, a member of another expression from the face file's `face:<c>`, a mouth from `talk:<c>`; never from another
+   * live record of the same file. Not built without the eyes and brows (C3). Built hidden, asking for no frame (A15).
+   */
+  const buildMotion = (root: BackdropView<T>, shot: NonNullable<BackdropView<T>['shot']>, char: CharId, k: MotionKit): void => {
+    const x = motionExpr(shot, char);
+    const face = shot.rig.cast.find((m) => m.char === char)?.face ?? null;
+    if (x === null || face === null) {
+      return;
+    }
+    const want = slots(logical, logicalRigs);
+    const held = (slot: string): TextureHandle<T> | undefined => {
+      const id = want.get(slot);
+      const h = id === undefined ? undefined : holds.get(holderOf(slot))?.get(id)?.bound;
+      return h === null || h === undefined || ended(h) ? undefined : h;
+    };
+    const drawn: Array<{ p: MotionPlan; slot: string; h: TextureHandle<T>; frame: T }> = [];
+    for (const p of faceMotion(shot.rig, char, x)) {
+      const slot = p.role === 'talk' ? `talk:${char}` : x === face.rest ? `motion:${p.file}` : `face:${char}`;
+      const h = held(slot);
+      const f = h === undefined || h.id !== p.file ? null : registry.frames(h, [p.frame]);
+      const frame = f?.ok === true ? f.value[0] : undefined;
+      if (h !== undefined && frame !== undefined) {
+        drawn.push({ p, slot, h, frame });
+      } else if (REQUIRED.has(p.role)) {
+        return;
+      }
+    }
+    const node = adapter.node(root.node.content, `motion:${char}`);
+    const members: MotionMember<T>[] = [];
+    let mouths = 0;
+    try {
+      for (const d of drawn) {
+        const [mx, my, w, ht] = d.p.at;
+        const sprite = adapter.sprite('bg', { id: d.h.id, texture: d.frame, w, h: ht }, node);
+        members.push({ role: d.p.role, index: d.p.role === 'talk' ? mouths++ : 0, view: { slot: d.slot, handle: d.h, sprite }, shown: false });
+        adapter.set(sprite, { x: mx, y: my, w, h: ht, alpha: 0 });
+      }
+    } catch (e) {
+      members.forEach((m) => destroyView(m.view));
+      adapter.dropGroup(node);
+      // Motion is the face's life, not its picture: the face stays at the rest its part or the plate shows.
+      console.error(`scene: ${char}'s motion was not built`, e);
+      return;
+    }
+    // Over its face's part (2i + 2), under the next member's figure plane (2i + 3); a patch (2n + 1) stays above.
+    adapter.set(node, { z: 2 * shot.rig.cast.findIndex((m) => m.char === char) + 2.5 });
+    const animator = k.face({ talk: members.filter((m) => m.role === 'talk') });
+    const g: MotionGroup<T> = { root, char, expr: x, node, members, animator, off: () => {} };
+    groups.set(char, g);
+    const source: AmbientSource = {
+      layer: 'stage',
+      continuous: () => false,
+      step: (time) => showFace(g, animator.sample(time.t)),
+      nextChangeMs: (time) => animator.nextChangeMs(time.t),
+      setMode: (m) => m.frozen && hideFace(g),
+    };
+    g.off = loop.addAmbient(source);
+  };
+  /**
+   * The groups to the shot on stage (D5): a group whose root, expression or records no longer hold leaves, and each face
+   * without one gains it. Only at a point with no unfinished batch (W5): `finish` runs it after the last one.
+   */
+  const syncMotion = (): void => {
+    const k = kit;
+    if (destroyed || k === null || unfinished.length > 0) {
+      return;
+    }
+    const root = bg;
+    const shot = root?.shot;
+    for (const g of [...groups.values()]) {
+      if (g.root !== root || shot === undefined || motionExpr(shot, g.char) !== g.expr || g.members.some((m) => ended(m.view.handle))) {
+        dropMotion(g);
+      }
+    }
+    if (root === null || shot === undefined) {
+      return;
+    }
+    for (const m of shot.rig.cast) {
+      if (m.face !== null && !groups.has(m.char)) {
+        buildMotion(root, shot, m.char, k);
+      }
+    }
   };
 
   // Placement in the current stage size (layout.ts): backdrops cover ROOM_SOURCE, props take the same transform. An
@@ -717,6 +930,11 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       const old = shot.parts.get(key);
       const want = faces.get(m.char);
       const x = m.face !== null && want !== undefined && want !== m.face.rest && Object.hasOwn(m.face.exprs, want) ? want : null;
+      const g = groups.get(m.char);
+      if (g !== undefined && g.root === v && g.expr !== (x ?? m.face?.rest)) {
+        // O2: the face's motion leaves at its expression's change, before a patch or the new part shows.
+        dropMotion(g);
+      }
       if ((old?.expr ?? null) === x) {
         continue;
       }
@@ -841,13 +1059,14 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       unfinished.splice(i, 1);
     }
     sweepFor(b);
+    syncMotion();
     b.settle();
   };
 
   /** Builds the batch's stage changes on `tl` and hands it to the batch (or ends the batch when it has no time). */
   const compose = (b: Batch<T>, got: ReadonlyMap<string, TextureHandle<T>>, tl: Timeline): void => {
     const target = b.target;
-    const want = slotsOf(target, b.rigs);
+    const want = slots(target, b.rigs);
     const sec = (ms: number): number => (b.instant ? 0 : Math.max(0, ms) / 1000);
     /** The swap point comes later than the build: at black, or when the old root retires. */
     let later = false;
@@ -1439,7 +1658,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     entry = false,
   ): Promise<void> => {
     const prev = logical;
-    const before = slotsOf(prev, logicalRigs);
+    const before = slots(prev, logicalRigs);
     logical = target;
     logicalRigs = rigs;
     if (entry || prev.bg !== target.bg) {
@@ -1449,7 +1668,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     const failed = (slot: string, id: AssetId): boolean => holds.get(holderOf(slot))?.get(id)?.failed === true;
     const takes = new Map<string, Hold<T>>();
     const under = new Map<string, Hold<T>>();
-    for (const [slot, id] of slotsOf(target, rigs)) {
+    for (const [slot, id] of slots(target, rigs)) {
       const into = covered && slot !== 'cg' ? under : takes;
       if (before.get(slot) !== id) {
         takeFor(into, slot, id);
@@ -1526,6 +1745,12 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         return;
       }
       complete();
+      // The old stage's motion groups die with it (their sprites with its Application); their sources go now, and the
+      // groups are built again on the new stage from the live handles at the end (a failed revive leaves none).
+      for (const g of groups.values()) {
+        g.off();
+      }
+      groups.clear();
       adapter = a;
       fxAlpha = 0;
       // The new stage's world is at identity.
@@ -1595,6 +1820,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       orderProps();
       // D4: the held move on the new stage, framed for its size.
       writeWorld(framingOf(bg?.shot?.rig, drawnCam));
+      syncMotion();
       loop.requestRender();
     },
     reacquire() {
@@ -1614,7 +1840,13 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
           destroyBackdrop(bg);
           bg = null;
         }
-        // A shot part over an ended record leaves the root; the re-take below draws it again.
+        // A shot part over an ended record leaves the root; the re-take below draws it again. So does a face's motion
+        // group with a member over one, sprites and source both (W2), before the resume frame.
+        for (const g of [...groups.values()]) {
+          if (g.members.some((m) => ended(m.view.handle))) {
+            dropMotion(g);
+          }
+        }
         for (const [k, p] of [...(bg?.shot?.parts ?? [])]) {
           if (p.views.some((v) => ended(v.handle))) {
             destroyPart(p);
@@ -1641,7 +1873,7 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         }
         loop.requestRender();
       }
-      const want = slotsOf(logical, logicalRigs);
+      const want = slots(logical, logicalRigs);
       const takes = new Map<string, Hold<T>>();
       const again: Array<[string, AssetId]> = [];
       for (const [holder, byId] of holds) {
@@ -1665,6 +1897,8 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
         // The logical stage is unchanged: the batch only shows those slots again, on new records.
         void queue([], logical, true, takes, logicalRigs);
       }
+      // A re-taken motion or talk slot is never in `takes`: its landing rebuilds the group (D5).
+      syncMotion();
     },
     propRects() {
       return [...anchors.values()].flatMap((a) => a.views.map((v) => ({ prop: v.prop, ...v.box })));
@@ -1672,6 +1906,21 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
     stats() {
       return { activeTimelines: active.size, flatRefused };
     },
+    setMotion(k) {
+      if (destroyed || kit !== null) {
+        return;
+      }
+      kit = k;
+      // O1: the logical stage's motion slots, taken now: a later batch on the same shot takes a slot only when its id
+      // changes, so a stage built before the kit would never take them (T13; F5's restore-first session).
+      for (const [slot, id] of slots(logical, logicalRigs)) {
+        if (slot.startsWith('motion:')) {
+          landing(slot, id, take(slot, id));
+        }
+      }
+      syncMotion();
+    },
+    blinks: () => blinks,
     destroy() {
       if (destroyed) {
         return;
@@ -1694,6 +1943,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       }
       for (const r of [...retiring]) {
         retireNow(r);
+      }
+      for (const g of [...groups.values()]) {
+        dropMotion(g);
       }
       for (const cv of [...chars.values()]) {
         destroyChar(cv);
