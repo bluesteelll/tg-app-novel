@@ -261,7 +261,8 @@ type Open = {
   asked: ReturnType<PuzzleSession['hints']> | null;
   /**
    * A reach frame's reached canonical answer awaiting a decisive reply (engine plan §7.5, "Posting per reply kind"):
-   * set by the type UI's report, posted by `postReach`; null for a commit frame, and cleared by a move away.
+   * set by the type UI's report, posted by `postReach`; null for a commit frame, and cleared by a move away or a
+   * mismatch (`attempted`).
    */
   reach: readonly number[] | null;
   /**
@@ -1305,6 +1306,8 @@ export function createYields(h: YieldsHost): Yields {
           o.reach = null;
           setFrame(o, { busy: false, line: 'idle', answer: o.session.answer(), awaiting: false });
           puzzleCue(o, 'reset');
+          // A device's saved work follows its reset (D15): the frame is at `initial()` already, so no part moves on screen.
+          restartWork(o);
           console.error('yields: reach-mismatch', o.local);
           vm.showToast({ kind: 'note', key: 'mech.content_updated', message: mechT(vm.lang, 'mech.content_updated'), sticky: true });
           return;

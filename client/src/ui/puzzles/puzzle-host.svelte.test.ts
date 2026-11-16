@@ -1357,3 +1357,29 @@ test('puzzle-host: every puzzle cue target resolves in the room-place bar and th
   expect(got).toEqual(want);
   expect(new Set(rows.map((r) => r[2]))).toEqual(new Set(['frame', 'status', 'attempts', 'part', 'tier', 'ladder', 'alert', 'notice', 'panel', 'box']));
 });
+
+test('puzzle-host: a room-place bar shows Try only while a reached answer awaits after an offline reply', async () => {
+  // A device posts by itself (its commit part, its full sequence, its reach); the one case it posts by hand is a reached
+  // answer whose post went offline (§7.5 "Posting per reply kind"): Try then sits in the bar's first row.
+  const ontry = vi.fn();
+  const offline = deviceFrame({ ui: EMITTER, awaiting: true, line: 'offline' });
+  const { container, rerender } = render(PuzzleHost, placed('room', { ontry, frame: offline }));
+  const tryButton = must(container.querySelector<HTMLButtonElement>('.bar > .row > button[data-cue="puzzle-try"]'), 'the bar Try');
+  expect([tryButton.textContent?.trim(), tryButton.disabled]).toEqual([t('en', 'puzzle.try'), false]);
+  tryButton.click();
+  expect(ontry).toHaveBeenCalledTimes(1);
+  // Posting again: Try stays, off while the post is in flight.
+  await rerender({ frame: { ...offline, busy: true } });
+  expect(container.querySelector<HTMLButtonElement>('[data-cue="puzzle-try"]')?.disabled).toBe(true);
+  // Every other state: no Try in the bar.
+  for (const over of [
+    { awaiting: true, line: 'checking' },
+    { awaiting: true, line: 'idle' },
+    { awaiting: false, line: 'offline' },
+    { awaiting: null, line: 'offline' },
+    { awaiting: true, line: 'rate-limited', retryAfter: 2 },
+  ] as const) {
+    await rerender({ frame: { ...offline, ...over } });
+    expect([over, container.querySelector('[data-cue="puzzle-try"]')]).toEqual([over, null]);
+  }
+});

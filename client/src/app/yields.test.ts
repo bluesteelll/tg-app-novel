@@ -5011,3 +5011,49 @@ test("yields: a view frame's host Retry plays no yields control cue", async () =
   expect(r.cues.slice(mark).filter((e) => e.cue.kind === 'ui' && e.cue.control === 'puzzle-retry')).toHaveLength(1);
   r.yields.dispose();
 });
+
+test("yields: a device's bar Try re-posts its reached work", async () => {
+  // An offline reply leaves a device's reached answer awaiting (§7.5 "Posting per reply kind"): its bar's Try posts it
+  // again through `postReach`, and a correct answer solves it.
+  const r = deviceRig('latch', { attempts: [NETWORK, SOLVED] });
+  await atDevice(r);
+  r.yields.host.onwork?.([2, 1, 0], false);
+  r.yields.host.onreach?.([2, 1, 0]);
+  await settle();
+  expect([r.posted, r.puzzle.frame?.line, r.puzzle.frame?.awaiting]).toEqual([[[2, 1, 0]], 'offline', true]);
+  r.yields.host.ontry();
+  await settle();
+  expect([r.posted, r.puzzle.frame, r.yields.world().puzzles[DEV]?.outcome]).toEqual([
+    [
+      [2, 1, 0],
+      [2, 1, 0],
+    ],
+    null,
+    'solved',
+  ]);
+  r.yields.dispose();
+});
+
+test('yields: a mismatch on a device restarts its work', async () => {
+  // A reach device's wrong reply is a mismatch (the content changed under this client): the frame returns to `initial()`
+  // with its one `puzzle:reset`, and the saved work follows it (D15: no part moves on screen, so no `puzzle:input`);
+  // the sticky toast asks for a restart in the UI language (V1).
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const r = deviceRig('latch', { attempts: [WRONG] });
+    r.vm.lang = 'en';
+    await atDevice(r);
+    r.yields.host.onwork?.([2, 1, 0], false);
+    expect(r.yields.world().puzzles[DEV]?.work).toEqual([2, 1, 0]);
+    const mark = r.cues.length;
+    r.yields.host.onreach?.([2, 1, 0]);
+    await settle();
+    expect(puzzleCuesOf(r, mark)).toEqual(['reached@null', 'checking@null', 'reset@null']);
+    expect([r.puzzle.frame?.answer, r.puzzle.frame?.awaiting, r.yields.world().puzzles[DEV]?.work]).toEqual([[0, 0, 0], false, [0, 0, 0]]);
+    expect(r.vm.toasts).toEqual([{ kind: 'note', key: 'mech.content_updated', message: 'The game was updated. Close it and open it again.', sticky: true }]);
+    expect(errors.mock.calls).toEqual([['yields: reach-mismatch', 'dev']]);
+    r.yields.dispose();
+  } finally {
+    errors.mockRestore();
+  }
+});

@@ -14,9 +14,10 @@
   // GM8h (engine plan §7.5 "Host"): `place` picks where it renders. `frame` (the default, App's frame layer) is the
   // overlay above. `room` is a device inside its room (ExploreView's `.room`): a full-bleed root that takes no tap, the
   // parts layer with the type UI, and the compact bar anchored to the top in three rows (the title with Hint and, while
-  // a chunk failed, Retry; the status line, or the load notice in its place; the attempts), no give-up (a lock puzzle
-  // cannot be abandoned); the root is the frame family's and the bar its frame marker. Its type UI is busy through a 429
-  // countdown too: a device has no Try to hold, so its parts take no press then.
+  // a chunk failed, Retry, or Try while a reached answer awaits after an offline reply, the one case a device posts by
+  // hand; the status line, or the load notice in its place; the attempts), no give-up (a lock puzzle cannot be
+  // abandoned); the root is the frame family's and the bar its frame marker. Its type UI is busy through a 429 countdown
+  // too: the bar has no Try that holds it, so the parts take no press until the countdown ends.
   // `ladder` is the hint ladder alone, in a room sheet over a device, with no root: its controls emit through the
   // innermost root around it, ExploreView's.
   import { cueRoot } from '../../cues/root.ts';
@@ -168,6 +169,8 @@
             {/if}
             {#if frame.loadFailed}
               <button type="button" data-cue="puzzle-retry" disabled={frame.retrying} onclick={() => onretry()}>{t(lang, 'puzzle.retry')}</button>
+            {:else if frame.awaiting === true && frame.line === 'offline'}
+              <button type="button" data-cue="puzzle-try" disabled={!canTry} onclick={() => ontry()}>{t(lang, 'puzzle.try')}</button>
             {/if}
           </div>
           {#if frame.loadFailed}
