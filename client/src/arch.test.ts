@@ -1646,6 +1646,8 @@ test('arch: entry closure fixtures', () => {
     ['R12 a /src/ specifier with a query', boot("import { metaError } from '/src/api/meta.ts?v=1';"), toMeta],
     // GM8a D12 (A11): an eager module glob loads each match with its importer, wherever the call sits.
     ['R13 an eager module glob', boot("export function routes() {\n  return import.meta.glob('../api/*.ts', { eager: true });\n}"), toMeta],
+    ['R15 an eager ** glob from the root', boot("const m = import.meta.glob('/src/**/meta.ts', { eager: true });"), toMeta],
+    ['R16 an eager glob with a brace and a ?', boot("const m = import.meta.glob('../{api,meta}/me?a.ts', { eager: true });"), toMeta],
   ];
   for (const [label, files, chains] of red) {
     expect(walk(files), label).toEqual({ chains, unresolved: [] });
@@ -1661,6 +1663,10 @@ test('arch: entry closure fixtures', () => {
     unresolved: ["app/boot.ts: import.meta.glob('../api/[a-z]*.ts')"],
   });
   expect(walk(boot('const m = import.meta.glob(API, { eager: true });')), 'R14 an opaque glob').toEqual({
+    chains: [],
+    unresolved: ['app/boot.ts: import.meta.glob(…)'],
+  });
+  expect(walk(boot("const m = import.meta.glob('../api/*.ts', OPTIONS);")), 'R14 opaque options').toEqual({
     chains: [],
     unresolved: ['app/boot.ts: import.meta.glob(…)'],
   });
@@ -1692,6 +1698,13 @@ test('arch: entry closure fixtures', () => {
     // GM8a D12 (A11): a lazy glob is an `import()` per match; an eager `?url` glob loads a string per match, no module.
     ['A4 a lazy glob', boot("const m = import.meta.glob('../api/*.ts');"), []],
     ['A5 an eager url glob', boot("const m = import.meta.glob('../api/*.ts', { eager: true, query: '?url', import: 'default' });"), []],
+    [
+      'A6 options with no eager, and eager false',
+      boot("const m = import.meta.glob('../api/*.ts', { import: 'default' });\nconst n = import.meta.glob('../api/*.ts', { eager: false });"),
+      [],
+    ],
+    // A `*` stays in one directory: from the root it matches main.ts, never api/meta.ts.
+    ['A7 an eager glob one level above the meta module', boot("const m = import.meta.glob('../*.ts', { eager: true });"), []],
   ];
   for (const [label, files, chains] of allow) {
     expect(walk(files), label).toEqual({ chains, unresolved: [] });
@@ -2696,6 +2709,11 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
       // GM8a D12: a lazy glob is an `import()` per match; an eager one from inside the lazy directory stays in it; an
       // eager one whose head no lazy scope starts with, nor lies under one, matches none.
       ['app/yields.ts', "const m = import.meta.glob('../puzzles/ui/*.svelte');"],
+      [
+        'app/yields.ts',
+        "const m = import.meta.glob('../puzzles/ui/*.svelte', { import: 'default' });\n" +
+          "const n = import.meta.glob('../puzzles/ui/*.svelte', { eager: false });",
+      ],
       ['puzzles/ui/index.ts', "const m = import.meta.glob('./*.svelte', { eager: true });"],
       ['app/yields.ts', "const m = import.meta.glob('../ui/state*.ts', { eager: true });"],
     ],
