@@ -127,9 +127,24 @@ export function leversLint(budget: number = LEVERS_SEARCH_STEPS) {
     validateSolution(p: LeversParams, s: readonly number[]): string | null {
       return !search(p).found || same(s, p.target) ? null : `the solution [${s.join(', ')}] is not the target [${p.target.join(', ')}]`;
     },
-    renderHints(_p: LeversParams, hints: readonly { ru: string; en: string }[]): readonly { ru: string; en: string }[] {
+    /**
+     * D2, c5: the ladder checked, then its last tier's `[moves]` replaced by the witness as the player counts levers
+     * (from 1, joined by ", ") in ru and in en; the earlier tiers as written. No witness (an unreachable target, which
+     * the reach pass refuses before emit) is a throw, never a literal `[moves]` shipped.
+     */
+    renderHints(p: LeversParams, hints: readonly { ru: string; en: string }[]): readonly { ru: string; en: string }[] {
       checkLadder(hints);
-      return hints;
+      if (hints.length === 0) {
+        return hints;
+      }
+      const order = search(p).witness;
+      if (order === null) {
+        throw new Error('levers hints: no throw order reaches the target');
+      }
+      const moves = order.map((part) => part + 1).join(', ');
+      const last = hints.length - 1;
+      // A function replacement: the text is inserted as it is, no `$` pattern read.
+      return hints.map((h, i) => (i === last ? { ru: h.ru.replace(MOVES, () => moves), en: h.en.replace(MOVES, () => moves) } : h));
     },
     partRects: (p: LeversParams) => p.rects,
     reached: LEVERS_PLAY.reached,

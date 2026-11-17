@@ -8,8 +8,9 @@ import { LEVERS_RULES } from '../../../src/puzzles/rules/levers.ts';
 import type { LeversParams } from '../../../src/puzzles/rules/levers.ts';
 import type { SettingParams } from '../../../src/puzzles/rules/setting.ts';
 import type { AssetCatalog } from '../../../src/story/catalog.ts';
-import type { ChapterId, Rect } from '../../../src/story/staging.ts';
-import { decodeWorldSource } from '../../../src/world/decode.ts';
+import type { ChapterId, LineId, PuzzleLocalId, Rect } from '../../../src/story/staging.ts';
+import { decodeWorldSource, toServer } from '../../../src/world/decode.ts';
+import type { HintRenderer } from '../../../src/world/decode.ts';
 import { clueFindings, reachFindings } from '../mechanics/clues.ts';
 import { devicesFindings } from '../mechanics/devices.ts';
 import type { WorldLintInput } from '../mechanics/index.ts';
@@ -17,6 +18,7 @@ import { lintWorld } from '../world.ts';
 import { PUZZLE_LINTS } from './index.ts';
 import { LEVERS_LINT, LEVERS_SEARCH_STEPS, leversLint, searchLevers } from './levers.ts';
 import { SETTING_LINT } from './setting.ts';
+import type { PuzzleLintRegistry } from './shape.ts';
 
 /** `n` rects in a 4-column grid of 150 px squares inside HOTSPOT_SAFE_FRAME and the device band (A6). */
 const rectsOf = (n: number): Rect[] => Array.from({ length: n }, (_, i): Rect => [80 + (i % 4) * 230, 800 + Math.floor(i / 4) * 400, 150, 150]);
@@ -324,4 +326,37 @@ test('story: a secret setting device declares a clue its section reaches', () =>
   expect(codes(setting([{ solved: 'dial' }]), 'world/clue-reachable')).toEqual([
     'world/clue-reachable: puzzle \'dial\': clue {"solved":"dial"} holds in no state of section s reached before \'dial\' is solved or failed (§7.3)',
   ]);
+});
+
+test('emit: a levers tier 3 renders its throw order in both languages', () => {
+  // c5 (D13): through the real emit seam, `toServer` with the renderer emit.ts builds over PUZZLE_LINTS. The en table's
+  // entries differ from ru and hold `[moves]`, so an en tier copied from ru (a missing entry) cannot pass for a render.
+  const raw = fuseWorld(L23);
+  const fuse = (raw as { puzzles: { fuse: Record<string, unknown> } }).puzzles.fuse;
+  fuse['hints'] = [
+    { id: 'ch1.fuse.0003', ru: T1[0] },
+    { id: 'ch1.fuse.0004', ru: T2[0] },
+    { id: 'ch1.fuse.0005', ru: T3[0] },
+  ];
+  const r = decodeWorldSource(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture decodes: ${JSON.stringify(r.error)}`);
+  }
+  const en = { ['ch1.fuse.0003' as LineId]: T1[1], ['ch1.fuse.0004' as LineId]: T2[1], ['ch1.fuse.0005' as LineId]: T3[1] }; // fixture ids
+  const lints: PuzzleLintRegistry = PUZZLE_LINTS;
+  // emit.ts's renderer: a type's lint half renders its server hints, identity without one.
+  const renderHints: HintRenderer = (p, hints) => lints[p.type]?.renderHints?.(p.params, hints) ?? hints;
+  const server = toServer(r.value, en, 'ch1' as ChapterId, renderHints).puzzles['fuse' as PuzzleLocalId];
+  // The witness 0 0 1 1 as the player counts levers, from 1: the last tier only, in both languages.
+  expect(server?.hints).toEqual([
+    { ru: T1[0], en: T1[1] },
+    { ru: T2[0], en: T2[1] },
+    { ru: 'Порядок рычагов: 1, 1, 2, 2.', en: 'Lever order: 1, 1, 2, 2.' },
+  ]);
+  // The tie-break reads through: the tie's order is 1, 2, never 2, 1.
+  expect(LEVERS_LINT.renderHints(TIE, ladder(T3))).toEqual([{ ru: 'Порядок рычагов: 1, 2.', en: 'Lever order: 1, 2.' }]);
+  // No throw order to render (an unreachable target, which the reach pass refuses before emit): a throw, never a
+  // literal `[moves]` shipped.
+  expect(() => LEVERS_LINT.renderHints(PARITY, ladder(T1, T2, T3))).toThrow('levers hints: no throw order reaches the target');
+  expect(LEVERS_LINT.renderHints(PARITY, [])).toEqual([]);
 });
