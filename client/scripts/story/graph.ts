@@ -401,6 +401,25 @@ function identifiers(code: string): string[] {
   return code.match(IDENT_RE) ?? [];
 }
 
+/** The text inside each `{…}` of a line, at any depth (an inner group also inside its outer one's text): the outer
+ *  `seen` of `{seen: again {g_trust}|first}` is read as surely as the inner `g_trust`. An unmatched brace opens or
+ *  closes nothing. */
+function braceGroups(code: string): string[] {
+  const groups: string[] = [];
+  const open: number[] = [];
+  for (let i = 0; i < code.length; i++) {
+    if (code[i] === '{') {
+      open.push(i);
+    } else if (code[i] === '}') {
+      const start = open.pop();
+      if (start !== undefined) {
+        groups.push(code.slice(start + 1, i));
+      }
+    }
+  }
+  return groups;
+}
+
 /**
  * The VARs the files assign (first site per VAR) and every identifier they read (D15). A read set by identifiers is
  * a heuristic, and `vars/write-only` is a W: a name that only looks read keeps it quiet, never the other way round.
@@ -451,8 +470,8 @@ function varUse(parsed: readonly Parsed[], vars: ReadonlySet<VarName>, globals: 
       if (cls.kind === 'block-open' || cls.kind === 'block-branch') {
         readAll(cls.head);
       }
-      for (const m of l.code.matchAll(/\{([^{}]*)\}/g)) {
-        readAll(m[1] ?? '');
+      for (const group of braceGroups(l.code)) {
+        readAll(group);
       }
     }
   }

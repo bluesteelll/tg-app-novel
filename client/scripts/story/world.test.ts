@@ -28,7 +28,7 @@ import type { DecodeOptions, WorldIssue } from '../../src/world/decode.ts';
 import type { HotspotKey, ItemId, WorldSource, WorldText } from '../../src/world/types.ts';
 import { carryPaths, main } from '../story.ts';
 import { compileChapter } from './compile.ts';
-import { buildGraph, mustPass, worldRef } from './graph.ts';
+import { buildGraph, mustPass, worldRef, writeOnly } from './graph.ts';
 import type { ChapterGraph, GraphFacts, WorldRef } from './graph.ts';
 import { GLOBALS_PATH, LINT_CODES } from './lint.ts';
 import { checkLocales, decodeEnTable, decodeNameTable } from './locales.ts';
@@ -3560,3 +3560,12 @@ test(
   },
   IN_PROCESS_TIMEOUT_MS,
 );
+
+test('vars: a nested inline read counts as a read', () => {
+  /** ch1 assigning its VAR `seen` and saying `said`. */
+  const chapter = (said: string): string[] => [...INK_HEAD.slice(0, 1), 'VAR seen = false', ...INK_HEAD.slice(1), '~ seen = true', `${said} #id:ch1.start.a001`, '-> END'];
+  // `seen` read only by the outer group of a nested inline: `{g_trust}` sits inside its branch.
+  expect(writeOnly([graphWith(chapter('Мы {seen: снова {g_trust}|впервые} здесь.')).facts])).toEqual([]);
+  // The control: the same write, read nowhere.
+  expect(writeOnly([graphWith(chapter('Мы здесь.')).facts]).map((f) => f.message)).toEqual(['VAR seen is assigned, but its chapter never reads it (§11)']);
+});
