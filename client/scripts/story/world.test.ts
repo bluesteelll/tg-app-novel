@@ -1019,6 +1019,8 @@ test('story: module and type lint codes are unique and none is a DSL code', () =
     'world/device-alone E',
     'world/device-unlock E',
     'world/device-part E',
+    'world/device-hotspot-cover E',
+    'world/hint-moves E',
   ]);
   // The registry restates world.ts's VarLiteral (its types stay out of the app program): one type (tsc).
   type InputVar = WorldLintInput['declared'] extends ReadonlyMap<VarName, infer V> ? V : never;
