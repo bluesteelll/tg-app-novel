@@ -3,6 +3,7 @@
 // world.ts. Its imports from lint.ts and the halves' from here are `import type`, erased at run time, so the value
 // graph is world.ts -> index.ts -> the lint halves with no edge back. Each type lane appends its entry.
 import type { ParamsOf, PuzzleType } from '../../../src/puzzles/rules/index.ts';
+import type { Rect } from '../../../src/story/staging.ts';
 import type { Severity } from '../lint.ts';
 import { CODE_LINT } from './code.ts';
 import { GRID_LINT } from './grid.ts';
@@ -31,6 +32,11 @@ export interface PuzzleTypeLint<P> {
    * answer (a finding, never a hang: `world/unique-solution`).
    */
   countSolutions(p: P, cap: 2): 0 | 1 | 2 | null;
+  /**
+   * View types (devices): every part's rect in room source px, in part order, a commit part's last (D3); the devices
+   * lint's frame check reads it. Optional: an overlay type has no parts in its room.
+   */
+  partRects?(p: P): readonly Rect[];
 }
 
 type PuzzleLints = {
