@@ -6,11 +6,11 @@
 // a renderer that records each render (no WebGL in node).
 import { Container, Rectangle, Sprite } from 'pixi.js';
 import type { Texture } from 'pixi.js';
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 
 import type { HalfFile, ImageEntry, Result } from '../story/catalog.ts';
 import type { AssetId, BgId, CgId, ChapterId, CharId, ExprId, PropId } from '../story/staging.ts';
-import { applyStep, chapterStep, createLayers, pixiAdapter, restoreStep, targetKit } from './controller.ts';
+import { applyStep, chapterStep, createLayers, createMotionLoader, createSceneHolds, pixiAdapter, restoreStep, sceneSteps, swapCanvas, targetKit } from './controller.ts';
 import { createExecutor } from './executor.ts';
 import type { Executor, GroupRef, SceneSnapshot, StageAdapter, VisualCommand } from './executor.ts';
 import { createGpuLedger, snapshotPlan } from './flatten.ts';
@@ -555,4 +555,238 @@ test('controller: a patch renders its rect of the world in device px at its plat
   }
   expect(content?.children).toEqual([]);
   expect(ledger.stats()).toMatchObject({ targets: 0, targetsDestroyed: 1 });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The motion kit's loader (lane SH7, D1, B11): the scene's one import(), started once a step has settled (an apply or a
+// restore-first session's restore), never at mount and never on the path to the first line; a failed import leaves
+// the faces at rest, and a shot built with no kit retries it (bounded per chapter).
+
+/** A kit the loader hands over; these rows never animate a face. */
+const LOADED_KIT = {
+  face: (): never => {
+    throw new Error('invariant: no face is made here');
+  },
+  talkMaxMs: 20_000,
+};
+const settled = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+/** Step parts whose apply waits until the test lets it settle; restore settles at once. */
+function heldParts() {
+  let release = (): void => {};
+  const parts = {
+    registry: { previewing: <R>(run: () => R): R => run(), releaseHolder: (): void => {} },
+    executor: {
+      apply: (): Promise<void> =>
+        new Promise<void>((r) => {
+          release = r;
+        }),
+      restore: (): Promise<void> => Promise.resolve(),
+    },
+  };
+  return { parts, release: () => release() };
+}
+
+test("controller: the motion kit's import starts after the first apply, not at mount", async () => {
+  const imports: string[] = [];
+  const installed: unknown[] = [];
+  const loader = createMotionLoader({
+    load: () => {
+      imports.push('motion');
+      return Promise.resolve(LOADED_KIT);
+    },
+    install: (k) => installed.push(k),
+  });
+  const held = heldParts();
+  let mounted = false;
+  const steps = sceneSteps(() => (mounted ? held.parts : null), loader);
+  // Not mounted: a step is a no-op and starts nothing.
+  await steps.apply([], { instant: true });
+  await steps.restore({ bg: null, cg: null, chars: [], props: [] });
+  await settled();
+  expect([imports, loader.state()]).toEqual([[], 'pending']);
+  // Mounted: the first batch runs, and the import waits for it to settle.
+  mounted = true;
+  const first = steps.apply([CUT], { instant: false });
+  await settled();
+  expect(imports).toEqual([]);
+  held.release();
+  await first;
+  await settled();
+  expect([imports, loader.state(), installed]).toEqual([['motion'], 'ready', [LOADED_KIT]]);
+  // Every later step imports nothing more.
+  const second = steps.apply([CUT], { instant: true });
+  held.release();
+  await second;
+  await steps.restore({ bg: 'x' as BgId, cg: null, chars: [], props: [] });
+  await settled();
+  expect([imports, installed.length]).toEqual([['motion'], 1]);
+  // Arm (B11 (b)): a restore-first session's restore starts the import as its first settled step.
+  const restoreFirst: string[] = [];
+  const other = createMotionLoader({
+    load: () => {
+      restoreFirst.push('motion');
+      return Promise.resolve(LOADED_KIT);
+    },
+    install: () => {},
+  });
+  await sceneSteps(() => heldParts().parts, other).restore({ bg: 'x' as BgId, cg: null, chars: [], props: [] });
+  await settled();
+  expect([restoreFirst, other.state()]).toEqual([['motion'], 'ready']);
+});
+
+test('controller: a failed kit import reports failed and a retry imports again', async () => {
+  let imports = 0;
+  const installed: unknown[] = [];
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const loader = createMotionLoader({
+    load: () => {
+      imports += 1;
+      return imports === 1 ? Promise.reject(new Error('chunk offline')) : Promise.resolve(LOADED_KIT);
+    },
+    install: (k) => installed.push(k),
+  });
+  // A shot built before the first import asks for nothing: only a failed import is retried.
+  loader.want();
+  expect([imports, loader.state()]).toEqual([0, 'pending']);
+  loader.applied();
+  await settled();
+  expect([imports, loader.state(), installed]).toEqual([1, 'failed', []]);
+  expect(warn).toHaveBeenCalledTimes(1);
+  // A later step does not retry; a shot built with no kit does, once while its import flies.
+  loader.applied();
+  expect(imports).toBe(1);
+  loader.want();
+  loader.want();
+  expect([imports, loader.state()]).toEqual([2, 'pending']);
+  await settled();
+  expect([imports, loader.state(), installed]).toEqual([2, 'ready', [LOADED_KIT]]);
+  // Loaded: nothing imports again.
+  loader.want();
+  loader.chapter();
+  loader.want();
+  await settled();
+  expect([imports, installed.length]).toEqual([2, 1]);
+  warn.mockRestore();
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The controller's holds and the rebuilt canvas (lane SH7, D10): a pause, a cover or an animation mode set before the
+// mount holds the loop the mount makes (E6); a rebuilt canvas takes the old one's place and the host's box (E5).
+
+test('controller: a pause and a cover set before mount hold the loop at mount', () => {
+  const holds = createSceneHolds();
+  // Before the mount: `deactivated`, an opaque frame, and the e2e build's frozen default.
+  expect([holds.pause(), holds.pause()]).toEqual([true, false]);
+  holds.setCovered('panel', true);
+  holds.setAnimation({ frozen: true });
+  // The mount's loop, with a continuous source on its stage layer.
+  let clock = 0;
+  const ticks = new Set<() => void>();
+  const loop = createRenderLoop({
+    ticker: {
+      add: (fn) => {
+        ticks.add(fn);
+      },
+      remove: (fn) => {
+        ticks.delete(fn);
+      },
+    },
+    render: () => true,
+    now: () => clock,
+    timer: { set: () => 0, clear: () => {} },
+  });
+  holds.attach(loop);
+  const modes: Array<{ frozen: boolean; covered: boolean }> = [];
+  let steps = 0;
+  loop.addAmbient({
+    layer: 'stage',
+    continuous: () => true,
+    step: () => {
+      steps += 1;
+    },
+    nextChangeMs: () => null,
+    setMode: (m) => {
+      modes.push({ frozen: m.frozen, covered: m.covered });
+      return false;
+    },
+  });
+  const frame = (): void => {
+    clock += 50;
+    for (const fn of [...ticks]) {
+      fn();
+    }
+  };
+  // The mount's first frame request: paused, the loop does not listen.
+  loop.requestRender();
+  frame();
+  expect([loop.stats().listening, loop.stats().frames, steps]).toEqual([false, 0, 0]);
+  expect(modes.at(-1)).toEqual({ frozen: true, covered: true });
+  // `activated`: the frame draws, the source stays held by the cover and the mode.
+  expect(holds.resume()).toBe(true);
+  frame();
+  expect([loop.stats().frames, steps]).toEqual([1, 0]);
+  holds.setAnimation({ frozen: false });
+  holds.setCovered('panel', false);
+  frame();
+  expect(steps).toBeGreaterThan(0);
+  expect(modes.at(-1)).toEqual({ frozen: false, covered: false });
+  // After the mount a pause reaches the attached loop at once; a detached loop hears nothing more.
+  holds.pause();
+  expect(loop.stats().listening).toBe(false);
+  holds.detach();
+  holds.resume();
+  expect(loop.stats().listening).toBe(false);
+  loop.destroy();
+});
+
+test("controller: a rebuilt canvas takes the old canvas's place and the host's box", () => {
+  type El = { readonly name: string };
+  const old: El = { name: 'old canvas' };
+  const later: El = { name: 'the frame layer' };
+  const next: El = { name: 'new canvas' };
+  const children: El[] = [old, later];
+  const host = {
+    children,
+    // The host's box when the rebuild's init resolves: not the one appOptions read before the await.
+    clientWidth: 412,
+    clientHeight: 915,
+    replaceChild(n: El, o: El): El {
+      children.splice(children.indexOf(o), 1, n);
+      return o;
+    },
+    appendChild(n: El): El {
+      children.push(n);
+      return n;
+    },
+  };
+  const sizes: Array<[number, number]> = [];
+  swapCanvas(host, old, {
+    canvas: next,
+    renderer: {
+      resize: (w, h) => {
+        sizes.push([w, h]);
+      },
+    },
+  });
+  expect(children.map((c) => c.name)).toEqual(['new canvas', 'the frame layer']);
+  expect(sizes).toEqual([[412, 915]]);
+});
+
+test('controller: a target render that throws destroys its target', () => {
+  // r1 M2, the controller half: the target is made and tracked before its render; a render that throws (a renderer
+  // bug, a context lost mid-render) destroys it, so the ledger sees it go, and nothing is shown.
+  const ledger = createGpuLedger();
+  const layers = createLayers({ stage: new Container() });
+  const made: Texture[] = [];
+  const renderer = {
+    render: (o: { target: Texture }): void => {
+      made.push(o.target);
+      throw new Error('renderer: a lost context mid-render');
+    },
+  };
+  const adapter = pixiAdapter({ screen: new Rectangle(0, 0, 390, 844) }, layers, targetKit({ renderer }, () => true, ledger));
+  expect(() => adapter.flatten?.(PHONE, { kind: 'screen' })).toThrow('renderer: a lost context mid-render');
+  expect(made.map((t) => t.destroyed)).toEqual([true]);
+  expect(ledger.stats()).toEqual({ targets: 0, targetBytes: 0, targetsCreated: 1, targetsDestroyed: 1 });
+  expect(layers.flat.children).toEqual([]);
 });
