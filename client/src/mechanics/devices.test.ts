@@ -575,6 +575,57 @@ test("search: a device's arrival adds no state", () => {
   expect(kinds(at('hall'), all)).toEqual(['tap', 'tap', 'tap']);
 });
 
+test("search: an uncapped device's arrival adds one evaluation and no state", () => {
+  // P3: the world above with an uncapped device. With no cap it never fails, so the one zoom-in edge into the present,
+  // unsolved device expands into its `closed` edge and its one outcome, as the device's own tap does: one evaluation
+  // more than a registry without the hook, on the same states (the entry, `power` set, the device solved).
+  const w = kernel(
+    source(
+      {
+        hall: room([look('switch', [{ set: 'power' }]), exit('to_panel', 'panel'), exit('out', { story: 'end' })]),
+        panel: room([object('dial', lock('dial'), { when: { flag: 'power' } })], { view: { of: 'hall' }, device: 'dial' }),
+      },
+      { puzzles: { dial: code(2) }, flags: { power: 's' } },
+    ),
+  );
+  const all: RulesRegistry = MECHANIC_RULES;
+  const quiet: RulesRegistry = all.map((m) => {
+    if (m.id !== 'devices') {
+      return m;
+    }
+    const { arrived: _arrived, ...rest } = m;
+    return rest;
+  });
+  const search = (rules: RulesRegistry): { result: string; states: number; stats: SearchStats | null } => {
+    let stats: SearchStats | null = null;
+    const r = searchSection(w, sectionEntry(w, EMPTY_WORLD_STATE, S, rules), S, RESUME_STATE_CAP, {
+      rules,
+      onStats: (x) => {
+        stats = x;
+      },
+    });
+    return { ...r, stats };
+  };
+  const plain = search(quiet);
+  const hooked = search(all);
+  expect(plain.result).toBe('exhausted');
+  expect({ result: hooked.result, states: hooked.states, expansions: hooked.stats?.expansions }).toEqual({
+    result: plain.result,
+    states: plain.states,
+    expansions: plain.stats?.expansions,
+  });
+  expect((hooked.stats?.work ?? 0) - (plain.stats?.work ?? 0)).toBe(1);
+  expect(hooked.stats?.work).toBeLessThanOrEqual(plain.states * RESUME_WORK_PER_STATE);
+  expect([plain.states, plain.stats, hooked.stats]).toEqual([3, { expansions: 6, work: 18, bound: null }, { expansions: 6, work: 19, bound: null }]);
+  // The hook is live: with `power` set, the zoom-in expands into the device's `closed` edge and its one outcome.
+  const lit = at('hall', { flags: [fl('power')], fired: ['enter:hall', 'then:hall.switch'], examined: [k('hall.switch')] });
+  const kinds = (s: WorldState, rules: RulesRegistry): string[] => successors(w, s, rules).map((x) => x.step.kind);
+  expect([kinds(lit, quiet), kinds(lit, all)]).toEqual([
+    ['tap', 'tap', 'tap'],
+    ['tap', 'closed', 'puzzle-ended', 'tap'],
+  ]);
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // The story gate: placement lints (each a code of the module's own table) and the band
 
