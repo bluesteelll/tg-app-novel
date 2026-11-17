@@ -1336,6 +1336,41 @@ test('levers: a coupled throw is one onwork carrying the whole configuration', (
   expect(onwork.mock.calls).toEqual([[[1, 0, 2], false]]);
 });
 
+test('levers, setting: a busy device takes no throw and no turn', async () => {
+  // D10: while the host holds the type UI busy (an attempt in flight, a 429 countdown), every lever and knob is
+  // disabled and a tap writes no work; the `disabled` attribute is asserted itself, since a click on a disabled button
+  // never reaches its handler. The control: once free, one tap is one `onwork`.
+  for (const [params, cue, answer] of [
+    [LEVERS, 'lever', [1, 0]],
+    [SETTING, 'setting-part', [3, 0, 7]],
+  ] as const) {
+    const onwork = vi.fn<(w: readonly number[], wrong: boolean) => void>();
+    const { container, rerender } = render(LeverDevice, props({ params, answer: [...answer], onwork, busy: true }));
+    const parts = [...container.querySelectorAll<HTMLButtonElement>(`button[data-cue="${cue}"]`)];
+    expect(parts.length, cue).toBeGreaterThan(0);
+    for (const b of parts) {
+      expect(b.disabled, cue).toBe(true);
+      b.click();
+    }
+    expect(onwork, cue).not.toHaveBeenCalled();
+    await rerender({ busy: false });
+    must(parts[0]).click();
+    expect(onwork, cue).toHaveBeenCalledTimes(1);
+  }
+});
+
+test('setting: a misshapen answer leaves the pull disabled and commits nothing', () => {
+  // D7: whether an answer may be tried is the type UI's (`validAnswer`): a configuration of the wrong length cannot be
+  // pulled, so the pull is disabled and a tap posts nothing. The app never hands the device such an answer (the start
+  // and the session check the shape first); this pins the device's own gate.
+  const oncommit = vi.fn<() => void>();
+  const { container } = render(LeverDevice, props({ params: SETTING, answer: [1], oncommit }));
+  const pull = must(container.querySelector<HTMLButtonElement>('button[data-cue="setting-pull"]'));
+  expect(pull.disabled).toBe(true);
+  pull.click();
+  expect(oncommit).not.toHaveBeenCalled();
+});
+
 test('setting: a pull commits once and calls nothing else', async () => {
   // D7 (A17): the pull is the device's commit part: one tap, one `oncommit` (which posts the working configuration, as
   // Try does), and no other callback; while an attempt is in flight it is disabled and calls nothing.
