@@ -21,7 +21,7 @@ import type { SearchOptions } from '../../src/mechanics/rules/search.ts';
 import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from '../../src/puzzles/rules/index.ts';
 import { assetIndex, decodeAssetCatalog, decodeCast } from '../../src/story/catalog.ts';
-import type { AssetCatalog, Cast } from '../../src/story/catalog.ts';
+import type { AssetCatalog, Cast, EndingName } from '../../src/story/catalog.ts';
 import type { ChapterId, KnotName, PuzzleLocalId, SectionId, VarName } from '../../src/story/staging.ts';
 import { decodeWorldPublic, decodeWorldSource, toPublic } from '../../src/world/decode.ts';
 import type { DecodeOptions, WorldIssue } from '../../src/world/decode.ts';
@@ -2755,12 +2755,14 @@ function enterManor(bypass: boolean): string[] {
   return [...INK_HEAD, 'Перед усадьбой. #id:ch1.start.a001', ...choice, '=== hall ===', 'Мы вошли. #id:ch1.hall.a002', '# explore: manor', '-> DONE', ...away, '=== manor_out ===', 'Мы вышли. #id:ch1.manor_out.a004', '-> END'];
 }
 
-/** The manor giver's chapter (ch1) built from `main`, the medallion's receiver ch2 after it. */
-function proofOf(main: readonly string[], registry: string | null = SUN_ROW): Finding[] {
+/** The manor giver's chapter (ch1) built from `main`, its declared story endings `endings`, the medallion's receiver ch2
+ *  after it. */
+function proofOf(main: readonly string[], endings: Readonly<Record<string, string>> = {}): Finding[] {
   const w = giver();
   const g = graphWith(main, okWorld(w));
-  const chapters = [carryChapter('ch1', 'ch2', w, carryPaths(g.graph, g.facts)), carryChapter('ch2', null, heir())];
-  return carryProof({ chapters, registry }).findings;
+  const declared = new Map(Object.entries(endings) as Array<[KnotName, EndingName]>); // fixture knot and ending names
+  const chapters = [carryChapter('ch1', 'ch2', w, carryPaths(g.graph, g.facts, declared)), carryChapter('ch2', null, heir())];
+  return carryProof({ chapters, registry: SUN_ROW }).findings;
 }
 
 test('carry: a continuing END reachable without the giver yield is refused', () => {
@@ -2774,6 +2776,38 @@ test('carry: a continuing END reachable without the giver yield is refused', () 
   // The manor never yielded: refused at the giver's section.
   const never = [...INK_HEAD, 'Перед усадьбой. #id:ch1.start.a001', '-> manor_out', '=== manor_out ===', 'Мы вышли. #id:ch1.manor_out.a004', '-> END'];
   expect(carried(proofOf(never))).toEqual([`world/carry-required-path ${FILE}:${jsonLine(giver(), '"manor": {')}`]);
+});
+
+test('carry: a story ending reachable before the giver is allowed', () => {
+  // ch3's `shore_drowned` shape: before the manor, a choice may end the story (a declared ending) or walk away (an END
+  // the story continues after, to ch2).
+  const main = [
+    ...INK_HEAD,
+    'Перед усадьбой. #id:ch1.start.a001',
+    '* [Войти #id:ch1.start.c001]',
+    '    -> hall',
+    '* [Утонуть #id:ch1.start.c002]',
+    '    -> drowned',
+    '=== hall ===',
+    'Мы вошли. #id:ch1.hall.a002',
+    '# explore: manor',
+    '-> DONE',
+    '=== drowned ===',
+    'Волна накрыла нас. #id:ch1.drowned.a003',
+    '-> END',
+    '=== manor_out ===',
+    'Мы вышли. #id:ch1.manor_out.a004',
+    '-> END',
+  ];
+  expect(proofOf(main, { drowned: 'drowned' })).toEqual([]);
+  // The same END undeclared continues the story, so it is refused (the plan's m5: every END counted, T2's red).
+  expect(proofOf(main).map((f) => `${f.code} ${f.line} ${f.message.slice(f.message.indexOf('END'))}`)).toEqual([
+    `world/carry-required-path ${lineIn(main, '# explore: manor')} END of knot 'drowned' is reachable without a yield of manor (§6.6)`,
+  ]);
+  // A declared ending beside a continuing END: the continuing one is still refused.
+  const both = enterManor(true);
+  expect(proofOf(both, { manor_out: 'out' }).map((f) => f.message.slice(f.message.indexOf('END')))).toEqual(["END of knot 'away' is reachable without a yield of manor (§6.6)"]);
+  expect(proofOf(both, { away: 'away' })).toEqual([]);
 });
 
 test('carry: an inherited item is checked against story/items.json', () => {

@@ -346,11 +346,13 @@ function readWorlds(root: string, chapters: readonly ChapterListEntry[], out: Fi
 
 /**
  * The carry pass's graph glue (engine plan §6.6; scripts/story/mechanics/carry.ts takes plain data, never a graph): per
- * section an explore yield of the chapter names, its yields (repo-relative, source order) and the first END, in knot
- * order, that the first knot reaches around every knot holding one of them (`mustPass`); null when the entry names no
- * knot (its `ink/entry` error says why). Every END continues the story.
+ * section an explore yield of the chapter names, its yields (repo-relative, source order) and the first continuing END,
+ * in knot order, that the first knot reaches around every knot holding one of them (`mustPass`); null when the entry
+ * names no knot (its `ink/entry` error says why). A continuing END is one the story goes on after: an END in a knot
+ * that `endings` (the chapter's declared story endings) does not hold. A declared ending's END runs inside its own knot
+ * (`catalog/stories` rule 8: no successor, no yield), and its player never reaches the receiver.
  */
-export function carryPaths(graph: ChapterGraph, facts: GraphFacts): ReadonlyMap<SectionId, SectionPath> | null {
+export function carryPaths(graph: ChapterGraph, facts: GraphFacts, endings: ReadonlyMap<KnotName, EndingName>): ReadonlyMap<SectionId, SectionPath> | null {
   const first = graph.firstKnot;
   if (first === null) {
     return null;
@@ -359,7 +361,7 @@ export function carryPaths(graph: ChapterGraph, facts: GraphFacts): ReadonlyMap<
   for (const e of facts.explores ?? []) {
     bySection.set(e.section, [...(bySection.get(e.section) ?? []), { knot: e.knot, file: `story/${e.file}`, line: e.line }]);
   }
-  const ends = [...graph.knots.values()].filter((k) => k.ending).map((k) => k.name);
+  const ends = [...graph.knots.values()].filter((k) => k.ending && !endings.has(k.name)).map((k) => k.name);
   return new Map(
     [...bySection].map(([section, sites]) => {
       const yielding = new Set(sites.map((s) => s.knot));
@@ -368,12 +370,13 @@ export function carryPaths(graph: ChapterGraph, facts: GraphFacts): ReadonlyMap<
   );
 }
 
-/** Each listed chapter as the carry pass reads it, in list order. */
+/** Each listed chapter as the carry pass reads it, in list order; `endings`: the declared story endings per chapter. */
 function carryChapters(
   chapters: readonly ChapterListEntry[],
   worlds: ReadonlyMap<ChapterId, ChapterWorld>,
   graphs: ReadonlyMap<ChapterId, ChapterGraph>,
   facts: ReadonlyMap<ChapterId, GraphFacts>,
+  endings: ReadonlyMap<ChapterId, ReadonlyMap<KnotName, EndingName>>,
 ): CarryChapter[] {
   return chapters.map((ch) => {
     const w = worlds.get(ch.id);
@@ -384,7 +387,7 @@ function carryChapters(
       paid: ch.paid,
       next: ch.next,
       world: w === undefined || w.kind === 'none' ? { kind: 'none' } : w.kind === 'invalid' ? { kind: 'invalid' } : { kind: 'ok', source: w.source, text: w.text },
-      paths: g === undefined || f === undefined ? null : carryPaths(g, f),
+      paths: g === undefined || f === undefined ? null : carryPaths(g, f, endings.get(ch.id) ?? new Map()),
     };
   });
 }
@@ -793,11 +796,13 @@ export function main(argv: readonly string[], repoRoot: string): number {
   // The files an error of stages 1-4 names: such a chapter is not played (stage 6). Localization errors do not gate play.
   const sourceErrors = new Set(found.filter((f) => f.severity === 'E').map((f) => f.file));
 
+  // The declared story endings per chapter: the carry proof's and the playthroughs' (stage 6).
+  const endings = plans === null ? new Map<ChapterId, ReadonlyMap<KnotName, EndingName>>() : endingKnots(plans);
   // The carry proof across the chapters (engine plan §6.6). Its findings name chapter files, so it runs after the set
   // above: they never keep a chapter from being played, and the run still fails on them. Judged only on a decoded story
   // list, like the endings: a list that failed has its own error, so the skip fails closed.
   if (plans !== null) {
-    found.push(...carryProof({ chapters: carryChapters(chapters, worlds, graphs, facts), registry: readRaw(root, ITEMS_FILE) }).findings);
+    found.push(...carryProof({ chapters: carryChapters(chapters, worlds, graphs, facts, endings), registry: readRaw(root, ITEMS_FILE) }).findings);
   }
 
   // 5. Localization (after `--sync-locales` appended the new IDs): the en tables of the compiled chapters, the names
@@ -816,7 +821,6 @@ export function main(argv: readonly string[], repoRoot: string): number {
   }
 
   // 6. Seeded playthroughs of the chapters, in list order.
-  const endings = plans === null ? new Map<ChapterId, ReadonlyMap<KnotName, EndingName>>() : endingKnots(plans);
   const sourceWorlds = new Map([...worlds].flatMap(([ch, w]) => (w.kind === 'ok' ? [[ch, w.source] as const] : [])));
   // The played world carries the decoded `mods`, as the explore controller's does: a module's rules read their data there.
   const publicWorlds = new Map([...sourceWorlds].map(([ch, w]) => [ch, { ...toPublic(w), mods: w.mods }]));
