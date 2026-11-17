@@ -7,7 +7,14 @@ import { throwPart } from '../../../src/puzzles/play/levers.ts';
 import { LEVERS_RULES } from '../../../src/puzzles/rules/levers.ts';
 import type { LeversParams } from '../../../src/puzzles/rules/levers.ts';
 import type { SettingParams } from '../../../src/puzzles/rules/setting.ts';
-import type { Rect } from '../../../src/story/staging.ts';
+import type { AssetCatalog } from '../../../src/story/catalog.ts';
+import type { ChapterId, Rect } from '../../../src/story/staging.ts';
+import { decodeWorldSource } from '../../../src/world/decode.ts';
+import { clueFindings, reachFindings } from '../mechanics/clues.ts';
+import { devicesFindings } from '../mechanics/devices.ts';
+import type { WorldLintInput } from '../mechanics/index.ts';
+import { lintWorld } from '../world.ts';
+import { PUZZLE_LINTS } from './index.ts';
 import { LEVERS_LINT, LEVERS_SEARCH_STEPS, leversLint, searchLevers } from './levers.ts';
 import { SETTING_LINT } from './setting.ts';
 
@@ -173,4 +180,148 @@ test('setting: the solution check refuses a misshapen answer and the start', () 
   expect(v([0, 0, 0])).toBe('the solution equals the initial state (all zeros)');
   // A commit type's goal is its one source solution.
   expect(SETTING_LINT.countSolutions()).toBe(1);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The world lints on worlds that hold the real `levers` and `setting` (engine plan §7.3-§7.5; D4, D5, D11, D15), each
+// world written in the source format and decoded with the real registries.
+
+/** No pass below reads the asset catalog. */
+const CATALOG: AssetCatalog = { bg: {}, chars: {}, cg: {}, bgm: {}, sfx: {}, prop: {}, cover: {} };
+
+/** The per-world lint input of a source world; its line lookup numbers each path in the order it is first asked for. */
+function inputOf(raw: unknown): WorldLintInput {
+  const text = `${JSON.stringify(raw, null, 2)}\n`;
+  const r = decodeWorldSource(JSON.parse(text));
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture decodes: ${JSON.stringify(r.error)}`);
+  }
+  const asked: string[] = [];
+  const line = (path: string): number => {
+    const i = asked.indexOf(path);
+    return i >= 0 ? i + 1 : asked.push(path);
+  };
+  const chapter = { id: 'ch1' as ChapterId, paid: false, entry: 'ch1/main.ink' }; // a fixture chapter id
+  return { chapter, file: 'story/ch1/world.json', text, world: r.value, catalog: CATALOG, knots: null, yielded: null, declared: new Map(), line, moduleLines: new Map() };
+}
+
+/** A world whose one puzzle `fuse` is a levers puzzle on no lock (a linear yield's place, path.test.ts's `fuse` form). */
+function fuseWorld(params: LeversParams, o: { readonly maxAttempts?: number; readonly solution?: readonly number[] } = {}): unknown {
+  const fuse = {
+    type: 'levers',
+    title: { id: 'ch1.fuse.0001', ru: 'Щиток' },
+    prompt: { id: 'ch1.fuse.0002', ru: 'Рычаги' },
+    closeup: null,
+    params,
+    maxAttempts: o.maxAttempts ?? null,
+    giveUp: false,
+    solution: o.solution ?? [...params.target],
+    hints: [],
+  };
+  return { format: 1, items: {}, docs: {}, sections: {}, puzzles: { fuse } };
+}
+
+let lineCounter = 0;
+const txt = (ru: string): { id: string; ru: string } => ({ id: `ch1.lv.${(lineCounter++).toString(36).padStart(4, '0')}`, ru });
+/** A hotspot rect in the safe frame and the band, in column `i`. */
+const spot = (i: number): Rect => [80 + i * 300, 800, 200, 200];
+
+/**
+ * A world of one section: the hall (a look `note`, the way to the view `panel`, the way out) and the panel, a view of the
+ * hall whose device `dial` carries a zero-slot lock with the puzzle `dial`.
+ */
+function deviceWorld(dial: Readonly<Record<string, unknown>>): unknown {
+  const exit = (id: string, to: unknown, i: number): unknown => ({ id, kind: 'exit', rect: spot(i), label: txt(id), to, lock: null, sfx: null });
+  const lock = { slots: [], puzzle: 'dial', locked: txt('заперто'), onOpen: [], onFail: [] };
+  const hall = [{ id: 'note', kind: 'look', rect: spot(0), label: txt('записка'), look: txt('Цифры на обороте.'), then: [] }, exit('to_panel', { room: 'panel' }, 1), exit('out', { story: 'end' }, 2)];
+  const device = { id: 'dial', kind: 'object', rect: spot(1), label: txt('механизм'), lock, then: [], look: null, prop: null };
+  return {
+    format: 1,
+    items: {},
+    docs: {},
+    puzzles: { dial: { title: txt('Механизм'), prompt: txt('Ручки'), closeup: null, maxAttempts: null, giveUp: false, hints: [], ...dial } },
+    sections: {
+      s: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: { bg: 'room', title: txt('Зал'), onEnter: [], hotspots: hall },
+          panel: { bg: 'room', title: txt('Панель'), onEnter: [], hotspots: [device], view: { of: 'hall' }, device: 'dial' },
+        },
+      },
+    },
+  };
+}
+
+/** Each finding as `<code>: <message>`. */
+const said = (findings: ReadonlyArray<{ readonly code: string; readonly message: string }>): string[] => findings.map((f) => `${f.code}: ${f.message}`);
+
+test('story: a levers target its throws cannot reach is refused', () => {
+  // c2: the reach pass runs the real search through the real registry; a couple parity leaves the target unreachable.
+  expect(said(reachFindings(inputOf(fuseWorld(PARITY))))).toEqual(["world/reach-solution: puzzle 'fuse' (levers) has no solution: no answer reaches its goal (§7.4)"]);
+  // The control: a reachable target is clean.
+  expect(reachFindings(inputOf(fuseWorld(L23)))).toEqual([]);
+});
+
+test('story: maxAttempts on levers is refused', () => {
+  // c7: a levers device has no wrong state, so an attempt count would never move.
+  const capped = reachFindings(inputOf(fuseWorld(L23, { maxAttempts: 3 }))).filter((f) => f.code === 'world/attempts-without-wrong');
+  expect(said(capped)).toEqual(["world/attempts-without-wrong: puzzle 'fuse' (levers) has maxAttempts 3, but its type has no wrong answer: the count never moves"]);
+  expect(reachFindings(inputOf(fuseWorld(L23))).filter((f) => f.code === 'world/attempts-without-wrong')).toEqual([]);
+});
+
+test('story: a linear levers yield is refused', () => {
+  // c10 (D15): the devices lint reads the registered types by default, so the first real view type is held to its device
+  // with no `types` passed: on no lock, a levers puzzle is refused.
+  expect(said(devicesFindings(inputOf(fuseWorld(L23))))).toEqual([
+    "world/view-type-site: puzzles.fuse: view-type puzzle 'fuse' is on no lock: a view type is played only by its device, never as a linear yield (§7.5)",
+  ]);
+  // The control: the same puzzle as a view room's device is clean.
+  const { parts, positions, couples, target, rects } = L23;
+  expect(devicesFindings(inputOf(deviceWorld({ type: 'levers', params: { parts, positions, couples, target, rects }, solution: [...target] })))).toEqual([]);
+});
+
+test('story: a levers target equal to its start is refused', () => {
+  // c13: a target at the start would post before any input; written as the solution, it is the initial state too.
+  const atStart = levers(3, [[1], []], [0, 0]);
+  const input = inputOf(fuseWorld(atStart, { solution: [0, 0] }));
+  expect(said(reachFindings(input).filter((f) => f.code === 'world/reach-solution'))).toEqual([
+    "world/reach-solution: puzzle 'fuse' (levers) is reached at its start: it would post before any input (§7.4)",
+  ]);
+  expect(said(lintWorld(input).findings.filter((f) => f.code === 'world/solution-initial'))).toEqual([
+    "world/solution-initial: puzzle 'fuse': the solution [0, 0] is the initial state (X17)",
+  ]);
+  // The control: a target off the start, written as the solution, is neither.
+  const off = inputOf(fuseWorld(L23));
+  expect([reachFindings(off).filter((f) => f.code === 'world/reach-solution'), lintWorld(off).findings.filter((f) => f.code === 'world/solution-initial')]).toEqual([[], []]);
+});
+
+test('story: a levers search stopped at its bound is refused as unproven', () => {
+  // D5 through the reach pass: a lint half built under a bound one throw below what the search needs is unproven, one
+  // finding; never "has no solution" (one root cause, one finding).
+  const steps = searchLevers(DEPTH2, Number.POSITIVE_INFINITY).steps;
+  const input = inputOf(fuseWorld(DEPTH2));
+  expect(said(reachFindings(input, { ...PUZZLE_LINTS, levers: leversLint(steps - 1) }))).toEqual([
+    "world/unique-solution: puzzle 'fuse' (levers): the solution search stopped at its bound before it proved one solution (§7.4)",
+  ]);
+  // The control: at the bound the search needs, and under the shipped one, it is clean.
+  expect(reachFindings(input, { ...PUZZLE_LINTS, levers: leversLint(steps) })).toEqual([]);
+  expect(reachFindings(input)).toEqual([]);
+});
+
+test('story: a secret setting device declares a clue its section reaches', () => {
+  // D11 (RULINGS 360): the clue lints run on a secret device's section. `setting` keeps its goal secret, so it declares a
+  // clue; the clue search walks the device's section with the puzzle's own end removed.
+  const setting = (clues: readonly unknown[]): unknown =>
+    deviceWorld({ type: 'setting', params: { parts: 3, positions: 10, rects: [spot(0), spot(1), spot(2)], pull: [380, 1300, 300, 150] }, solution: [1, 2, 3], clues });
+  const codes = (raw: unknown, code: string): string[] => said(clueFindings(inputOf(raw)).filter((f) => f.code === code));
+  expect(codes(setting([]), 'world/clue-declared')).toEqual([
+    "world/clue-declared: puzzle 'dial' (setting, a secret goal) declares no clue: clues names the fact that shows its answer (§7.3, I4)",
+  ]);
+  // A clue the section reaches before the device opens (the hall's note, examined): clean.
+  expect([codes(setting([{ examined: 'hall.note' }]), 'world/clue-declared'), codes(setting([{ examined: 'hall.note' }]), 'world/clue-reachable')]).toEqual([[], []]);
+  // A clue only the device's own end sets: its search never meets it.
+  expect(codes(setting([{ solved: 'dial' }]), 'world/clue-reachable')).toEqual([
+    'world/clue-reachable: puzzle \'dial\': clue {"solved":"dial"} holds in no state of section s reached before \'dial\' is solved or failed (§7.3)',
+  ]);
 });
