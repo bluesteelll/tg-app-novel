@@ -191,6 +191,14 @@ function partsOf(p: unknown): number {
   return (p as { readonly parts: number }).parts; // the fixture's params, decoded as written
 }
 const TYPES: PuzzleTypes = [...PUZZLE_TYPES, CRANKS];
+/** A second fixture view type, `cranks` but for its `workFits`, which throws on any saved work. */
+const JAMMED: PuzzleTypeData<string, unknown> = Object.freeze({
+  ...CRANKS,
+  type: 'jammed',
+  workFits: () => {
+    throw new Error('jammed: this fixture type reads no saved work');
+  },
+});
 const cranks = (parts: number): Json => ({ ...code(2), type: 'cranks', params: { parts }, solution: new Array<number>(parts).fill(1) });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -401,6 +409,21 @@ test('device: a saved work that no longer fits the device is dropped at resume',
   const kept: string[] = [];
   expect(normalizeDevices(w, s, kept)).toBe(s);
   expect(kept).toEqual([]);
+});
+
+test('device: a saved work its type throws on is dropped at resume', () => {
+  // A `workFits` that throws is a misfit (`instanceOf.fits`' reading, RULINGS 368): its work goes as `work:<p>` and its
+  // run stays, and the runs after it are judged as before (the misfit `gauge` still goes, the rest keep theirs).
+  const types: PuzzleTypes = [...TYPES, JAMMED];
+  const puzzles = { wide: cranks(2), stuck: { ...cranks(2), type: 'jammed' }, gauge: cranks(3), drawer: code(2) };
+  const w = kernel(source({ hall: room([exit('out', { story: 'end' })]) }, { puzzles }), types);
+  const saved = (work: readonly number[]): PuzzleRun => ({ outcome: null, attempts: 1, hintsOpened: 0, work });
+  const s = at('hall', { puzzles: { [pz('wide')]: saved([2, 0]), [pz('stuck')]: saved([0, 0]), [pz('gauge')]: saved([0, 1]), [pz('drawer')]: saved([2, 0, 1]) } });
+  const dropped: string[] = [];
+  const r = fitWork(w, s, dropped, types);
+  const bare = { outcome: null, attempts: 1, hintsOpened: 0 };
+  expect(r.puzzles).toStrictEqual({ wide: saved([2, 0]), stuck: bare, gauge: bare, drawer: saved([2, 0, 1]) });
+  expect(dropped).toEqual(['work:stuck', 'work:gauge']);
 });
 
 test("device: the default registry drops a real view type's misfit work at resume", () => {

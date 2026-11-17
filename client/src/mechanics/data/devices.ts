@@ -7,7 +7,7 @@
 // emission and the version hash. Function declarations and types only: mechanics/data/index.ts builds the entry from
 // them. Its data is plain JSON. Whether the hotspot exists, carries the right lock and sits in a view is the story
 // gate's (client/scripts/story/mechanics/devices.ts). At resume, normalize drops a saved work its type judges no longer
-// fits the puzzle (`fitWork`). Pure.
+// fits the puzzle, or throws on (`fitWork`). Pure.
 import type { PuzzleRun, WorldState } from '../../explore/state.ts';
 import { PUZZLE_TYPES } from '../../puzzles/rules/index.ts';
 import type { PuzzleTypes } from '../../puzzles/rules/index.ts';
@@ -90,9 +90,11 @@ export function decodePartAtom(v: unknown, path: string, report: IssueReport): P
 
 /**
  * Every run's saved `work` that its puzzle's type judges no longer fits the puzzle (`workFits` false, a new version's
- * params) goes, as `work:<puzzle>` in `dropped`; the run itself stays. A type with no `workFits`, or one `types` lacks,
- * keeps its work: the drop belongs to the type that can judge it (a view type's session seeds from a kept work only
- * after its own check). `types` is read at call time, so the registry's load order holds (data/index.ts's header).
+ * params) goes, as `work:<puzzle>` in `dropped`; the run itself stays. A `workFits` that throws is a misfit too
+ * (`instanceOf.fits`' reading, RULINGS 368): that work goes, unlogged, and every other run is judged as before. A type
+ * with no `workFits`, or one `types` lacks, keeps its work: the drop belongs to the type that can judge it (a view
+ * type's session seeds from a kept work only after its own check). `types` is read at call time, so the registry's load
+ * order holds (data/index.ts's header).
  */
 export function fitWork(w: KernelWorld, s: WorldState, dropped: string[], types: PuzzleTypes = PUZZLE_TYPES): WorldState {
   let puzzles: Record<PuzzleLocalId, PuzzleRun> | null = null;
@@ -102,7 +104,13 @@ export function fitWork(w: KernelWorld, s: WorldState, dropped: string[], types:
     if (run.work === undefined || body === undefined) {
       continue; // no work, or a puzzle the world lost (reconcile drops its whole run)
     }
-    if (types.find((t) => t.type === body.type)?.workFits?.(body.params, run.work) === false) {
+    let fits: boolean | undefined;
+    try {
+      fits = types.find((t) => t.type === body.type)?.workFits?.(body.params, run.work);
+    } catch {
+      fits = false; // per run: one type's throw never stops the walk
+    }
+    if (fits === false) {
       const { work: _gone, ...kept } = run;
       puzzles ??= { ...s.puzzles };
       puzzles[p] = kept;
