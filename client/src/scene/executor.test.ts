@@ -4084,6 +4084,134 @@ test("executor: an uncover draws a held face's current state on its first frame"
   h.ex.destroy();
 });
 
+/** `adapter.node` throws for one label (a stage bug in a motion group's node). */
+function throwOnNode(h: ReturnType<typeof harness>, label: string): void {
+  const node = h.adapter.node.bind(h.adapter);
+  h.adapter.node = (parent, l) => {
+    if (l === label) {
+      throw new Error(`stage: a bug in the node ${label}`);
+    }
+    return node(parent, l);
+  };
+}
+/** Node's rejection events; vitest runs on Node, and src's types are the browser's (no @types/node there). */
+type RejectionEvents = {
+  on(e: 'unhandledRejection', fn: (reason: unknown) => void): unknown;
+  off(e: 'unhandledRejection', fn: (reason: unknown) => void): unknown;
+};
+/** One real macrotask (fake timers leave MessageChannel alone): Node reports a pending unhandled rejection first. */
+const macrotask = (): Promise<void> =>
+  new Promise((resolve) => {
+    const c = new MessageChannel();
+    c.port1.onmessage = () => {
+      c.port1.close();
+      resolve();
+    };
+    c.port2.postMessage(null);
+  });
+
+// Triage r4 L2: a throw anywhere in the motion path never strands a batch, the story with it, nor rejects a landing:
+// the batch settles before its motion sync, the sync is guarded (`scene: motion failed`), and a face whose build throws
+// is left at rest with nothing of it registered while every other face's motion is built.
+test('executor: a throw in the motion path leaves its face at rest and settles every batch', async () => {
+  // `process` is Node's here (vitest), typed by RejectionEvents above.
+  const events = (globalThis as unknown as { process: RejectionEvents }).process;
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown): void => {
+    unhandled.push(reason);
+  };
+  events.on('unhandledRejection', onUnhandled);
+  const spy = spyErrors();
+  const logged = (from: number): string[] => [...new Set(spy.errors.slice(from).map((e) => String(e[0])))];
+  try {
+    // (a) The stage's node throws for ally's group at the batch end: this batch and the next settle, ally stays at
+    // rest, and the stranger's group is built.
+    {
+      const from = spy.errors.length;
+      const d = drivenLoop();
+      const h = harness(S390, d.loop, MOTION);
+      throwOnNode(h, 'motion:ally');
+      h.ex.setMotion(fakeKit().kit);
+      const a = track(h.ex.apply([scene('lamp', 'cut')], NOW));
+      await flush();
+      const b = track(h.ex.apply([], NOW));
+      await flush();
+      expect.soft([a.done, b.done], '(a) both batches settled').toEqual([true, true]);
+      expect.soft([motionNodes(h).map((x) => x.key), d.loop.stats().ambientSources], '(a) the groups').toEqual([['motion:stranger'], 1]);
+      expect.soft(logged(from), '(a) the log').toEqual(["scene: ally's motion was not built"]);
+      h.ex.destroy();
+    }
+    // (b) The kit lands over a drawn shot and its landing's sync meets the same throw: no unhandled rejection.
+    {
+      const from = spy.errors.length;
+      const d = drivenLoop();
+      const h = harness(S390, d.loop, MOTION);
+      throwOnNode(h, 'motion:ally');
+      await h.ex.apply([scene('lamp', 'cut')], NOW);
+      await flush();
+      h.ex.setMotion(fakeKit().kit);
+      await flush();
+      await macrotask();
+      expect.soft([motionNodes(h).map((x) => x.key), unhandled], '(b) the kit landing').toEqual([['motion:stranger'], []]);
+      expect.soft(logged(from), '(b) the log').toEqual(["scene: ally's motion was not built"]);
+      h.ex.destroy();
+    }
+    // (c) The loop refuses ally's source: no half-built group of ally is registered, so a talk reaches the stranger
+    // only.
+    {
+      const from = spy.errors.length;
+      const d = drivenLoop();
+      const h = harness(S390, d.loop, MOTION);
+      const add = d.loop.addAmbient.bind(d.loop);
+      let first = true;
+      d.loop.addAmbient = (s) => {
+        if (first) {
+          first = false;
+          throw new Error('loop: a bug in the source registration');
+        }
+        return add(s);
+      };
+      const { kit, faces } = fakeKit();
+      h.ex.setMotion(kit);
+      const a = track(h.ex.apply([scene('lamp', 'cut')], NOW));
+      await flush();
+      h.ex.talk('ally' as CharId);
+      expect.soft([a.done, motionNodes(h).map((x) => x.key), d.loop.stats().ambientSources], '(c) the groups').toEqual([true, ['motion:stranger'], 1]);
+      expect.soft(faces.map((f) => f.talks), '(c) the talk').toEqual([[], [{ on: false }]]);
+      expect.soft(logged(from), '(c) the log').toEqual(["scene: ally's motion was not built"]);
+      h.ex.destroy();
+    }
+    // (d) A throw in the sync's check of the built groups, outside any face's build (a frame cut that throws): two
+    // batch ends and a talk file's landing each log it, and both batches settle.
+    {
+      const from = spy.errors.length;
+      const d = drivenLoop();
+      const h = harness(S390, d.loop, MOTION);
+      h.ex.setMotion(fakeKit().kit);
+      const go = h.deferLoad('talk/lamp/ally/neutral');
+      await h.ex.apply([scene('lamp', 'cut')], NOW);
+      await flush();
+      expect(motionNodes(h).map((x) => x.key)).toEqual(['motion:ally', 'motion:stranger']);
+      h.registry.frames = () => {
+        throw new Error('registry: a bug in the frame cut');
+      };
+      const a = track(h.ex.apply([], NOW));
+      await flush();
+      const b = track(h.ex.apply([], NOW));
+      await flush();
+      go();
+      await flush();
+      await macrotask();
+      expect.soft([a.done, b.done, unhandled], '(d) the batches and the landing').toEqual([true, true, []]);
+      expect.soft(spy.errors.slice(from).map((e) => String(e[0])), '(d) the log').toEqual(['scene: motion failed', 'scene: motion failed', 'scene: motion failed']);
+      h.ex.destroy();
+    }
+  } finally {
+    spy.restore();
+    events.off('unhandledRejection', onUnhandled);
+  }
+});
+
 // Reduced motion (lane SH7, D2, D12): a camera move lands at its end; cuts, dissolves and the faces keep their time.
 
 test('executor: under reduced motion a camera move jumps to its end', async () => {

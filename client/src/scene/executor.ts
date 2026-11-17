@@ -790,52 +790,59 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   };
   /**
    * `char`'s group on the shot root, from its live members (`liveMotion`). Not built without the eyes and brows (C3).
-   * Built hidden, asking for no frame (A15).
+   * Built hidden, asking for no frame (A15). A throw anywhere in the build leaves the face at rest: what was made is
+   * dropped and the group is registered only once its source is (triage r4 L2), so every other face is still built.
    */
   const buildMotion = (root: BackdropView<T>, shot: NonNullable<BackdropView<T>['shot']>, char: CharId, k: MotionKit): void => {
-    const x = motionExpr(shot, char);
-    const drawn = x === null ? null : liveMotion(shot, char, x);
-    if (x === null || drawn === null) {
-      return;
-    }
-    const node = adapter.node(root.node.content, `motion:${char}`);
+    let node: GroupRef | null = null;
     const members: MotionMember<T>[] = [];
-    let mouths = 0;
+    let off = (): void => {};
     try {
+      const x = motionExpr(shot, char);
+      const drawn = x === null ? null : liveMotion(shot, char, x);
+      if (x === null || drawn === null) {
+        return;
+      }
+      const made = adapter.node(root.node.content, `motion:${char}`);
+      node = made;
+      let mouths = 0;
       for (const d of drawn) {
         const [mx, my, w, ht] = d.p.at;
-        const sprite = adapter.sprite('bg', { id: d.h.id, texture: d.frame, w, h: ht }, node);
+        const sprite = adapter.sprite('bg', { id: d.h.id, texture: d.frame, w, h: ht }, made);
         members.push({ role: d.p.role, index: d.p.role === 'talk' ? mouths++ : 0, view: { slot: d.slot, handle: d.h, sprite }, shown: false });
         adapter.set(sprite, { x: mx, y: my, w, h: ht, alpha: 0 });
       }
+      // Over its face's part (2i + 2), under the next member's figure plane (2i + 3); a patch (2n + 1) stays above.
+      adapter.set(made, { z: 2 * shot.rig.cast.findIndex((m) => m.char === char) + 2.5 });
+      const animator = k.face({ talk: members.filter((m) => m.role === 'talk') });
+      // W1: the talk outlives its speaker's group; the speaker's group built before its deadline flaps the rest of it.
+      const t = talking;
+      if (t !== null && t.char === char) {
+        const left = (t.forMs ?? k.talkMaxMs) - (loop.time() - t.at);
+        if (left > 0) {
+          animator.talk(true, { forMs: left, think: t.think });
+        }
+      }
+      const g: MotionGroup<T> = { root, char, expr: x, node: made, members, animator, off: () => {} };
+      const source: AmbientSource = {
+        layer: 'stage',
+        continuous: () => false,
+        step: (time) => showFace(g, animator.sample(time.t)),
+        nextChangeMs: (time) => animator.nextChangeMs(time.t),
+        setMode: (m) => m.frozen && hideFace(g),
+      };
+      off = loop.addAmbient(source);
+      g.off = off;
+      groups.set(char, g);
     } catch (e) {
+      off();
       members.forEach((m) => destroyView(m.view));
-      adapter.dropGroup(node);
+      if (node !== null) {
+        adapter.dropGroup(node);
+      }
       // Motion is the face's life, not its picture: the face stays at the rest its part or the plate shows.
       console.error(`scene: ${char}'s motion was not built`, e);
-      return;
     }
-    // Over its face's part (2i + 2), under the next member's figure plane (2i + 3); a patch (2n + 1) stays above.
-    adapter.set(node, { z: 2 * shot.rig.cast.findIndex((m) => m.char === char) + 2.5 });
-    const animator = k.face({ talk: members.filter((m) => m.role === 'talk') });
-    // W1: the talk outlives its speaker's group; a group built for the speaker before its deadline flaps the rest of it.
-    const t = talking;
-    if (t !== null && t.char === char) {
-      const left = (t.forMs ?? k.talkMaxMs) - (loop.time() - t.at);
-      if (left > 0) {
-        animator.talk(true, { forMs: left, think: t.think });
-      }
-    }
-    const g: MotionGroup<T> = { root, char, expr: x, node, members, animator, off: () => {} };
-    groups.set(char, g);
-    const source: AmbientSource = {
-      layer: 'stage',
-      continuous: () => false,
-      step: (time) => showFace(g, animator.sample(time.t)),
-      nextChangeMs: (time) => animator.nextChangeMs(time.t),
-      setMode: (m) => m.frozen && hideFace(g),
-    };
-    g.off = loop.addAmbient(source);
   };
   /**
    * Whether a slot `g`'s expression plans has a live record and no member in `g` (review r1 I1): a mouth whose talk file
@@ -848,13 +855,21 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
   /**
    * The groups to the shot on stage (D5): a group whose root, expression or records no longer hold, or that lacks a
    * member whose record is now live, leaves, and each face without one gains it. Only at a point with no unfinished
-   * batch (W5): `finish` runs it after the last one.
+   * batch (W5): `finish` runs it after the last one. Guarded (triage r4 L2): a bug in the motion path is logged and the
+   * faces stay as they are, so it never strands a batch end, rejects a landing, or throws out of `setMotion`.
    */
   const syncMotion = (): void => {
     const k = kit;
     if (destroyed || k === null || unfinished.length > 0) {
       return;
     }
+    try {
+      syncGroups(k);
+    } catch (e) {
+      console.error('scene: motion failed', e);
+    }
+  };
+  const syncGroups = (k: MotionKit): void => {
     const root = bg;
     const shot = root?.shot;
     let shown = false;
@@ -1129,8 +1144,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       unfinished.splice(i, 1);
     }
     sweepFor(b);
-    syncMotion();
+    // The batch settles before its motion sync (triage r4 L2): whatever the motion path does, the story goes on.
     b.settle();
+    syncMotion();
   };
 
   /** Builds the batch's stage changes on `tl` and hands it to the batch (or ends the batch when it has no time). */
