@@ -1730,6 +1730,17 @@ test('puzzles: a push part presses once per activation, by pointer, keyboard or 
       expect(work.mock.calls.map(([w, wrong]) => `[${w.join(' ')}] ${String(wrong)}`), `${type}: ${name}`).toEqual(Array.from({ length: presses }, () => '[0] false'));
       view.unmount();
     }
+    // The arm is per part (A4): a stale arm on one part (a drag-off) never swallows another part's unarmed click (B4's
+    // residual is the armed part's own click only). Part 1 first is a wrong `sequence` press of [0, 2, 1].
+    const across = vi.fn<(w: readonly number[], wrong: boolean) => void>();
+    const other = render(ButtonDevice, props({ params, answer: [], onwork: across }));
+    const [first, second] = pushParts(other.container);
+    pointerDown(must(second));
+    clickOf(must(first), 1);
+    expect(across.mock.calls.map(([w, wrong]) => `[${w.join(' ')}] ${String(wrong)}`), `${type}: a drag-off on part 1, then an assistive click on part 0`).toEqual(
+      params === SEQUENCE ? ['[] true', '[0] false'] : ['[1] false', '[0] false'],
+    );
+    other.unmount();
     // A mouse's other button on a full answer is no refused press either.
     const onblocked = vi.fn<(part: number) => void>();
     const full = render(ButtonDevice, props({ params, answer: params === SEQUENCE ? [0, 2, 1] : [0, 1, 2, 0, 1], onblocked }));
