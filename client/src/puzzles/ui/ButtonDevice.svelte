@@ -5,7 +5,10 @@
   // through the room's cover (geom/cover.ts, the hotspots' own transform) at the root's measured size, each side grown to
   // PART_MIN_PX around its centre. A part is a button and a part (`data-cue-part`, its index), named by its number, which
   // it shows as a numeral; a line read by a screen reader counts the presses. A part presses at touch (`pointerdown`,
-  // its declared trigger: the button sinks at touch). Presentational: the presses are the `answer` prop; a press computes
+  // its declared trigger: the button sinks at touch), once per activation (A4): the pointer's press arms the part, so the
+  // tap's own click presses nothing, while a click with no press before it (Enter, Space, an assistive activation)
+  // presses; a key on the part drops a stale arm. Only a primary pointer presses: a mouse's other buttons fire
+  // `pointerdown` and no click (B3). Presentational: the presses are the `answer` prop; a press computes
   // the next list from it and leaves as one fresh array through `onwork`, never `onchange`: a right `sequence` press
   // appends, a wrong one resets to `[]` with `wrong` (the device's own wrong, which counts one attempt); a `ritual` press
   // appends and is never wrong (the host posts the full list, `commit: 'full'`; its reply says). A `sequence`
@@ -65,14 +68,17 @@
     }
   });
 
-  /** A press of part `part`, by D5's order: busy takes nothing; a full answer refuses it; else the type's press. */
-  function press(part: number): void {
+  /**
+   * A press of part `part`, by D5's order, the one busy decision of every input: busy takes nothing and answers false; a
+   * full answer refuses it (`onblocked`); else the type's press.
+   */
+  function press(part: number): boolean {
     if (busy || device === null) {
-      return;
+      return false;
     }
     if (answer.length >= device.len) {
       onblocked?.(part);
-      return;
+      return true;
     }
     if (sequence !== null) {
       const next = pressSequence(sequence, answer, part);
@@ -85,6 +91,34 @@
         onwork?.(next, false);
       }
     }
+    return true;
+  }
+
+  /** The part a pointer pressed whose own click is still to come: that click is the tap's, no press. Never rendered. */
+  let armed: number | null = null;
+
+  /** A pointer down on part `part`: a primary pointer presses, and arms the part unless busy took nothing. */
+  function down(part: number, e: PointerEvent): void {
+    if (e.pointerType === 'mouse' && e.button !== 0) {
+      return;
+    }
+    if (press(part)) {
+      armed = part;
+    }
+  }
+
+  /** A click on part `part`: the armed part's own (a tap's) presses nothing; any other presses, whatever its `detail`. */
+  function click(part: number): void {
+    const own = armed === part;
+    armed = null;
+    if (!own) {
+      press(part);
+    }
+  }
+
+  /** A key on a part: a stale arm (a pointer that left the part) never swallows the keyboard's click. */
+  function disarm(): void {
+    armed = null;
   }
 </script>
 
@@ -107,7 +141,9 @@
         style:height="{box.h}px"
         aria-label={mechT(lang, 'mech.button_part', { n: i + 1 })}
         disabled={busy}
-        onpointerdown={() => press(i)}
+        onpointerdown={(e) => down(i, e)}
+        onclick={() => click(i)}
+        onkeydown={disarm}
       >
         <span aria-hidden="true">{i + 1}</span>
       </button>

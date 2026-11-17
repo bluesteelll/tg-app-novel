@@ -6,7 +6,8 @@ import { flushSync } from 'svelte';
 import type { Component } from 'svelte';
 import { afterEach, expect, test, vi } from 'vitest';
 
-import type { GestureCue } from '../../cues/types.ts';
+import { cueRoot } from '../../cues/root.ts';
+import type { CueEvent, GestureCue } from '../../cues/types.ts';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import { mechT } from '../../i18n/mechanics.ts';
@@ -1443,6 +1444,14 @@ const pointerDown = (el: Element, init: PointerEventInit = {}): void => {
 };
 /** The device's push parts, in part order. */
 const pushParts = (root: Element): HTMLButtonElement[] => [...root.querySelectorAll<HTMLButtonElement>('button[data-cue="push"]')];
+/** A click on `el` with `detail`: 1 is a pointer's (the host test's tap), 0 a keyboard's or `HTMLElement.click()`'s. */
+const clickOf = (el: Element, detail: number): void => {
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true, detail }));
+};
+/** A key going down on `el` (Enter: the keyboard's click follows it). */
+const keyDown = (el: Element): void => {
+  el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+};
 
 test('sequence, ritual: the shared device renders the type its params decode as', () => {
   for (const lang of LANGS) {
@@ -1631,4 +1640,140 @@ test('ritual: the attempt posts at full length with no per-press feedback', asyn
     await rerender({ answer: work });
   }
   expect(calls).toEqual(['work [2] false', 'work [2 0] false', 'work [2 0 1] false', 'work [2 0 1 1] false', 'work [2 0 1 1 2] false']);
+});
+
+test('puzzles: a push part presses once per activation, by pointer, keyboard or assistive click', () => {
+  // A4 (D4): a part presses at touch and arms; the tap's own click is consumed. A click with no press before it presses,
+  // whatever its `detail` (Enter's is 0; an assistive activation may send 1); a key drops a stale arm (B4: a drag-off
+  // never swallows a keyboard press). B3: only a primary pointer presses (a mouse's other buttons fire no click).
+  const right = { pointerType: 'mouse', button: 2 } as const;
+  const middle = { pointerType: 'mouse', button: 1 } as const;
+  const primary = { pointerType: 'mouse', button: 0 } as const;
+  const cases: ReadonlyArray<readonly [string, (el: HTMLElement) => void, number]> = [
+    ['a lone pointerdown (a drag-off)', (el) => pointerDown(el), 1],
+    [
+      'Enter: a key, then its click (detail 0)',
+      (el) => {
+        keyDown(el);
+        clickOf(el, 0);
+      },
+      1,
+    ],
+    ['an assistive click (detail 1, no pointerdown)', (el) => clickOf(el, 1), 1],
+    [
+      'a drag-off, then Enter',
+      (el) => {
+        pointerDown(el);
+        keyDown(el);
+        clickOf(el, 0);
+      },
+      2,
+    ],
+    [
+      'a right button, then a primary tap',
+      (el) => {
+        pointerDown(el, right);
+        pointerDown(el, primary);
+        clickOf(el, 1);
+      },
+      1,
+    ],
+    [
+      'a middle button, then a primary tap',
+      (el) => {
+        pointerDown(el, middle);
+        pointerDown(el, primary);
+        clickOf(el, 1);
+      },
+      1,
+    ],
+  ];
+  for (const params of [SEQUENCE, RITUAL]) {
+    const type = params === SEQUENCE ? 'sequence' : 'ritual';
+    // A tap: one press, landed on the pointerdown (counted before the click), none added by its click.
+    const onwork = vi.fn<(w: readonly number[], wrong: boolean) => void>();
+    const tapped = render(ButtonDevice, props({ params, answer: [], onwork }));
+    const part = must(pushParts(tapped.container)[0]);
+    pointerDown(part);
+    expect(onwork, `${type}: the tap's pointerdown`).toHaveBeenCalledTimes(1);
+    clickOf(part, 1);
+    expect(onwork, `${type}: the tap's click`).toHaveBeenCalledTimes(1);
+    tapped.unmount();
+    for (const [name, act, presses] of cases) {
+      const work = vi.fn<(w: readonly number[], wrong: boolean) => void>();
+      const view = render(ButtonDevice, props({ params, answer: [], onwork: work }));
+      act(must(pushParts(view.container)[0]));
+      expect(work.mock.calls.map(([w, wrong]) => `[${w.join(' ')}] ${String(wrong)}`), `${type}: ${name}`).toEqual(Array.from({ length: presses }, () => '[0] false'));
+      view.unmount();
+    }
+    // A mouse's other button on a full answer is no refused press either.
+    const onblocked = vi.fn<(part: number) => void>();
+    const full = render(ButtonDevice, props({ params, answer: params === SEQUENCE ? [0, 2, 1] : [0, 1, 2, 0, 1], onblocked }));
+    pointerDown(must(pushParts(full.container)[0]), right);
+    pointerDown(must(pushParts(full.container)[0]), middle);
+    expect(onblocked, `${type}: other buttons on a full answer`).not.toHaveBeenCalled();
+    full.unmount();
+  }
+});
+
+test('puzzles: a push button emits its cue on pointerdown', () => {
+  // c9 (D4): under a family root (cues/root.ts, set up by hand as the frame's), a push part emits its cue on its declared
+  // trigger, at touch, with its index; the tap's click adds none.
+  const host = document.createElement('div');
+  host.setAttribute('data-cue-root', '');
+  const target = document.createElement('div');
+  host.append(target);
+  document.body.append(host);
+  const played: string[] = [];
+  const root = cueRoot(host, (e: CueEvent) => {
+    if (e.cue.kind === 'ui') {
+      played.push(`ui:${e.cue.control}@${String(e.cue.index)}`);
+    }
+  });
+  try {
+    for (const params of [SEQUENCE, RITUAL]) {
+      const view = render(ButtonDevice, { target, props: props({ params, answer: [] }) });
+      const part = must(pushParts(target)[2]);
+      pointerDown(part);
+      expect(played, JSON.stringify(params)).toEqual(['ui:push@2']);
+      clickOf(part, 1);
+      expect(played, JSON.stringify(params)).toEqual(['ui:push@2']);
+      view.unmount();
+      played.length = 0;
+    }
+  } finally {
+    root.destroy();
+    host.remove();
+  }
+});
+
+test('sequence, ritual: a press after unmount reports nothing', async () => {
+  // A7 (M2, A18): every handler is delegated to the mount root, which a detached part's events never reach. The control
+  // first: before the unmount a part's pointerdown, then a key and the keyboard's click on it, are two presses.
+  for (const params of [SEQUENCE, RITUAL]) {
+    const calls: string[] = [];
+    const record: Partial<PuzzleUiProps> = {
+      onchange: () => calls.push('change'),
+      onwork: (w, wrong) => calls.push(`work [${w.join(' ')}] ${String(wrong)}`),
+      oncommit: () => calls.push('commit'),
+      onreach: (a) => calls.push(`reach ${a.join(' ')}`),
+      onblocked: (i) => calls.push(`blocked ${i}`),
+      ondemo: () => calls.push('demo'),
+    };
+    const view = render(ButtonDevice, props({ params, answer: [], ...record }));
+    const part = must(pushParts(view.container)[0]);
+    pointerDown(part);
+    keyDown(part);
+    clickOf(part, 0);
+    const before = ['work [0] false', 'work [0] false'];
+    expect(calls, JSON.stringify(params)).toEqual(before);
+    view.unmount();
+    // After the unmount: every input on the detached part, then a microtask, adds nothing.
+    pointerDown(part);
+    clickOf(part, 0);
+    clickOf(part, 1);
+    keyDown(part);
+    await Promise.resolve();
+    expect(calls, JSON.stringify(params)).toEqual(before);
+  }
 });
