@@ -299,7 +299,8 @@ function registryOf(text: string | null, listed: ReadonlySet<ChapterId>, report:
 /**
  * The story-level carry rules over every listed chapter (engine plan §6.6), each a refusal: story/items.json itself
  * (`world/carry-registry`, a row whose chapter gives its item in no section included); each receiver's inherited item
- * registered, from a chapter before it on its chain whose world marks it (`world/carry-inherit`); each mark registered,
+ * registered, from a chapter before it on its chain whose world marks it (`world/carry-inherit`), and never from a paid
+ * chapter into a free one (`world/carry-tier`: the paid item would reach a free chapter's player); each mark registered,
  * at its giving chapter or at a chapter that inherits it (`world/carry-mark`); for each required item, its giver section
  * yielded and no continuing END reachable around that section's yields (`world/carry-required-path`), and each knot
  * holding such a yield reaching one of them on every entry (`world/carry-giver-prefix`: a path through the knot then
@@ -379,10 +380,17 @@ export function carryProof(input: CarryInput): { findings: Finding[]; leaves: Le
         refuse(from.id === r.id ? `${ITEMS_FILE} gives it from ${r.id} itself` : `it comes from ${from.id}, which is not before ${r.id} on its chain`);
       } else if (from.world.kind === 'ok' && !from.world.source.mods.carry.marks.includes(e.id)) {
         refuse(`${from.id}'s world does not mark it carry: true`);
-      } else if (e.required && from.world.kind === 'ok') {
-        held.push({ from: from.id, item: e.id, receiver: r.id });
-        if (!required.has(`${from.id}.${e.id}`)) {
-          required.set(`${from.id}.${e.id}`, { from, item: e.id, receiver: r.id });
+      } else {
+        // Tiers from story/chapters.json: free -> paid, paid -> paid and free -> free are fine.
+        if (from.paid && !r.paid) {
+          const message = `item '${e.id}' comes from ${from.id}, a paid chapter, into ${r.id}, a free one: a paid chapter's item would reach a free chapter's player (§6.6)`;
+          report('world/carry-tier', worldFile(r.id), line(`inherits.${n}`), message);
+        }
+        if (e.required && from.world.kind === 'ok') {
+          held.push({ from: from.id, item: e.id, receiver: r.id });
+          if (!required.has(`${from.id}.${e.id}`)) {
+            required.set(`${from.id}.${e.id}`, { from, item: e.id, receiver: r.id });
+          }
         }
       }
     });

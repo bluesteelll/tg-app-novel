@@ -3402,3 +3402,46 @@ test('carry: a required item consumable later is refused', () => {
   const [line] = consumer('slot', gate, 'hall.gate');
   expect(consumed(chain('ch1', gate, REQUIRED))).toEqual([refusal('ch1', line, 'slot hall.gate#0')]);
 });
+
+test('carry: a paid giver into a free chapter is refused', () => {
+  /** The pass over ch1 (the manor giver) -> ch2 (inheriting `inherits`) at the given tiers. */
+  const tiers = (giverPaid: boolean, receiverPaid: boolean, inherits: readonly Json[] = [{ id: 'medal_sun', required: true }]): string[] => {
+    const chapters = [carryChapter('ch1', 'ch2', giver(), null, giverPaid), carryChapter('ch2', null, heir(inherits), null, receiverPaid)];
+    return carryProof({ chapters, registry: SUN_ROW }).findings.map((f) => `${f.code} ${f.file}:${f.line} ${f.message}`);
+  };
+  const refused = `world/carry-tier story/ch2/world.json:${inheritLine(heir(), 0)} item 'medal_sun' comes from ch1, a paid chapter, into ch2, a free one: a paid chapter's item would reach a free chapter's player (§6.6)`;
+  // Paid -> free, a required item and an optional one.
+  expect(tiers(true, false)).toEqual([refused]);
+  expect(tiers(true, false, [{ id: 'medal_sun', required: false }])).toEqual([refused]);
+  // Free -> paid (the committed chains' shape), paid -> paid and free -> free: clean.
+  expect(tiers(false, true)).toEqual([]);
+  expect(tiers(true, true)).toEqual([]);
+  expect(tiers(false, false)).toEqual([]);
+});
+
+test(
+  'carry: the story gate refuses a paid giver into a free chapter',
+  () => {
+    /** Free ch1 -> ch2 (paid unless `free`), giving the lamp -> free ch3, inheriting it as required. */
+    const repo = (free: boolean): Record<string, string> =>
+      carryRepo({
+        chapters: [
+          receiverChapter(null, { id: 'ch1', paid: false, next: 'ch2' }),
+          giverChapter({ id: 'ch2', paid: !free, next: 'ch3' }),
+          receiverChapter(LAMP_REQUIRED, { id: 'ch3', paid: false }),
+        ],
+        items: '[{ "id": "lamp", "from": "ch2" }]\n',
+      });
+    const files = repo(false);
+    const r = storyRun(files);
+    const line = carryLines(files['story/ch3/world.json'] ?? '')('inherits.0');
+    expect(line).toBeGreaterThan(0);
+    expect(printed(r.out, 'world/carry-tier'), r.out.join('\n')).toEqual([`story/ch3/world.json:${line}`]);
+    expect(r.code).toBe(1);
+    // The control: ch2 free. Clean, so it exits 0.
+    const control = storyRun(repo(true));
+    expect(carryCodes(control.out), control.out.join('\n')).toEqual([]);
+    expect(control.code, control.out.join('\n')).toBe(0);
+  },
+  IN_PROCESS_TIMEOUT_MS,
+);
