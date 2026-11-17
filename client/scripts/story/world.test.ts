@@ -21,7 +21,7 @@ import type { PuzzleTypeData, PuzzleTypes } from '../../src/puzzles/rules/index.
 import { assetIndex, decodeAssetCatalog, decodeCast } from '../../src/story/catalog.ts';
 import type { AssetCatalog, Cast } from '../../src/story/catalog.ts';
 import type { ChapterId, KnotName, PuzzleLocalId, SectionId, VarName } from '../../src/story/staging.ts';
-import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
+import { decodeWorldPublic, decodeWorldSource, toPublic } from '../../src/world/decode.ts';
 import type { DecodeOptions, WorldIssue } from '../../src/world/decode.ts';
 import type { HotspotKey, ItemId, WorldSource, WorldText } from '../../src/world/types.ts';
 import { compileChapter } from './compile.ts';
@@ -30,7 +30,7 @@ import type { ChapterGraph, GraphFacts, WorldRef } from './graph.ts';
 import { GLOBALS_PATH, LINT_CODES } from './lint.ts';
 import { checkLocales, decodeEnTable, decodeNameTable } from './locales.ts';
 import type { Finding, LintCode, Severity, SourceChapter } from './lint.ts';
-import { clueFindings } from './mechanics/clues.ts';
+import { clueFindings, reachFindings } from './mechanics/clues.ts';
 import { CONDITIONS_LINT, condFindings } from './mechanics/conditions.ts';
 import type { CondSite } from './mechanics/conditions.ts';
 import { MECHANIC_LINTS, MECHANIC_TEXTS } from './mechanics/index.ts';
@@ -1021,6 +1021,16 @@ test('story: module and type lint codes are unique and none is a DSL code', () =
     'world/device-part E',
     'world/device-hotspot-cover E',
     'world/hint-moves E',
+    'world/inherit-count E',
+    'world/inherit-item E',
+    'world/carry-registry E',
+    'world/carry-inherit E',
+    'world/carry-mark E',
+    'world/carry-required-path E',
+    'world/carry-giver-prefix E',
+    'world/carry-leave E',
+    'world/carry-consumed E',
+    'world/carry-tier E',
   ]);
   // The registry restates world.ts's VarLiteral (its types stay out of the app program): one type (tsc).
   type InputVar = WorldLintInput['declared'] extends ReadonlyMap<VarName, infer V> ? V : never;
@@ -1349,7 +1359,8 @@ test('story: a clue naming no fact of its world is refused', () => {
     `${clueLine(w, 'drawer', 1)} puzzle 'drawer': clue {"examined":"hall.nothing"} names no hotspot of this world`,
     `${clueLine(w, 'drawer', 2)} puzzle 'drawer': clue {"solved":"ghost"} names no puzzle of this world`,
   ]);
-  // A linear puzzle's atoms too; whether they hold is the story's order (GM9p), so a named fact passes.
+  // A linear puzzle's atoms too; whether they hold is the story's order, judged by a cross-chapter clue pass once
+  // content needs one (RULINGS 402 C4), so a named fact passes.
   const linear = withCabinet(base());
   const yielded = new Set(['cabinet'] as PuzzleLocalId[]); // a fixture id
   at(linear, 'puzzles.cabinet')['clues'] = [{ visited: 'attic' }, { has: 'lamp' }, { doc: 'diary' }];
@@ -1446,6 +1457,23 @@ test("story: the build's answer bound never exceeds the server's MAX_ANSWER_LEN"
   const m = /pub const MAX_ANSWER_LEN: usize = (\d+);/.exec(rust);
   expect(m, 'server/src/puzzles/mod.rs: pub const MAX_ANSWER_LEN: usize = <n>;').not.toBeNull();
   expect(MAX_ANSWER_LEN).toBeLessThanOrEqual(Number(m?.[1]));
+});
+
+test('story: a reach type whose lint half lacks a hook is refused by its code', () => {
+  // K5's M1 (fix3): the reach pass names a missing `solve`, `reached` or `canonical` by its own code. The control's lint
+  // half has all three: its one answer is all ones, which the zero start does not reach.
+  const n = 4;
+  const input = passInput(lengthWorld('reaches', n), LENGTH_TYPES);
+  const countSolutions = (): 1 => 1;
+  const solve = (): number[] => Array.from({ length: n }, () => 1);
+  const reached = (_p: unknown, a: readonly number[]): boolean => a.every((v) => v === 1);
+  const canonical = (_p: unknown, a: readonly number[]): readonly number[] => a;
+  const codes = (half: PuzzleTypeLint<unknown>): string[] => reachFindings(input, { ...LENGTH_LINTS, reaches: half }, LENGTH_TYPES).map((f) => `${f.code} ${f.line}`);
+  expect(codes({ countSolutions, solve, reached, canonical })).toEqual([]);
+  const at = input.line('puzzles.drawer.params');
+  expect(codes({ countSolutions, reached, canonical }), 'no solve').toEqual([`world/reach-solution ${at}`]);
+  expect(codes({ countSolutions, solve, canonical }), 'no reached').toEqual([`world/reach-solution ${at}`]);
+  expect(codes({ countSolutions, solve, reached }), 'no canonical').toEqual([`world/reach-solution ${at}`]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2442,7 +2470,7 @@ test('story: a part atom in a gating condition is refused at its line, not a cra
   ];
   const plain = (): Json => recipeBase(() => t('manor', 'Монета легла в оправу.'));
   // The device: a view `desk` of the study, entered by the study's `to_desk`, whose device `dial` is a zero-slot lock on
-  // the secret code puzzle `dial` (a clue). No view type is registered before GM8a, so `world/device-type` refuses it.
+  // the secret code puzzle `dial` (a clue). A code puzzle is no view type, so `world/device-type` refuses it.
   const desk = (): Json => {
     const w = plain();
     at(w, 'puzzles')['dial'] = {
@@ -2494,4 +2522,133 @@ test('story: a part atom in a gating condition is refused at its line, not a cra
       expect(r.sections.map((s) => s.states), `${label}, ${path}: unsearched`).toEqual([null]);
     }
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM9p: the carry proof (engine plan §6.6). A giving world marks `items.<id>.carry: true`; a receiving world lists
+// `inherits: [{ id, required }]`; story/items.json registers each carried item's giving chapter.
+
+/** The demo manor with a lamp declared (no section gives it) and `inherits` set, unless null. */
+function receiver(inherits: readonly unknown[] | null): Json {
+  const w = base();
+  obj(w['items'])['lamp'] = { name: t('lamp', 'Лампа'), desc: t('lamp', 'Старая лампа.'), glyph: 'key' };
+  if (inherits !== null) {
+    w['inherits'] = inherits;
+  }
+  return w;
+}
+
+/** The line of `inherits.<n>` in the fixture's two-space JSON: each entry `{ id, required }` spans four lines. */
+function inheritLine(w: Json, n: number): number {
+  return jsonLine(w, '"inherits": [') + 1 + 4 * n;
+}
+
+/** The findings of the carry codes, as `code line message`. */
+function carrySeen(findings: readonly Finding[]): string[] {
+  return findings.filter((f) => f.code.startsWith('world/carry-') || f.code.startsWith('world/inherit-')).map((f) => `${f.code} ${f.line} ${f.message}`);
+}
+
+test("carry: a receiver's inherits and a giver's mark decode into mods.carry", () => {
+  const w = receiver([
+    { id: 'lamp', required: true },
+    { id: 'rope', required: false },
+  ]);
+  at(w, 'items.medal_sun')['carry'] = true;
+  const r = decodeWorldSource(w);
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture decodes: ${JSON.stringify(r.error)}`);
+  }
+  const d = r.value.mods.carry;
+  expect(d).toEqual({
+    marks: ['medal_sun'],
+    inherits: [
+      { id: 'lamp', required: true },
+      { id: 'rope', required: false },
+    ],
+  });
+  // Plain JSON (registry.test.ts's form for every module's data).
+  expect(d).toStrictEqual(JSON.parse(JSON.stringify(d)));
+  // Through the public body and back: the same data, each key after the kernel's of its place.
+  const pub = JSON.parse(JSON.stringify(toPublic(r.value))) as Json; // the body's JSON, owned keys untyped there
+  expect(Object.keys(at(pub, 'items.medal_sun'))).toEqual(['name', 'desc', 'glyph', 'carry']);
+  expect(Object.keys(pub).at(-1)).toBe('inherits');
+  const back = decodeWorldPublic({ ...pub, version: '0123456789abcdef' });
+  expect(back.ok ? back.value.mods.carry : back.error).toEqual(d);
+  // Strict: each issue a world/schema finding at its own path.
+  const schema = (inherits: unknown, mark: unknown = undefined): string[] => {
+    const x = receiver([]);
+    x['inherits'] = inherits;
+    if (mark !== undefined) {
+      at(x, 'items.medal_sun')['carry'] = mark;
+    }
+    return of(lint(x), 'world/schema').map((f) => f.message);
+  };
+  expect(schema([{ id: 'lamp', required: true, note: 1 }])).toEqual(['inherits.0.note: unknown key (expected id, required)']);
+  expect(schema([{ id: 'lamp', required: 'yes' }])).toEqual(['inherits.0.required: not a boolean']);
+  expect(schema([{ id: 'lamp' }])).toEqual(['inherits.0.required: not a boolean']);
+  expect(
+    schema([
+      { id: 'lamp', required: true },
+      { id: 'lamp', required: false },
+    ]),
+  ).toEqual(["inherits.1.id: 'lamp' repeats"]);
+  expect(schema([{ id: 'Lamp', required: true }])).toEqual(['inherits.0.id: not an item id ^[a-z][a-z0-9_]*$']);
+  expect(schema({ id: 'lamp', required: true })).toEqual(['inherits: not an array']);
+  expect(schema(['lamp'])).toEqual(['inherits.0: not an { id, required } object']);
+  expect(schema([], false)).toEqual(['items.medal_sun.carry: not true (omit the key)']);
+  // The control of the rows above: the same receiver, well formed.
+  expect(schema([{ id: 'lamp', required: true }])).toEqual([]);
+  // At the author's line.
+  const bad = receiver([{ id: 'lamp', required: 'yes' }]);
+  expect(of(lint(bad), 'world/schema').map((f) => f.line)).toEqual([jsonLine(bad, '"required": "yes"')]);
+});
+
+test('carry: an inherited item is a declared item no section of the receiver gives', () => {
+  // The control: the lamp is declared and no section gives it.
+  expect(carrySeen(lint(receiver([{ id: 'lamp', required: true }])))).toEqual([]);
+  const given = (id: string, edit: (x: Json) => void = () => undefined): string[] => {
+    const x = receiver([{ id, required: true }]);
+    edit(x);
+    return carrySeen(lint(x));
+  };
+  const line = inheritLine(receiver([{ id: 'lamp', required: true }]), 0);
+  const refused = (id: string): string[] => [`world/inherit-item ${line} item '${id}' is inherited and given in section manor: its reset would drop the inherited item (§6.6)`];
+  // A kernel gift: the study's take, the drawer's `give` effect.
+  expect(given('medal_sun')).toEqual(refused('medal_sun'));
+  expect(given('medal_moon')).toEqual(refused('medal_moon'));
+  // A module gift: a recipe's product (S's own items, `ownScope`).
+  expect(given('lamp', (x) => (x['recipes'] = [{ a: 'medal_sun', b: 'medal_star', gives: 'lamp' }]))).toEqual(refused('lamp'));
+  // An undeclared item: the receiver declares the texts of what it inherits.
+  expect(given('ghost')).toEqual([`world/inherit-item ${line} item 'ghost' is inherited but not declared in items: the receiver declares its texts (§6.6)`]);
+});
+
+test('carry: more than three optional inherited items are refused', () => {
+  const world = (optional: number, required: number): Json => {
+    const ids = ['rope', 'map', 'coin', 'ring', 'lamp'].slice(0, optional + required);
+    const w = receiver(ids.map((id, i) => ({ id, required: i >= optional })));
+    for (const id of ids.filter((x) => x !== 'lamp')) {
+      obj(w['items'])[id] = { name: t(id, 'Предмет'), desc: t(id, 'Описание.'), glyph: 'key' };
+    }
+    return w;
+  };
+  const four = world(4, 0);
+  expect(carrySeen(lint(four))).toEqual([
+    `world/inherit-count ${jsonLine(four, '"inherits": [')} 4 optional inherited items: at most 3, each doubles the starts a section proves (§6.6)`,
+  ]);
+  // The edge, and required items, which do not count.
+  expect(carrySeen(lint(world(3, 0)))).toEqual([]);
+  expect(carrySeen(lint(world(3, 2)))).toEqual([]);
+});
+
+test('carry: a carry-less world encodes no carry key', () => {
+  const plain = decodeWorldSource(base());
+  if (!plain.ok) {
+    throw new Error('invariant: the demo manor decodes');
+  }
+  expect(plain.value.mods.carry).toEqual({ marks: [], inherits: [] });
+  expect(MECHANIC_DATA[7].encode(plain.value.mods.carry)).toEqual([]);
+  // So its public body is the kernel's: no `inherits`, no item's `carry`.
+  const pub = JSON.stringify(toPublic(plain.value));
+  expect(pub).not.toContain('"inherits"');
+  expect(pub).not.toContain('"carry"');
 });

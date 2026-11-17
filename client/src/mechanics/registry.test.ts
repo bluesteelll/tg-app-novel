@@ -352,7 +352,7 @@ function useSource(): Json {
 test('mechanics: the data registry loads from any module first', async () => {
   // data/use.ts, data/visual.ts, data/combine.ts and data/flags.ts import data/conditions.ts (`decodeCond`), which imports
   // data/index.ts (its default registry), which holds their entries: the same cycle as the rules registry's
-  // (data/devices.ts is off it). index.ts builds each entry from its module's function declarations, so each load order
+  // (data/devices.ts and data/carry.ts, which import no data/conditions.ts, are off it). index.ts builds each entry from its module's function declarations, so each load order
   // leaves the registry whole (every member compared: vitest's runner reads an uninitialized `const` as undefined), and
   // a decode through the freshly loaded graph reads a `when`.
   const checkData = (
@@ -364,6 +364,7 @@ test('mechanics: the data registry loads from any module first', async () => {
     combine: typeof import('./data/combine.ts'),
     flags: typeof import('./data/flags.ts'),
     devices: typeof import('./data/devices.ts'),
+    carry: typeof import('./data/carry.ts'),
   ): void => {
     expect(index.MECHANIC_DATA).toStrictEqual([
       core.core,
@@ -417,6 +418,14 @@ test('mechanics: the data registry loads from any module first', async () => {
         normalize: devices.normalizeDevices,
         atoms: { part: { decode: devices.decodePartAtom, gating: false } },
       },
+      {
+        id: 'carry',
+        rules: 'none',
+        owns: { item: ['carry'], world: ['inherits'], facts: [] },
+        decode: carry.decodeCarry,
+        encode: carry.encodeCarry,
+        normalize: carry.normalizeCarry,
+      },
     ]);
   };
   const firsts = [
@@ -429,6 +438,7 @@ test('mechanics: the data registry loads from any module first', async () => {
     () => import('./data/combine.ts'),
     () => import('./data/flags.ts'),
     () => import('./data/devices.ts'),
+    () => import('./data/carry.ts'),
   ];
   for (const first of firsts) {
     vi.resetModules();
@@ -442,6 +452,7 @@ test('mechanics: the data registry loads from any module first', async () => {
       await import('./data/combine.ts'),
       await import('./data/flags.ts'),
       await import('./data/devices.ts'),
+      await import('./data/carry.ts'),
     );
     const decoded = (await import('../world/decode.ts')).decodeWorldSource(useSource());
     expect(decoded.ok ? decoded.value.mods.use.uses[k('hall.box')]?.[0]?.when : decoded.error).toEqual({ all: [{ held: 'lens' }, { not: { open: 'hall.box' } }] });
