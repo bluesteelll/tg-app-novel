@@ -1518,7 +1518,24 @@ test('mechanics: both string tables hold the same keys and placeholders', () => 
   }
   const { mechanicsEn, mechanicsRu, mechT } = table;
   const keys = Object.keys(mechanicsRu) as Array<keyof typeof mechanicsRu>;
-  expect([...keys].sort()).toEqual(['mech.content_updated', 'mech.grid_cell', 'mech.grid_clear', 'mech.grid_empty', 'mech.grid_given', 'mech.grid_rule', 'mech.path_cell', 'mech.path_end', 'mech.path_rule', 'mech.ribbon', 'mech.use_refused']);
+  expect([...keys].sort()).toEqual([
+    'mech.content_updated',
+    'mech.grid_cell',
+    'mech.grid_clear',
+    'mech.grid_empty',
+    'mech.grid_given',
+    'mech.grid_rule',
+    'mech.levers_part',
+    'mech.levers_rule',
+    'mech.path_cell',
+    'mech.path_end',
+    'mech.path_rule',
+    'mech.ribbon',
+    'mech.setting_part',
+    'mech.setting_pull',
+    'mech.setting_rule',
+    'mech.use_refused',
+  ]);
   expect(Object.keys(mechanicsEn).sort()).toEqual([...keys].sort());
   const placeholders = (text: string): string[] => [...text.matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1] ?? '').sort();
   for (const key of keys) {

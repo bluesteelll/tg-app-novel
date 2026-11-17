@@ -1,5 +1,6 @@
-// LP2 in happy-dom: the puzzle type UIs (PUZZLES-PLAN X17; engine plan §7.2 `path`, GM7p) and their lazy loader (X14).
-// Each is presentational: the answer comes in as a prop and every change leaves as a fresh array through `onchange`.
+// LP2 in happy-dom: the puzzle type UIs (PUZZLES-PLAN X17; engine plan §7.2 `path`, GM7p; the devices, GM8a) and their
+// lazy loader (X14). Each is presentational: the answer comes in as a prop and every change leaves as a fresh array,
+// through `onchange` (an overlay type) or `onwork` (a device).
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
 import { afterEach, expect, test, vi } from 'vitest';
@@ -12,12 +13,14 @@ import { GLYPH_PATHS } from '../../ui/glyphs.ts';
 import type { Glyph, ItemId } from '../../world/types.ts';
 import { loadPuzzleUi, PUZZLE_UI } from '../registry.ts';
 import type { PuzzleUiProps } from '../registry.ts';
-import { PUZZLE_TYPES, puzzleInstance } from '../rules/index.ts';
-import type { PuzzleType, PuzzleTypes } from '../rules/index.ts';
+import { PUZZLE_RULES, PUZZLE_TYPES, puzzleInstance } from '../rules/index.ts';
+import type { PuzzleType, PuzzleTypeData, PuzzleTypes } from '../rules/index.ts';
 import CodeLock from './CodeLock.svelte';
 import codeLockSource from './CodeLock.svelte?raw';
 import GridPuzzle from './GridPuzzle.svelte';
 import gridSource from './GridPuzzle.svelte?raw';
+import LeverDevice from './LeverDevice.svelte';
+import leverSource from './LeverDevice.svelte?raw';
 import OrderPuzzle from './OrderPuzzle.svelte';
 import PathPuzzle from './PathPuzzle.svelte';
 import pathSource from './PathPuzzle.svelte?raw';
@@ -190,6 +193,24 @@ test('order: each slot shows its piece glyph beside the name', async () => {
   ]);
 });
 
+/**
+ * A raw params literal through its type's own `decodeParams`: what the world decoder hands the frame (B3; world/decode.ts
+ * `typedParams`), so a device is rendered from the decoder's output, never only from a source literal.
+ */
+function decoded(type: PuzzleType, raw: unknown): unknown {
+  const data: PuzzleTypeData<string, unknown> = PUZZLE_RULES[type];
+  const r = data.decodeParams(raw);
+  if (!r.ok) {
+    throw new Error(`invariant: the ${type} fixture decodes: ${r.error}`);
+  }
+  return r.value;
+}
+
+/** Two levers of 3 positions, lever 0 moving lever 1 too; rects inside the safe frame and the device band (A6). */
+const LEVERS_RAW = { parts: 2, positions: 3, couples: [[1], []], target: [2, 1], rects: [[100, 800, 200, 300], [600, 800, 150, 150]] };
+/** Three knobs of 10 positions and the pull. */
+const SETTING_RAW = { parts: 3, positions: 10, rects: [[80, 800, 150, 150], [310, 800, 150, 150], [540, 800, 150, 150]], pull: [400, 1500, 300, 150] };
+
 /** Per type: params and an answer that render its parts, and how many parts they render (a type without one is a tsc
  *  error, so a new type UI is held to the marker rule from its first commit). */
 const PART_FIXTURES: { readonly [T in PuzzleType]: { readonly params: unknown; readonly answer: readonly number[]; readonly parts: number } } = {
@@ -199,6 +220,9 @@ const PART_FIXTURES: { readonly [T in PuzzleType]: { readonly params: unknown; r
   path: { params: { cols: 3, rows: 2, ends: [0, 3], blocked: [4] }, answer: [0, 1], parts: 6 },
   // Every cell is a part, a given one too, cell-major; no palette button is.
   grid: { params: { rows: 2, cols: 3, symbols: 3, given: [1, 2, 0, 0, 0, 1] }, answer: [1, 2, 0, 0, 0, 1], parts: 6 },
+  // Each lever is a part; each knob is, and the pull is none (D3: no position of the answer).
+  levers: { params: decoded('levers', LEVERS_RAW), answer: [0, 0], parts: 2 },
+  setting: { params: decoded('setting', SETTING_RAW), answer: [0, 0, 0], parts: 3 },
 };
 
 test('puzzles: every type UI marks its parts', async () => {
@@ -229,6 +253,8 @@ const INDEX_KINDS: { readonly [T in PuzzleType]: 'position' | 'value' } = {
   order: 'position',
   path: 'value',
   grid: 'position',
+  levers: 'position',
+  setting: 'position',
 };
 
 test('puzzles: every registered type declares its index kind and its start gives that kind', () => {
@@ -251,13 +277,18 @@ test('registry: each type loads its own component', async () => {
   const order = await loadPuzzleUi('order');
   const path = await loadPuzzleUi('path');
   const grid = await loadPuzzleUi('grid');
-  if (!code.ok || !order.ok || !path.ok || !grid.ok) {
-    throw new Error(`expected every chunk to load: ${JSON.stringify([code, order, path, grid])}`);
+  const levers = await loadPuzzleUi('levers');
+  const setting = await loadPuzzleUi('setting');
+  if (!code.ok || !order.ok || !path.ok || !grid.ok || !levers.ok || !setting.ok) {
+    throw new Error(`expected every chunk to load: ${JSON.stringify([code, order, path, grid, levers, setting])}`);
   }
   expect(code.value).toBe(CodeLock);
   expect(order.value).toBe(OrderPuzzle);
   expect(path.value).toBe(PathPuzzle);
   expect(grid.value).toBe(GridPuzzle);
+  // The two devices share one component, so one chunk.
+  expect(levers.value).toBe(LeverDevice);
+  expect(setting.value).toBe(LeverDevice);
   const lock = render(code.value, props({ params: { dials: 3 }, answer: [0, 0, 0] }));
   expect(lock.getAllByRole('button', { name: t('en', 'puzzle.dial_up') })).toHaveLength(3);
   lock.unmount();
@@ -1103,4 +1134,280 @@ test("grid: each cell's cue index is its board index", () => {
   const d = filled({ params: G23, answer: [1, 2, 0, 0, 0, 1] });
   const marks = [...d.view.container.querySelectorAll('button.cell')].map((b) => [b.getAttribute('data-cue'), b.getAttribute('data-cue-part'), b.getAttribute('data-cue-index')]);
   expect(marks).toEqual([0, 1, 2, 3, 4, 5].map((i) => ['grid-cell', String(i), String(i)]));
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The devices (engine plan §7.2, §7.5; GM8a D3, D7, D10): `levers` and `setting` share LeverDevice, which tells the
+// two apart by the decoder that accepts its params, lays each part on its rect over the room's cover, and reports a
+// part's move through `onwork` and the pull through `oncommit`.
+
+const LEVERS = decoded('levers', LEVERS_RAW);
+const SETTING = decoded('setting', SETTING_RAW);
+
+/** `el`, or a throw: the element is rendered. */
+function must<T>(el: T | null | undefined): T {
+  if (el === null || el === undefined) {
+    throw new Error('invariant: the element is rendered');
+  }
+  return el;
+}
+
+/** Every button of a rendered device, by its cue name. */
+const cuesOf = (root: Element): string[] => [...root.querySelectorAll('button')].map((b) => b.getAttribute('data-cue') ?? '');
+/** Every button's accessible name. */
+const labelsOf = (root: Element): Array<string | null> => [...root.querySelectorAll('button')].map((b) => b.getAttribute('aria-label'));
+
+test('levers: the shared device renders the type its params decode as', () => {
+  for (const lang of LANGS) {
+    // Levers: one lever per part, each named by its number, its position, the positions and its mark; no pull.
+    const l = render(LeverDevice, props({ params: LEVERS, answer: [1, 0], lang }));
+    expect(cuesOf(l.container), lang).toEqual(['lever', 'lever']);
+    expect(labelsOf(l.container), lang).toEqual([
+      mechT(lang, 'mech.levers_part', { n: 1, p: 2, m: 3, t: 3 }),
+      mechT(lang, 'mech.levers_part', { n: 2, p: 1, m: 3, t: 2 }),
+    ]);
+    expect(shown(must(l.container.querySelector('.how'))), lang).toBe(mechT(lang, 'mech.levers_rule'));
+    l.unmount();
+    // Setting: one knob per part, then the pull.
+    const s = render(LeverDevice, props({ params: SETTING, answer: [0, 4, 9], lang }));
+    expect(cuesOf(s.container), lang).toEqual(['setting-part', 'setting-part', 'setting-part', 'setting-pull']);
+    expect(labelsOf(s.container), lang).toEqual([
+      mechT(lang, 'mech.setting_part', { n: 1, p: 1, m: 10 }),
+      mechT(lang, 'mech.setting_part', { n: 2, p: 5, m: 10 }),
+      mechT(lang, 'mech.setting_part', { n: 3, p: 10, m: 10 }),
+      mechT(lang, 'mech.setting_pull'),
+    ]);
+    expect(shown(must(s.container.querySelector('.how'))), lang).toBe(mechT(lang, 'mech.setting_rule'));
+    s.unmount();
+  }
+  // Params neither decoder accepts render nothing actionable: another type's, a mix of the two key sets, none.
+  for (const params of [{ dials: 4 }, { ...LEVERS_RAW, pull: SETTING_RAW.pull }, null]) {
+    const view = render(LeverDevice, props({ params, answer: [0, 0] }));
+    expect(view.container.querySelectorAll('button'), JSON.stringify(params)).toHaveLength(0);
+    view.unmount();
+  }
+});
+
+/**
+ * The device rendered with its root measured at `w` x `h` CSS px: happy-dom lays nothing out, and `bind:clientWidth`
+ * reads the root's getters once at mount, so stubbing them until the mount has flushed sets the size it reads.
+ */
+function measured(w: number, h: number, over: Partial<PuzzleUiProps>) {
+  const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(w);
+  const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(h);
+  try {
+    const view = render(LeverDevice, props(over));
+    flushSync();
+    return view;
+  } finally {
+    width.mockRestore();
+    height.mockRestore();
+  }
+}
+
+/** Each button's placement as `[left, top, width, height]`. */
+const boxes = (root: Element): string[][] =>
+  [...root.querySelectorAll<HTMLElement>('button')].map((b) => [b.style.left, b.style.top, b.style.width, b.style.height]);
+
+test("levers: each part sits on its rect over the room's cover", () => {
+  // D3: the room's cover (geom/cover.ts, the hotspots' own transform). A 540 x 1024 root covers the 1080 x 2048 room at
+  // 0.5: lever 0 [100, 800, 200, 300] is 50, 400, 100 x 150; lever 1 [600, 800, 150, 150] is 300, 400, 75 x 75.
+  const half = measured(540, 1024, { params: LEVERS, answer: [0, 0] });
+  expect(boxes(half.container)).toEqual([
+    ['50px', '400px', '100px', '150px'],
+    ['300px', '400px', '75px', '75px'],
+  ]);
+  half.unmount();
+  // At 0.25 lever 1's 150 px sides are 37.5 and grow to 44 around its centre (PART_MIN_PX); lever 0's do not.
+  const quarter = measured(270, 512, { params: LEVERS, answer: [0, 0] });
+  expect(boxes(quarter.container)).toEqual([
+    ['25px', '200px', '50px', '75px'],
+    ['146.75px', '196.75px', '44px', '44px'],
+  ]);
+  quarter.unmount();
+  // The pull is placed the same way, on its own rect [400, 1500, 300, 150]; at 0.25 only its height grows.
+  const knobs = measured(540, 1024, { params: SETTING, answer: [0, 0, 0] });
+  expect(boxes(knobs.container)).toEqual([
+    ['40px', '400px', '75px', '75px'],
+    ['155px', '400px', '75px', '75px'],
+    ['270px', '400px', '75px', '75px'],
+    ['200px', '750px', '150px', '75px'],
+  ]);
+  knobs.unmount();
+  const small = measured(270, 512, { params: SETTING, answer: [0, 0, 0] });
+  expect(boxes(small.container).at(-1)).toEqual(['100px', '371.75px', '75px', '44px']);
+  small.unmount();
+});
+
+test('levers: a throw or a pull after unmount reports nothing', async () => {
+  // D10 M2 (A18): every handler is delegated to the mount root, which a detached part's events never reach. The control
+  // first: before the unmount a lever's tap reaches `onwork` and the pull's reaches `oncommit`, each once.
+  const calls: string[] = [];
+  const record: Partial<PuzzleUiProps> = {
+    onchange: (a) => calls.push(`change ${a.join(' ')}`),
+    onwork: (w, wrong) => calls.push(`work ${w.join(' ')} ${String(wrong)}`),
+    oncommit: () => calls.push('commit'),
+    onreach: (a) => calls.push(`reach ${a.join(' ')}`),
+  };
+  const l = render(LeverDevice, props({ params: LEVERS, answer: [0, 0], ...record }));
+  const lever = must(l.container.querySelector<HTMLButtonElement>('button[data-cue="lever"]'));
+  lever.click();
+  expect(calls).toEqual(['work 1 1 false']);
+  l.unmount();
+  const s = render(LeverDevice, props({ params: SETTING, answer: [0, 0, 0], ...record }));
+  const knob = must(s.container.querySelector<HTMLButtonElement>('button[data-cue="setting-part"]'));
+  const pull = must(s.container.querySelector<HTMLButtonElement>('button[data-cue="setting-pull"]'));
+  knob.click();
+  pull.click();
+  expect(calls).toEqual(['work 1 1 false', 'work 1 0 0 false', 'commit']);
+  s.unmount();
+  // After the unmount: taps on the detached lever, knob and pull, then a microtask, add nothing.
+  lever.click();
+  knob.click();
+  pull.click();
+  await Promise.resolve();
+  expect(calls).toEqual(['work 1 1 false', 'work 1 0 0 false', 'commit']);
+});
+
+test('levers: the parts and the pull take their own taps and open no callout', () => {
+  // D10: the host's device and parts layers take no tap (T34), so each part and the pull declare their own; a long-press
+  // on one opens no iOS callout, and the device selects no text. happy-dom computes no style: read from the source.
+  for (const cls of ['part', 'pull']) {
+    const rule = declarationsFor(leverSource, cls);
+    expect([rule.get('pointer-events'), rule.get('-webkit-touch-callout'), rule.get('position')], cls).toEqual(['auto', 'none', 'absolute']);
+  }
+  const root = declarationsFor(leverSource, 'device-parts');
+  expect([root.get('pointer-events'), root.get('user-select'), root.get('-webkit-user-select')]).toEqual(['none', 'none', 'none']);
+  // The rendered elements carry the classes the rules name.
+  const s = render(LeverDevice, props({ params: SETTING, answer: [0, 0, 0] }));
+  const classes = [...s.container.querySelectorAll('button')].map((b) => [...b.classList].filter((c) => c === 'part' || c === 'pull'));
+  expect(classes).toEqual([['part'], ['part'], ['part'], ['pull']]);
+  expect(s.container.querySelectorAll('.device-parts')).toHaveLength(1);
+});
+
+test('levers: a throw continues from the answer prop', async () => {
+  // c9: a lever computes from the `answer` prop and keeps no copy: the session's answer is the one configuration.
+  const onwork = vi.fn<(w: readonly number[], wrong: boolean) => void>();
+  const onchange = vi.fn<(a: readonly number[]) => void>();
+  const answer = Object.freeze([0, 0]);
+  const { container, rerender } = render(LeverDevice, props({ params: LEVERS, answer, onwork, onchange }));
+  const lever = (i: number): HTMLButtonElement => must(container.querySelectorAll<HTMLButtonElement>('button[data-cue="lever"]')[i]);
+  lever(1).click();
+  // Until the caller's answer changes, a second throw computes from the same answer: [0, 1] again, never [0, 2].
+  lever(1).click();
+  expect(answer).toEqual([0, 0]);
+  await rerender({ answer: [2, 2] });
+  // From the new prop: lever 0 moves itself and lever 1, each from 2 round to 0.
+  lever(0).click();
+  expect(onwork.mock.calls).toEqual([
+    [[0, 1], false],
+    [[0, 1], false],
+    [[0, 0], false],
+  ]);
+  // A device writes through `onwork` alone.
+  expect(onchange).not.toHaveBeenCalled();
+  // What shows is the prop's: each lever's position numeral.
+  expect([...container.querySelectorAll('button[data-cue="lever"] > span:first-child')].map(shown)).toEqual(['3', '3']);
+});
+
+test('levers: a configuration seeded at the target reports reached once at mount', async () => {
+  // c11: the report is the reach edge's over the `answer` prop, so a device seeded at its target (a saved work at the
+  // goal) reports at mount, once; a re-render with the same configuration adds none.
+  const onreach = vi.fn<(a: readonly number[]) => void>();
+  const onwork = vi.fn<(w: readonly number[], wrong: boolean) => void>();
+  const { rerender } = render(LeverDevice, props({ params: LEVERS, answer: [2, 1], onreach, onwork }));
+  expect(onreach.mock.calls).toEqual([[[2, 1]]]);
+  await rerender({ answer: [2, 1] });
+  expect(onreach).toHaveBeenCalledTimes(1);
+  // Off the target and back: a second turn to reached, a second report; no throw reported it.
+  await rerender({ answer: [0, 1] });
+  await rerender({ answer: [2, 1] });
+  expect(onreach.mock.calls).toEqual([[[2, 1]], [[2, 1]]]);
+  expect(onwork).not.toHaveBeenCalled();
+});
+
+test('levers: a coupled throw is one onwork carrying the whole configuration', () => {
+  // D3's write path: lever 0 moves levers 1 and 2 too; the three positions leave in one call, which yields diffs into one
+  // `puzzle:input` per moved lever (one write of the saved work, one queue drain).
+  const onwork = vi.fn<(w: readonly number[], wrong: boolean) => void>();
+  const three = decoded('levers', { parts: 3, positions: 4, couples: [[1, 2], [], []], target: [1, 1, 2], rects: [[80, 800, 150, 150], [310, 800, 150, 150], [540, 800, 150, 150]] });
+  const { container } = render(LeverDevice, props({ params: three, answer: [0, 3, 1], onwork }));
+  must(container.querySelector<HTMLButtonElement>('button[data-cue="lever"]')).click();
+  expect(onwork.mock.calls).toEqual([[[1, 0, 2], false]]);
+});
+
+test('levers, setting: a busy device takes no throw and no turn', async () => {
+  // D10: while the host holds the type UI busy (an attempt in flight, a 429 countdown), every lever and knob is
+  // disabled and a tap writes no work; the `disabled` attribute is asserted itself, since a click on a disabled button
+  // never reaches its handler. The control: once free, one tap is one `onwork`.
+  for (const [params, cue, answer] of [
+    [LEVERS, 'lever', [1, 0]],
+    [SETTING, 'setting-part', [3, 0, 7]],
+  ] as const) {
+    const onwork = vi.fn<(w: readonly number[], wrong: boolean) => void>();
+    const { container, rerender } = render(LeverDevice, props({ params, answer: [...answer], onwork, busy: true }));
+    const parts = [...container.querySelectorAll<HTMLButtonElement>(`button[data-cue="${cue}"]`)];
+    expect(parts.length, cue).toBeGreaterThan(0);
+    for (const b of parts) {
+      expect(b.disabled, cue).toBe(true);
+      b.click();
+    }
+    expect(onwork, cue).not.toHaveBeenCalled();
+    await rerender({ busy: false });
+    must(parts[0]).click();
+    expect(onwork, cue).toHaveBeenCalledTimes(1);
+  }
+});
+
+test('setting: a misshapen answer leaves the pull disabled and commits nothing', () => {
+  // D7: whether an answer may be tried is the type UI's (`validAnswer`): a configuration of the wrong shape (length,
+  // range, integer) cannot be pulled, so the pull is disabled and a tap posts nothing. One row per clause of
+  // `shapeProblem`: short, long, above the last position, below 0, not an integer. The app never hands the device such
+  // an answer (the start and the session check the shape first); this pins the device's own gate.
+  const oncommit = vi.fn<() => void>();
+  for (const answer of [[1], [0, 0, 0, 0], [0, 10, 0], [0, -1, 0], [0, 0.5, 0]]) {
+    const { container, unmount } = render(LeverDevice, props({ params: SETTING, answer, oncommit }));
+    const pull = must(container.querySelector<HTMLButtonElement>('button[data-cue="setting-pull"]'));
+    expect(pull.disabled, JSON.stringify(answer)).toBe(true);
+    pull.click();
+    unmount();
+  }
+  expect(oncommit).not.toHaveBeenCalled();
+});
+
+test('setting: a pull commits once and calls nothing else', async () => {
+  // D7 (A17): the pull is the device's commit part: one tap, one `oncommit` (which posts the working configuration, as
+  // Try does), and no other callback; while an attempt is in flight it is disabled and calls nothing.
+  const calls: string[] = [];
+  const record: Partial<PuzzleUiProps> = {
+    onchange: () => calls.push('change'),
+    onwork: () => calls.push('work'),
+    oncommit: () => calls.push('commit'),
+    onreach: () => calls.push('reach'),
+  };
+  const { container, rerender } = render(LeverDevice, props({ params: SETTING, answer: [3, 0, 7], ...record }));
+  const pull = must(container.querySelector<HTMLButtonElement>('button[data-cue="setting-pull"]'));
+  pull.click();
+  expect(calls).toEqual(['commit']);
+  // Busy: the pull is disabled, and a tap that reaches it anyway (a stale event) calls nothing.
+  await rerender({ busy: true });
+  expect(pull.disabled).toBe(true);
+  pull.click();
+  pull.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  expect(calls).toEqual(['commit']);
+  // Free again: the next pull commits once more.
+  await rerender({ busy: false });
+  pull.click();
+  expect(calls).toEqual(['commit', 'commit']);
+  // Any configuration may be pulled (X5): with every knob at either edge (0, or 9, the last of `positions: 10`), in
+  // each of the 2^3 combinations, the pull is enabled and one tap commits once.
+  for (const answer of [[0, 0, 0], [9, 0, 0], [0, 9, 0], [9, 9, 0], [0, 0, 9], [9, 0, 9], [0, 9, 9], [9, 9, 9]]) {
+    const once = vi.fn<() => void>();
+    const edge = render(LeverDevice, props({ params: SETTING, answer, oncommit: once }));
+    const edgePull = must(edge.container.querySelector<HTMLButtonElement>('button[data-cue="setting-pull"]'));
+    expect(edgePull.disabled, JSON.stringify(answer)).toBe(false);
+    edgePull.click();
+    expect(once, JSON.stringify(answer)).toHaveBeenCalledTimes(1);
+    edge.unmount();
+  }
 });

@@ -120,10 +120,14 @@ const PURE_WORLD_FILES = [
   'puzzles/rules/order.ts',
   'puzzles/rules/path.ts',
   'puzzles/rules/grid.ts',
+  'puzzles/rules/levers.ts',
+  'puzzles/rules/setting.ts',
   'puzzles/play/code.ts',
   'puzzles/play/order.ts',
   'puzzles/play/path.ts',
   'puzzles/play/grid.ts',
+  'puzzles/play/levers.ts',
+  'puzzles/play/setting.ts',
   'explore/state.ts',
   'explore/reduce.ts',
   'explore/project.ts',
@@ -677,6 +681,7 @@ function checkNode(ctx: Ctx, node: ts.Node): void {
     }
   }
   checkImport(ctx, node);
+  checkEagerGlob(ctx, node);
   checkPixiEnv(ctx, node);
   if (importOrigins(node).some((o) => reachesOutsideSrc(ctx.file, o))) {
     report(ctx, 'import-outside-src', node);
@@ -920,6 +925,37 @@ function checkImport(ctx: Ctx, node: ts.Node): void {
   }
 }
 
+/**
+ * `lazy-ui`'s glob half (GM8a D12): an eager `import.meta.glob` loads every match with its importer, as a static import
+ * does, so one whose static head (`splitGlob`'s directory and the rest up to its first wildcard: every match starts
+ * with it) lies inside a lazy scope, or above one (a head the scope starts with), from a file outside that scope, is
+ * reported. With or without a query, as the static rule reads none. Conservative: an eager `**` glob from a parent of
+ * a lazy directory is reported. A lazy glob is an `import()` per match and allowed; a glob outside src/ or with no
+ * literal pattern is `import-outside-src`'s.
+ */
+function checkEagerGlob(ctx: Ctx, node: ts.Node): void {
+  if (!ts.isCallExpression(node) || !isImportMeta(node.expression, 'glob')) {
+    return;
+  }
+  const load = globLoad(node);
+  if (load !== 'strings' && load !== 'modules') {
+    return;
+  }
+  for (const o of globOrigins(node)) {
+    const split = o.form === 'glob' ? splitGlob(ctx.file, o) : undefined;
+    if (split === undefined) {
+      continue;
+    }
+    const wild = split.rest.search(/[*?[{]/);
+    const head = split.dir + (wild < 0 ? split.rest : split.rest.slice(0, wild));
+    const scopes: readonly string[] = [...LAZY_DIRS, ...LAZY_ROOT_FILES];
+    if (scopes.some((scope) => (scope.startsWith(head) || head.startsWith(scope)) && !ctx.file.startsWith(scope))) {
+      report(ctx, 'lazy-ui', node);
+      return;
+    }
+  }
+}
+
 /** A relative or /src/ import that resolves into the pure world layer or its pure dependencies; never a package. */
 function isPureWorldTarget(file: string, spec: string): boolean {
   if (!spec.startsWith('.') && !spec.startsWith('/')) {
@@ -1014,6 +1050,71 @@ function globOrigins(call: ts.CallExpression): Origin[] {
 }
 
 /**
+ * What an `import.meta.glob` call loads with its importer (GM8a D12): `none` for a lazy glob (an `import()` per match),
+ * `strings` for an eager glob whose `query` or `as` asks for a `url` or `raw` string, `modules` for any other eager one
+ * (a module with another query still loads); `unknown` when the options are no object literal (Vite refuses that, and
+ * `import-outside-src` refuses the call as opaque). An `eager` that is no literal `false` counts as eager.
+ */
+function globLoad(call: ts.CallExpression): 'none' | 'strings' | 'modules' | 'unknown' {
+  const options = call.arguments[1];
+  if (options === undefined) {
+    return 'none';
+  }
+  if (!ts.isObjectLiteralExpression(options)) {
+    return 'unknown';
+  }
+  const option = (name: string): ts.ObjectLiteralElementLike | undefined =>
+    options.properties.find((p) => memberName(p.name) === name);
+  const eager = option('eager');
+  const literalFalse = eager !== undefined && ts.isPropertyAssignment(eager) && eager.initializer.kind === ts.SyntaxKind.FalseKeyword;
+  if (eager === undefined || literalFalse) {
+    return 'none';
+  }
+  const asks = [option('query'), option('as')].some((p) => {
+    if (p === undefined || !ts.isPropertyAssignment(p) || !ts.isStringLiteralLike(p.initializer)) {
+      return false;
+    }
+    const query = new URLSearchParams(p.initializer.text.replace(/^\?/, ''));
+    return query.has('url') || query.has('raw');
+  });
+  return asks ? 'strings' : 'modules';
+}
+
+/**
+ * The URL a glob's `./` or `../` head resolves against, as Vite's `toAbsoluteGlob`: `base` (a `/` base from the project
+ * root, a relative one from the importer) or the importer.
+ */
+function globBaseUrl(file: string, base: string | null): string {
+  const from = `file:///src/${file}`;
+  if (base === null) {
+    return from;
+  }
+  const dir = base.endsWith('/') ? base : `${base}/`;
+  return new URL(dir, dir.startsWith('/') ? 'file:///' : from).href;
+}
+
+/**
+ * A glob as Vite's `toAbsoluteGlob` reads it: its static directory (the pattern before its first `*`, `?`, `[` or `{`,
+ * up to its last `/`) resolved from the project root (a `/` head) or from `globBaseUrl` (a `./` or `../` head), as a
+ * src/-relative directory; and the rest of the pattern as written. Undefined for any other head, or a directory
+ * outside src/ (`import-outside-src` refuses both).
+ */
+function splitGlob(
+  file: string,
+  o: { readonly pattern: string; readonly base: string | null },
+): { dir: string; rest: string } | undefined {
+  const wild = o.pattern.search(/[*?[{]/);
+  const head = wild < 0 ? o.pattern : o.pattern.slice(0, wild);
+  const raw = head.slice(0, head.lastIndexOf('/') + 1);
+  const relative = raw.startsWith('./') || raw.startsWith('../');
+  if (!raw.startsWith('/') && !relative) {
+    return undefined;
+  }
+  const path = new URL(raw, relative ? globBaseUrl(file, o.base) : 'file:///').pathname;
+  return path.startsWith('/src/') ? { dir: path.slice('/src/'.length), rest: o.pattern.slice(raw.length) } : undefined;
+}
+
+/**
  * What a node can make Vite load: a static import (not `import type`), an export-from (not `export type`), a dynamic
  * `import()`, `import.meta.glob`, or `new URL(…, import.meta.url)`; nothing for any other node.
  */
@@ -1086,11 +1187,7 @@ function reachesOutsideSrc(file: string, o: Origin): boolean {
       if (!dir.startsWith('./') && !dir.startsWith('../')) {
         return true; // empty, `**`, `#` or a bare name: Vite hands it to resolveId
       }
-      if (o.base === null) {
-        return !underSrc(dir, from);
-      }
-      const base = o.base.endsWith('/') ? o.base : `${o.base}/`;
-      return !underSrc(dir, new URL(base, base.startsWith('/') ? 'file:///' : from).href);
+      return !underSrc(dir, globBaseUrl(file, o.base));
     }
     default: {
       const unhandled: never = o;
@@ -1237,6 +1334,7 @@ test('arch: pure world modules', () => {
 const LAZY_COMPONENTS = [
   'puzzles/ui/CodeLock.svelte',
   'puzzles/ui/GridPuzzle.svelte',
+  'puzzles/ui/LeverDevice.svelte',
   'puzzles/ui/OrderPuzzle.svelte',
   'puzzles/ui/PathPuzzle.svelte',
   'ui/puzzles/PuzzleHost.svelte',
@@ -1279,9 +1377,11 @@ test('arch: lazy ui only by dynamic import', () => {
     // The list names only files the rule treats as lazy.
     expect(lazyDirOf(file), file).toBeDefined();
   }
+  // One `import()` per component: `levers` and `setting` share LeverDevice's loader, so it is listed once.
   expect(dynamicLazyTargets('puzzles/registry.ts', SOURCES['puzzles/registry.ts'] ?? '')).toEqual([
     'puzzles/ui/CodeLock.svelte',
     'puzzles/ui/GridPuzzle.svelte',
+    'puzzles/ui/LeverDevice.svelte',
     'puzzles/ui/OrderPuzzle.svelte',
     'puzzles/ui/PathPuzzle.svelte',
   ]);
@@ -1302,9 +1402,10 @@ test('arch: lazy ui only by dynamic import', () => {
 // never with the entry. The `lazy-ui` rule cannot say this: it allows a static import into a lazy scope only from the
 // same directory, while the controller's chunk spans app/meta.ts, meta/ and api/meta.ts, which import each other. The
 // invariant is a property of the whole graph: no meta module is in the entry's static closure.
-// Its limit: the walk reads import and export declarations only, so an eager `.ts` `import.meta.glob` in an entry
-// module would load modules with the entry unseen here. The budget's entry row still measures them; `globOrigins` is
-// where a glob-aware walk would start.
+// Its reach (GM8a D12, A11): the walk reads the import and export declarations and the eager module globs (`globLoad`
+// `modules`, wherever the call sits), each expanded against the tree; a glob it cannot expand is an unresolved target,
+// so the walk never passes by losing its way. An eager `?url` or `?raw` glob loads a string per match and no module,
+// and `import()` and a lazy glob are chunk boundaries: none is followed. The budget's entry row measures the bytes.
 
 /** The entry module: index.html's `<script type="module" src="/src/main.ts">`. */
 const ENTRY_ROOT = 'main.ts';
@@ -1337,6 +1438,83 @@ function staticTargets(file: string, text: string): string[] {
   return out;
 }
 
+const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * A glob's rest (`splitGlob`) as a pattern over the src/-relative paths under its directory: `**` (`**\/` any number of
+ * directories), `*` and `?` within one name, `{a,b}` one level deep; null for a class (`[`), a nested or open brace,
+ * or a `..` segment, which the walk does not expand.
+ */
+function globRegex(dir: string, rest: string): RegExp | null {
+  if (rest.includes('[') || rest.split('/').includes('..')) {
+    return null;
+  }
+  let out = '';
+  let brace = false;
+  for (let i = 0; i < rest.length; i++) {
+    const c = rest.charAt(i);
+    if (rest.startsWith('**/', i)) {
+      out += '(?:.*/)?';
+      i += 2;
+    } else if (rest.startsWith('**', i)) {
+      out += '.*';
+      i += 1;
+    } else if (c === '*') {
+      out += '[^/]*';
+    } else if (c === '?') {
+      out += '[^/]';
+    } else if (c === '{') {
+      if (brace) {
+        return null;
+      }
+      brace = true;
+      out += '(?:';
+    } else if (c === '}' && brace) {
+      brace = false;
+      out += ')';
+    } else if (c === ',' && brace) {
+      out += '|';
+    } else {
+      out += escapeRegex(c);
+    }
+  }
+  return brace ? null : new RegExp(`^${escapeRegex(dir)}${out}$`);
+}
+
+/**
+ * The files of `files` a source's eager module globs load with it (`globLoad` `modules`, any call in the script, as
+ * Vite hoists each to static imports), in path order; and each such glob the walk cannot expand (no literal pattern,
+ * no src/ head, or a form `globRegex` refuses), named `<file>: import.meta.glob('<pattern>')`.
+ */
+function eagerGlobTargets(
+  files: Readonly<Record<string, string>>,
+  file: string,
+): { targets: string[]; unread: string[] } {
+  const text = files[file] ?? '';
+  const script = file.endsWith('.svelte') ? splitDocument(text).script : text;
+  const sf = ts.createSourceFile(file, script, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  const targets: string[] = [];
+  const unread: string[] = [];
+  const paths = Object.keys(files).sort();
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && isImportMeta(node.expression, 'glob')) {
+      const load = globLoad(node);
+      for (const o of load === 'modules' || load === 'unknown' ? globOrigins(node) : []) {
+        const split = o.form === 'glob' ? splitGlob(file, o) : undefined;
+        const match = split === undefined ? null : globRegex(split.dir, split.rest);
+        if (match === null) {
+          unread.push(`${file}: import.meta.glob(${o.form === 'glob' ? `'${o.pattern}'` : '…'})`);
+        } else {
+          targets.push(...paths.filter((path) => match.test(path) && !targets.includes(path)));
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return { targets, unread };
+}
+
 /**
  * The source a target names, as the bundler resolves it (like ui/meta/meta.svelte.test.ts's `sourceOf`): the file
  * itself, `x.js` or an extensionless `x` as `x.ts`, a directory as its `index.ts`. So `'../api/meta'` is reported on
@@ -1348,8 +1526,9 @@ function sourceIn(files: Readonly<Record<string, string>>, target: string): stri
 }
 
 /**
- * A breadth-first walk over the static value edges from `root` (ENTRY_ROOT unless named): each reached file with the
- * file that first reached it (null for the root), and every relative target that names no source of `files`.
+ * A breadth-first walk over the static value edges from `root` (ENTRY_ROOT unless named), the eager module globs'
+ * matches among them (`eagerGlobTargets`): each reached file with the file that first reached it (null for the root),
+ * and every relative target that names no source of `files` and every eager glob the walk cannot expand.
  */
 function entryClosure(
   files: Readonly<Record<string, string>>,
@@ -1366,7 +1545,9 @@ function entryClosure(
   reached.set(root, null);
   const queue = [root];
   for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
-    for (const target of staticTargets(file, files[file] ?? '')) {
+    const globs = eagerGlobTargets(files, file);
+    unresolved.push(...globs.unread);
+    for (const target of [...staticTargets(file, files[file] ?? ''), ...globs.targets]) {
       const source = sourceIn(files, target);
       if (source === undefined) {
         unresolved.push(target);
@@ -1463,6 +1644,10 @@ test('arch: entry closure fixtures', () => {
     ['R10 a side-effect import', boot("import '../api/meta.ts';"), toMeta],
     ['R11 export star', boot("export * from '../api/meta.ts';"), toMeta],
     ['R12 a /src/ specifier with a query', boot("import { metaError } from '/src/api/meta.ts?v=1';"), toMeta],
+    // GM8a D12 (A11): an eager module glob loads each match with its importer, wherever the call sits.
+    ['R13 an eager module glob', boot("export function routes() {\n  return import.meta.glob('../api/*.ts', { eager: true });\n}"), toMeta],
+    ['R15 an eager ** glob from the root', boot("const m = import.meta.glob('/src/**/meta.ts', { eager: true });"), toMeta],
+    ['R16 an eager glob with a brace and a ?', boot("const m = import.meta.glob('../{api,meta}/me?a.ts', { eager: true });"), toMeta],
   ];
   for (const [label, files, chains] of red) {
     expect(walk(files), label).toEqual({ chains, unresolved: [] });
@@ -1471,6 +1656,19 @@ test('arch: entry closure fixtures', () => {
   expect(walk({ 'app/boot.ts': "import { x } from './missing.ts';" }), 'R6 a missing target').toEqual({
     chains: [],
     unresolved: ['app/missing.ts'],
+  });
+  // R14: an eager glob the walk cannot expand (a class, or a pattern that is no literal) is reported the same way.
+  expect(walk(boot("const m = import.meta.glob('../api/[a-z]*.ts', { eager: true });")), 'R14 an unread glob').toEqual({
+    chains: [],
+    unresolved: ["app/boot.ts: import.meta.glob('../api/[a-z]*.ts')"],
+  });
+  expect(walk(boot('const m = import.meta.glob(API, { eager: true });')), 'R14 an opaque glob').toEqual({
+    chains: [],
+    unresolved: ['app/boot.ts: import.meta.glob(…)'],
+  });
+  expect(walk(boot("const m = import.meta.glob('../api/*.ts', OPTIONS);")), 'R14 opaque options').toEqual({
+    chains: [],
+    unresolved: ['app/boot.ts: import.meta.glob(…)'],
   });
   const allow: readonly Case[] = [
     [
@@ -1497,6 +1695,16 @@ test('arch: entry closure fixtures', () => {
       { ...boot('export const x = 1;'), 'meta/wallet.ts': "import { metaError } from '../api/meta.ts';" },
       [],
     ],
+    // GM8a D12 (A11): a lazy glob is an `import()` per match; an eager `?url` glob loads a string per match, no module.
+    ['A4 a lazy glob', boot("const m = import.meta.glob('../api/*.ts');"), []],
+    ['A5 an eager url glob', boot("const m = import.meta.glob('../api/*.ts', { eager: true, query: '?url', import: 'default' });"), []],
+    [
+      'A6 options with no eager, and eager false',
+      boot("const m = import.meta.glob('../api/*.ts', { import: 'default' });\nconst n = import.meta.glob('../api/*.ts', { eager: false });"),
+      [],
+    ],
+    // A `*` stays in one directory: from the root it matches main.ts, never api/meta.ts.
+    ['A7 an eager glob one level above the meta module', boot("const m = import.meta.glob('../*.ts', { eager: true });"), []],
   ];
   for (const [label, files, chains] of allow) {
     expect(walk(files), label).toEqual({ chains, unresolved: [] });
@@ -2259,6 +2467,12 @@ const RED: Record<RuleId, readonly Fixture[]> = {
     ['app/game.ts', "import { type PurchaseFlow } from '../purchase/flow.ts';"],
     // The in-play overlays (a lazy directory, lever O5): the engine imports none of them statically.
     ['app/engine.ts', "import Menu from '../ui/overlays/Menu.svelte';"],
+    // An eager glob loads what it matches with its importer, as a static import does (GM8a D12): into a lazy directory,
+    // with a query too (the static rule reads none), from a parent of one (conservative), and onto a lazy root file.
+    ['app/yields.ts', "const m = import.meta.glob('../puzzles/ui/*.svelte', { eager: true });"],
+    ['app/yields.ts', "const m = import.meta.glob('../puzzles/ui/*.svelte', { eager: true, query: '?raw' });"],
+    ['app/yields.ts', "const m = import.meta.glob('../puzzles/**/*.svelte', { eager: true });"],
+    ['app/game.ts', "const m = import.meta.glob('./me*.ts', { eager: true });"],
   ],
   'rules-lazy': [
     ['story/chapters.ts', "import { MECHANIC_RULES } from '../mechanics/rules/index.ts';"],
@@ -2492,6 +2706,16 @@ const ALLOW: ReadonlyArray<readonly [RuleId, readonly Fixture[]]> = [
         "type M = Pick<typeof import('../purchase/flow.ts'), 'createPurchaseFlow'>;\nconst m = () => import('../purchase/flow.ts');",
       ],
       ['ui/state.svelte.ts', "import type { PurchaseState } from '../purchase/flow.ts';"],
+      // GM8a D12: a lazy glob is an `import()` per match; an eager one from inside the lazy directory stays in it; an
+      // eager one whose head no lazy scope starts with, nor lies under one, matches none.
+      ['app/yields.ts', "const m = import.meta.glob('../puzzles/ui/*.svelte');"],
+      [
+        'app/yields.ts',
+        "const m = import.meta.glob('../puzzles/ui/*.svelte', { import: 'default' });\n" +
+          "const n = import.meta.glob('../puzzles/ui/*.svelte', { eager: false });",
+      ],
+      ['puzzles/ui/index.ts', "const m = import.meta.glob('./*.svelte', { eager: true });"],
+      ['app/yields.ts', "const m = import.meta.glob('../ui/state*.ts', { eager: true });"],
     ],
   ],
   [

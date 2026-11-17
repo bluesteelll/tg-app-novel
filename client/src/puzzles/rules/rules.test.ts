@@ -2,22 +2,29 @@ import { expect, test } from 'vitest';
 
 import { PUZZLE_LINTS } from '../../../scripts/story/puzzles/index.ts';
 import type { PuzzleLintRegistry } from '../../../scripts/story/puzzles/shape.ts';
-import { UI_MOTIONS, uiMotion } from '../../cues/stage/motions.ts';
+import { UI_MOTIONS, declaredControls, uiMotion } from '../../cues/stage/motions.ts';
 import type { ControlCue, GestureCue } from '../../cues/types.ts';
-import type { ChapterId, LineId, PuzzleLocalId } from '../../story/staging.ts';
+import { MIN_TARGET_PX } from '../../explore/controller.ts';
+import type { ChapterId, LineId, PuzzleLocalId, Rect } from '../../story/staging.ts';
 import { decodeWorldPublic, decodeWorldSource, toServer } from '../../world/decode.ts';
 import type { ItemId, SourcePuzzle } from '../../world/types.ts';
 import { CODE_PLAY } from '../play/code.ts';
 import { GRID_PLAY, place } from '../play/grid.ts';
+import { LEVERS_PLAY, PART_MIN_PX, throwPart } from '../play/levers.ts';
 import { ORDER_PLAY } from '../play/order.ts';
 import { PATH_PLAY, advance, cellAt, cellsAlong, touch } from '../play/path.ts';
+import { SETTING_PLAY, turnKnob } from '../play/setting.ts';
 import { PUZZLE_UI } from '../registry.ts';
 import { GRID_RULES } from './grid.ts';
 import type { GridParams } from './grid.ts';
 import { PUZZLE_RULES, PUZZLE_TYPES } from './index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from './index.ts';
+import { LEVERS_FIT_STEPS, LEVERS_RULES, reachable } from './levers.ts';
+import type { LeversParams } from './levers.ts';
 import { PATH_RULES } from './path.ts';
 import type { PathParams } from './path.ts';
+import { SETTING_RULES } from './setting.ts';
+import type { SettingParams } from './setting.ts';
 
 const code = PUZZLE_RULES.code;
 const order = PUZZLE_RULES.order;
@@ -428,6 +435,303 @@ test('puzzles: grid declares its cell and its symbol', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
+// The `levers` and `setting` devices (engine plan §7.2, §7.5; GM8a D3, D6, D10, B2): their data halves and their play
+// halves' moves, read directly. Every rect lies inside HOTSPOT_SAFE_FRAME and the device band (y >= 733, sides >= 150).
+
+/** `n` rects in a 4-column grid of 150 px squares inside the safe frame and the band. */
+const rectsOf = (n: number): Rect[] => Array.from({ length: n }, (_, i): Rect => [80 + (i % 4) * 230, 800 + Math.floor(i / 4) * 400, 150, 150]);
+/** 2 levers of 2 positions, each throw moving both (critique W1): only 0 0 and 1 1 are reachable. */
+const L22: LeversParams = { parts: 2, positions: 2, couples: [[1], [0]], target: [1, 1], rects: rectsOf(2) };
+/** 2 levers of 3 positions: a throw of lever 0 moves lever 1 too, a throw of lever 1 moves it alone. */
+const L23: LeversParams = { parts: 2, positions: 3, couples: [[1], []], target: [2, 1], rects: rectsOf(2) };
+/** 3 levers of 4 positions, directed couples: 0 moves 1 and 2, 2 moves 0, 1 moves itself. */
+const L34: LeversParams = { parts: 3, positions: 4, couples: [[1, 2], [], [0]], target: [1, 1, 1], rects: rectsOf(3) };
+/** The largest decode-legal instance, no couples: every configuration is reachable, all 3s the deepest (24 throws). */
+const L84: LeversParams = { parts: 8, positions: 4, couples: [[], [], [], [], [], [], [], []], target: [3, 3, 3, 3, 3, 3, 3, 3], rects: rectsOf(8) };
+/** The largest with pairs coupled both ways: each pair's two levers always stand alike. */
+const L84_PAIRS: LeversParams = { ...L84, couples: [[1], [0], [3], [2], [5], [4], [7], [6]] };
+/** 3 knobs of 10 positions, the pull below them. */
+const S3: SettingParams = { parts: 3, positions: 10, rects: rectsOf(3), pull: [380, 1300, 300, 150] };
+
+/** `p`'s decoded params, or the decode error as a throw. */
+function decodedLevers(raw: unknown): LeversParams {
+  const r = LEVERS_RULES.decodeParams(raw);
+  if (!r.ok) {
+    throw new Error(`expected ${JSON.stringify(raw)} to decode: ${r.error}`);
+  }
+  return r.value;
+}
+
+test('rules: levers params decode strictly', () => {
+  expect(decodedLevers(L23)).toEqual(L23);
+  expect(decodedLevers(L84_PAIRS)).toEqual(L84_PAIRS);
+  // Decode returns its own arrays, and its output decodes to itself (the frame's params are the decoder's output).
+  const out = decodedLevers(L34);
+  const shared = (['couples', 'target', 'rects'] as const).filter((k) => out[k] === L34[k]);
+  expect([shared, out.couples[0] === L34.couples[0], out.rects[0] === L34.rects[0]]).toEqual([[], false, false]);
+  expect(decodedLevers(out)).toEqual(L34);
+  const raw = { parts: 2, positions: 3, couples: [[1], []], target: [2, 1], rects: rectsOf(2) };
+  const refused: ReadonlyArray<readonly [unknown, string]> = [
+    [{ ...raw, parts: 1 }, 'parts must be an integer in 2..8'],
+    [{ ...raw, parts: 9 }, 'parts must be an integer in 2..8'],
+    [{ ...raw, parts: 2.5 }, 'parts must be an integer in 2..8'],
+    [{ ...raw, positions: 1 }, 'positions must be an integer in 2..4'],
+    [{ ...raw, positions: 5 }, 'positions must be an integer in 2..4'],
+    [{ ...raw, positions: '3' }, 'positions must be an integer in 2..4'],
+    [{ ...raw, couples: [[1]] }, 'couples must be an array of 2 lists'],
+    [{ ...raw, couples: [[1], [], []] }, 'couples must be an array of 2 lists'],
+    [{ ...raw, couples: { 0: [1] } }, 'couples must be an array of 2 lists'],
+    [{ ...raw, couples: [[1], 0] }, 'couples 1 must be an array of levers'],
+    // A lever never couples itself, nor names another twice; each name is a lever.
+    [{ ...raw, couples: [[0], []] }, 'couples 0: lever 0 couples itself'],
+    [{ ...raw, couples: [[1, 1], []] }, 'couples 0: lever 1 is listed twice'],
+    [{ ...raw, couples: [[2], []] }, 'couples 0: 2 is not a lever in 0..1'],
+    [{ ...raw, couples: [[], [-1]] }, 'couples 1: -1 is not a lever in 0..1'],
+    [{ ...raw, couples: [[0.5], []] }, 'couples 0: 0.5 is not a lever in 0..1'],
+    [{ ...raw, target: [2] }, 'target must be an array of 2 positions'],
+    [{ ...raw, target: [2, 1, 0] }, 'target must be an array of 2 positions'],
+    [{ ...raw, target: [3, 1] }, 'target: 3 at lever 0 is not a position in 0..2'],
+    [{ ...raw, target: [2, -1] }, 'target: -1 at lever 1 is not a position in 0..2'],
+    [{ ...raw, target: [2, '1'] }, 'target: "1" at lever 1 is not a position in 0..2'],
+    [{ ...raw, rects: rectsOf(1) }, 'rects must be an array of 2 rects'],
+    [{ ...raw, rects: [...rectsOf(1), [1, 2, 3]] }, 'rects 1: [1,2,3] is not [x, y, w, h] in integers'],
+    [{ ...raw, rects: [...rectsOf(1), [100, 800, 150.5, 150]] }, 'rects 1: [100,800,150.5,150] is not [x, y, w, h] in integers'],
+    [{ ...raw, rects: [[-1, 800, 150, 150], ...rectsOf(1)] }, 'rects 0: [-1,800,150,150]: x, y must be ≥ 0 and w, h > 0'],
+    [{ ...raw, rects: [...rectsOf(1), [100, 800, 0, 150]] }, 'rects 1: [100,800,0,150]: x, y must be ≥ 0 and w, h > 0'],
+    [{ parts: 2, positions: 3, couples: [[1], []], rects: rectsOf(2) }, 'missing key target'],
+    // `setting`'s key: the two types' key sets are disjoint, so a strict decoder tells them apart.
+    [{ ...raw, pull: [380, 1300, 300, 150] }, "unknown key pull (a levers puzzle has 'parts', 'positions', 'couples', 'target', 'rects')"],
+    [null, 'params is not an object'],
+    [[2, 3], 'params is not an object'],
+    ['2x3', 'params is not an object'],
+  ];
+  for (const [r, error] of refused) {
+    expect(LEVERS_RULES.decodeParams(r), JSON.stringify(r)).toEqual({ ok: false, error });
+  }
+});
+
+test('rules: setting params decode strictly', () => {
+  const ok = (raw: unknown): SettingParams => {
+    const r = SETTING_RULES.decodeParams(raw);
+    if (!r.ok) {
+      throw new Error(`expected ${JSON.stringify(raw)} to decode: ${r.error}`);
+    }
+    return r.value;
+  };
+  expect(ok(S3)).toEqual(S3);
+  const out = ok(S3);
+  expect([out.rects === S3.rects, out.rects[0] === S3.rects[0], out.pull === S3.pull]).toEqual([false, false, false]);
+  expect(ok(out)).toEqual(S3);
+  // One knob and eight, two positions and ten.
+  expect(ok({ ...S3, parts: 1, rects: rectsOf(1), positions: 2 })).toEqual({ ...S3, parts: 1, rects: rectsOf(1), positions: 2 });
+  expect(ok({ ...S3, parts: 8, rects: rectsOf(8) })).toEqual({ ...S3, parts: 8, rects: rectsOf(8) });
+  const refused: ReadonlyArray<readonly [unknown, string]> = [
+    [{ ...S3, parts: 0, rects: [] }, 'parts must be an integer in 1..8'],
+    [{ ...S3, parts: 9 }, 'parts must be an integer in 1..8'],
+    [{ ...S3, positions: 1 }, 'positions must be an integer in 2..10'],
+    [{ ...S3, positions: 11 }, 'positions must be an integer in 2..10'],
+    [{ ...S3, rects: rectsOf(2) }, 'rects must be an array of 3 rects'],
+    [{ ...S3, rects: [...rectsOf(2), 'r'] }, 'rects 2: "r" is not [x, y, w, h] in integers'],
+    // The pull is a rect of its own (D3), required.
+    [{ parts: 3, positions: 10, rects: rectsOf(3) }, 'missing key pull'],
+    [{ ...S3, pull: [380, 1300, 300] }, 'pull: [380,1300,300] is not [x, y, w, h] in integers'],
+    [{ ...S3, pull: [380, 1300, 300, -150] }, 'pull: [380,1300,300,-150]: x, y must be ≥ 0 and w, h > 0'],
+    [{ ...S3, pull: null }, 'pull: null is not [x, y, w, h] in integers'],
+    // `levers`' keys are refused.
+    [{ ...S3, target: [1, 2, 3] }, "unknown key target (a setting puzzle has 'parts', 'positions', 'rects', 'pull')"],
+    [{ ...S3, couples: [[], [], []] }, "unknown key couples (a setting puzzle has 'parts', 'positions', 'rects', 'pull')"],
+    [null, 'params is not an object'],
+    [[3, 10], 'params is not an object'],
+  ];
+  for (const [r, error] of refused) {
+    expect(SETTING_RULES.decodeParams(r), JSON.stringify(r)).toEqual({ ok: false, error });
+  }
+});
+
+test('rules: levers and setting answer one position per part, from all zeros', () => {
+  expect(LEVERS_RULES.answerShape(L23)).toEqual({ len: 2, max: 2 });
+  expect(LEVERS_RULES.answerShape(L84)).toEqual({ len: 8, max: 3 });
+  expect(SETTING_RULES.answerShape(S3)).toEqual({ len: 3, max: 9 });
+  // Every part starts at 0, a full-length configuration the device shows before any input (`startShown`).
+  expect(LEVERS_RULES.initial(L23)).toEqual([0, 0]);
+  expect(LEVERS_RULES.initial(L84)).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
+  expect(SETTING_RULES.initial(S3)).toEqual([0, 0, 0]);
+  expect(LEVERS_RULES.startShown(L34)).toEqual(LEVERS_RULES.initial(L34));
+  expect(SETTING_RULES.startShown(S3)).toEqual(SETTING_RULES.initial(S3));
+  // A fresh array each time: a session never writes into another's start.
+  expect(LEVERS_RULES.initial(L23)).not.toBe(LEVERS_RULES.initial(L23));
+});
+
+test('levers: reached on the shown target', () => {
+  const { reached } = LEVERS_PLAY;
+  expect(reached(L23, [2, 1])).toBe(true);
+  expect(reached(L34, [1, 1, 1])).toBe(true);
+  // Each case breaks one rule only.
+  expect(reached(L23, [2, 0]), 'one lever off its mark').toBe(false);
+  expect(reached(L23, [0, 0]), 'the start').toBe(false);
+  expect(reached(L23, [2, 1, 0]), 'a lever too many').toBe(false);
+  expect(reached(L23, [2]), 'a lever short').toBe(false);
+  expect(reached(L23, []), 'empty').toBe(false);
+  // A reached configuration is the only one a levers device posts: it posts itself, there is no Try.
+  expect(LEVERS_PLAY.validAnswer(L23, [2, 1])).toBe(true);
+  expect(LEVERS_PLAY.validAnswer(L23, [1, 1])).toBe(false);
+});
+
+test('levers: a throw advances the part and its couples', () => {
+  // Lever 0 moves lever 1 too; lever 1 moves alone (directed); each wraps at `positions`.
+  expect(throwPart(L23, [0, 0], 0)).toEqual([1, 1]);
+  expect(throwPart(L23, [0, 0], 1)).toEqual([0, 1]);
+  expect(throwPart(L23, [2, 1], 0)).toEqual([0, 2]);
+  expect(throwPart(L23, [1, 2], 1)).toEqual([1, 0]);
+  // Two couples, and a couple back: 0 moves 1 and 2; 2 moves 0; 1 moves itself.
+  expect(throwPart(L34, [0, 0, 0], 0)).toEqual([1, 1, 1]);
+  expect(throwPart(L34, [0, 0, 0], 1)).toEqual([0, 1, 0]);
+  expect(throwPart(L34, [3, 0, 0], 2)).toEqual([0, 0, 1]);
+  // The configuration given is never written: a throw answers a fresh array.
+  const a = Object.freeze([0, 0]);
+  expect(throwPart(L23, a, 0)).not.toBe(a);
+  expect(a).toEqual([0, 0]);
+  // No lever, or a configuration of another length: nothing to throw.
+  for (const part of [-1, 2, 0.5]) {
+    expect(throwPart(L23, [0, 0], part), `lever ${part}`).toBeNull();
+  }
+  expect(throwPart(L23, [0, 0, 0], 0), 'a length mismatch').toBeNull();
+  // The play half's press is the throw, never wrong; a press that throws nothing keeps the work.
+  expect(LEVERS_PLAY.press(L34, [0, 0, 0], 0)).toEqual({ work: [1, 1, 1], wrong: false });
+  expect(LEVERS_PLAY.press(L34, [0, 0, 0], 3)).toEqual({ work: [0, 0, 0], wrong: false });
+});
+
+test('setting: a turn advances one knob, and any configuration may be pulled', () => {
+  expect(turnKnob(S3, [0, 0, 0], 1)).toEqual([0, 1, 0]);
+  expect(turnKnob(S3, [9, 0, 0], 0)).toEqual([0, 0, 0]);
+  const a = Object.freeze([0, 0, 0]);
+  expect(turnKnob(S3, a, 2)).not.toBe(a);
+  for (const part of [-1, 3, 1.5]) {
+    expect(turnKnob(S3, [0, 0, 0], part), `knob ${part}`).toBeNull();
+  }
+  expect(turnKnob(S3, [0, 0], 0), 'a length mismatch').toBeNull();
+  expect(SETTING_PLAY.press(S3, [0, 5, 0], 1)).toEqual({ work: [0, 6, 0], wrong: false });
+  expect(SETTING_PLAY.press(S3, [0, 5, 0], 4)).toEqual({ work: [0, 5, 0], wrong: false });
+  // Whether it opens is the server's: the start and every in-range configuration may be pulled.
+  expect(SETTING_PLAY.validAnswer(S3, [0, 0, 0])).toBe(true);
+  expect(SETTING_PLAY.validAnswer(S3, [9, 9, 9])).toBe(true);
+  expect(SETTING_PLAY.validAnswer(S3, [0, 0])).toBe(false);
+  expect(SETTING_PLAY.validAnswer(S3, [0, 10, 0])).toBe(false);
+  expect(SETTING_PLAY.validAnswer(S3, [0, 0.5, 0])).toBe(false);
+  expect(SETTING_PLAY.validAnswer(S3, [0, 0, 0, 0]), 'a longer answer').toBe(false);
+});
+
+test('levers: canonical is the configuration itself', () => {
+  // One configuration, one posted answer: what reaches is posted as it stands.
+  const a = [2, 1];
+  expect(LEVERS_PLAY.canonical(L23, a)).toBe(a);
+  expect(LEVERS_PLAY.canonical(L34, [1, 1, 1])).toEqual([1, 1, 1]);
+});
+
+test("levers, setting: workFits is total over the save codec's domain", () => {
+  // D10: the codec's domain is any array of non-negative safe integers of any length; a saved work may also come from
+  // an older world. Each type's own `workFits`, called directly (instanceOf's try / catch would hide a throw).
+  const holed: number[] = [];
+  holed[1] = 0; // index 0 is a hole
+  const misfits: ReadonlyArray<readonly number[]> = [
+    [],
+    [0],
+    [0, 0, 0],
+    [0, 3],
+    [-1, 0],
+    [0.5, 0],
+    [Number.NaN, 0],
+    [Number.POSITIVE_INFINITY, 0],
+    [Number.MAX_SAFE_INTEGER, 0],
+    [2 ** 60, 0],
+    holed,
+    ['1', 0] as unknown as number[],
+  ];
+  for (const w of misfits) {
+    expect(() => LEVERS_RULES.workFits(L23, w), `levers ${JSON.stringify(w)}`).not.toThrow();
+    expect(LEVERS_RULES.workFits(L23, w), `levers ${JSON.stringify(w)}`).toBe(false);
+    const knobs: SettingParams = { ...S3, parts: 2, rects: rectsOf(2), positions: 3 };
+    expect(() => SETTING_RULES.workFits(knobs, w), `setting ${JSON.stringify(w)}`).not.toThrow();
+    expect(SETTING_RULES.workFits(knobs, w), `setting ${JSON.stringify(w)}`).toBe(false);
+  }
+  // The controls: in-range works of the right length fit.
+  expect([LEVERS_RULES.workFits(L23, [0, 0]), LEVERS_RULES.workFits(L23, [2, 1])]).toEqual([true, true]);
+  expect([SETTING_RULES.workFits(S3, [0, 0, 0]), SETTING_RULES.workFits(S3, [9, 0, 9])]).toEqual([true, true]);
+});
+
+test('levers: a saved work fits only where the throws reach it from the start', () => {
+  // B2 (critique W1): a throw adds a fixed step, so from a work the device reaches only that work plus what the throws
+  // generate. A work an older version's params left fits the shape and may still be beyond every throw: it is dropped,
+  // and the device starts over. L22 is the critique's v2: from 0 1 the throws give only 1 0 and 0 1.
+  expect([[0, 0], [1, 1], [0, 1], [1, 0]].map((w) => LEVERS_RULES.workFits(L22, w))).toEqual([true, true, false, false]);
+  // The same as the play half's own throws from the start, for every in-range work of three small instances.
+  for (const p of [L22, L23, L34]) {
+    const seen = new Set<string>([JSON.stringify(LEVERS_RULES.initial(p))]);
+    const queue: (readonly number[])[] = [LEVERS_RULES.initial(p)];
+    for (let a = queue.shift(); a !== undefined; a = queue.shift()) {
+      for (let part = 0; part < p.parts; part++) {
+        const next = LEVERS_PLAY.press(p, a, part).work;
+        if (!seen.has(JSON.stringify(next))) {
+          seen.add(JSON.stringify(next));
+          queue.push(next);
+        }
+      }
+    }
+    const all = Array.from({ length: p.positions ** p.parts }, (_, n) => Array.from({ length: p.parts }, (_, i) => Math.floor(n / p.positions ** i) % p.positions));
+    expect(all.filter((w) => LEVERS_RULES.workFits(p, w)), JSON.stringify(p.couples)).toEqual(all.filter((w) => seen.has(JSON.stringify(w))));
+    // Not vacuous: each instance has a work it refuses or reaches all.
+    expect(seen.size, JSON.stringify(p.couples)).toBeGreaterThan(1);
+  }
+  // The largest instance with each pair coupled both ways: a pair standing apart is beyond every throw, found by a
+  // search that ended, not one its bound stopped.
+  const apart = [1, 0, 0, 0, 0, 0, 0, 0];
+  expect([reachable(L84_PAIRS, apart), LEVERS_RULES.workFits(L84_PAIRS, apart)]).toEqual([false, false]);
+  expect(LEVERS_RULES.workFits(L84_PAIRS, [1, 1, 0, 0, 3, 3, 2, 2])).toBe(true);
+  // The bound covers the decode-legal space: on the largest instance with no couples every work fits, all 3s last of
+  // all (the one configuration 24 throws deep, met after every other's 8 throws: 65,535 x 8 = 524,280).
+  const deepest = [3, 3, 3, 3, 3, 3, 3, 3];
+  expect(LEVERS_FIT_STEPS).toBe(524_288);
+  expect(LEVERS_RULES.workFits(L84, deepest)).toBe(true);
+  expect(LEVERS_RULES.workFits(L84, [0, 1, 2, 3, 3, 2, 1, 0])).toBe(true);
+  expect(reachable(L84, deepest, 524_280)).toBe(true);
+  // One throw short, the search stops: no answer (workFits reads it as no fit, the safe side).
+  expect(reachable(L84, deepest, 524_279)).toBeNull();
+});
+
+/** The devices' three controls join `ControlCue` through the registry, with no cues/types.ts edit (tsc: false before). */
+const LEVER_CONTROL: 'lever' extends ControlCue ? true : false = true;
+const SETTING_PART: 'setting-part' extends ControlCue ? true : false = true;
+const SETTING_PULL: 'setting-pull' extends ControlCue ? true : false = true;
+
+test('puzzles: levers and setting declare their parts and the pull, no part with a haptic', () => {
+  expect([LEVER_CONTROL, SETTING_PART, SETTING_PULL]).toEqual([true, true, true]);
+  // Read through the registry (`declaredControls` reads PUZZLE_TYPES): `uiMotion` falls back to the control default for
+  // a name no registry declares, so the null haptic alone would hold for an undeclared name; "found" makes it bite.
+  const declared = declaredControls();
+  for (const name of ['lever', 'setting-part'] as const) {
+    const decl = declared.find((d) => d.name === name);
+    // D18 (A15): a moved part plays the roll's `puzzle:input`, one light haptic per part; its own control adds none.
+    expect(decl, name).toStrictEqual({ name, on: 'click' });
+    expect(uiMotion(name).haptic, name).toBeNull();
+    expect(uiMotion(name), name).toEqual(UI_MOTIONS.control);
+  }
+  // The pull plays as the frame's Try does: the click default, its outcome's haptic the reply cue's.
+  expect(declared.find((d) => d.name === 'setting-pull')).toStrictEqual({ name: 'setting-pull', on: 'click' });
+  expect(uiMotion('setting-pull')).toEqual(UI_MOTIONS.control);
+  expect(LEVERS_RULES.controls).toEqual([{ name: 'lever', on: 'click' }]);
+  expect(SETTING_RULES.controls).toEqual([
+    { name: 'setting-part', on: 'click' },
+    { name: 'setting-pull', on: 'click' },
+  ]);
+});
+
+test("levers: a part's least side is the hotspots' minimum", () => {
+  // A3: the device's parts take taps as the room's hotspots do; a literal in the play half (the controller is the explore
+  // family's chunk), held equal to the controller's here.
+  expect(PART_MIN_PX).toBe(MIN_TARGET_PX);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
 // The type registry (engine plan §7.1, §7.3): the pins every type's data half keeps, each checked against fixtures
 // that break it, so a checker that lost a rule is red here and not only on a future type.
 
@@ -493,7 +797,7 @@ test('puzzles: every type has a data half, a loader and a lint', () => {
   const types = PUZZLE_TYPES.map((t) => t.type);
   expect(new Set(types).size).toBe(types.length);
   const sorted = [...types].sort();
-  expect(sorted).toEqual(['code', 'grid', 'order', 'path']);
+  expect(sorted).toEqual(['code', 'grid', 'levers', 'order', 'path', 'setting']);
   expect(Object.keys(PUZZLE_RULES).sort()).toEqual(sorted);
   expect(Object.keys(PUZZLE_UI).sort()).toEqual(sorted);
   expect(Object.keys(PUZZLE_LINTS).sort()).toEqual(sorted);
@@ -501,16 +805,19 @@ test('puzzles: every type has a data half, a loader and a lint', () => {
     // The keyed view is the registry's own object, not a copy that could drift from it.
     expect(PUZZLE_RULES[t.type], t.type).toBe(t);
     expect(PUZZLE_UI[t.type], t.type).toBeTypeOf('function');
-    // `code`, `order`, `path` and `grid` save no working configuration and demonstrate nothing (§7.2).
-    expect('workFits' in t, t.type).toBe(false);
+    // The view types, `levers` and `setting`, save a working configuration; the overlays (`code`, `order`, `path`,
+    // `grid`) save none, and no type demonstrates (§7.2).
+    expect('workFits' in t, t.type).toBe(['levers', 'setting'].includes(t.type));
     expect('demo' in t, t.type).toBe(false);
   }
   // The commit types' start configuration is shown before any input (§7.1 `startShown`; per-player's floor excludes
-  // it); a path shows no full-length configuration before input, a grid its givens and blanks.
+  // it); a path shows no full-length configuration before input, a grid its givens and blanks, a device its zeros.
   expect(code.startShown(DIALS4)).toEqual(code.initial(DIALS4));
   expect(order.startShown(MEDALS)).toEqual(order.initial(MEDALS));
   expect(PUZZLE_RULES.path.startShown(P32)).toBeNull();
   expect(PUZZLE_RULES.grid.startShown(G23)).toEqual(PUZZLE_RULES.grid.initial(G23));
+  expect(PUZZLE_RULES.levers.startShown(L23)).toEqual(PUZZLE_RULES.levers.initial(L23));
+  expect(PUZZLE_RULES.setting.startShown(S3)).toEqual(PUZZLE_RULES.setting.initial(S3));
 });
 
 test('puzzles: a commit type posts its wrong answers; a reach type has none or a local one', () => {
@@ -568,6 +875,8 @@ test('puzzles: a commit type checks its solution and a reach type solves, reache
   expect(PUZZLE_LINTS.path.canonical).toBe(PATH_PLAY.canonical);
   expect(PUZZLE_LINTS.grid.reached).toBe(GRID_PLAY.reached);
   expect(PUZZLE_LINTS.grid.canonical).toBe(GRID_PLAY.canonical);
+  expect(PUZZLE_LINTS.levers.reached).toBe(LEVERS_PLAY.reached);
+  expect(PUZZLE_LINTS.levers.canonical).toBe(LEVERS_PLAY.canonical);
   // The checker against its own fixtures: each misses one member set; the full ones pass.
   const count = (): 1 => 1;
   const valid = (): null => null;
@@ -627,7 +936,7 @@ test('puzzles: a fixture type passed as types decodes in a world', () => {
     expect(r.value.puzzles[GATE]?.params).toBe(TUMBLER_PARAMS);
   }
   // Without `types` the decoder knows PUZZLE_TYPES only, and names them.
-  const issue = { ok: false, error: [{ path: 'puzzles.gate.type', reason: 'shape', detail: '"tumbler" is not code or order or path or grid' }] };
+  const issue = { ok: false, error: [{ path: 'puzzles.gate.type', reason: 'shape', detail: '"tumbler" is not code or order or path or grid or levers or setting' }] };
   expect(decodeWorldPublic(publicRaw)).toEqual(issue);
   expect(decodeWorldSource(sourceRaw)).toEqual(issue);
 });
