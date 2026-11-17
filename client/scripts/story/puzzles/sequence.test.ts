@@ -1,12 +1,18 @@
-// The push devices' build halves (engine plan §7.1 "BUILD", §7.4; GM8b D1, D7, D11): the `sequence` hint refusal and
-// solution check, the `ritual` solution check and per-player domain size, and the part rects the frame check reads.
+// The push devices' build halves (engine plan §7.1 "BUILD", §7.4; GM8b D1, D7, D11, D14): the `sequence` hint refusal
+// and solution check, the `ritual` solution check and per-player domain size, the part rects the frame check reads, and
+// the reach and clue passes on worlds that hold the real types.
 import { expect, test } from 'vitest';
 
 import { RITUAL_RULES } from '../../../src/puzzles/rules/ritual.ts';
 import type { RitualParams } from '../../../src/puzzles/rules/ritual.ts';
 import { SEQUENCE_RULES } from '../../../src/puzzles/rules/sequence.ts';
 import type { SequenceParams } from '../../../src/puzzles/rules/sequence.ts';
-import type { Rect } from '../../../src/story/staging.ts';
+import type { AssetCatalog } from '../../../src/story/catalog.ts';
+import type { ChapterId, Rect } from '../../../src/story/staging.ts';
+import { decodeWorldSource } from '../../../src/world/decode.ts';
+import { clueFindings, reachFindings } from '../mechanics/clues.ts';
+import type { WorldLintInput } from '../mechanics/index.ts';
+import { lintWorld } from '../world.ts';
 import { RITUAL_LINT, ritualDomainSize } from './ritual.ts';
 import { SEQUENCE_LINT } from './sequence.ts';
 
@@ -98,4 +104,115 @@ test('ritual: the per-player domain counts every press sequence of its length', 
   expect(ritualDomainSize(presses(6, 4))).toBe(1296);
   expect(ritualDomainSize(presses(2, 3))).toBe(8);
   expect(ritualDomainSize(presses(6, 12))).toBe(2_176_782_336);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The world lints on worlds that hold the real `sequence` and `ritual` (engine plan §7.3-§7.5; D14), each world written in
+// the source format and decoded with the real registries. Each world declares no item, and a device room holds only
+// its device's hotspot (GM8b-B4); every row reads the reach pass, the clue pass or a code-filtered lintWorld.
+
+/** No pass below reads the asset catalog. */
+const CATALOG: AssetCatalog = { bg: {}, chars: {}, cg: {}, bgm: {}, sfx: {}, prop: {}, cover: {} };
+
+/** The per-world lint input of a source world; its line lookup numbers each path in the order it is first asked for. */
+function inputOf(raw: unknown): WorldLintInput {
+  const text = `${JSON.stringify(raw, null, 2)}\n`;
+  const r = decodeWorldSource(JSON.parse(text));
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture decodes: ${JSON.stringify(r.error)}`);
+  }
+  const asked: string[] = [];
+  const line = (path: string): number => {
+    const i = asked.indexOf(path);
+    return i >= 0 ? i + 1 : asked.push(path);
+  };
+  const chapter = { id: 'ch1' as ChapterId, paid: false, entry: 'ch1/main.ink' }; // a fixture chapter id
+  return { chapter, file: 'story/ch1/world.json', text, world: r.value, catalog: CATALOG, knots: null, yielded: null, declared: new Map(), line, moduleLines: new Map() };
+}
+
+/** A world whose one puzzle `fuse` is a sequence puzzle on no lock (a linear yield's place, levers.test.ts's form). */
+function fuseWorld(params: SequenceParams, o: { readonly maxAttempts?: number; readonly solution?: readonly number[] } = {}): unknown {
+  const fuse = {
+    type: 'sequence',
+    title: { id: 'ch1.fuse.0001', ru: 'Колокола' },
+    prompt: { id: 'ch1.fuse.0002', ru: 'Порядок' },
+    closeup: null,
+    params,
+    maxAttempts: o.maxAttempts ?? null,
+    giveUp: false,
+    solution: o.solution ?? [...params.order],
+    hints: [],
+  };
+  return { format: 1, items: {}, docs: {}, sections: {}, puzzles: { fuse } };
+}
+
+let lineCounter = 0;
+const txt = (ru: string): { id: string; ru: string } => ({ id: `ch1.sq.${(lineCounter++).toString(36).padStart(4, '0')}`, ru });
+/** A hotspot rect in the safe frame and the band, in column `i`. */
+const spot = (i: number): Rect => [80 + i * 300, 800, 200, 200];
+
+/**
+ * A world of one section: the hall (a look `note`, the way to the view `panel`, the way out) and the panel, a view of the
+ * hall whose one hotspot is the device `dial`, a zero-slot lock with the puzzle `dial`.
+ */
+function deviceWorld(dial: Readonly<Record<string, unknown>>): unknown {
+  const exit = (id: string, to: unknown, i: number): unknown => ({ id, kind: 'exit', rect: spot(i), label: txt(id), to, lock: null, sfx: null });
+  const lock = { slots: [], puzzle: 'dial', locked: txt('заперто'), onOpen: [], onFail: [] };
+  const hall = [{ id: 'note', kind: 'look', rect: spot(0), label: txt('записка'), look: txt('Знаки на обороте.'), then: [] }, exit('to_panel', { room: 'panel' }, 1), exit('out', { story: 'end' }, 2)];
+  const device = { id: 'dial', kind: 'object', rect: spot(1), label: txt('механизм'), lock, then: [], look: null, prop: null };
+  return {
+    format: 1,
+    items: {},
+    docs: {},
+    puzzles: { dial: { title: txt('Механизм'), prompt: txt('Кнопки'), closeup: null, maxAttempts: null, giveUp: false, hints: [], ...dial } },
+    sections: {
+      s: {
+        start: 'hall',
+        bgm: null,
+        rooms: {
+          hall: { bg: 'room', title: txt('Зал'), onEnter: [], hotspots: hall },
+          panel: { bg: 'room', title: txt('Панель'), onEnter: [], hotspots: [device], view: { of: 'hall' }, device: 'dial' },
+        },
+      },
+    },
+  };
+}
+
+/** Each finding as `<code>: <message>`. */
+const said = (findings: ReadonlyArray<{ readonly code: string; readonly message: string }>): string[] => findings.map((f) => `${f.code}: ${f.message}`);
+
+test('story: a sequence with a clue is refused', () => {
+  // D14 (07:181): a sequence draws its goal (it shows its order), so it declares no clue.
+  const sequence = (clues: readonly unknown[]): unknown => deviceWorld({ type: 'sequence', params: SQ3, solution: [...SQ3.order], clues });
+  const codes = (raw: unknown): string[] => said(clueFindings(inputOf(raw)).filter((f) => f.code === 'world/reach-has-clue'));
+  expect(codes(sequence([{ examined: 'hall.note' }]))).toEqual(["world/reach-has-clue: puzzle 'dial' (sequence) draws its goal: it declares no clue (§7.3)"]);
+  // The control: the same device with no clue.
+  expect(codes(sequence([]))).toEqual([]);
+});
+
+test("story: a sequence may set maxAttempts, and its order reaches by the device's own rule", () => {
+  // D14: a sequence's wrong press is the device's own (`wrong: 'local'`), so an attempt count moves; its one solution, the
+  // order, reaches by the play half's rule, is its own canonical form and is not reached at the start: no reach finding.
+  expect(reachFindings(inputOf(fuseWorld(SQ3, { maxAttempts: 3 })))).toEqual([]);
+  expect(reachFindings(inputOf(fuseWorld({ parts: 4, order: [3, 3, 0], rects: rowRects(4), replay: slot(4) })))).toEqual([]);
+});
+
+test('story: a sequence solution other than its order is refused', () => {
+  // D14: the source solution is checked by the lint half (`world/solution`): only the order is the device's answer.
+  const solutions = (solution: readonly number[]): string[] => said(lintWorld(inputOf(fuseWorld(SQ3, { solution }))).findings.filter((f) => f.code === 'world/solution'));
+  expect(solutions([0, 1, 2])).toEqual(["world/solution: puzzle 'fuse': the solution [0, 1, 2] is not the order [0, 2, 1]"]);
+  // The control: the order is clean.
+  expect(solutions([0, 2, 1])).toEqual([]);
+});
+
+test('story: a secret ritual device declares a clue its section reaches', () => {
+  // D14 (RULINGS 360): `ritual` keeps its goal secret, so its device declares a clue; the clue search walks the device's
+  // section with the puzzle's own end removed.
+  const ritual = (clues: readonly unknown[]): unknown => deviceWorld({ type: 'ritual', params: RT35, solution: [2, 0, 1, 1, 2], clues });
+  const codes = (raw: unknown, code: string): string[] => said(clueFindings(inputOf(raw)).filter((f) => f.code === code));
+  expect(codes(ritual([]), 'world/clue-declared')).toEqual([
+    "world/clue-declared: puzzle 'dial' (ritual, a secret goal) declares no clue: clues names the fact that shows its answer (§7.3, I4)",
+  ]);
+  // A clue the section reaches before the device opens (the hall's note, examined): clean.
+  expect([codes(ritual([{ examined: 'hall.note' }]), 'world/clue-declared'), codes(ritual([{ examined: 'hall.note' }]), 'world/clue-reachable')]).toEqual([[], []]);
 });
