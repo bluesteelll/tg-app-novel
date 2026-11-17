@@ -80,7 +80,14 @@ export type GraphFacts = {
    * logic line, a choice condition, a block head, an inline `{…}`, and every line of a function body.
    */
   read: ReadonlySet<string>;
+  /**
+   * Every explore yield inside a knot, in source order (the carry proof's giver yields, engine plan §6.6). Always set by
+   * `buildGraph`; optional only so that a hand-built facts object of an older test still types.
+   */
+  explores?: readonly ExploreSite[];
 };
+/** An explore yield inside a knot: the section it explores, where it is written (story-relative). */
+export type ExploreSite = { knot: KnotName; section: SectionId; file: string; line: number };
 /** An explore yield's section knots: reachability edges from the yielding knot, and their entry stage. */
 export type SectionEdges = { edges: ReadonlyMap<KnotName, readonly KnotName[]>; seeds: ReadonlyMap<KnotName, readonly AssetId[]> };
 /** The section edges, and per section knot the rooms that name it as an event and as a leave (sorted ids). */
@@ -216,6 +223,17 @@ function reachable(knots: ReadonlyMap<KnotName, KnotNode>, first: KnotName, edge
     queue.push(...[...(knots.get(k)?.next ?? []), ...(edges?.get(k) ?? [])].filter((n) => knots.has(n) && !seen.has(n)));
   }
   return seen;
+}
+
+/**
+ * Whether every path from `from` to a knot of `target`, over `next` and the section edges, passes a knot of `avoid`
+ * (engine plan §6.6, R-E13): true when no knot of `target` is reachable from `from` once the knots of `avoid` are taken
+ * out. So a `from` in `avoid` or that is no knot, a target in `avoid`, a target reached only behind `avoid` and an
+ * unreachable target are all true: no path reaches the target around `avoid`.
+ */
+export function mustPass(graph: ChapterGraph, from: KnotName, avoid: ReadonlySet<KnotName>, target: ReadonlySet<KnotName>): boolean {
+  const around = reachable(new Map([...graph.knots].filter(([k]) => !avoid.has(k))), from, graph.sections?.edges);
+  return ![...target].some((k) => around.has(k));
 }
 
 /**
@@ -652,6 +670,7 @@ export function buildGraph(input: {
   const body = world.kind === 'ok' ? world.body : null;
   const index = body === null ? null : worldIndex(body);
   const yields = new Map<KnotName, YieldCommand[]>();
+  const explores: ExploreSite[] = [];
   const sectionsOf = new Map<SectionId, SectionKnots>();
   const knotsOf = (section: SectionId): SectionKnots => {
     const known = sectionsOf.get(section);
@@ -665,6 +684,9 @@ export function buildGraph(input: {
   for (const { knot, file, line, cmd } of sites) {
     if (knot !== null) {
       yields.set(knot, [...(yields.get(knot) ?? []), cmd]);
+      if (cmd.kind === 'explore') {
+        explores.push({ knot, section: cmd.section, file, line });
+      }
     }
     if (cmd.kind === 'puzzle') {
       if (scopes.has(cmd.then)) {
@@ -802,6 +824,6 @@ export function buildGraph(input: {
       },
     },
     findings,
-    facts: { yields, declared, ...varUse(parsed, vars, globals) },
+    facts: { yields, declared, ...varUse(parsed, vars, globals), explores },
   };
 }

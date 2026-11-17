@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import type { KernelWorld } from '../src/mechanics/contract.ts';
 import { assetIndex, decodeChapterList } from '../src/story/catalog.ts';
 import type { AssetCatalog, Cast, CatalogIssue, ChapterListEntry, EndingName, StoryId } from '../src/story/catalog.ts';
-import type { AssetId, AssetIndex, BgId, ChapterId, KnotName, LineId, PuzzleLocalId } from '../src/story/staging.ts';
+import type { AssetId, AssetIndex, BgId, ChapterId, KnotName, LineId, PuzzleLocalId, SectionId } from '../src/story/staging.ts';
 import { toPublic } from '../src/world/decode.ts';
 import type { RoomId, WorldPublicBody, WorldSource } from '../src/world/types.ts';
 import { compileChapter } from './story/compile.ts';
@@ -26,12 +26,14 @@ import type { CompiledChapter } from './story/compile.ts';
 import { OUT, chapterPaths, decodeLineFingerprints, decodeStoryUsage, hintIdsOf, paidLeak, planEmit, storyVersion } from './story/emit.ts';
 import type { StoryNames, WorldNeedles } from './story/emit.ts';
 import { ID_SHAPED_RE, fixIds, fixWorldIds, syncLocales } from './story/fix.ts';
-import { buildGraph, worldRef, writeOnly } from './story/graph.ts';
+import { buildGraph, mustPass, worldRef, writeOnly } from './story/graph.ts';
 import type { ChapterGraph, GraphFacts } from './story/graph.ts';
 import { LINT_CODES, lintCatalog, lintSources } from './story/lint.ts';
 import type { Finding, LintCode, Severity, SourceChapter, SourceLintInput } from './story/lint.ts';
 import { RETIRED_FILE, checkLocales, decodeEnTable, decodeNameTable, decodeRetired } from './story/locales.ts';
 import type { EnTable } from './story/locales.ts';
+import { ITEMS_FILE, carryProof } from './story/mechanics/carry.ts';
+import type { CarryChapter, SectionPath, YieldSite } from './story/mechanics/carry.ts';
 import { META_FILE, choicePoints, lintMeta } from './story/meta.ts';
 import type { ChoiceMap, MetaSource, StoryMeta } from './story/meta.ts';
 import { ALLOW_FILE, coverageLine, decodeAllow, playChapter } from './story/playthrough.ts';
@@ -340,6 +342,51 @@ function readWorlds(root: string, chapters: readonly ChapterListEntry[], out: Fi
     worlds.set(ch.id, d.world === null ? { kind: 'invalid' } : { kind: 'ok', source: d.world, text, lines: worldLines(d.world, key, text) });
   }
   return worlds;
+}
+
+/**
+ * The carry pass's graph glue (engine plan §6.6; scripts/story/mechanics/carry.ts takes plain data, never a graph): per
+ * section an explore yield of the chapter names, its yields (repo-relative, source order) and the first END, in knot
+ * order, that the first knot reaches around every knot holding one of them (`mustPass`); null when the entry names no
+ * knot (its `ink/entry` error says why). Every END continues the story.
+ */
+export function carryPaths(graph: ChapterGraph, facts: GraphFacts): ReadonlyMap<SectionId, SectionPath> | null {
+  const first = graph.firstKnot;
+  if (first === null) {
+    return null;
+  }
+  const bySection = new Map<SectionId, YieldSite[]>();
+  for (const e of facts.explores ?? []) {
+    bySection.set(e.section, [...(bySection.get(e.section) ?? []), { knot: e.knot, file: `story/${e.file}`, line: e.line }]);
+  }
+  const ends = [...graph.knots.values()].filter((k) => k.ending).map((k) => k.name);
+  return new Map(
+    [...bySection].map(([section, sites]) => {
+      const yielding = new Set(sites.map((s) => s.knot));
+      return [section, { sites, bypass: ends.find((e) => !mustPass(graph, first, yielding, new Set([e]))) ?? null }] as const;
+    }),
+  );
+}
+
+/** Each listed chapter as the carry pass reads it, in list order. */
+function carryChapters(
+  chapters: readonly ChapterListEntry[],
+  worlds: ReadonlyMap<ChapterId, ChapterWorld>,
+  graphs: ReadonlyMap<ChapterId, ChapterGraph>,
+  facts: ReadonlyMap<ChapterId, GraphFacts>,
+): CarryChapter[] {
+  return chapters.map((ch) => {
+    const w = worlds.get(ch.id);
+    const g = graphs.get(ch.id);
+    const f = facts.get(ch.id);
+    return {
+      id: ch.id,
+      paid: ch.paid,
+      next: ch.next,
+      world: w === undefined || w.kind === 'none' ? { kind: 'none' } : w.kind === 'invalid' ? { kind: 'invalid' } : { kind: 'ok', source: w.source, text: w.text },
+      paths: g === undefined || f === undefined ? null : carryPaths(g, f),
+    };
+  });
 }
 
 /**
@@ -745,6 +792,13 @@ export function main(argv: readonly string[], repoRoot: string): number {
 
   // The files an error of stages 1-4 names: such a chapter is not played (stage 6). Localization errors do not gate play.
   const sourceErrors = new Set(found.filter((f) => f.severity === 'E').map((f) => f.file));
+
+  // The carry proof across the chapters (engine plan §6.6). Its findings name chapter files, so it runs after the set
+  // above: they never keep a chapter from being played, and the run still fails on them. Judged only on a decoded story
+  // list, like the endings: a list that failed has its own error, so the skip fails closed.
+  if (plans !== null) {
+    found.push(...carryProof({ chapters: carryChapters(chapters, worlds, graphs, facts), registry: readRaw(root, ITEMS_FILE) }).findings);
+  }
 
   // 5. Localization (after `--sync-locales` appended the new IDs): the en tables of the compiled chapters, the names
   // and titles, and the ID rules no single chapter can see. Without the cast no name can be checked.
