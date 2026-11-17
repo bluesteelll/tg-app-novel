@@ -34,6 +34,7 @@ import { RETIRED_FILE, checkLocales, decodeEnTable, decodeNameTable, decodeRetir
 import type { EnTable } from './story/locales.ts';
 import { ITEMS_FILE, carryLines, carryProof } from './story/mechanics/carry.ts';
 import type { CarryChapter, SectionPath, YieldSite } from './story/mechanics/carry.ts';
+import { DEVICES_CODES } from './story/mechanics/devices.ts';
 import { META_FILE, choicePoints, lintMeta } from './story/meta.ts';
 import type { ChoiceMap, MetaSource, StoryMeta } from './story/meta.ts';
 import { ALLOW_FILE, coverageLine, decodeAllow, playChapter } from './story/playthrough.ts';
@@ -255,6 +256,50 @@ function localeStage(
   });
   out.push(...inStory(r.findings));
   return { en, names: r.names };
+}
+
+/** The marker a levers puzzle's last hint tier holds (07 §7.3); restated from scripts/story/mechanics/devices.ts, where
+ *  it is private. */
+const MOVES = '[moves]';
+
+/**
+ * W6's en half (07 §7.3): the build replaces a levers puzzle's last-tier `[moves]` with the throw order in both
+ * languages, so each decoded world's en hint tiers obey the ru rule the devices lint judges: no other type's tier holds
+ * the marker, and a levers puzzle's last tier holds it exactly once and no earlier tier does. Each refusal is a
+ * `world/hint-moves` (the devices lint's code) at the tier's line in story/locales/en/<ch>.json; a tier with no en entry
+ * is the locales check's.
+ */
+function enHintMoves(worlds: ReadonlyMap<ChapterId, ChapterWorld>, en: ReadonlyMap<string, EnTable>): Finding[] {
+  const out: Finding[] = [];
+  for (const [ch, w] of worlds) {
+    const table = en.get(ch);
+    if (w.kind !== 'ok' || table === undefined) {
+      continue;
+    }
+    for (const [pid, p] of Object.entries(w.source.puzzles)) {
+      const n = p.hints.length;
+      p.hints.forEach((h, i) => {
+        const text = table.entries.get(h.id)?.en;
+        if (text === undefined) {
+          return;
+        }
+        const times = text.split(MOVES).length - 1;
+        let why: string | null;
+        if (p.type !== 'levers') {
+          why = times > 0 ? `${p.type} puzzle '${pid}': en hint tier ${i + 1} holds ${MOVES}, which only a levers puzzle's last tier may` : null;
+        } else if (i === n - 1) {
+          const tier = `levers puzzle '${pid}': its last en hint tier (${i + 1} of ${n})`;
+          why = times === 0 ? `${tier} holds no ${MOVES}, which the build replaces with the throw order` : times > 1 ? `${tier} holds ${MOVES} ${times} times, not once` : null;
+        } else {
+          why = times > 0 ? `levers puzzle '${pid}': en hint tier ${i + 1} of ${n} holds ${MOVES}, which only the last tier may` : null;
+        }
+        if (why !== null) {
+          out.push({ code: 'world/hint-moves', severity: DEVICES_CODES['world/hint-moves'], file: `story/${table.file}`, line: table.keyLine(h.id), message: `${why} (§7.3, W6)` });
+        }
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -841,6 +886,11 @@ export function main(argv: readonly string[], repoRoot: string): number {
   // A paid chapter's title is its invoice title (`catalog/stories` rule 9), judged once every title is known.
   if (plans !== null && localized !== null && localized.names !== null) {
     found.push(...checkInvoiceTitles(plans, chapters, localized.names));
+  }
+  // The en half of the hint marker rule, once the en tables are decoded: after `sourceErrors`, so it never keeps a
+  // chapter from being played, and its error keeps the run from emitting (the levers build would throw on it).
+  if (localized !== null) {
+    found.push(...enHintMoves(worlds, localized.en));
   }
 
   // 6. Seeded playthroughs of the chapters, in list order.

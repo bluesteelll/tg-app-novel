@@ -3489,3 +3489,74 @@ test(
   },
   IN_PROCESS_TIMEOUT_MS,
 );
+
+test(
+  'story: the en half of [moves] is refused at its en line',
+  () => {
+    const SAFE_HINT = 'ch1.w.m001'; // fixture text ids, beside repoWorld's `ch1.w.<n>`
+    const DIAL_HINT = 'ch1.w.m002';
+    /** ch1 alone: its archive's hall holds a code safe (its clue a note beside it) and a door into the view of a two-lever
+     *  device (07 §7.5), whose ru hints obey W6; `safeEn` and `dialEn` are the en texts of the safe's one hint and the levers' last tier. */
+    const repo = (safeEn: string, dialEn: string): Record<string, string> => {
+      const ch1 = receiverChapter(null, { id: 'ch1', paid: false });
+      const zeroSlot = (puzzle: string): Json => ({ slots: [], puzzle, locked: TEXT, onOpen: [], onFail: [] });
+      const common = { title: TEXT, prompt: TEXT, closeup: null, maxAttempts: null, giveUp: false };
+      const puzzles = {
+        safe: { type: 'code', ...common, params: { dials: 3 }, solution: [1, 1, 1], hints: [{ id: SAFE_HINT, ru: 'Код в письме.' }], clues: [{ examined: 'hall.note' }] },
+        dial: {
+          type: 'levers',
+          ...common,
+          params: { parts: 2, positions: 2, couples: [[], []], target: [1, 1], rects: [[100, 800, 150, 150], [400, 800, 150, 150]] },
+          solution: [1, 1],
+          hints: [{ id: DIAL_HINT, ru: 'Порядок: [moves].' }],
+        },
+      };
+      const world = repoWorld('ch1', {
+        sections: {
+          archive: {
+            hall: [
+              leaveBy('out', 'archive_out'),
+              { id: 'safe', kind: 'object', label: TEXT, lock: zeroSlot('safe'), then: [], look: null, prop: null },
+              { id: 'note', kind: 'look', label: TEXT, look: TEXT, then: [] },
+              { id: 'to_panel', kind: 'exit', label: TEXT, to: { room: 'panel' }, lock: null, sfx: null },
+            ],
+            panel: [{ id: 'dial', kind: 'object', label: TEXT, lock: zeroSlot('dial'), then: [], look: null, prop: null }],
+          },
+        },
+        top: { puzzles },
+      });
+      const panel = at(world, 'sections.archive.rooms.panel');
+      panel['view'] = { of: 'hall' };
+      panel['device'] = 'dial';
+      const files = carryRepo({ chapters: [{ ...ch1, world }] });
+      const en = JSON.parse(files['story/locales/en/ch1.json'] ?? '{}') as Record<string, Json>; // the harness's en table
+      obj(en[SAFE_HINT])['en'] = safeEn;
+      obj(en[DIAL_HINT])['en'] = dialEn;
+      files['story/locales/en/ch1.json'] = `${JSON.stringify(en, null, 2)}\n`;
+      return files;
+    };
+    /** The run's `world/hint-moves` lines, and the en table line of `id` in its repo. */
+    const refused = (out: readonly string[]): string[] => out.filter((l) => l.includes(' world/hint-moves '));
+    const enLine = (files: Readonly<Record<string, string>>, id: string): number => (files['story/locales/en/ch1.json'] ?? '').split('\n').indexOf(`  "${id}": {`) + 1;
+
+    // The control: each en tier as its ru. Clean, so it exits 0 (and the levers build replaced the marker).
+    const control = storyRun(repo('The code is in the letter.', 'Order: [moves].'));
+    expect(control.out.filter((l) => /^[EW] /.test(l)), control.out.join('\n')).toEqual([]);
+    expect(control.code).toBe(0);
+    // A code puzzle's en tier holding the marker.
+    const codeFiles = repo('Code: [moves].', 'Order: [moves].');
+    const code = storyRun(codeFiles);
+    expect(refused(code.out), code.out.join('\n')).toEqual([
+      `E story/locales/en/ch1.json:${enLine(codeFiles, SAFE_HINT)} world/hint-moves code puzzle 'safe': en hint tier 1 holds [moves], which only a levers puzzle's last tier may (§7.3, W6)`,
+    ]);
+    expect(code.code).toBe(1);
+    // The levers' last en tier without it.
+    const leversFiles = repo('The code is in the letter.', 'Order.');
+    const levers = storyRun(leversFiles);
+    expect(refused(levers.out), levers.out.join('\n')).toEqual([
+      `E story/locales/en/ch1.json:${enLine(leversFiles, DIAL_HINT)} world/hint-moves levers puzzle 'dial': its last en hint tier (1 of 1) holds no [moves], which the build replaces with the throw order (§7.3, W6)`,
+    ]);
+    expect(levers.code).toBe(1);
+  },
+  IN_PROCESS_TIMEOUT_MS,
+);
