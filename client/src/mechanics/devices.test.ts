@@ -624,6 +624,9 @@ test("search: an uncapped device's arrival adds one evaluation and no state", ()
     ['tap', 'tap', 'tap'],
     ['tap', 'closed', 'puzzle-ended', 'tap'],
   ]);
+  // The search reads one `puzzle` effect per action, so a second one would leave every count above unmoved: the
+  // arrival's effect stream is what pins the hook to exactly one opening.
+  expect(opens(reduce(w, lit, tap('hall.to_panel')).effects)).toEqual([OPEN_DIAL]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
