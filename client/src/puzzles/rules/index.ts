@@ -10,6 +10,8 @@ import { GRID_RULES } from './grid.ts';
 import { LEVERS_RULES } from './levers.ts';
 import { ORDER_RULES } from './order.ts';
 import { PATH_RULES } from './path.ts';
+import { RITUAL_RULES } from './ritual.ts';
+import { SEQUENCE_RULES } from './sequence.ts';
 import { SETTING_RULES } from './setting.ts';
 
 /**
@@ -51,7 +53,7 @@ export interface PuzzleTypeData<T extends string, P> {
 export type PuzzleTypes = readonly PuzzleTypeData<string, unknown>[];
 
 /** Every puzzle type, one data half each; `PuzzleType` derives from it. */
-export const PUZZLE_TYPES = [CODE_RULES, ORDER_RULES, PATH_RULES, GRID_RULES, LEVERS_RULES, SETTING_RULES] as const satisfies PuzzleTypes;
+export const PUZZLE_TYPES = [CODE_RULES, ORDER_RULES, PATH_RULES, GRID_RULES, LEVERS_RULES, SETTING_RULES, SEQUENCE_RULES, RITUAL_RULES] as const satisfies PuzzleTypes;
 
 export type PuzzleType = (typeof PUZZLE_TYPES)[number]['type'];
 /** The decoded `params` of type `T`: what its data half's `decodeParams` returns. */
@@ -66,6 +68,8 @@ export const PUZZLE_RULES: { readonly [T in PuzzleType]: PuzzleTypeData<T, Param
   grid: GRID_RULES,
   levers: LEVERS_RULES,
   setting: SETTING_RULES,
+  sequence: SEQUENCE_RULES,
+  ritual: RITUAL_RULES,
 });
 
 /** One puzzle as the runtime sees its type, built once from the type's data half: no consumer switches on type. */

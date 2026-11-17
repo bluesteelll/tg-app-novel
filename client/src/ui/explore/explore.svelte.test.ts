@@ -1519,6 +1519,8 @@ test('mechanics: both string tables hold the same keys and placeholders', () => 
   const { mechanicsEn, mechanicsRu, mechT } = table;
   const keys = Object.keys(mechanicsRu) as Array<keyof typeof mechanicsRu>;
   expect([...keys].sort()).toEqual([
+    'mech.button_part',
+    'mech.button_progress',
     'mech.content_updated',
     'mech.grid_cell',
     'mech.grid_clear',
@@ -1531,6 +1533,9 @@ test('mechanics: both string tables hold the same keys and placeholders', () => 
     'mech.path_end',
     'mech.path_rule',
     'mech.ribbon',
+    'mech.ritual_rule',
+    'mech.sequence_replay',
+    'mech.sequence_rule',
     'mech.setting_part',
     'mech.setting_pull',
     'mech.setting_rule',

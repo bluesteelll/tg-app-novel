@@ -1,9 +1,9 @@
-// The mechanics' UI strings (engine plan §6.1 UI, 12c GM3u; §7.4 GM7r; §7.2 GM7p, GM7g, GM8a): the item ribbon's label,
-// the text a refused use shows when neither its item nor its room says why, the update toast of a reach mismatch, the
-// path puzzle's rule line and cell names, the grid puzzle's rule line, cell names and Clear, and the devices' rule lines,
-// part names and the setting's pull. Their own table, imported only by app/yields.ts (the engine), the explore UI (the
-// ribbon) and the path, grid and device type UIs (their rules and parts), so these texts ship with the engine and never
-// in the entry
+// The mechanics' UI strings (engine plan §6.1 UI, 12c GM3u; §7.4 GM7r; §7.2 GM7p, GM7g, GM8a, GM8b): the item ribbon's
+// label, the text a refused use shows when neither its item nor its room says why, the update toast of a reach mismatch,
+// the path puzzle's rule line and cell names, the grid puzzle's rule line, cell names and Clear, the lever devices' rule
+// lines, part names and the setting's pull, and the push devices' rule lines, part name, the sequence's replay and the
+// count of presses. Their own table, imported only by app/yields.ts (the engine), the explore UI (the ribbon) and the
+// path, grid and device type UIs (their rules and parts), so these texts ship with the engine and never in the entry
 // (`arch: the mechanics string table loads with the engine, never with the entry`). Russian first (its keys are the
 // contract), English second; all but `mech.content_updated` are drafts for the owner's copy pass (OPEN-QUESTIONS Q61,
 // RULINGS 226 Q6); `mech.content_updated` is the owner's adopted copy (Q15e, RULINGS 154).
@@ -27,6 +27,11 @@ export const mechanicsRu = {
   'mech.setting_rule': 'Поверните ручки, затем потяните.',
   'mech.setting_part': 'Ручка {n}: положение {p} из {m}',
   'mech.setting_pull': 'Потянуть',
+  'mech.sequence_rule': 'Нажимайте кнопки в том порядке, который показало устройство. Ошибка начинает ряд заново.',
+  'mech.ritual_rule': 'Нажмите кнопки в верном порядке. Устройство проверит весь ряд, когда он будет набран.',
+  'mech.button_part': 'Кнопка {n}',
+  'mech.sequence_replay': 'Показать порядок ещё раз',
+  'mech.button_progress': 'Нажато {k} из {n}',
 } as const;
 
 /** A key of the mechanics table; mechanicsRu defines the set. */
@@ -50,6 +55,11 @@ export const mechanicsEn: Readonly<Record<MechanicsKey, string>> = {
   'mech.setting_rule': 'Turn the knobs, then pull.',
   'mech.setting_part': 'Knob {n}: position {p} of {m}',
   'mech.setting_pull': 'Pull',
+  'mech.sequence_rule': 'Press the buttons in the order the device showed. A mistake starts the row over.',
+  'mech.ritual_rule': 'Press the buttons in the right order. The device checks the whole row once it is complete.',
+  'mech.button_part': 'Button {n}',
+  'mech.sequence_replay': 'Show the order again',
+  'mech.button_progress': '{k} of {n} pressed',
 };
 
 const TABLES: Readonly<Record<Lang, Readonly<Record<MechanicsKey, string>>>> = { ru: mechanicsRu, en: mechanicsEn };

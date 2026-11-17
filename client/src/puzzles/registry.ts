@@ -1,7 +1,7 @@
 // The puzzle type UIs' loader (docs/PUZZLES-PLAN.md X14, X17): one dynamic chunk per type UI, so a type UI is never in
 // the entry or the engine's static closure (the `lazy-ui` arch rule, the puzzle-type budget row). Each `import()` is
-// a literal, so Vite emits exactly one chunk per component (the two devices, `levers` and `setting`, share one); a
-// chunk that fails to load is an error value, never a throw.
+// a literal, so Vite emits exactly one chunk per component (the lever devices, `levers` and `setting`, share one, and the
+// push devices, `sequence` and `ritual`, another); a chunk that fails to load is an error value, never a throw.
 import type { Component } from 'svelte';
 
 import type { GestureCue } from '../cues/types.ts';
@@ -63,8 +63,10 @@ function loader(load: () => Promise<{ default: Component<PuzzleUiProps> }>): UiL
   };
 }
 
-// The devices' one component: one loader, one `import()` (its literal in an anonymous arrow, as each loader's).
+// The lever devices' one component, and the push devices': one loader, one `import()` each (its literal in an anonymous
+// arrow, as each loader's).
 const leverDevice = loader(() => import('./ui/LeverDevice.svelte'));
+const buttonDevice = loader(() => import('./ui/ButtonDevice.svelte'));
 
 /** One loader per puzzle type (engine plan §7.1); a type without one is a tsc error. */
 export const PUZZLE_UI: { readonly [T in PuzzleType]: UiLoader } = Object.freeze({
@@ -74,6 +76,8 @@ export const PUZZLE_UI: { readonly [T in PuzzleType]: UiLoader } = Object.freeze
   grid: loader(() => import('./ui/GridPuzzle.svelte')),
   levers: leverDevice,
   setting: leverDevice,
+  sequence: buttonDevice,
+  ritual: buttonDevice,
 });
 
 /** The component of puzzle type `t`, loaded on first use. */

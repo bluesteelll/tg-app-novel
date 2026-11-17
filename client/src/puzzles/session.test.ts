@@ -390,6 +390,9 @@ const SAMPLE_PARAMS: { readonly [T in PuzzleType]: ParamsOf<T> } = {
   grid: { rows: 2, cols: 2, symbols: 2, given: [1, 0, 0, 0] },
   levers: { parts: 2, positions: 3, couples: [[1], []], target: [2, 1], rects: [[100, 800, 200, 300], [600, 800, 150, 150]] },
   setting: { parts: 3, positions: 10, rects: [[80, 800, 150, 150], [310, 800, 150, 150], [540, 800, 150, 150]], pull: [400, 1500, 300, 150] },
+  // The order 0 2 1 is no palindrome: a reversed demonstration differs from it (D2).
+  sequence: { parts: 3, order: [0, 2, 1], rects: [[80, 760, 150, 150], [270, 760, 150, 150], [460, 760, 150, 150]], replay: [650, 760, 150, 150] },
+  ritual: { parts: 3, length: 5, rects: [[80, 760, 150, 150], [270, 760, 150, 150], [460, 760, 150, 150]] },
 };
 
 test('session: an instance answers initial and shape for every type', () => {
@@ -411,7 +414,8 @@ test('session: an instance answers initial and shape for every type', () => {
       wrong: data.wrong,
       commit: data.commit,
       initial: data.initial(params),
-      demo: null,
+      // Written from the params, never from the data half's `demo`: a demonstrating type plays its order.
+      demo: type.type === 'sequence' ? SAMPLE_PARAMS.sequence.order : null,
     });
   }
 });
@@ -518,8 +522,8 @@ test('session: a wrong reply to a reach post is a mismatch and counts no attempt
 
 /**
  * A fixture view type outside PUZZLE_TYPES (engine plan §7.5): three knobs of 0..2, all 0 at the start, a wrong input its
- * device sees itself (which neither registered view type, `levers` nor `setting`, has), and a saved work that fits while
- * it holds three knobs in range.
+ * device sees itself (as the registered `sequence` has, on a reach type; this one is a commit type), and a saved work
+ * that fits while it holds three knobs in range.
  */
 const KNOBS: PuzzleTypeData<'knobs', { readonly knobs: number }> = {
   type: 'knobs',
@@ -774,6 +778,19 @@ test('session: a local wrong input counts one attempt and the limit ends the ses
   const c = rig();
   expect(c.s.failLocal()).toEqual(err({ kind: 'invalid' }));
   expect(c.dispatch).not.toHaveBeenCalled();
+});
+
+test('sequence: three wrong rings jam the bell', () => {
+  // c2 (D2), the session half on the registered type: a `sequence` world decoded by the real decoder, three attempts.
+  // Each wrong ring is a local wrong (the device reset its presses), counted with no POST; the third ends it failed.
+  const { s, api, dispatch, ends } = rig({ puzzle: { type: 'sequence', params: SAMPLE_PARAMS.sequence, maxAttempts: 3, hintTiers: 0 } });
+  expect(s.instance.wrong).toBe('local');
+  expect(s.failLocal()).toEqual(ok({ kind: 'wrong', attemptsLeft: 2 }));
+  expect(s.failLocal()).toEqual(ok({ kind: 'wrong', attemptsLeft: 1 }));
+  expect(s.failLocal()).toEqual(ok({ kind: 'failed' }));
+  expect(dispatch.mock.calls).toEqual([[FAILED_ATTEMPT], [FAILED_ATTEMPT], [FAILED_ATTEMPT]]);
+  expect(ends).toEqual([{ outcome: 'failed', hintsOpened: 0 }]);
+  expect(api.postAttempt).not.toHaveBeenCalled();
 });
 
 test('session: a view session starts from its saved work when it fits', () => {
