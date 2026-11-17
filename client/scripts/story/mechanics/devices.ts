@@ -6,32 +6,37 @@
 // with no `uses` (`world/device-object`), always present (`world/device-when`), the room's only puzzle lock
 // (`world/device-alone`) and no trigger's `unlock` target (`world/device-unlock`): the arrival hook opens its session,
 // so nothing else may hide, open or replace it. A capped device shows its jam (`world/device-failed-state`), and a `part`
-// atom reads its own room's device within the type's answer shape (`world/device-part`). A `device` naming a hotspot its
-// room lacks is the DSL's `world/unknown-ref`. The types are a parameter (`types`, the registry the world was decoded with: a
-// fixture view type in tests, since no registered type is a view before GM8a). A device carries no text and enters no
+// atom reads its own room's device within the type's answer shape (`world/device-part`). Each part of a device's puzzle,
+// as its type's lint half gives it (`partRects`), lies inside the safe frame, under the device bar's band, with each side
+// at least the hotspot minimum, and over no other part (`world/device-parts-frame`); a view type whose lint half gives no
+// rects is skipped here and held to them by the registry pin. A `device` naming a hotspot its room lacks is the DSL's
+// `world/unknown-ref`. The registries are parameters (`types`, the one the world was decoded with, and `lints`, the
+// puzzle lint halves): a fixture view type in tests beside the registered ones. A device carries no text and enters no
 // knot, so the module has no text or story walker. Build only and pure, no node:*: world.ts imports the registry and
 // scan-dist.ts imports world.ts. Its imports from index.ts and lint.ts are `import type`; it never imports world.ts
-// (index.ts's header). It alone imports geom/cover.ts: the module's src halves stay pure-world.
+// (index.ts's value graph has no edge back), and the puzzle lint registry it reads imports nothing of mechanics/. It
+// alone imports geom/cover.ts: the module's src halves stay pure-world.
 import { hotspotKey, lockOf, own } from '../../../src/explore/reduce.ts';
-import { ROOM_SOURCE } from '../../../src/geom/cover.ts';
+import { HOTSPOT_MIN_SOURCE_PX, HOTSPOT_SAFE_FRAME, ROOM_SOURCE } from '../../../src/geom/cover.ts';
 import { condEntry, condReads } from '../../../src/mechanics/data/conditions.ts';
 import type { Cond } from '../../../src/mechanics/data/conditions.ts';
 import type { PartAtom } from '../../../src/mechanics/data/devices.ts';
 import { PUZZLE_TYPES } from '../../../src/puzzles/rules/index.ts';
 import type { PuzzleTypes } from '../../../src/puzzles/rules/index.ts';
-import type { PuzzleLocalId } from '../../../src/story/staging.ts';
+import type { PuzzleLocalId, Rect } from '../../../src/story/staging.ts';
 import type { Effect, HotspotKey, RoomId } from '../../../src/world/types.ts';
 import type { Finding, Severity } from '../lint.ts';
+import { PUZZLE_LINTS } from '../puzzles/index.ts';
+import type { PuzzleLintRegistry } from '../puzzles/shape.ts';
 import type { WorldLint, WorldLintInput } from './index.ts';
 
 /** Every code of the module with its severity: all errors (a device that breaks one cannot be played or abandoned). */
 export const DEVICES_CODES = {
   'world/view-type-site': 'E',
   'world/device-type': 'E',
-  // Registered with no check behind it yet (RULINGS 353 Q1 (c)): GM8a, the first real view type, adds the part-rects
-  // accessor and the check (each part inside HOTSPOT_SAFE_FRAME, each side at least HOTSPOT_MIN_SOURCE_PX, both from
-  // geom/cover.ts, and its top at or below DEVICE_BAND_Y). No world can hold a device before then: `world/device-type`
-  // refuses every type that is not a view, and none is registered.
+  // This module's check (RULINGS 353 Q1 (c)) over GM8a's part-rects accessor (`PuzzleTypeLint.partRects`): each part
+  // inside HOTSPOT_SAFE_FRAME, each side at least HOTSPOT_MIN_SOURCE_PX, both from geom/cover.ts, its top at or below
+  // DEVICE_BAND_Y, and no part over another.
   'world/device-parts-frame': 'E',
   'world/device-closeup': 'E',
   'world/device-failed-state': 'E',
@@ -59,9 +64,9 @@ export function deviceBandY(barCss: number, insetCss: number): number {
 }
 
 /**
- * Every device part's top edge lies at or below this canonical y (`world/device-parts-frame`, GM8a's check): 64 + 432 =
- * 496 at the 320 px worst case. At the 360 px design width (telegram/viewport.ts, Q67) the same formula gives 448, so
- * 496 is the stricter bound and stays.
+ * Every device part's top edge lies at or below this canonical y (`world/device-parts-frame`, this module's check):
+ * 64 + 432 = 496 at the 320 px worst case. At the 360 px design width (telegram/viewport.ts, Q67) the same formula gives
+ * 448, so 496 is the stricter bound and stays.
  */
 export const DEVICE_BAND_Y = deviceBandY(DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS);
 
@@ -77,13 +82,41 @@ function partsOf(c: Cond): PartAtom[] {
   return kind === 'part' ? [value as PartAtom] : []; // module devices' decoder keeps a `part` atom's value
 }
 
+/** Whether two rects share an area; edge-touching ones do not (world.ts's local copy of the same test). */
+function overlaps(a: Rect, b: Rect): boolean {
+  const [ax, ay, aw, ah] = a;
+  const [bx, by, bw, bh] = b;
+  return ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah;
+}
+
 /**
- * `devices`' lint of one world, against `types`: in source order per room (each device room's `device`: its site, its
- * hotspot and lock, the room's other puzzle locks, its failed state), then per puzzle of a view type (its close-up, then
- * every lock that carries it), then per room again (each trigger list's `unlock` of a device, each visual condition's
- * `part` atoms).
+ * Where `rect` sits among `params`' own keys, by identity: `.<key>` for a value that is it, `.<key>.<i>` for an array
+ * holding it; null when no key holds it (a lint half that returns copies). Both real halves return the decoded params'
+ * own rects (levers' `rects`, setting's `rects` and `pull`).
  */
-export function devicesFindings(input: WorldLintInput, types: PuzzleTypes = PUZZLE_TYPES): Finding[] {
+function paramPath(params: unknown, rect: Rect): string | null {
+  if (typeof params !== 'object' || params === null) {
+    return null;
+  }
+  for (const [key, v] of Object.entries(params)) {
+    if (v === rect) {
+      return `.${key}`;
+    }
+    const i = Array.isArray(v) ? v.indexOf(rect) : -1;
+    if (i >= 0) {
+      return `.${key}.${i}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * `devices`' lint of one world, against `types` and `lints`: in source order per room (each device room's `device`: its
+ * site, its hotspot and lock, the room's other puzzle locks, its failed state, then, in a device room, its puzzle's parts
+ * once per puzzle, at its first device room), then per puzzle of a view type (its close-up, then every lock that carries
+ * it), then per room again (each trigger list's `unlock` of a device, each visual condition's `part` atoms).
+ */
+export function devicesFindings(input: WorldLintInput, types: PuzzleTypes = PUZZLE_TYPES, lints: PuzzleLintRegistry = PUZZLE_LINTS): Finding[] {
   const out: Finding[] = [];
   // A module code takes its own table's severity; the DSL's `world/unknown-ref` is E in lint.ts's table, which this file
   // may only type-import (index.ts's header).
@@ -103,6 +136,50 @@ export function devicesFindings(input: WorldLintInput, types: PuzzleTypes = PUZZ
   // Each device's hotspot key, and each device room's puzzle (its device lock's), for the second pass.
   const deviceKeys = new Set<HotspotKey>();
   const devicePuzzle = new Map<RoomId, PuzzleLocalId>();
+  // The device puzzles whose parts were judged: a puzzle that is the device of two rooms is one root cause, one finding.
+  const judged = new Set<PuzzleLocalId>();
+  const frame = HOTSPOT_SAFE_FRAME;
+  /** The part rects of device puzzle `pid` (null: its type's lint half gives none, D2), judged once. */
+  const partsOfDevice = (pid: PuzzleLocalId): readonly Rect[] | null => {
+    const body = own(w.puzzles, pid);
+    const half = body === undefined || !Object.hasOwn(lints, body.type) ? undefined : lints[body.type];
+    const rects = body === undefined || half?.partRects === undefined ? null : half.partRects(body.params);
+    if (body === undefined || rects === null || judged.has(pid)) {
+      return rects;
+    }
+    judged.add(pid);
+    const top = Math.max(frame.y0, DEVICE_BAND_Y);
+    const floor = frame.y1;
+    rects.forEach((rect, i) => {
+      const [x, y, rw, rh] = rect;
+      const causes: string[] = [];
+      if (x < frame.x0) {
+        causes.push(`starts at x ${x}, left of the safe frame's x ${frame.x0}`);
+      }
+      if (x + rw > frame.x1) {
+        causes.push(`ends at x ${x + rw}, right of the safe frame's x ${frame.x1}`);
+      }
+      if (y < top) {
+        causes.push(`starts at y ${y}, above the device bar's band at y ${top}`);
+      }
+      if (y + rh > floor) {
+        causes.push(`ends at y ${y + rh}, below the safe frame's y ${frame.y1}`);
+      }
+      if (rw < HOTSPOT_MIN_SOURCE_PX || rh < HOTSPOT_MIN_SOURCE_PX) {
+        causes.push(`is ${rw}×${rh}, a side under ${HOTSPOT_MIN_SOURCE_PX} source px`);
+      }
+      rects.slice(0, i).forEach((o, j) => {
+        if (overlaps(rect, o)) {
+          causes.push(`overlaps part ${j}, which then takes its taps`);
+        }
+      });
+      if (causes.length > 0) {
+        const at = `puzzles.${pid}.params${paramPath(body.params, rect) ?? ''}`;
+        report('world/device-parts-frame', at, `part ${i} of puzzle '${pid}' [${rect.join(', ')}] ${causes.join('; ')} (§7.5)`);
+      }
+    });
+    return rects;
+  };
   for (const [sid, s] of Object.entries(w.sections)) {
     for (const [rid, r] of Object.entries(s.rooms)) {
       const room = rid as RoomId; // a key of a decoded section's rooms
@@ -154,6 +231,12 @@ export function devicesFindings(input: WorldLintInput, types: PuzzleTypes = PUZZ
           if (p !== null && capped !== null && !rules.some((x) => condReads(x.when).some((f) => f.kind === 'failed' && f.id === p))) {
             const message = `puzzle '${p}' has maxAttempts ${capped} and no decor or device state reads { failed: '${p}' }: a jammed device never looks live (§7.5)`;
             report('world/device-failed-state', at, message);
+          }
+          // A device room: a view whose `device` hotspot carries a zero-slot lock with a view-type puzzle (the lock the
+          // view-lock pass below marks the device's). Any other room with a `device` key is refused above and judged no
+          // further.
+          if (isViewRoom && lock !== null && lock.slots.length === 0 && p !== null && isView(p)) {
+            partsOfDevice(p);
           }
         }
       }
