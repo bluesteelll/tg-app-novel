@@ -710,8 +710,13 @@ test('story: a device hotspot with a when is refused', () => {
 });
 
 test('story: a device room with another puzzle lock is refused', () => {
-  // A plain slot lock and a lockless object beside the device are allowed; a second puzzle lock is not.
-  const spots = [object('box', lock(null, ['key'])), object('vase', null), object('safe', lock('safe'))];
+  // A plain slot lock and a lockless object beside the device are allowed; a second puzzle lock is not. The spots sit
+  // under the bar's band, as every hotspot of a device room does.
+  const spots = [
+    object('box', lock(null, ['key']), { rect: [100, 800, 200, 200] }),
+    object('vase', null, { rect: [400, 800, 200, 200] }),
+    object('safe', lock('safe'), { rect: [700, 800, 200, 200] }),
+  ];
   expect(lint(deviceWorld({ spots, puzzles: { safe: code(3) } }))).toEqual([
     "world/device-alone sections.s.rooms.panel.hotspots.3.lock.puzzle: hotspot 'safe' carries puzzle 'safe' beside device 'dial': a device room holds no other puzzle lock (§7.5)",
   ]);
@@ -840,6 +845,26 @@ test("story: the device part checks run once per device puzzle, on a view room's
     { puzzles: { dial: leversPuzzle(bad) } },
   );
   expect(lint(twice)).toEqual([partFinding('.rects.0', 0, [79, 800, 150, 150], "starts at x 79, left of the safe frame's x 80")]);
+});
+
+test("story: a device room's hotspot under the bar's band or under a part is refused", () => {
+  // F6: while the device is open its bar covers the band and takes the taps there, and a part takes the taps of what it
+  // lies over. The device's own hotspot draws no button, so it is never judged.
+  const vase = (rect: Rect): string[] => lint(deviceWorld({ spots: [object('vase', null, { rect })], puzzles: { dial: leversPuzzle(PARTS) } }));
+  const cover = (rect: Rect, why: string): string =>
+    `world/device-hotspot-cover sections.s.rooms.panel.hotspots.1.rect: hotspot 'vase' [${rect.join(', ')}] ${why} (§7.5)`;
+  const band = (y: number): string => `starts at y ${y}, above the device bar's band at y ${DEVICE_BAND_Y}, which covers it while the device is open`;
+  // F6a, against the band's constant: a top one px above it, a hotspot wholly above it, one straddling it; a top on it
+  // is clean.
+  const edge: Rect = [700, DEVICE_BAND_Y - 1, 150, 150];
+  expect(vase(edge)).toEqual([cover(edge, band(DEVICE_BAND_Y - 1))]);
+  expect(vase([700, 520, 150, 150])).toEqual([cover([700, 520, 150, 150], band(520))]);
+  expect(vase([700, 600, 200, 200])).toEqual([cover([700, 600, 200, 200], band(600))]);
+  expect(vase([700, DEVICE_BAND_Y, 150, 150])).toEqual([]);
+  // F6b: a part over the hotspot.
+  expect(vase([400, 800, 200, 200])).toEqual([cover([400, 800, 200, 200], "lies under part 1 of puzzle 'dial', which takes its taps")]);
+  // The control: the device's own hotspot under a part.
+  expect(lint(deviceWorld({ dial: object('dial', lock('dial'), { rect: [100, 800, 200, 200] }), puzzles: { dial: leversPuzzle(PARTS) } }))).toEqual([]);
 });
 
 test("devices: every view type's lint half gives its part rects", () => {

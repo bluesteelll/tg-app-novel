@@ -9,7 +9,8 @@
 // atom reads its own room's device within the type's answer shape (`world/device-part`). Each part of a device's puzzle,
 // as its type's lint half gives it (`partRects`), lies inside the safe frame, under the device bar's band, with each side
 // at least the hotspot minimum, and over no other part (`world/device-parts-frame`); a view type whose lint half gives no
-// rects is skipped here and held to them by the registry pin. A `device` naming a hotspot its room lacks is the DSL's
+// rects is skipped here and held to them by the registry pin. Every other hotspot of a device room lies under the band
+// and under no part (`world/device-hotspot-cover`). A `device` naming a hotspot its room lacks is the DSL's
 // `world/unknown-ref`. The registries are parameters (`types`, the one the world was decoded with, and `lints`, the
 // puzzle lint halves): a fixture view type in tests beside the registered ones. A device carries no text and enters no
 // knot, so the module has no text or story walker. Build only and pure, no node:*: world.ts imports the registry and
@@ -45,6 +46,9 @@ export const DEVICES_CODES = {
   'world/device-alone': 'E',
   'world/device-unlock': 'E',
   'world/device-part': 'E',
+  // A device room's other hotspot above the band (the open device's bar covers it and takes its taps) or under a part
+  // (the part takes them): a clue there is lost while the device is open (verify-places F6).
+  'world/device-hotspot-cover': 'E',
 } as const satisfies Readonly<Record<string, Severity>>;
 type DevicesCode = keyof typeof DEVICES_CODES;
 
@@ -65,8 +69,9 @@ export function deviceBandY(barCss: number, insetCss: number): number {
 }
 
 /**
- * Every device part's top edge lies at or below this canonical y (`world/device-parts-frame`, this module's check):
- * 64 + ceil(198 x 3.375) = 64 + 669 = 733 at the 320 px worst case. A 360 px window (`columnScale` 1) gives 658, and a
+ * Every device part's top edge, and every other hotspot's of a device room, lies at or below this canonical y
+ * (`world/device-parts-frame`, `world/device-hotspot-cover`: this module's checks): 64 + ceil(198 x 3.375) = 64 + 669 =
+ * 733 at the 320 px worst case. A 360 px window (`columnScale` 1) gives 658, and a
  * 320 px one under Q67's layer (telegram/viewport.ts) 685, so 733 is the stricter bound and stays.
  */
 export const DEVICE_BAND_Y = deviceBandY(DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS);
@@ -114,8 +119,9 @@ function paramPath(params: unknown, rect: Rect): string | null {
 /**
  * `devices`' lint of one world, against `types` and `lints`: in source order per room (each device room's `device`: its
  * site, its hotspot and lock, the room's other puzzle locks, its failed state, then, in a device room, its puzzle's parts
- * once per puzzle, at its first device room), then per puzzle of a view type (its close-up, then every lock that carries
- * it), then per room again (each trigger list's `unlock` of a device, each visual condition's `part` atoms).
+ * once per puzzle, at its first device room, and the room's other hotspots), then per puzzle of a view type (its
+ * close-up, then every lock that carries it), then per room again (each trigger list's `unlock` of a device, each visual
+ * condition's `part` atoms).
  */
 export function devicesFindings(input: WorldLintInput, types: PuzzleTypes = PUZZLE_TYPES, lints: PuzzleLintRegistry = PUZZLE_LINTS): Finding[] {
   const out: Finding[] = [];
@@ -235,9 +241,26 @@ export function devicesFindings(input: WorldLintInput, types: PuzzleTypes = PUZZ
           }
           // A device room: a view whose `device` hotspot carries a zero-slot lock with a view-type puzzle (the lock the
           // view-lock pass below marks the device's). Any other room with a `device` key is refused above and judged no
-          // further.
+          // further. Its other hotspots are judged per room: the open device's bar and parts cover them.
           if (isViewRoom && lock !== null && lock.slots.length === 0 && p !== null && isView(p)) {
-            partsOfDevice(p);
+            const parts = partsOfDevice(p) ?? [];
+            r.hotspots.forEach((x, j) => {
+              if (x === h) {
+                return; // the device's own hotspot draws no button
+              }
+              const causes: string[] = [];
+              if (x.rect[1] < DEVICE_BAND_Y) {
+                causes.push(`starts at y ${x.rect[1]}, above the device bar's band at y ${DEVICE_BAND_Y}, which covers it while the device is open`);
+              }
+              parts.forEach((o, i) => {
+                if (overlaps(x.rect, o)) {
+                  causes.push(`lies under part ${i} of puzzle '${p}', which takes its taps`);
+                }
+              });
+              if (causes.length > 0) {
+                report('world/device-hotspot-cover', `${base}.hotspots.${j}.rect`, `hotspot '${x.id}' [${x.rect.join(', ')}] ${causes.join('; ')} (§7.5)`);
+              }
+            });
           }
         }
       }
