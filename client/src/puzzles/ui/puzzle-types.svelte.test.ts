@@ -1335,3 +1335,29 @@ test('levers: a coupled throw is one onwork carrying the whole configuration', (
   must(container.querySelector<HTMLButtonElement>('button[data-cue="lever"]')).click();
   expect(onwork.mock.calls).toEqual([[[1, 0, 2], false]]);
 });
+
+test('setting: a pull commits once and calls nothing else', async () => {
+  // D7 (A17): the pull is the device's commit part: one tap, one `oncommit` (which posts the working configuration, as
+  // Try does), and no other callback; while an attempt is in flight it is disabled and calls nothing.
+  const calls: string[] = [];
+  const record: Partial<PuzzleUiProps> = {
+    onchange: () => calls.push('change'),
+    onwork: () => calls.push('work'),
+    oncommit: () => calls.push('commit'),
+    onreach: () => calls.push('reach'),
+  };
+  const { container, rerender } = render(LeverDevice, props({ params: SETTING, answer: [3, 0, 7], ...record }));
+  const pull = must(container.querySelector<HTMLButtonElement>('button[data-cue="setting-pull"]'));
+  pull.click();
+  expect(calls).toEqual(['commit']);
+  // Busy: the pull is disabled, and a tap that reaches it anyway (a stale event) calls nothing.
+  await rerender({ busy: true });
+  expect(pull.disabled).toBe(true);
+  pull.click();
+  pull.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  expect(calls).toEqual(['commit']);
+  // Free again: the next pull commits once more.
+  await rerender({ busy: false });
+  pull.click();
+  expect(calls).toEqual(['commit', 'commit']);
+});
