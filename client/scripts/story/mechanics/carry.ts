@@ -5,11 +5,12 @@
 // and pure, no node:*: world.ts imports the registry and scan-dist.ts imports world.ts. Its imports from index.ts and
 // lint.ts are `import type`; it never imports `world.ts`, `graph.ts` or `softlock.ts` (index.ts's header): story.ts hands
 // it the graph's facts as plain data, and softlock.ts reads its code table.
+import { hotspotKey, lockOf } from '../../../src/explore/reduce.ts';
 import type { KernelWorld } from '../../../src/mechanics/contract.ts';
 import { ownScope } from '../../../src/mechanics/rules/search.ts';
 import type { ChapterId, KnotName, SectionId } from '../../../src/story/staging.ts';
 import { toPublic } from '../../../src/world/decode.ts';
-import type { ItemId, WorldSource } from '../../../src/world/types.ts';
+import type { ItemId, RoomId, WorldSource } from '../../../src/world/types.ts';
 import type { Finding, Severity } from '../lint.ts';
 import type { WorldLint, WorldLintInput } from './index.ts';
 
@@ -191,6 +192,42 @@ export function carryLines(text: string): (path: string) => number {
   };
 }
 
+/**
+ * What in world `w` consumes item `i`, each with its source path at the line naming the item: a kernel lock slot that
+ * accepts it and does not keep it (`mods.use.keep` has no `<HotspotKey>#<slot index>`), a `uses` rule on it without
+ * `keep`, and a recipe with it as an input outside its `keep`; in source order, slots and rules per hotspot first.
+ */
+function consumersOf(w: WorldSource, i: ItemId): Array<{ what: string; path: string }> {
+  const out: Array<{ what: string; path: string }> = [];
+  const kept = new Set(w.mods.use.keep);
+  for (const [s, section] of Object.entries(w.sections)) {
+    for (const [room, r] of Object.entries(section.rooms)) {
+      r.hotspots.forEach((h, n) => {
+        const key = hotspotKey(room as RoomId, h.id); // a decoded world's room key
+        const at = `sections.${s}.rooms.${room}.hotspots.${n}`;
+        lockOf(h)?.slots.forEach((slot, j) => {
+          if (slot.accepts === i && !kept.has(`${key}#${j}`)) {
+            out.push({ what: `slot ${key}#${j}`, path: `${at}.lock.slots.${j}.accepts` });
+          }
+        });
+        (w.mods.use.uses[key] ?? []).forEach((rule, j) => {
+          if (rule.item === i && !rule.keep) {
+            out.push({ what: `rule ${j} of ${key}`, path: `${at}.uses.${j}.item` });
+          }
+        });
+      });
+    }
+  }
+  w.mods.combine.recipes.forEach((r, n) => {
+    for (const side of ['a', 'b'] as const) {
+      if (r[side] === i && !r.keep.includes(i)) {
+        out.push({ what: `recipe ${n}`, path: `recipes.${n}.${side}` });
+      }
+    }
+  });
+  return out;
+}
+
 /** One registry row that passed its checks: the item's giving chapter and the row's index. */
 type Row = { readonly from: ChapterId; readonly at: number };
 type Report = (code: CarryProofCode, file: string, line: number, message: string) => void;
@@ -266,7 +303,8 @@ function registryOf(text: string | null, listed: ReadonlySet<ChapterId>, report:
  * at its giving chapter or at a chapter that inherits it (`world/carry-mark`); for each required item, its giver section
  * yielded and no continuing END reachable around that section's yields (`world/carry-required-path`), and each knot
  * holding such a yield reaching one of them on every entry (`world/carry-giver-prefix`: a path through the knot then
- * passes the yield). Returns the
+ * passes the yield); and no chapter of a receiver's chain from the giver through the receiver consuming a required item
+ * (`world/carry-consumed`: it is injected at the receiver's start, so it must stay held all the way). Returns the
  * findings and, per giver section of a required item, the leave search story.ts runs (`world/carry-leave`). A mark with
  * a row and no receiver is no finding: a story may carry an item into a chapter not yet written.
  */
@@ -318,8 +356,10 @@ export function carryProof(input: CarryInput): { findings: Finding[]; leaves: Le
     }
   }
 
-  // Each receiver's inherited items, in list order; each required one's (giver, item) once, with its first receiver.
+  // Each receiver's inherited items, in list order; each required one's (giver, item) once, with its first receiver;
+  // and every (giver, item, receiver) of a required one, for the consumed check.
   const required = new Map<string, { from: CarryChapter; item: ItemId; receiver: ChapterId }>();
+  const held: Array<{ from: ChapterId; item: ItemId; receiver: ChapterId }> = [];
   for (const r of input.chapters) {
     if (r.world.kind !== 'ok') {
       continue;
@@ -339,10 +379,38 @@ export function carryProof(input: CarryInput): { findings: Finding[]; leaves: Le
         refuse(from.id === r.id ? `${ITEMS_FILE} gives it from ${r.id} itself` : `it comes from ${from.id}, which is not before ${r.id} on its chain`);
       } else if (from.world.kind === 'ok' && !from.world.source.mods.carry.marks.includes(e.id)) {
         refuse(`${from.id}'s world does not mark it carry: true`);
-      } else if (e.required && from.world.kind === 'ok' && !required.has(`${from.id}.${e.id}`)) {
-        required.set(`${from.id}.${e.id}`, { from, item: e.id, receiver: r.id });
+      } else if (e.required && from.world.kind === 'ok') {
+        held.push({ from: from.id, item: e.id, receiver: r.id });
+        if (!required.has(`${from.id}.${e.id}`)) {
+          required.set(`${from.id}.${e.id}`, { from, item: e.id, receiver: r.id });
+        }
       }
     });
+  }
+
+  // Each required item, from its giver through each receiver of it: no chapter on the way consumes it (the giver and
+  // the receiver included). One finding per consumer, however many receivers' chains pass it.
+  const consumed = new Set<string>();
+  for (const { from, item, receiver } of held) {
+    const chain: ChapterId[] = [receiver];
+    for (let c = before.get(receiver); c !== undefined && chain.at(-1) !== from; c = before.get(c)) {
+      chain.push(c); // `from` is earlier on the receiver's chain (checked above), so the walk ends there
+    }
+    for (const c of chain.reverse()) {
+      const w = byId.get(c)?.world;
+      if (w?.kind !== 'ok') {
+        continue;
+      }
+      const line = carryLines(w.text);
+      for (const { what, path } of consumersOf(w.source, item)) {
+        const message = `item '${item}' is inherited as required from ${from}, but ${what} consumes it: a required carried item stays held from its giver through its receiver (§6.6)`;
+        const at = `${worldFile(c)}:${line(path)}:${message}`;
+        if (!consumed.has(at)) {
+          consumed.add(at);
+          report('world/carry-consumed', worldFile(c), line(path), message);
+        }
+      }
+    }
   }
 
   // Each mark: registered, and at its giving chapter or at a chapter that inherits it (a chain item's re-mark).

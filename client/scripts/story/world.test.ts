@@ -2718,11 +2718,18 @@ function carryWorldOf(w: Json): CarryWorld {
   return { kind: 'ok', source: decoded.world, text };
 }
 
-/** The demo manor marking the sun medallion, which its study gives. */
+/** The demo manor marking the sun medallion, which its study gives and its gate's slot keeps (a required carried item
+ *  is never used up on its way, §6.6). */
 function giver(): Json {
   const w = base();
   at(w, 'items.medal_sun')['carry'] = true;
+  list(obj(gateOf(w)['lock'])['slots'])[0] = { accepts: 'medal_sun', keep: true };
   return w;
+}
+
+/** The demo manor's gate, whose lock's slot 0 accepts the sun medallion. */
+function gateOf(w: Json): Json {
+  return obj(hotspots(w, 'hall').find((h) => h['id'] === 'gate'));
 }
 
 /** A small receiving world declaring the sun medallion, which no section of it gives, inheriting `inherits`. */
@@ -3320,3 +3327,78 @@ test(
   },
   IN_PROCESS_TIMEOUT_MS,
 );
+
+test('carry: a required item consumable later is refused', () => {
+  type Form = 'slot' | 'rule' | 'recipe';
+  const FORMS: readonly Form[] = ['slot', 'rule', 'recipe'];
+  /** `form` consuming the sun medallion (`keep`: keeping it) in the manor: the gate's slot, a rule on the inscription, a
+   *  recipe. */
+  const manor = (form: Form | null, keep: boolean): Json => {
+    const w = giver();
+    if (form === 'slot') {
+      list(obj(gateOf(w)['lock'])['slots'])[0] = { accepts: 'medal_sun', ...(keep ? { keep: true } : {}) };
+    } else if (form === 'rule') {
+      spot(w, 'hall', 'inscription')['uses'] = [{ item: 'medal_sun', ...(keep ? { keep: true } : {}), do: [] }];
+    } else if (form === 'recipe') {
+      obj(w['items'])['coin'] = { name: t('coin', 'Монета'), desc: t('coin', 'Старая монета.'), glyph: 'key' };
+      obj(w['items'])['amulet'] = { name: t('amulet', 'Амулет'), desc: t('amulet', 'Монета в оправе.'), glyph: 'key' };
+      w['recipes'] = [{ a: 'medal_sun', b: 'coin', gives: 'amulet', ...(keep ? { keep: ['medal_sun'] } : {}) }];
+    }
+    return w;
+  };
+  /** A small world declaring the medallion and a recipe's coin and amulet, none of which it gives; `form` consumes the
+   *  medallion (`keep`: keeps it) on its hall's box or as a recipe; `inherits` set unless null. */
+  const holder = (form: Form | null, keep: boolean, inherits: readonly Json[] | null = null): Json => {
+    const slot = { accepts: 'medal_sun', ...(keep ? { keep: true } : {}) };
+    const box = form === 'slot' ? [object('box', { ...lockOf([]), slots: [slot] })] : form === 'rule' ? [{ ...object('box', null), uses: [{ item: 'medal_sun', ...(keep ? { keep: true } : {}), do: [] }] }] : [];
+    const w = mini({ items: ['medal_sun', 'coin', 'amulet'], sections: { s: { start: 'hall', rooms: { hall: [leave('out'), ...box] } } } });
+    if (form === 'recipe') {
+      w['recipes'] = [{ a: 'medal_sun', b: 'coin', gives: 'amulet', ...(keep ? { keep: ['medal_sun'] } : {}) }];
+    }
+    if (inherits !== null) {
+      w['inherits'] = inherits;
+    }
+    return w;
+  };
+  const REQUIRED: readonly Json[] = [{ id: 'medal_sun', required: true }];
+  /** ch1 gives the medallion, ch2 passes it on, ch3 inherits it as required, ch4 follows; `w` replaces chapter `place`. */
+  const chain = (place: string, w: Json, ch2Inherits: readonly Json[] | null = null): CarryChapter[] => {
+    const worlds: Record<string, Json> = { ch1: giver(), ch2: holder(null, false, ch2Inherits), ch3: holder(null, false, REQUIRED), ch4: holder(null, false), [place]: w };
+    return ['ch1', 'ch2', 'ch3', 'ch4'].map((c, i, all) => carryChapter(c, all[i + 1] ?? null, worlds[c] ?? null));
+  };
+  /** The pass's consumed findings as `code file:line message`; every other carry rule holds (the chain is valid). */
+  const consumed = (chapters: readonly CarryChapter[]): string[] => {
+    const found = carryProof({ chapters, registry: SUN_ROW }).findings;
+    expect(found.filter((f) => f.code !== 'world/carry-consumed')).toEqual([]);
+    return found.filter((f) => f.code === 'world/carry-consumed').map((f) => `${f.code} ${f.file}:${f.line} ${f.message}`);
+  };
+  const refusal = (c: string, line: number, what: string): string =>
+    `world/carry-consumed story/${c}/world.json:${line} item 'medal_sun' is inherited as required from ch1, but ${what} consumes it: a required carried item stays held from its giver through its receiver (§6.6)`;
+  /** The consumer's line (the line naming the item) and its name, in world `w`. */
+  const consumer = (form: Form, w: Json, hotspot: string): [number, string] =>
+    form === 'slot' ? [jsonLine(w, '"accepts": "medal_sun"'), `slot ${hotspot}#0`] : form === 'rule' ? [jsonLine(w, '"uses": [') + 2, `rule 0 of ${hotspot}`] : [jsonLine(w, '"a": "medal_sun"'), 'recipe 0'];
+
+  // The control: nothing on the way consumes the medallion.
+  expect(consumed(chain('ch1', giver()))).toEqual([]);
+  for (const form of FORMS) {
+    // In the giver, an intermediate chapter and the receiver: refused at the consumer; each with `keep`: clean.
+    const rows: ReadonlyArray<readonly [c: string, make: (keep: boolean) => Json, hotspot: string]> = [
+      ['ch1', (keep) => manor(form, keep), form === 'slot' ? 'hall.gate' : 'hall.inscription'],
+      ['ch2', (keep) => holder(form, keep), 'hall.box'],
+      ['ch3', (keep) => holder(form, keep, REQUIRED), 'hall.box'],
+    ];
+    for (const [c, make, hotspot] of rows) {
+      const w = make(false);
+      const [line, what] = consumer(form, w, hotspot);
+      expect(consumed(chain(c, w)), `${form} in ${c}`).toEqual([refusal(c, line, what)]);
+      expect(consumed(chain(c, make(true))), `${form} in ${c}, kept`).toEqual([]);
+    }
+    // After the receiver (ch4), and in a receiver that inherits it as optional: clean.
+    expect(consumed(chain('ch4', holder(form, false))), `${form} in ch4`).toEqual([]);
+    expect(consumed(chain('ch3', holder(form, false, [{ id: 'medal_sun', required: false }]))), `${form} in an optional receiver`).toEqual([]);
+  }
+  // Two receivers whose chains both pass the consumer (ch2 and ch3 each inherit it as required): one finding.
+  const gate = manor('slot', false);
+  const [line] = consumer('slot', gate, 'hall.gate');
+  expect(consumed(chain('ch1', gate, REQUIRED))).toEqual([refusal('ch1', line, 'slot hall.gate#0')]);
+});
