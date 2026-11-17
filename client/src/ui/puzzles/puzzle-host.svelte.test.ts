@@ -681,7 +681,8 @@ test('puzzles: every declared control emits its cue', () => {
         place: 'room',
       },
     ],
-    // The push devices in their room (GM8b): a sequence device's parts, then a ritual device's, each pressed at touch.
+    // The push devices in their room (GM8b): a sequence device's parts and its replay, then a ritual device's parts, each
+    // part pressed at touch.
     [
       'sequence',
       {
@@ -793,6 +794,7 @@ test('puzzles: every declared control emits its cue', () => {
       'puzzle-hint',
       'puzzle-retry',
       'puzzle-try',
+      'sequence-replay',
       'setting-part',
       'setting-pull',
     ].map(

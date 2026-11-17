@@ -1457,8 +1457,8 @@ test('sequence, ritual: the shared device renders the type its params decode as'
   for (const lang of LANGS) {
     // A sequence: one push per part, each named by its number; the rule line, and the line that counts the presses.
     const s = render(ButtonDevice, props({ params: SEQUENCE, answer: [0], lang }));
-    expect(cuesOf(s.container), lang).toEqual(['push', 'push', 'push']);
-    expect(labelsOf(s.container), lang).toEqual([1, 2, 3].map((n) => mechT(lang, 'mech.button_part', { n })));
+    expect(cuesOf(s.container), lang).toEqual(['push', 'push', 'push', 'sequence-replay']);
+    expect(labelsOf(s.container), lang).toEqual([...[1, 2, 3].map((n) => mechT(lang, 'mech.button_part', { n })), mechT(lang, 'mech.sequence_replay')]);
     expect(shown(must(s.container.querySelector('.how'))), lang).toBe(mechT(lang, 'mech.sequence_rule'));
     expect(shown(must(s.container.querySelector('[role="status"]'))), lang).toBe(mechT(lang, 'mech.button_progress', { k: 1, n: 3 }));
     s.unmount();
@@ -1480,22 +1480,28 @@ test('sequence, ritual: the shared device renders the type its params decode as'
 });
 
 test("sequence, ritual: each part sits on its rect over the room's cover", () => {
-  // D7, D10: the room's cover, the levers' transform. At 0.5 the parts [80 | 270 | 460, 760, 150, 150] are 75 px squares.
+  // D7, D10: the room's cover, the levers' transform. At 0.5 the parts [80 | 270 | 460, 760, 150, 150] are 75 px squares,
+  // and the replay on its own rect [650, 760, 150, 150] after them.
   const half = measured(540, 1024, { params: SEQUENCE, answer: [] }, ButtonDevice);
   expect(boxes(half.container)).toEqual([
     ['40px', '380px', '75px', '75px'],
     ['135px', '380px', '75px', '75px'],
     ['230px', '380px', '75px', '75px'],
+    ['325px', '380px', '75px', '75px'],
   ]);
   half.unmount();
   // At 0.25 each 37.5 px side grows to 44 around its centre (PART_MIN_PX), the ritual's parts as the sequence's.
-  for (const params of [SEQUENCE, RITUAL]) {
+  const quarterParts = [
+    ['16.75px', '186.75px', '44px', '44px'],
+    ['64.25px', '186.75px', '44px', '44px'],
+    ['111.75px', '186.75px', '44px', '44px'],
+  ];
+  for (const [params, expected] of [
+    [SEQUENCE, [...quarterParts, ['159.25px', '186.75px', '44px', '44px']]],
+    [RITUAL, quarterParts],
+  ] as const) {
     const quarter = measured(270, 512, { params, answer: [] }, ButtonDevice);
-    expect(boxes(quarter.container).slice(0, 3)).toEqual([
-      ['16.75px', '186.75px', '44px', '44px'],
-      ['64.25px', '186.75px', '44px', '44px'],
-      ['111.75px', '186.75px', '44px', '44px'],
-    ]);
+    expect(boxes(quarter.container)).toEqual(expected);
     quarter.unmount();
   }
 });
@@ -1503,14 +1509,16 @@ test("sequence, ritual: each part sits on its rect over the room's cover", () =>
 test('sequence, ritual: the parts take their own taps and open no callout', () => {
   // T34 (A7): the host's device and parts layers take no tap, so each part declares its own; a long-press on one opens
   // no iOS callout, and the device selects no text. happy-dom computes no style: read from the source.
-  const rule = declarationsFor(buttonSource, 'part');
-  expect([rule.get('pointer-events'), rule.get('-webkit-touch-callout'), rule.get('position')]).toEqual(['auto', 'none', 'absolute']);
+  for (const cls of ['part', 'replay']) {
+    const rule = declarationsFor(buttonSource, cls);
+    expect([rule.get('pointer-events'), rule.get('-webkit-touch-callout'), rule.get('position')], cls).toEqual(['auto', 'none', 'absolute']);
+  }
   const root = declarationsFor(buttonSource, 'device-parts');
   expect([root.get('pointer-events'), root.get('user-select'), root.get('-webkit-user-select')]).toEqual(['none', 'none', 'none']);
   // The rendered elements carry the classes the rules name.
   const s = render(ButtonDevice, props({ params: SEQUENCE, answer: [] }));
-  const classes = [...s.container.querySelectorAll('button')].map((b) => [...b.classList].filter((c) => c === 'part'));
-  expect(classes).toEqual([['part'], ['part'], ['part']]);
+  const classes = [...s.container.querySelectorAll('button')].map((b) => [...b.classList].filter((c) => c === 'part' || c === 'replay'));
+  expect(classes).toEqual([['part'], ['part'], ['part'], ['replay']]);
   expect(s.container.querySelectorAll('.device-parts')).toHaveLength(1);
 });
 
@@ -1749,7 +1757,8 @@ test('puzzles: a push button emits its cue on pointerdown', () => {
 
 test('sequence, ritual: a press after unmount reports nothing', async () => {
   // A7 (M2, A18): every handler is delegated to the mount root, which a detached part's events never reach. The control
-  // first: before the unmount a part's pointerdown, then a key and the keyboard's click on it, are two presses.
+  // first: before the unmount a part's pointerdown, then a key and the keyboard's click on it, are two presses; a
+  // sequence's replay click is one demonstration.
   for (const params of [SEQUENCE, RITUAL]) {
     const calls: string[] = [];
     const record: Partial<PuzzleUiProps> = {
@@ -1762,18 +1771,65 @@ test('sequence, ritual: a press after unmount reports nothing', async () => {
     };
     const view = render(ButtonDevice, props({ params, answer: [], ...record }));
     const part = must(pushParts(view.container)[0]);
+    const replay = view.container.querySelector<HTMLButtonElement>('button[data-cue="sequence-replay"]');
     pointerDown(part);
     keyDown(part);
     clickOf(part, 0);
-    const before = ['work [0] false', 'work [0] false'];
-    expect(calls, JSON.stringify(params)).toEqual(before);
+    if (replay !== null) {
+      clickOf(replay, 1);
+    }
+    const before = params === SEQUENCE ? ['work [0] false', 'work [0] false', 'demo'] : ['work [0] false', 'work [0] false'];
+    expect([calls, replay === null], JSON.stringify(params)).toEqual([before, params !== SEQUENCE]);
     view.unmount();
-    // After the unmount: every input on the detached part, then a microtask, adds nothing.
+    // After the unmount: every input on the detached part and replay, then a microtask, adds nothing.
     pointerDown(part);
     clickOf(part, 0);
     clickOf(part, 1);
     keyDown(part);
+    if (replay !== null) {
+      clickOf(replay, 1);
+      clickOf(replay, 0);
+    }
     await Promise.resolve();
     expect(calls, JSON.stringify(params)).toEqual(before);
+  }
+});
+
+test('puzzles: the replay control asks for the demonstration', async () => {
+  // c4 (D5): under a family root, a tap on the replay plays its cue (the root's capture listener, first), then exactly one
+  // `ondemo`. It follows busy as the parts do (disabled: a click on it reaches nothing in happy-dom) and stays enabled on a
+  // full answer: a demonstration changes no work.
+  const host = document.createElement('div');
+  host.setAttribute('data-cue-root', '');
+  const target = document.createElement('div');
+  host.append(target);
+  document.body.append(host);
+  const log: string[] = [];
+  const root = cueRoot(host, (e: CueEvent) => {
+    if (e.cue.kind === 'ui') {
+      log.push(`ui:${e.cue.control}`);
+    }
+  });
+  try {
+    const view = render(ButtonDevice, { target, props: props({ params: SEQUENCE, answer: [], ondemo: () => log.push('demo') }) });
+    const replay = must(target.querySelector<HTMLButtonElement>('button[data-cue="sequence-replay"]'));
+    expect(replay.hasAttribute('data-cue-part')).toBe(false);
+    pointerDown(replay);
+    clickOf(replay, 1);
+    expect(log).toEqual(['ui:sequence-replay', 'demo']);
+    await view.rerender({ busy: true });
+    expect(replay.disabled).toBe(true);
+    clickOf(replay, 1);
+    expect(log).toEqual(['ui:sequence-replay', 'demo']);
+    // Free, on a full answer (reached, its POST done or pending): enabled, one tap, one demonstration.
+    await view.rerender({ busy: false, answer: [0, 2, 1] });
+    expect(replay.disabled).toBe(false);
+    pointerDown(replay);
+    clickOf(replay, 1);
+    expect(log).toEqual(['ui:sequence-replay', 'demo', 'ui:sequence-replay', 'demo']);
+    view.unmount();
+  } finally {
+    root.destroy();
+    host.remove();
   }
 });

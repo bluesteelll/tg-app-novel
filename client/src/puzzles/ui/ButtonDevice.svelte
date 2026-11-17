@@ -14,8 +14,10 @@
   // appends and is never wrong (the host posts the full list, `commit: 'full'`; its reply says). A `sequence`
   // report is the reach edge's (`puzzles/play/reach.ts`) over the `answer` prop, never a handler's: once per turn to
   // reached, at mount too. The rule order of a press (D5): busy, nothing; a full answer, `onblocked`; else the type's
-  // press. Busy disables every part, and every handler is delegated to the mount root, so none outlives the component.
-  // Params neither type decodes render nothing actionable.
+  // press. A `sequence` also shows its replay, a button on its own rect and no part (it is no position of the answer),
+  // whose click asks for the demonstration once (`ondemo`); a demonstration changes no work, so a full answer leaves it
+  // enabled. Busy disables every part and the replay, and every handler is delegated to the mount root, so none outlives
+  // the component. Params neither type decodes render nothing actionable.
   import { cover, minTarget, ROOM_SOURCE, toStage } from '../../geom/cover.ts';
   import type { Box } from '../../geom/cover.ts';
   import { mechT } from '../../i18n/mechanics.ts';
@@ -27,7 +29,7 @@
   import type { PuzzleUiProps } from '../registry.ts';
   import { PUZZLE_RULES } from '../rules/index.ts';
 
-  let { params, answer, busy, lang, onwork, onreach, onblocked }: PuzzleUiProps = $props();
+  let { params, answer, busy, lang, onwork, onreach, ondemo, onblocked }: PuzzleUiProps = $props();
 
   const uid = $props.id();
   /** The root's size in CSS px, from its bindings: 0 x 0 until it is laid out. */
@@ -120,6 +122,14 @@
   function disarm(): void {
     armed = null;
   }
+
+  /** The replay's click: the demonstration, once; busy, nothing. */
+  function replay(): void {
+    if (busy) {
+      return;
+    }
+    ondemo?.();
+  }
 </script>
 
 {#if device !== null}
@@ -148,12 +158,29 @@
         <span aria-hidden="true">{i + 1}</span>
       </button>
     {/each}
+    {#if sequence !== null}
+      {@const replayBox = boxOf(sequence.replay)}
+      <button
+        type="button"
+        class="replay"
+        data-cue="sequence-replay"
+        style:left="{replayBox.x}px"
+        style:top="{replayBox.y}px"
+        style:width="{replayBox.w}px"
+        style:height="{replayBox.h}px"
+        aria-label={mechT(lang, 'mech.sequence_replay')}
+        disabled={busy}
+        onclick={replay}
+      >
+        <span aria-hidden="true">↻</span>
+      </button>
+    {/if}
   </div>
 {/if}
 
 <style>
-  /* The device fills the host's parts layer, which takes no tap (T34): only the parts do. A double tap or a drag over the
-     device selects no text. */
+  /* The device fills the host's parts layer, which takes no tap (T34): only the parts and the replay do. A double tap or a
+     drag over the device selects no text. */
   .device-parts {
     position: absolute;
     inset: 0;
@@ -174,8 +201,9 @@
   }
 
   /* Each on its rect (inline left, top, width, height); a long-press on one opens no iOS callout. Until GM8d's art, a
-     framed tile with its number. */
-  .part {
+     framed tile with its number, the replay with its glyph. */
+  .part,
+  .replay {
     position: absolute;
     pointer-events: auto;
     -webkit-touch-callout: none;
@@ -193,7 +221,8 @@
     font-size: 18px;
   }
 
-  .part:disabled {
+  .part:disabled,
+  .replay:disabled {
     opacity: 0.5;
   }
 </style>
