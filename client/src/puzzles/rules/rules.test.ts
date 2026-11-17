@@ -13,16 +13,22 @@ import { GRID_PLAY, place } from '../play/grid.ts';
 import { LEVERS_PLAY, PART_MIN_PX, throwPart } from '../play/levers.ts';
 import { ORDER_PLAY } from '../play/order.ts';
 import { PATH_PLAY, advance, cellAt, cellsAlong, touch } from '../play/path.ts';
+import { RITUAL_PLAY, pressRitual } from '../play/ritual.ts';
+import { PART_MIN_PX as BUTTON_PART_MIN_PX, SEQUENCE_PLAY, pressSequence } from '../play/sequence.ts';
 import { SETTING_PLAY, turnKnob } from '../play/setting.ts';
 import { PUZZLE_UI } from '../registry.ts';
 import { GRID_RULES } from './grid.ts';
 import type { GridParams } from './grid.ts';
-import { PUZZLE_RULES, PUZZLE_TYPES } from './index.ts';
+import { PUZZLE_RULES, PUZZLE_TYPES, instanceOf } from './index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from './index.ts';
 import { LEVERS_FIT_STEPS, LEVERS_RULES, reachable } from './levers.ts';
 import type { LeversParams } from './levers.ts';
 import { PATH_RULES } from './path.ts';
 import type { PathParams } from './path.ts';
+import { RITUAL_RULES } from './ritual.ts';
+import type { RitualParams } from './ritual.ts';
+import { SEQUENCE_RULES } from './sequence.ts';
+import type { SequenceParams } from './sequence.ts';
 import { SETTING_RULES } from './setting.ts';
 import type { SettingParams } from './setting.ts';
 
@@ -729,6 +735,247 @@ test("levers: a part's least side is the hotspots' minimum", () => {
   // A3: the device's parts take taps as the room's hotspots do; a literal in the play half (the controller is the explore
   // family's chunk), held equal to the controller's here.
   expect(PART_MIN_PX).toBe(MIN_TARGET_PX);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The push devices (engine plan §7.2, §7.5; GM8b D3, D5, D6, D9, D10): `sequence` repeats a shown order, a wrong press
+// resetting it on the device; `ritual` takes `length` presses with no right or wrong until the server's reply.
+
+/** Slot `i` of a 5-column grid of 150 px squares inside the safe frame and the band, none overlapping (GM8b-B4). */
+const slot = (i: number): Rect => [80 + (i % 5) * 190, 760 + Math.floor(i / 5) * 200, 150, 150];
+/** `n` part rects, slots 0..`n - 1`; slot `n` is the replay's. */
+const rowRects = (n: number): Rect[] => Array.from({ length: n }, (_, i) => slot(i));
+/** 3 parts, the order 0 2 1 (no palindrome: a reversed demonstration differs), the replay in slot 3. */
+const SQ3: SequenceParams = { parts: 3, order: [0, 2, 1], rects: rowRects(3), replay: slot(3) };
+/** 3 parts, 5 presses. */
+const RT35: RitualParams = { parts: 3, length: 5, rects: rowRects(3) };
+
+test('rules: sequence params decode strictly', () => {
+  const ok = (raw: unknown): SequenceParams => {
+    const r = SEQUENCE_RULES.decodeParams(raw);
+    if (!r.ok) {
+      throw new Error(`expected ${JSON.stringify(raw)} to decode: ${r.error}`);
+    }
+    return r.value;
+  };
+  expect(ok(SQ3)).toEqual(SQ3);
+  // Decode returns its own arrays, and its output decodes to itself (the frame's params are the decoder's output).
+  const out = ok(SQ3);
+  expect([out.order === SQ3.order, out.rects === SQ3.rects, out.rects[0] === SQ3.rects[0], out.replay === SQ3.replay]).toEqual([false, false, false, false]);
+  expect(ok(out)).toEqual(SQ3);
+  // Each bound's edge: 2 and 8 parts, 2 and 12 presses in the order.
+  const two = { parts: 2, order: [1, 0], rects: rowRects(2), replay: slot(2) };
+  expect(ok(two)).toEqual(two);
+  const eight = { parts: 8, order: [7, 0], rects: rowRects(8), replay: slot(8) };
+  expect(ok(eight)).toEqual(eight);
+  const twelve = { ...SQ3, order: [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2] };
+  expect(ok(twelve)).toEqual(twelve);
+  // Repeats, adjacent ones too, and a part the order never names (a decoy) are legal.
+  expect(ok({ ...SQ3, order: [0, 1, 0] }).order).toEqual([0, 1, 0]);
+  expect(ok({ ...SQ3, order: [0, 0] }).order).toEqual([0, 0]);
+  const decoy = { parts: 4, order: [0, 2, 1], rects: rowRects(4), replay: slot(4) };
+  expect(ok(decoy)).toEqual(decoy);
+  const refused: ReadonlyArray<readonly [unknown, string]> = [
+    [{ ...SQ3, parts: 1, rects: rowRects(1) }, 'parts must be an integer in 2..8'],
+    [{ ...SQ3, parts: 9, rects: rowRects(9) }, 'parts must be an integer in 2..8'],
+    [{ ...SQ3, parts: 2.5 }, 'parts must be an integer in 2..8'],
+    [{ ...SQ3, order: [0] }, 'order must be an array of 2..12 parts'],
+    [{ ...SQ3, order: [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0] }, 'order must be an array of 2..12 parts'],
+    [{ ...SQ3, order: { 0: 0, 1: 2 } }, 'order must be an array of 2..12 parts'],
+    [{ ...SQ3, order: [0, 2, 3] }, 'order: 3 at 2 is not a part in 0..2'],
+    [{ ...SQ3, order: [-1, 2, 1] }, 'order: -1 at 0 is not a part in 0..2'],
+    [{ ...SQ3, order: [0, 0.5, 1] }, 'order: 0.5 at 1 is not a part in 0..2'],
+    [{ ...SQ3, order: [0, '1', 1] }, 'order: "1" at 1 is not a part in 0..2'],
+    [{ ...SQ3, rects: rowRects(2) }, 'rects must be an array of 3 rects'],
+    // The replay is a rect of its own (D7), required.
+    [{ parts: 3, order: [0, 2, 1], rects: rowRects(3) }, 'missing key replay'],
+    [{ ...SQ3, replay: [650, 760, 150] }, 'replay: [650,760,150] is not [x, y, w, h] in integers'],
+    [{ ...SQ3, replay: [650, 760, 0, 150] }, 'replay: [650,760,0,150]: x, y must be ≥ 0 and w, h > 0'],
+    // The other devices' keys are refused: the four key sets are disjoint, so a strict decoder tells them apart.
+    [{ ...SQ3, length: 5 }, "unknown key length (a sequence puzzle has 'parts', 'order', 'rects', 'replay')"],
+    [RT35, "unknown key length (a sequence puzzle has 'parts', 'order', 'rects', 'replay')"],
+    [L23, "unknown key positions, couples, target (a sequence puzzle has 'parts', 'order', 'rects', 'replay')"],
+    [null, 'params is not an object'],
+    [[3, [0, 2, 1]], 'params is not an object'],
+  ];
+  for (const [r, error] of refused) {
+    expect(SEQUENCE_RULES.decodeParams(r), JSON.stringify(r)).toEqual({ ok: false, error });
+  }
+});
+
+test('rules: ritual params decode strictly', () => {
+  const ok = (raw: unknown): RitualParams => {
+    const r = RITUAL_RULES.decodeParams(raw);
+    if (!r.ok) {
+      throw new Error(`expected ${JSON.stringify(raw)} to decode: ${r.error}`);
+    }
+    return r.value;
+  };
+  expect(ok(RT35)).toEqual(RT35);
+  const out = ok(RT35);
+  expect([out.rects === RT35.rects, out.rects[0] === RT35.rects[0]]).toEqual([false, false]);
+  expect(ok(out)).toEqual(RT35);
+  // Each bound's edge: 2 and 6 parts, 3 and 12 presses.
+  for (const [parts, length] of [
+    [2, 3],
+    [6, 12],
+    [2, 12],
+    [6, 3],
+  ] as const) {
+    const raw = { parts, length, rects: rowRects(parts) };
+    expect(ok(raw), JSON.stringify(raw)).toEqual(raw);
+  }
+  const refused: ReadonlyArray<readonly [unknown, string]> = [
+    [{ ...RT35, parts: 1, rects: rowRects(1) }, 'parts must be an integer in 2..6'],
+    [{ ...RT35, parts: 7, rects: rowRects(7) }, 'parts must be an integer in 2..6'],
+    [{ ...RT35, length: 2 }, 'length must be an integer in 3..12'],
+    [{ ...RT35, length: 13 }, 'length must be an integer in 3..12'],
+    [{ ...RT35, length: 4.5 }, 'length must be an integer in 3..12'],
+    [{ ...RT35, rects: rowRects(4) }, 'rects must be an array of 3 rects'],
+    [{ parts: 3, rects: rowRects(3) }, 'missing key length'],
+    [{ ...RT35, order: [0, 1, 2] }, "unknown key order (a ritual puzzle has 'parts', 'length', 'rects')"],
+    [SQ3, "unknown key order, replay (a ritual puzzle has 'parts', 'length', 'rects')"],
+    [null, 'params is not an object'],
+  ];
+  for (const [r, error] of refused) {
+    expect(RITUAL_RULES.decodeParams(r), JSON.stringify(r)).toEqual({ ok: false, error });
+  }
+});
+
+test('rules: sequence and ritual answer one part per press, from empty', () => {
+  // A press list: its length is the order's (GM7r Q-08) or `length`, each entry a part.
+  expect(SEQUENCE_RULES.answerShape(SQ3)).toEqual({ len: 3, max: 2 });
+  expect(SEQUENCE_RULES.answerShape({ parts: 4, order: [3, 3, 0, 1, 2], rects: rowRects(4), replay: slot(4) })).toEqual({ len: 5, max: 3 });
+  expect(RITUAL_RULES.answerShape(RT35)).toEqual({ len: 5, max: 2 });
+  // Both start empty (value-indexed, GM8h2 D9), each time a fresh array, and show no full-length configuration first.
+  expect([SEQUENCE_RULES.initial(SQ3), RITUAL_RULES.initial(RT35)]).toEqual([[], []]);
+  expect(SEQUENCE_RULES.initial(SQ3)).not.toBe(SEQUENCE_RULES.initial(SQ3));
+  expect(RITUAL_RULES.initial(RT35)).not.toBe(RITUAL_RULES.initial(RT35));
+  expect([SEQUENCE_RULES.startShown(SQ3), RITUAL_RULES.startShown(RT35)]).toEqual([null, null]);
+});
+
+test('sequence: a wrong press resets locally and counts one attempt', () => {
+  // c1: from a non-empty prefix, a wrong part resets the presses to empty and says so (from [] the reset and the kept
+  // work are equal); a right one appends. The count is the session's: `wrong: 'local'` routes the press to failLocal.
+  expect(pressSequence(SQ3, [0], 1)).toEqual({ work: [], wrong: true });
+  expect(pressSequence(SQ3, [0], 2)).toEqual({ work: [0, 2], wrong: false });
+  expect(pressSequence(SQ3, [], 0)).toEqual({ work: [0], wrong: false });
+  expect(pressSequence(SQ3, [0, 2], 0)).toEqual({ work: [], wrong: true });
+  expect(SEQUENCE_RULES.wrong).toBe('local');
+  // The presses given are never written: a press answers a fresh array.
+  const a = Object.freeze([0]);
+  expect(pressSequence(SQ3, a, 2)?.work).not.toBe(a);
+  expect(a).toEqual([0]);
+  // No part, or a full answer: the device refuses the press.
+  for (const part of [-1, 3, 0.5]) {
+    expect(pressSequence(SQ3, [0], part), `part ${part}`).toBeNull();
+  }
+  expect(pressSequence(SQ3, [0, 2, 1], 0), 'a full answer').toBeNull();
+  // The play half's press: a refused one keeps the work and is no wrong press.
+  expect(SEQUENCE_PLAY.press(SQ3, [0], 1)).toEqual({ work: [], wrong: true });
+  expect(SEQUENCE_PLAY.press(SQ3, [0, 2, 1], 0)).toEqual({ work: [0, 2, 1], wrong: false });
+  expect(SEQUENCE_PLAY.press(SQ3, [0], 5)).toEqual({ work: [0], wrong: false });
+});
+
+test('sequence: reached only on the whole order', () => {
+  const { reached } = SEQUENCE_PLAY;
+  expect(reached(SQ3, [0, 2, 1])).toBe(true);
+  // Each case breaks one rule only.
+  expect(reached(SQ3, [0, 2]), 'a press short').toBe(false);
+  expect(reached(SQ3, [0, 2, 1, 0]), 'a press too many').toBe(false);
+  expect(reached(SQ3, []), 'empty').toBe(false);
+  expect(reached(SQ3, [1, 2, 0]), 'the order reversed').toBe(false);
+  // A reached list is the only one a sequence device posts: it posts itself, there is no Try.
+  expect(SEQUENCE_PLAY.validAnswer(SQ3, [0, 2, 1])).toBe(true);
+  expect(SEQUENCE_PLAY.validAnswer(SQ3, [0, 2])).toBe(false);
+});
+
+test('sequence: canonical is the press list itself', () => {
+  // c11: one order, one posted answer: what reaches is posted as it stands.
+  const a = [0, 2, 1];
+  expect(SEQUENCE_PLAY.canonical(SQ3, a)).toBe(a);
+});
+
+test('sequence: the device demonstrates its order', () => {
+  // c3 (D2): the demonstration is the order itself, in order (SQ3's is no palindrome, so a reversed one differs).
+  expect(SEQUENCE_RULES.demo(SQ3)).toEqual([0, 2, 1]);
+  expect(instanceOf(SEQUENCE_RULES, SQ3).demo()).toEqual([0, 2, 1]);
+  // A secret goal is never demonstrated.
+  expect(instanceOf(RITUAL_RULES, RT35).demo()).toBeNull();
+});
+
+test('ritual: a press appends its part and is never wrong, until the sequence is full', () => {
+  expect(pressRitual(RT35, [], 2)).toEqual([2]);
+  expect(pressRitual(RT35, [2, 0], 0)).toEqual([2, 0, 0]);
+  const a = Object.freeze([1]);
+  expect(pressRitual(RT35, a, 1)).not.toBe(a);
+  expect(a).toEqual([1]);
+  // No part, or a full answer: refused.
+  for (const part of [-1, 3, 0.5]) {
+    expect(pressRitual(RT35, [0], part), `part ${part}`).toBeNull();
+  }
+  expect(pressRitual(RT35, [0, 0, 0, 0, 0], 1), 'a full answer').toBeNull();
+  // The play half's press is never wrong; a refused one keeps the work.
+  expect(RITUAL_PLAY.press(RT35, [1], 1)).toEqual({ work: [1, 1], wrong: false });
+  expect(RITUAL_PLAY.press(RT35, [2, 0, 1, 1, 2], 0)).toEqual({ work: [2, 0, 1, 1, 2], wrong: false });
+  // Any full list of in-range presses may be posted (the shape); whether it opens is the server's.
+  expect(RITUAL_PLAY.validAnswer(RT35, [2, 0, 1, 1, 2])).toBe(true);
+  expect(RITUAL_PLAY.validAnswer(RT35, [0, 0, 0, 0, 0])).toBe(true);
+  expect(RITUAL_PLAY.validAnswer(RT35, [2, 0, 1, 1])).toBe(false);
+  expect(RITUAL_PLAY.validAnswer(RT35, [2, 0, 1, 1, 3])).toBe(false);
+  expect(RITUAL_PLAY.validAnswer(RT35, [2, 0, 1, 1, 0.5])).toBe(false);
+  expect(RITUAL_PLAY.validAnswer(RT35, [2, 0, 1, 1, 2, 0])).toBe(false);
+});
+
+test("sequence, ritual: workFits is total over the save codec's domain", () => {
+  // D3: each type's own `workFits`, called directly (instanceOf's try / catch would hide a throw), on SQ3 (order 0 2 1)
+  // and RT35 (5 presses of 3 parts); each row's expected fit written from the type's rule: a prefix of the order, or
+  // at most `length` in-range presses.
+  const holed: number[] = [];
+  holed[1] = 0; // index 0 is a hole
+  const rows: ReadonlyArray<readonly [readonly number[], boolean, boolean]> = [
+    [[], true, true],
+    [[0], true, true],
+    [[0, 2], true, true],
+    [[0, 2, 1], true, true],
+    [[1], false, true],
+    [[0, 1], false, true],
+    [[0, 2, 1, 0], false, true],
+    [[0, 0, 0, 0, 0], false, true],
+    [[0, 0, 0, 0, 0, 0], false, false],
+    [[3], false, false],
+    [[-1], false, false],
+    [[0.5], false, false],
+    [[Number.NaN], false, false],
+    [[Number.POSITIVE_INFINITY], false, false],
+    [[2 ** 60], false, false],
+    [[Number.MAX_SAFE_INTEGER], false, false],
+    [holed, false, false],
+    [['0'] as unknown as number[], false, false],
+  ];
+  for (const [w, sequence, ritual] of rows) {
+    expect(() => SEQUENCE_RULES.workFits(SQ3, w), `sequence ${JSON.stringify(w)}`).not.toThrow();
+    expect(() => RITUAL_RULES.workFits(RT35, w), `ritual ${JSON.stringify(w)}`).not.toThrow();
+    expect([SEQUENCE_RULES.workFits(SQ3, w), RITUAL_RULES.workFits(RT35, w)], JSON.stringify(w)).toEqual([sequence, ritual]);
+  }
+});
+
+test('sequence: a saved work fits only as a prefix of its order', () => {
+  // D3 (RULINGS 391 W1's twin): after a content update the order is 1 2 0; a work left by 0 2 1 is in shape for it (each
+  // value a part, no longer than the order) and no prefix, so it could fill to full length unreached: it does not fit.
+  const p1 = SQ3;
+  const p2: SequenceParams = { ...SQ3, order: [1, 2, 0] };
+  const w = [0, 2];
+  expect(SEQUENCE_RULES.workFits(p2, w)).toBe(false);
+  // The controls: the same work on its own order, and a prefix of the new one.
+  expect(SEQUENCE_RULES.workFits(p1, w)).toBe(true);
+  expect(SEQUENCE_RULES.workFits(p2, [1, 2])).toBe(true);
+});
+
+test("sequence, ritual: a part's least side is the hotspots' minimum", () => {
+  // D10: the push parts take taps as the room's hotspots do; a literal in the play half both types' UI loads (never
+  // `play/levers.ts`, LeverDevice's chunk), held equal to the controller's here.
+  expect(BUTTON_PART_MIN_PX).toBe(MIN_TARGET_PX);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
