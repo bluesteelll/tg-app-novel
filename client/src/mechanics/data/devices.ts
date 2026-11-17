@@ -59,8 +59,8 @@ export function encodeDevices(d: DevicesData): OwnedRaw {
 
 /**
  * The `part` atom's value (`atoms.part`, visual only): exactly `{ puzzle, index, is }`, a puzzle id and two integers
- * >= 0, every issue reported. Whether `puzzle` is its room's device and the integers are in its type's range is the
- * story gate's (`world/device-part`, with the types).
+ * >= 0, every issue reported. Whether `puzzle` is a device (a visual site's its own room's, a clue's any room's) and the
+ * integers are in its type's range is the story gate's (`world/device-part`, with the types).
  */
 export function decodePartAtom(v: unknown, path: string, report: IssueReport): PartAtom | undefined {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) {

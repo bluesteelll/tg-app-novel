@@ -5,8 +5,10 @@
 // the writer, a `work` fact per moved part, and a part's picture is a decor state chosen by the visual atom `part` over
 // that saved work; at resume a saved work its type judges no longer fits the device is dropped. The story gate's
 // devices lint places a view type only on a device and a device only in a view, keeps the device hotspot a plain,
-// always-present object that only its puzzle opens, and bounds a `part` atom by its room's device, with the types as a
-// parameter (a fixture view type, `cranks`, beside the registered ones; the real `levers` and `setting` are GM8a's).
+// always-present object that only its puzzle opens, bounds a visual `part` atom by its room's device and a clue's by any
+// room's device, and keeps a device's parts inside the safe frame, under the bar's band, above the item ribbon and apart,
+// and its room's other hotspots clear of the band and the parts, with the types and the lint halves as parameters (a
+// fixture view type, `cranks`, beside the registered ones; the real `levers` and `setting` are GM8a's).
 // Fixture worlds are written in the source format and decoded with the real registries; a proof world carries the
 // decoded `mods`, as the explore controller's and the story gate's do.
 import { expect, test } from 'vitest';
@@ -772,6 +774,27 @@ test("story: a part atom outside its device's range is refused", () => {
     `${DECOR}.panel.hotspots.0.is.0.when: {"part":{"puzzle":"dial","index":1,"is":3}}: is 3 is outside the part's range 0..2 (§7.5)`,
     `${DECOR}.panel.decor.0.is.0.when: {"part":{"puzzle":"dial","index":4,"is":1}}: index 4 is not below the device's 4 parts (§7.5)`,
     `${DECOR}.panel.decor.1.is.0.when: {"part":{"puzzle":"dial","index":0,"is":5}}: is 5 is outside the part's range 0..2 (§7.5)`,
+  ]);
+});
+
+test("story: a part atom in a clue reads a device's work within its shape", () => {
+  // RULINGS 356 (b): a clue's `part` reads any room's device, within that device's answer shape (the `cranks` dial: four
+  // parts at 0..2), and is reported at the clue.
+  const clues = [part('dial', 4, 1), part('dial', 0, 3), part('safe', 0, 1), part('dial', 3, 2)];
+  const CLUE = 'world/device-part puzzles.safe.clues';
+  expect(lint(deviceWorld({ puzzles: { safe: { ...code(3), clues } } }))).toEqual([
+    `${CLUE}.0: {"part":{"puzzle":"dial","index":4,"is":1}}: index 4 is not below the device's 4 parts (§7.5)`,
+    `${CLUE}.1: {"part":{"puzzle":"dial","index":0,"is":3}}: is 3 is outside the part's range 0..2 (§7.5)`,
+    `${CLUE}.2: {"part":{"puzzle":"safe","index":0,"is":1}} reads puzzle 'safe', which is no room's device: a clue's part reads a device's work (§7.5)`,
+  ]);
+});
+
+test('story: a part atom on a device lock with no puzzle says the device has no puzzle', () => {
+  // M1: the room has a device, whose lock names no puzzle; beside the lock's own two findings.
+  expect(lint(deviceWorld({ dial: object('dial', lock(null)), panel: { decor: [decor('a', part('dial', 0, 1))] } }))).toEqual([
+    "world/device-type sections.s.rooms.panel.device: hotspot 'dial' carries a lock with no puzzle: a device's hotspot carries a zero-slot lock with its puzzle (§7.5)",
+    "world/view-type-site puzzles.dial: view-type puzzle 'dial' is on no lock: a view type is played only by its device, never as a linear yield (§7.5)",
+    `world/device-part sections.s.rooms.panel.decor.0.is.0.when: {"part":{"puzzle":"dial","index":0,"is":1}} reads puzzle 'dial', but room 'panel''s device has no puzzle: a part reads its own room's device (§7.5)`,
   ]);
 });
 

@@ -1,16 +1,17 @@
 // Module `devices`' build half (engine plan §7.5 "Placement lints", the band): its world lint, with its own codes (all
 // errors), the device bar's band constants and, beside them, the item ribbon's floor over an open device. A puzzle
 // whose type is `presentation: 'view'` is the puzzle of exactly one lock, the zero-slot lock of a view room's `device`
-// hotspot, and a `device` sits only in a view (`world/view-type-site`); a device's hotspot carries a zero-slot lock with
-// a puzzle of a view type (`world/device-type`); a view type has no close-up (`world/device-closeup`). The device
+// hotspot, and a `device` sits only in a view (`world/view-type-site`); a device's hotspot carries a zero-slot lock
+// with a puzzle of a view type (`world/device-type`); a view type has no close-up (`world/device-closeup`). The device
 // hotspot is a plain `object` with no `uses` (`world/device-object`), always present (`world/device-when`), the room's
 // only puzzle lock (`world/device-alone`) and no trigger's `unlock` target (`world/device-unlock`): the arrival hook
 // opens its session, so nothing else may hide, open or replace it. A capped device shows its jam
-// (`world/device-failed-state`), and a `part` atom reads its own room's device within the type's answer shape
-// (`world/device-part`). Each part of a device's puzzle, as its type's lint half gives it (`partRects`), lies inside the
-// safe frame, under the device bar's band, above the item ribbon's rows, with each side at least the hotspot minimum, and
-// over no other part (`world/device-parts-frame`); a view type whose lint half gives no rects is skipped here and held to
-// them by the registry pin. Every other hotspot of a device room lies under the band and under no part
+// (`world/device-failed-state`), and a `part` atom reads a device within the type's answer shape (`world/device-part`):
+// a decor's or a hotspot state's its own room's device, a clue's any room's (RULINGS 356 (b)). Each part of a device's
+// puzzle, as its type's lint half gives it (`partRects`), lies inside the safe frame, under the device bar's band,
+// above the item ribbon's rows, with each side at least the hotspot minimum, and over no other part
+// (`world/device-parts-frame`); a view type whose lint half gives no rects is skipped here and held to them by the
+// registry pin. Every other hotspot of a device room lies under the band and under no part
 // (`world/device-hotspot-cover`). A `device` naming a hotspot its room lacks is the DSL's `world/unknown-ref`. The
 // registries are parameters (`types`, the one the world was decoded with, and `lints`, the puzzle lint halves): a
 // fixture view type in tests beside the registered ones. A device carries no text and enters no knot, so the module has
@@ -146,7 +147,7 @@ function paramPath(params: unknown, rect: Rect): string | null {
  * site, its hotspot and lock, the room's other puzzle locks, its failed state, then, in a device room, its puzzle's parts
  * once per puzzle, at its first device room, and the room's other hotspots), then per puzzle of a view type (its
  * close-up, then every lock that carries it), then per room again (each trigger list's `unlock` of a device, each visual
- * condition's `part` atoms).
+ * condition's `part` atoms), then per puzzle (each clue's `part` atoms).
  */
 export function devicesFindings(input: WorldLintInput, types: PuzzleTypes = PUZZLE_TYPES, lints: PuzzleLintRegistry = PUZZLE_LINTS): Finding[] {
   const out: Finding[] = [];
@@ -161,6 +162,16 @@ export function devicesFindings(input: WorldLintInput, types: PuzzleTypes = PUZZ
   const isView = (p: PuzzleLocalId): boolean => {
     const t = typeOf(p);
     return types.find((x) => x.type === t)?.presentation === 'view';
+  };
+  // A `part` atom's index and value lie in its puzzle's answer shape (`shapeProblem`'s range): the issue, or null.
+  const outsideShape = (a: PartAtom, atom: string): string | null => {
+    const data = types.find((x) => x.type === typeOf(a.puzzle));
+    const params = own(w.puzzles, a.puzzle)?.params;
+    const shape = data === undefined || params === undefined ? null : data.answerShape(params);
+    if (shape !== null && a.index >= shape.len) {
+      return `${atom}: index ${a.index} is not below the device's ${shape.len} parts (§7.5)`;
+    }
+    return shape !== null && a.is > shape.max ? `${atom}: is ${a.is} is outside the part's range 0..${shape.max} (§7.5)` : null;
   };
   // Every lock that carries a view-type puzzle, by puzzle; a lock is a device's when its room is a view whose `device`
   // names its hotspot and it has no slot.
@@ -351,25 +362,42 @@ export function devicesFindings(input: WorldLintInput, types: PuzzleTypes = PUZZ
         (own(visual.hotspots, key)?.is ?? []).forEach((x, j) => sites.push({ cond: x.when, path: `${spot}.is.${j}.when` }));
       });
       (own(visual.decor, room) ?? []).forEach((x, j) => x.is.forEach((y, i) => sites.push({ cond: y.when, path: `${base}.decor.${j}.is.${i}.when` })));
-      // A part reads its own room's device's saved work, within the type's answer shape (`shapeProblem`'s range).
+      // A visual part reads its own room's device's saved work, within the type's answer shape. A room whose `device`
+      // key names a hotspot with no puzzle (no lock, a lock with no puzzle, no such hotspot) has a device with no puzzle.
       const device = devicePuzzle.get(room) ?? null;
-      const data = device === null ? undefined : types.find((x) => x.type === typeOf(device));
-      const params = device === null ? undefined : own(w.puzzles, device)?.params;
-      const shape = data === undefined || params === undefined ? null : data.answerShape(params);
       for (const { cond, path } of sites) {
         for (const a of partsOf(cond)) {
           const atom = JSON.stringify({ part: a });
           if (a.puzzle !== device) {
-            const which = device === null ? `room '${rid}' has no device` : `room '${rid}''s device is '${device}'`;
+            const named = own(d.device, room) !== undefined;
+            const which = device !== null ? `room '${rid}''s device is '${device}'` : named ? `room '${rid}''s device has no puzzle` : `room '${rid}' has no device`;
             report('world/device-part', path, `${atom} reads puzzle '${a.puzzle}', but ${which}: a part reads its own room's device (§7.5)`);
-          } else if (shape !== null && a.index >= shape.len) {
-            report('world/device-part', path, `${atom}: index ${a.index} is not below the device's ${shape.len} parts (§7.5)`);
-          } else if (shape !== null && a.is > shape.max) {
-            report('world/device-part', path, `${atom}: is ${a.is} is outside the part's range 0..${shape.max} (§7.5)`);
+          } else {
+            const issue = outsideShape(a, atom);
+            if (issue !== null) {
+              report('world/device-part', path, issue);
+            }
           }
         }
       }
     }
+  }
+  // A clue's part reads any room's device (a clue shows a secret goal wherever it holds, RULINGS 356 (b)): the puzzle of
+  // some room's `device` lock, as the visual walk reads it, within its answer shape.
+  const devices = new Set(devicePuzzle.values());
+  for (const [pid, p] of Object.entries(w.puzzles)) {
+    p.clues.forEach((c, j) => {
+      const path = `puzzles.${pid}.clues.${j}`;
+      for (const a of partsOf(c)) {
+        const atom = JSON.stringify({ part: a });
+        const issue = devices.has(a.puzzle)
+          ? outsideShape(a, atom)
+          : `${atom} reads puzzle '${a.puzzle}', which is no room's device: a clue's part reads a device's work (§7.5)`;
+        if (issue !== null) {
+          report('world/device-part', path, issue);
+        }
+      }
+    });
   }
   return out;
 }
