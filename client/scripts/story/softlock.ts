@@ -1,9 +1,10 @@
 // The soft-lock model checker (docs/PUZZLES-PLAN.md T9; lint codes `world/softlock`, `world/state-cap`): in each
 // section, every state the player can reach from the section's entry can still reach a `leave`. It runs the
 // runtime's own successor relation and search kernel from the runtime's start, with the runtime's one cap (X4, X9),
-// so the build proves exactly what a resume can meet. LW3 wires it into the story gate. Given the items a later
-// chapter inherits as required, it also checks each leave holds them (`world/carry-leave`, engine plan §6.6; the code
-// is the carry module's, mechanics/carry.ts, which never imports this file). No node:*, like lint.ts.
+// so the build proves exactly what a resume can meet. LW3 wires it into the story gate. A receiving chapter's section
+// is proved from each start its inherited items allow; given the items a later chapter inherits as required, each
+// leave must hold them (`world/carry-leave`; engine plan §6.6; the code is the carry module's, mechanics/carry.ts,
+// which never imports this file). No node:*, like lint.ts.
 import { RESUME_STATE_CAP } from '../../src/explore/reduce.ts';
 import type { ExploreAction, Step } from '../../src/explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
@@ -19,10 +20,11 @@ import type { ChapterId, PuzzleLocalId, SectionId } from '../../src/story/stagin
 import type { ItemId } from '../../src/world/types.ts';
 import { LINT_CODES } from './lint.ts';
 import type { Finding, LintCode } from './lint.ts';
-import { CARRY_PROOF_CODES } from './mechanics/carry.ts';
+import { CARRY_PROOF_CODES, MAX_OPTIONAL_INHERITS } from './mechanics/carry.ts';
 
-/** One section's verdict; `states` is the count of distinct section states, null when the search hit the cap or when
- *  the section was not searched (`gatesVisualOnly`). */
+/** One section's verdict; `states` is the count of distinct section states (summed over its starts), null when a
+ *  start's search hit the cap or when the section was not searched (`gatesVisualOnly`, or more than
+ *  MAX_OPTIONAL_INHERITS optional inherited items). */
 export type SectionCheck = { section: SectionId; states: number | null; findings: Finding[] };
 
 function finding(code: LintCode, file: string, message: string): Finding {
@@ -80,6 +82,12 @@ export function gatesVisualOnly(w: KernelWorld, section: SectionId, rules: Rules
   return rules.some((m) => m.reads(w, section).some((a) => visualOnly(a.kind)));
 }
 
+/** One start's search: capped (its `world/state-cap`), or its state count, its first stuck state's `world/softlock`
+ *  and, per required item, its first leave without it. */
+type StartRun =
+  | { readonly states: null; readonly findings: readonly Finding[] }
+  | { readonly states: number; readonly softlock: Finding | null; readonly leaves: ReadonlyMap<ItemId, Finding> };
+
 /**
  * Proves section S of the proof world: the public body and its decoded `mods` (the build has no `version`; LW3 stamps
  * it on emit). `file` is the finding's file (`story/<ch>/world.json`). The `world/softlock` message carries the
@@ -88,13 +96,50 @@ export function gatesVisualOnly(w: KernelWorld, section: SectionId, rules: Rules
  * `required` (story.ts's carry pass; the per-world run passes none): each item S gives that a later chapter inherits as
  * required, with its first receiver; every leave edge must hold it, and its first leave without it, in BFS order, is a
  * `world/carry-leave` with that path. A section not searched, or capped, checks no leave: its own error fails it.
+ *
+ * The world's inherited items (`mods.carry.inherits`, engine plan §6.6) set its starts: each required one held in every
+ * start, the k optional ones in each of their 2^k subsets, from all absent up; each start is searched under its own cap
+ * (what one resume meets, X9), the count is their sum, the first capped start caps the section, and the findings are
+ * the first failing start's. With more than one start a message names its start: `section S (start: no a, b): ...`.
+ * Above MAX_OPTIONAL_INHERITS optional items no start is searched: `world/inherit-count` (E) refuses the world.
  */
 export function checkSection(w: KernelWorld, section: SectionId, file: string, required: ReadonlyMap<ItemId, ChapterId> = new Map()): SectionCheck {
   if (gatesVisualOnly(w, section)) {
     // Not searched, so not proved: `states: null` keeps world.ts's second search off S, as at the cap.
     return { section, states: null, findings: [] };
   }
-  const start = sectionEntry(w, EMPTY_WORLD_STATE, section);
+  // A body without `mods` or without `carry` (a hand-built kernel world) is carry-less.
+  const inherits = w.mods?.carry?.inherits ?? [];
+  const optional = inherits.filter((e) => !e.required);
+  if (optional.length > MAX_OPTIONAL_INHERITS) {
+    return { section, states: null, findings: [] };
+  }
+  let states = 0;
+  let softlock: Finding | null = null;
+  const leaves = new Map<ItemId, Finding>();
+  for (let mask = 0; mask < 2 ** optional.length; mask++) {
+    const present = new Set(optional.filter((_, b) => ((mask >> b) & 1) === 1).map((e) => e.id));
+    // In `inherits` order, as the runtime's chapter start injects them.
+    const held = inherits.filter((e) => e.required || present.has(e.id)).map((e) => e.id);
+    const label = optional.length === 0 ? '' : ` (start: ${optional.map((e) => (present.has(e.id) ? e.id : `no ${e.id}`)).join(', ')})`;
+    const entry = sectionEntry(w, held.length === 0 ? EMPTY_WORLD_STATE : { ...EMPTY_WORLD_STATE, held }, section);
+    const run = searchStart(w, section, file, entry, `section ${section}${label}`, required);
+    if (run.states === null) {
+      return { section, states: null, findings: [...run.findings] };
+    }
+    states += run.states;
+    softlock ??= run.softlock;
+    for (const [item, f] of run.leaves) {
+      if (!leaves.has(item)) {
+        leaves.set(item, f);
+      }
+    }
+  }
+  return { section, states, findings: [...(softlock === null ? [] : [softlock]), ...leaves.values()] };
+}
+
+/** Searches section S from `start`; `head` opens each message (`section S`, with the start's label if any). */
+function searchStart(w: KernelWorld, section: SectionId, file: string, start: WorldState, head: string, required: ReadonlyMap<ItemId, ChapterId>): StartRun {
   const states: WorldState[] = [start];
   const parent: Array<{ from: number; step: Step; walk: Walk } | undefined> = [undefined];
   const into: number[][] = [[]];
@@ -128,9 +173,9 @@ export function checkSection(w: KernelWorld, section: SectionId, file: string, r
   if (r.result === 'cap') {
     const message =
       spent.bound === 'work'
-        ? `section ${section}: more than ${RESUME_STATE_CAP * RESUME_WORK_PER_STATE} successor evaluations (${RESUME_WORK_PER_STATE} per state of RESUME_STATE_CAP), too large to prove at resume (X9); split it into sections`
-        : `section ${section}: more than ${RESUME_STATE_CAP} states (RESUME_STATE_CAP), too large to prove at resume (X9); split it into sections`;
-    return { section, states: null, findings: [finding('world/state-cap', file, message)] };
+        ? `${head}: more than ${RESUME_STATE_CAP * RESUME_WORK_PER_STATE} successor evaluations (${RESUME_WORK_PER_STATE} per state of RESUME_STATE_CAP), too large to prove at resume (X9); split it into sections`
+        : `${head}: more than ${RESUME_STATE_CAP} states (RESUME_STATE_CAP), too large to prove at resume (X9); split it into sections`;
+    return { states: null, findings: [finding('world/state-cap', file, message)] };
   }
   const said = (before: WorldState | undefined, step: Step): string => (before === undefined ? JSON.stringify(step) : describe(w, before, step));
   /** The free moves from state `from` to the member its step is taken in, then the step: one hop's texts in order. */
@@ -152,11 +197,12 @@ export function checkSection(w: KernelWorld, section: SectionId, file: string, r
     }
     return hops.reverse().flat();
   };
-  const leaves = [...without].map(([item, v]): Finding => {
+  const leaves = new Map<ItemId, Finding>();
+  for (const [item, v] of without) {
     const path = [...pathTo(v.from), ...hop(v.from, v.walk, v.step)].join(' → ');
-    const message = `section ${section}: a leave without '${item}', which ${required.get(item) ?? '?'} inherits as required (§6.6): ${path}`;
-    return { code: 'world/carry-leave', severity: CARRY_PROOF_CODES['world/carry-leave'], file, line: 0, message };
-  });
+    const message = `${head}: a leave without '${item}', which ${required.get(item) ?? '?'} inherits as required (§6.6): ${path}`;
+    leaves.set(item, { code: 'world/carry-leave', severity: CARRY_PROOF_CODES['world/carry-leave'], file, line: 0, message });
+  }
   // Backwards from every state with a leave edge: whatever this does not reach is stuck.
   const exits = new Uint8Array(r.states);
   const queue = [...leaving];
@@ -174,13 +220,13 @@ export function checkSection(w: KernelWorld, section: SectionId, file: string, r
   }
   const stuck = exits.indexOf(0);
   if (stuck === -1) {
-    return { section, states: r.states, findings: leaves };
+    return { states: r.states, softlock: null, leaves };
   }
   const steps = pathTo(stuck);
   const path = steps.length === 0 ? '(the section entry itself)' : steps.join(' → ');
   const room = states[stuck]?.room ?? 'no room';
-  const message = `section ${section}: a reachable state cannot reach a leave (stuck in ${room}): ${path}`;
-  return { section, states: r.states, findings: [finding('world/softlock', file, message), ...leaves] };
+  const message = `${head}: a reachable state cannot reach a leave (stuck in ${room}): ${path}`;
+  return { states: r.states, softlock: finding('world/softlock', file, message), leaves };
 }
 
 /** Every section of the world, in key order. */

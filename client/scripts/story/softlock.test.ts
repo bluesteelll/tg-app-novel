@@ -91,9 +91,10 @@ const codes = (c: SectionCheck): string[] => c.findings.map((f) => f.code);
 /**
  * The round-2 triage's hub: a hall with an exit to each of `rooms` rooms, `items` take items spread over them and
  * `docs` take documents; one puzzle-less gate with a slot per item is the only `leave`. Its section states are the
- * product of the room and every gift's state: (rooms + 1) × 3^items × 2^docs.
+ * product of the room and every gift's state: (rooms + 1) × 3^items × 2^docs. `inherits`: the world's inherited items
+ * (§6.6), declared beside its own and read by nothing.
  */
-function hub(rooms: number, items: number, docs: number): KernelWorld {
+function hub(rooms: number, items: number, docs: number, inherits: readonly Json[] = []): KernelWorld {
   const itemIds = Array.from({ length: items }, (_, i) => `i${i}`);
   const docIds = Array.from({ length: docs }, (_, i) => `d${i}`);
   const spec: Record<string, Json> = {};
@@ -114,7 +115,8 @@ function hub(rooms: number, items: number, docs: number): KernelWorld {
     spec[`r${r}`] = room(spots);
   }
   spec['hall'] = room(hall);
-  return world({ items: itemIds, docs: docIds, sections: { s: { start: 'hall', rooms: spec } } });
+  const carried = inherits.length === 0 ? {} : { inherits: [...inherits] };
+  return world({ items: [...itemIds, ...inherits.map((e) => String(e['id']))], docs: docIds, sections: { s: { start: 'hall', rooms: spec } }, ...carried });
 }
 
 const MEDALS = ['medal_sun', 'medal_moon', 'medal_star'];
@@ -341,3 +343,106 @@ test('carry: a section leave without the item is refused', () => {
   expect(spent.map((f) => f.code)).toEqual(['world/carry-leave']);
   expect(spent[0]?.message).toMatch(/: tap hall\.t_lamp → insert hall\.out lamp → tap hall\.out$/);
 });
+
+/** `id` inherited, required or optional (§6.6). */
+const inherit = (id: string, required: boolean): Json => ({ id, required });
+
+test('softlock: optional carried items prove 2^k starts', () => {
+  /** A hall whose `spots` are all there is; `items` declared, `inherits` inherited. */
+  const hall = (spots: Json[], inherits: Json[], items = ['a', 'b']): KernelWorld => world({ items, inherits, sections: { s: { start: 'hall', rooms: { hall: room(spots) } } } });
+  const outOn = (id: string, item: string): Json => exit(id, { story: 'out' }, lock([item]));
+  // A required inherited item the only leave needs: held in the one start (two states: held, then in the slot), so
+  // clean.
+  expect(checkSection(hall([outOn('out', 'a')], [inherit('a', true)]), S, FILE)).toEqual({ section: 's', states: 2, findings: [] });
+  // k = 1, the same leave: the start without it is stuck at the entry.
+  expect(checkSection(hall([outOn('out', 'a')], [inherit('a', false)]), S, FILE).findings.map((f) => f.message)).toEqual([
+    'section s (start: no a): a reachable state cannot reach a leave (stuck in hall): (the section entry itself)',
+  ]);
+  // k = 1, consumed in this chapter by a slot without `keep`: its start without it is a start like any other. Clean.
+  const box: Json = { id: 'box', kind: 'object', rect: RECT, label: txt(), lock: lock(['a']), then: [], look: null, prop: null };
+  expect(checkSection(hall([exit('out', { story: 'out' }), box], [inherit('a', false)]), S, FILE).findings).toEqual([]);
+  // k = 2, a leave needing a and one needing b: stuck only when both are absent, the first start.
+  const two = [inherit('a', false), inherit('b', false)];
+  expect(checkSection(hall([outOn('out_a', 'a'), outOn('out_b', 'b')], two), S, FILE).findings.map((f) => f.message)).toEqual([
+    'section s (start: no a, no b): a reachable state cannot reach a leave (stuck in hall): (the section entry itself)',
+  ]);
+  // k = 2, stuck only in a mixed start: b opens a one-way door to a cell whose only leave needs a.
+  const mixed = world({
+    items: ['a', 'b'],
+    inherits: two,
+    sections: { s: { start: 'hall', rooms: { hall: room([exit('out', { story: 'out' }), exit('door', 'cell', lock(['b']))]), cell: room([outOn('cell_out', 'a')]) } } },
+  });
+  expect(checkSection(mixed, S, FILE).findings.map((f) => f.message)).toEqual([
+    'section s (start: no a, b): a reachable state cannot reach a leave (stuck in cell): insert hall.door b → tap hall.door',
+  ]);
+});
+
+/** A hall with an open way out and, per item of `ids`, a door it unlocks into a room holding a document; `inherits`
+ *  inherited. Each held item opens more of the section, so the starts' counts differ. */
+function doors(ids: readonly string[], inherits: Json[]): KernelWorld {
+  const rooms: Record<string, Json> = { hall: room([exit('out', { story: 'out' }), ...ids.map((id) => exit(`to_${id}`, `room_${id}`, lock([id])))]) };
+  for (const id of ids) {
+    rooms[`room_${id}`] = room([exit('back', 'hall'), take(`t_d${id}`, { doc: `d${id}` })]);
+  }
+  return world({ items: [...ids], docs: ids.map((id) => `d${id}`), inherits, sections: { s: { start: 'hall', rooms } } });
+}
+
+test('softlock: the state count sums the starts', () => {
+  /** The count of the start holding `held`: the same world with those inherited as required and the rest not inherited. */
+  const startCount = (ids: readonly string[], held: readonly string[]): number | null => checkSection(doors(ids, held.map((id) => inherit(id, true))), S, FILE).states;
+  // k = 1: two starts of different counts, summed.
+  const absent = startCount(['a'], []);
+  const present = startCount(['a'], ['a']);
+  expect(absent).not.toBe(present);
+  expect(checkSection(doors(['a'], [inherit('a', false)]), S, FILE)).toEqual({ section: 's', states: (absent ?? 0) + (present ?? 0), findings: [] });
+  // k = 3: the sum over the 8 starts.
+  const ids = ['a', 'b', 'c'];
+  const counts = Array.from({ length: 8 }, (_, mask) => startCount(ids, ids.filter((_, b) => ((mask >> b) & 1) === 1)) ?? 0);
+  expect(new Set(counts).size).toBeGreaterThan(1);
+  const all = checkSection(doors(ids, ids.map((id) => inherit(id, false))), S, FILE);
+  expect(all).toEqual({ section: 's', states: counts.reduce((n, c) => n + c, 0), findings: [] });
+});
+
+test('softlock: a capped start caps the section', () => {
+  // The hub's rooms behind a porch whose door the key opens: without the key one state, with it 6 × 3^5 × 2^2 = 5,832.
+  const hubRooms: Record<string, Json> = {};
+  const items = ['i0', 'i1', 'i2', 'i3', 'i4'];
+  const hallSpots: Json[] = [exit('to_porch', 'porch'), exit('gate', { story: 'out' }, lock(items))];
+  for (let r = 0; r < 4; r++) {
+    hallSpots.push(exit(`to_r${r}`, `r${r}`));
+    const gifts = items.filter((_, i) => i % 4 === r).map((id) => take(`t_${id}`, { item: id }));
+    const docs = r < 2 ? [take(`t_d${r}`, { doc: `d${r}` })] : [];
+    hubRooms[`r${r}`] = room([exit('back', 'hall'), ...gifts, ...docs]);
+  }
+  const w = world({
+    items: [...items, 'key'],
+    docs: ['d0', 'd1'],
+    inherits: [inherit('key', false)],
+    sections: { s: { start: 'porch', rooms: { porch: room([exit('out', { story: 'out' }), exit('door', 'hall', lock(['key']))]), hall: room(hallSpots), ...hubRooms } } },
+  });
+  expect(checkSection(w, S, FILE)).toEqual({
+    section: 's',
+    states: null,
+    findings: [
+      {
+        code: 'world/state-cap',
+        severity: 'E',
+        file: FILE,
+        line: 0,
+        message: `section s (start: key): more than ${RESUME_STATE_CAP} states (RESUME_STATE_CAP), too large to prove at resume (X9); split it into sections`,
+      },
+    ],
+  });
+});
+
+test('softlock: each start keeps its own cap', () => {
+  // RULINGS 403 B1: hub(4, 5, 2) with one optional inherited item nothing reads: two starts of 4,860 states each.
+  const N = 4_860;
+  const held = checkSection(hub(4, 5, 2, [inherit('x', true)]), S, FILE).states;
+  const absent = checkSection(hub(4, 5, 2), S, FILE).states;
+  expect([held, absent]).toEqual([N, N]);
+  expect(N).toBeLessThan(RESUME_STATE_CAP);
+  expect(2 * N).toBeGreaterThan(RESUME_STATE_CAP);
+  // Each start under the cap, the sum above it: clean, counted, no `world/state-cap`.
+  expect(checkSection(hub(4, 5, 2, [inherit('x', false)]), S, FILE)).toEqual({ section: 's', states: 2 * N, findings: [] });
+}, 60_000);

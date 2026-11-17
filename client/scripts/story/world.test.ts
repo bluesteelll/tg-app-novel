@@ -3445,3 +3445,47 @@ test(
   },
   IN_PROCESS_TIMEOUT_MS,
 );
+
+/** The receiver with `optional` optional inherited items it declares (lamp first), none of them read. */
+function optionalHeir(optional: number): Json {
+  const ids = ['lamp', 'rope', 'map', 'coin'].slice(0, optional);
+  const w = receiver(ids.map((id) => ({ id, required: false })));
+  for (const id of ids.filter((x) => x !== 'lamp')) {
+    obj(w['items'])[id] = { name: t(id, 'Предмет'), desc: t(id, 'Описание.'), glyph: 'key' };
+  }
+  return w;
+}
+
+test('carry: above three optional inherited items no section start is searched', () => {
+  const four = run(optionalHeir(4));
+  expect(four.sections.map((s) => s.states)).toEqual([null]);
+  expect(four.findings.map((f) => f.code)).toContain('world/inherit-count');
+  expect(four.findings.filter((f) => f.code === 'world/softlock' || f.code === 'world/state-cap')).toEqual([]);
+  // The edge: three, searched (2^3 starts).
+  expect(run(optionalHeir(3)).sections.map((s) => typeof s.states)).toEqual(['number']);
+});
+
+test(
+  'story: a section not searched is reported as such',
+  () => {
+    /** The first chapter alone, its archive's world inheriting `optional` optional items it declares. */
+    const repo = (optional: number): Record<string, string> => {
+      const ids = ['lamp', 'rope', 'map', 'coin'].slice(0, optional);
+      const ch1 = receiverChapter(null, { id: 'ch1', paid: false });
+      const world = repoWorld('ch1', {
+        items: Object.fromEntries(ids.map((id) => [id, {}])),
+        sections: { archive: { hall: [leaveBy('out', 'archive_out')] } },
+        top: { inherits: ids.map((id) => ({ id, required: false })) },
+      });
+      return carryRepo({ chapters: [{ ...ch1, world }] });
+    };
+    const worldLine = (out: readonly string[]): string[] => out.filter((l) => l.startsWith('world: ch1:'));
+    const r = storyRun(repo(4));
+    expect(worldLine(r.out), r.out.join('\n')).toEqual(['world: ch1: 1 section, 1 room, 0 puzzles, softlock NOT SEARCHED (1 of 1 sections)']);
+    expect(printed(r.out, 'world/inherit-count')).toHaveLength(1);
+    // The OK form's head fields, on the same world with three: searched, its eight starts of one state each.
+    const control = storyRun(repo(3));
+    expect(worldLine(control.out), control.out.join('\n')).toEqual(['world: ch1: 1 section, 1 room, 0 puzzles, softlock OK (8 states)']);
+  },
+  IN_PROCESS_TIMEOUT_MS,
+);

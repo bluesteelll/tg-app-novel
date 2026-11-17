@@ -461,8 +461,14 @@ function worldReport(ch: ChapterId, w: ChapterWorld | undefined, sections: reado
   const rooms = sections.reduce((n, s) => n + s.rooms, 0);
   const head = `world: ${ch}: ${plural(sections.length, 'section')}, ${plural(rooms, 'room')}, ${plural(Object.keys(w.source.puzzles).length, 'puzzle')}`;
   const failed = sections.filter((s) => !s.ok).length;
-  return failed > 0
-    ? `${head}, softlock FAIL (${failed} of ${sections.length} sections)`
+  // A section with no finding and no count was not searched (a visual-only read, or too many optional inherited items):
+  // its world's own E says why, and the line never calls it proved.
+  const skipped = sections.filter((s) => s.ok && s.states === null).length;
+  if (failed > 0) {
+    return `${head}, softlock FAIL (${failed} of ${sections.length} sections)`;
+  }
+  return skipped > 0
+    ? `${head}, softlock NOT SEARCHED (${skipped} of ${sections.length} sections)`
     : `${head}, softlock OK (${sections.reduce((n, s) => n + (s.states ?? 0), 0)} states)`;
 }
 
