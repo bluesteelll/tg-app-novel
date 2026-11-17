@@ -388,6 +388,38 @@ test('render-loop: an uncover steps the sources it held on the next tick', () =>
   r.run(FRAME_MS);
   expect.soft(stage.steps.length - (paused[0] ?? 0), 'resumed: the stage source stepped').toBe(1);
   r.loop.destroy();
+  // Triage r5 F1: an uncover under pause leaves nothing behind for resume(). The source is held again by another cover
+  // before resume, so resume() neither steps it nor draws.
+  {
+    const q = rig();
+    const d = source({ every: 1_000 });
+    q.loop.addAmbient(d.s);
+    q.run(500);
+    q.loop.setCovered('cg', true);
+    q.run(2_200);
+    q.loop.pause();
+    q.loop.setCovered('cg', false);
+    q.loop.setCovered('panel', true);
+    q.loop.resume();
+    const frames = q.loop.stats().frames;
+    q.run(100);
+    expect.soft([d.steps.length, q.loop.stats().frames - frames], 'uncovered and held again while paused').toEqual([0, 0]);
+    q.loop.destroy();
+  }
+  // Triage r5 F2: an uncover steps only the sources that cover held. A CG never holds a top-layer source, so its uncover
+  // neither steps that live source nor draws (its next change is at 1 s).
+  {
+    const q = rig();
+    const top = source({ every: 1_000, layer: 'top' });
+    q.loop.addAmbient(top.s);
+    q.run(500);
+    q.loop.setCovered('cg', true);
+    const [steps, frames] = [top.steps.length, q.loop.stats().frames];
+    q.loop.setCovered('cg', false);
+    q.run(100);
+    expect.soft([top.steps.length - steps, q.loop.stats().frames - frames], 'a CG lifted over a live top source').toEqual([0, 0]);
+    q.loop.destroy();
+  }
 });
 
 test('render-loop: a gated tick is not an ambient frame', () => {
