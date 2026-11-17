@@ -6,9 +6,9 @@
 // that saved work; at resume a saved work its type judges no longer fits the device is dropped. The story gate's
 // devices lint places a view type only on a device and a device only in a view, keeps the device hotspot a plain,
 // always-present object that only its puzzle opens, and bounds a `part` atom by its room's device, with the types as a
-// parameter (no registered type is a view before GM8a). Fixture worlds are written in the source format and decoded
-// with the real registries; a proof world carries the decoded `mods`, as the explore controller's and the story gate's
-// do.
+// parameter (a fixture view type, `cranks`, beside the registered ones; the real `levers` and `setting` are GM8a's).
+// Fixture worlds are written in the source format and decoded with the real registries; a proof world carries the
+// decoded `mods`, as the explore controller's and the story gate's do.
 import { expect, test } from 'vitest';
 
 import { DEVICE_BAND_Y, DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS, devicesFindings, deviceBandY } from '../../scripts/story/mechanics/devices.ts';
@@ -155,10 +155,11 @@ const bodyOf = (world: WorldState): SaveBody => ({
   worldVersion: 'fedcba9876543210',
 });
 
-/** A fixture view type the default registry lacks (GM8a registers the first real one): `parts` levers at 0..2, each
- *  starting at 2; a saved work fits while it has one value per lever. */
-const LEVERS: PuzzleTypeData<string, unknown> = Object.freeze({
-  type: 'levers',
+/** A fixture view type the default registry lacks, named apart from the real view types so none shadows it (`types.find`
+ *  takes the first match): `parts` cranks at 0..2, each starting at 2; a saved work fits while it has one value per
+ *  crank. */
+const CRANKS: PuzzleTypeData<string, unknown> = Object.freeze({
+  type: 'cranks',
   check: 'reach',
   goal: 'shown',
   presentation: 'view',
@@ -173,8 +174,8 @@ const LEVERS: PuzzleTypeData<string, unknown> = Object.freeze({
 function partsOf(p: unknown): number {
   return (p as { readonly parts: number }).parts; // the fixture's params, decoded as written
 }
-const TYPES: PuzzleTypes = [...PUZZLE_TYPES, LEVERS];
-const levers = (parts: number): Json => ({ ...code(2), type: 'levers', params: { parts }, solution: new Array<number>(parts).fill(1) });
+const TYPES: PuzzleTypes = [...PUZZLE_TYPES, CRANKS];
+const cranks = (parts: number): Json => ({ ...code(2), type: 'cranks', params: { parts }, solution: new Array<number>(parts).fill(1) });
 
 // ---------------------------------------------------------------------------------------------------------------
 // The data half
@@ -278,7 +279,7 @@ test('device: a part move writes run.work and its picture follows', () => {
   expect([again.state, again.effects]).toEqual([reset.state, []]);
   expect(again.state).toBe(reset.state);
   // X14 (a) for a type the default registry lacks: the fixture type's `initial` through `types`, and none without it.
-  const v = kernel(source({ hall: room([exit('out', { story: 'end' })]) }, { puzzles: { gauge: levers(3) } }), TYPES);
+  const v = kernel(source({ hall: room([exit('out', { story: 'end' })]) }, { puzzles: { gauge: cranks(3) } }), TYPES);
   const gauge = (index: number, is: number) => ({ puzzle: pz('gauge'), index, is });
   expect([partHolds(v, at('hall'), gauge(1, 2), TYPES), partHolds(v, at('hall'), gauge(1, 0), TYPES)]).toEqual([true, false]);
   expect([0, 1, 2].map((is) => partHolds(v, at('hall'), gauge(1, is)))).toEqual([false, false, false]);
@@ -364,9 +365,9 @@ test("writer: a kernel run write keeps a device's work and records no work fact"
 });
 
 test('device: a saved work that no longer fits the device is dropped at resume', () => {
-  // A new version's params: `gauge` now has three levers and its save two; `wide` still fits; `drawer` is a code puzzle,
+  // A new version's params: `gauge` now has three cranks and its save two; `wide` still fits; `drawer` is a code puzzle,
   // whose type has no `workFits`.
-  const w = kernel(source({ hall: room([exit('out', { story: 'end' })]) }, { puzzles: { gauge: levers(3), wide: levers(2), drawer: code(2) } }), TYPES);
+  const w = kernel(source({ hall: room([exit('out', { story: 'end' })]) }, { puzzles: { gauge: cranks(3), wide: cranks(2), drawer: code(2) } }), TYPES);
   const saved = (work: readonly number[]): PuzzleRun => ({ outcome: null, attempts: 1, hintsOpened: 0, work });
   const s = at('hall', { puzzles: { [pz('gauge')]: saved([0, 1]), [pz('wide')]: saved([2, 0]), [pz('drawer')]: saved([2, 0, 1]) } });
   const dropped: string[] = [];
@@ -379,11 +380,33 @@ test('device: a saved work that no longer fits the device is dropped at resume',
   const none: string[] = [];
   expect(fitWork(w, r, none, TYPES)).toBe(r);
   expect(none).toEqual([]);
-  // The registry's normalize judges by the registered types: a type they lack keeps its work (GM8a registers the first
-  // view type), as a type with no `workFits` does.
+  // The registry's normalize judges by the registered types: a type they lack (the fixture `cranks`) keeps its work, as
+  // a type with no `workFits` does (a registered view type's misfit goes: the next test).
   const kept: string[] = [];
   expect(normalizeDevices(w, s, kept)).toBe(s);
   expect(kept).toEqual([]);
+});
+
+test("device: the default registry drops a real view type's misfit work at resume", () => {
+  // D8 (A9): the registry wiring on a real view type. `gate` is a levers device whose two levers each move the other
+  // (critique W1): from the start only 0 0 and 1 1 are reachable. Decoded and judged with the default registry, no types.
+  const gate = {
+    ...code(2),
+    type: 'levers',
+    params: { parts: 2, positions: 2, couples: [[1], [0]], target: [1, 1], rects: [[100, 800, 200, 200], [600, 800, 200, 200]] },
+    solution: [1, 1],
+  };
+  const w = kernel(source({ hall: room([exit('out', { story: 'end' })]) }, { puzzles: { gate } }));
+  const saved = (work: readonly number[]): WorldState => at('hall', { puzzles: { [pz('gate')]: { outcome: null, attempts: 0, hintsOpened: 0, work } } });
+  const judged = (work: readonly number[]): { readonly work: readonly number[] | undefined; readonly dropped: string[] } => {
+    const dropped: string[] = [];
+    return { work: normalizeDevices(w, saved(work), dropped).puzzles[pz('gate')]?.work, dropped };
+  };
+  // A work of another length (an older version's three levers) goes, and so does one the throws never reach (B2).
+  expect(judged([1, 1, 0])).toEqual({ work: undefined, dropped: ['work:gate'] });
+  expect(judged([0, 1])).toEqual({ work: undefined, dropped: ['work:gate'] });
+  // A fitting work stays.
+  expect(judged([1, 1])).toEqual({ work: [1, 1], dropped: [] });
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -547,7 +570,7 @@ function lint(raw: Json, yielded: readonly string[] = []): string[] {
 /**
  * A lint fixture: the hall and its device view `panel`, whose device hotspot `dial` carries `o.dial` (default: a zero-slot
  * lock with the view-type puzzle `dial`); `o.hall` adds hotspots to the hall and `o.hallKeys` keys, `o.spots` hotspots to
- * the panel after the device and `o.panel` keys, `o.puzzles` puzzles beside `dial` (a `LEVERS` puzzle of four parts, each
+ * the panel after the device and `o.panel` keys, `o.puzzles` puzzles beside `dial` (a `CRANKS` puzzle of four parts, each
  * at 0..2, unless replaced).
  */
 function deviceWorld(
@@ -558,7 +581,7 @@ function deviceWorld(
       hall: room([exit('to_panel', 'panel'), exit('out', { story: 'end' }), ...(o.hall ?? [])], o.hallKeys),
       panel: room([o.dial ?? object('dial', lock('dial')), ...(o.spots ?? [])], { view: { of: 'hall' }, device: 'dial', ...o.panel }),
     },
-    { puzzles: { dial: levers(4), ...o.puzzles } },
+    { puzzles: { dial: cranks(4), ...o.puzzles } },
   );
 }
 
@@ -603,7 +626,7 @@ test('story: a view-type puzzle outside a device lock is refused', () => {
   // Three sites the view type cannot be played from: a linear yield, an ordinary room lock, a slot lock.
   const w = deviceWorld({
     hall: [object('safe', lock('safe')), object('box', lock('box', ['key']))],
-    puzzles: { loose: levers(2), safe: levers(2), box: levers(1) },
+    puzzles: { loose: cranks(2), safe: cranks(2), box: cranks(1) },
   });
   expect(lint(w, ['loose'])).toEqual([
     "world/view-type-site puzzles.loose: view-type puzzle 'loose' is on no lock: a view type is played only by its device, never as a linear yield (§7.5)",
@@ -611,7 +634,7 @@ test('story: a view-type puzzle outside a device lock is refused', () => {
     "world/view-type-site sections.s.rooms.hall.hotspots.3.lock.puzzle: view-type puzzle 'box' is on a lock with slots: a view type is the puzzle of its device's zero-slot lock (§7.5)",
   ]);
   // A `device` on a room that is no view.
-  const flat = source({ hall: room([object('dial', lock('dial')), exit('out', { story: 'end' })], { device: 'dial' }) }, { puzzles: { dial: levers(4) } });
+  const flat = source({ hall: room([object('dial', lock('dial')), exit('out', { story: 'end' })], { device: 'dial' }) }, { puzzles: { dial: cranks(4) } });
   expect(lint(flat)).toEqual([
     "world/view-type-site sections.s.rooms.hall.device: room 'hall' is no view: a device sits in a view room (§7.5)",
     "world/view-type-site sections.s.rooms.hall.hotspots.0.lock.puzzle: view-type puzzle 'dial' is on a lock that is no view room's device: a view type is the puzzle of its device's zero-slot lock (§7.5)",
@@ -619,13 +642,13 @@ test('story: a view-type puzzle outside a device lock is refused', () => {
 });
 
 test('story: a device puzzle with a close-up is refused', () => {
-  expect(lint(deviceWorld({ puzzles: { dial: { ...levers(4), closeup: 'cabinet' } } }))).toEqual([
+  expect(lint(deviceWorld({ puzzles: { dial: { ...cranks(4), closeup: 'cabinet' } } }))).toEqual([
     "world/device-closeup puzzles.dial.closeup: view-type puzzle 'dial' has close-up 'cabinet': a device is played in its room, never under a close-up (§7.5)",
   ]);
 });
 
 test('story: a capped device without a failed state is refused', () => {
-  const capped = { puzzles: { dial: { ...levers(4), maxAttempts: 3 } } };
+  const capped = { puzzles: { dial: { ...cranks(4), maxAttempts: 3 } } };
   const FAILED =
     "world/device-failed-state sections.s.rooms.panel.device: puzzle 'dial' has maxAttempts 3 and no decor or device state reads { failed: 'dial' }: a jammed device never looks live (§7.5)";
   // Uncapped, a device never jams: no failed state is owed.

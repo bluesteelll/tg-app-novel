@@ -1,5 +1,5 @@
 // LP2 in happy-dom: the puzzle frame and the hint ladder (PUZZLES-PLAN X8, X14, X18; META-PLAN M21, M27, F24), the
-// view store's BackButton rule, and the reader rules over the six puzzle components (no literal text, no I/O). Events
+// view store's BackButton rule, and the reader rules over the seven puzzle components (no literal text, no I/O). Events
 // are built by hand where it matters: a raw tap is pointerdown + click with the DOM not yet updated (a double tap).
 import { cleanup, render } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
@@ -21,6 +21,7 @@ import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
 import CodeLock from '../../puzzles/ui/CodeLock.svelte';
 import GridPuzzle from '../../puzzles/ui/GridPuzzle.svelte';
+import LeverDevice from '../../puzzles/ui/LeverDevice.svelte';
 import OrderPuzzle from '../../puzzles/ui/OrderPuzzle.svelte';
 import PathPuzzle from '../../puzzles/ui/PathPuzzle.svelte';
 import type { PuzzleUiProps } from '../../puzzles/registry.ts';
@@ -617,7 +618,8 @@ const ORDER_PIECES = ['medal_sun', 'medal_moon', 'medal_star'];
 
 test('puzzles: every declared control emits its cue', () => {
   // The frame's states that show every control: a linear code frame with Give up and a ladder that can be used, an
-  // exploration order frame whose ladder cannot be paid (get more), and a frame whose type chunk failed (Retry).
+  // exploration order frame whose ladder cannot be paid (get more), a frame whose type chunk failed (Retry), each type's
+  // own controls, and the two devices in their room.
   const states: Array<[string, PuzzleHostProps]> = [
     ['code', hostProps({ ladder: ladderOf(TIERS, { cost: 1, balance: 2 }) })],
     [
@@ -643,6 +645,40 @@ test('puzzles: every declared control emits its cue', () => {
       hostProps({
         frame: frameOf({ mode: 'explore', type: 'grid', params: { rows: 2, cols: 2, symbols: 2, given: [1, 0, 0, 0] }, answer: [1, 0, 0, 0], awaiting: false, ui: GridPuzzle }),
       }),
+    ],
+    // The devices in their room (GM8a): a levers device's levers, then a setting device's knobs and its pull.
+    [
+      'levers',
+      {
+        ...hostProps({
+          frame: frameOf({
+            mode: 'explore',
+            presentation: 'view',
+            type: 'levers',
+            params: { parts: 2, positions: 3, couples: [[1], []], target: [2, 1], rects: [[100, 800, 200, 300], [600, 800, 150, 150]] },
+            answer: [0, 0],
+            awaiting: false,
+            ui: LeverDevice,
+          }),
+        }),
+        place: 'room',
+      },
+    ],
+    [
+      'setting',
+      {
+        ...hostProps({
+          frame: frameOf({
+            mode: 'explore',
+            presentation: 'view',
+            type: 'setting',
+            params: { parts: 2, positions: 10, rects: [[80, 800, 150, 150], [310, 800, 150, 150]], pull: [400, 1500, 300, 150] },
+            answer: [0, 0],
+            ui: LeverDevice,
+          }),
+        }),
+        place: 'room',
+      },
     ],
   ];
   const names = new Set<string>();
@@ -704,7 +740,26 @@ test('puzzles: every declared control emits its cue', () => {
   }
   // Every control the frame family declares was shown and tapped (the controls gate holds each name to its type).
   expect([...names].sort()).toEqual(
-    ['dial-down', 'dial-up', 'give-up-ask', 'give-up-no', 'give-up-yes', 'grid-cell', 'grid-symbol', 'hint-more', 'hint-use', 'order-slot', 'path-cell', 'path-stroke', 'puzzle-hint', 'puzzle-retry', 'puzzle-try'].map(
+    [
+      'dial-down',
+      'dial-up',
+      'give-up-ask',
+      'give-up-no',
+      'give-up-yes',
+      'grid-cell',
+      'grid-symbol',
+      'hint-more',
+      'hint-use',
+      'lever',
+      'order-slot',
+      'path-cell',
+      'path-stroke',
+      'puzzle-hint',
+      'puzzle-retry',
+      'puzzle-try',
+      'setting-part',
+      'setting-pull',
+    ].map(
       (n) => `ui:${n}`,
     ),
   );
@@ -1095,7 +1150,7 @@ test('puzzle host: the frame layer takes taps only on the frame and the load not
 
 // ---------------------------------------------------------------------------------------------------------------
 // The reader rules (spec 2, K26): copies of L14b's readers (menus.svelte.test.ts; RULINGS 55 accepts copies) over the
-// six puzzle components, with an exact import list per component (critique W2): a value import beyond it, such as
+// seven puzzle components, with an exact import list per component (critique W2): a value import beyond it, such as
 // the Telegram facade, is an offender.
 
 const COMPONENT_SOURCES = import.meta.glob<string>(['./*.svelte', '../../puzzles/ui/*.svelte'], { query: '?raw', import: 'default', eager: true });
@@ -1106,6 +1161,7 @@ const VALUE_IMPORTS: Readonly<Record<string, readonly string[]>> = {
   './HintLadder.svelte': ['../../i18n/index.ts'],
   '../../puzzles/ui/CodeLock.svelte': ['../../i18n/index.ts', '../rules/index.ts'],
   '../../puzzles/ui/GridPuzzle.svelte': ['../../i18n/mechanics.ts', '../play/grid.ts', '../play/reach.ts', '../rules/index.ts'],
+  '../../puzzles/ui/LeverDevice.svelte': ['../../geom/cover.ts', '../../i18n/mechanics.ts', '../play/levers.ts', '../play/reach.ts', '../play/setting.ts', '../rules/index.ts'],
   '../../puzzles/ui/OrderPuzzle.svelte': ['../../i18n/index.ts', '../../ui/glyphs.ts', '../rules/index.ts'],
   '../../puzzles/ui/PathPuzzle.svelte': ['../../i18n/mechanics.ts', '../play/path.ts', '../play/reach.ts', '../rules/index.ts'],
 };
@@ -1158,7 +1214,7 @@ function literalText(source: string): string[] {
 }
 
 test('puzzle ui: components hold no literal text', () => {
-  // Non-vacuous: exactly the six components are read.
+  // Non-vacuous: exactly the seven components are read.
   expect(Object.keys(COMPONENT_SOURCES).sort()).toEqual([...COMPONENTS].sort());
   const offenders: string[] = [];
   for (const name of COMPONENTS) {

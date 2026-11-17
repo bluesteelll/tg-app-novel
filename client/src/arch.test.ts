@@ -120,10 +120,14 @@ const PURE_WORLD_FILES = [
   'puzzles/rules/order.ts',
   'puzzles/rules/path.ts',
   'puzzles/rules/grid.ts',
+  'puzzles/rules/levers.ts',
+  'puzzles/rules/setting.ts',
   'puzzles/play/code.ts',
   'puzzles/play/order.ts',
   'puzzles/play/path.ts',
   'puzzles/play/grid.ts',
+  'puzzles/play/levers.ts',
+  'puzzles/play/setting.ts',
   'explore/state.ts',
   'explore/reduce.ts',
   'explore/project.ts',
@@ -1237,6 +1241,7 @@ test('arch: pure world modules', () => {
 const LAZY_COMPONENTS = [
   'puzzles/ui/CodeLock.svelte',
   'puzzles/ui/GridPuzzle.svelte',
+  'puzzles/ui/LeverDevice.svelte',
   'puzzles/ui/OrderPuzzle.svelte',
   'puzzles/ui/PathPuzzle.svelte',
   'ui/puzzles/PuzzleHost.svelte',
@@ -1279,9 +1284,11 @@ test('arch: lazy ui only by dynamic import', () => {
     // The list names only files the rule treats as lazy.
     expect(lazyDirOf(file), file).toBeDefined();
   }
+  // One `import()` per component: `levers` and `setting` share LeverDevice's loader, so it is listed once.
   expect(dynamicLazyTargets('puzzles/registry.ts', SOURCES['puzzles/registry.ts'] ?? '')).toEqual([
     'puzzles/ui/CodeLock.svelte',
     'puzzles/ui/GridPuzzle.svelte',
+    'puzzles/ui/LeverDevice.svelte',
     'puzzles/ui/OrderPuzzle.svelte',
     'puzzles/ui/PathPuzzle.svelte',
   ]);

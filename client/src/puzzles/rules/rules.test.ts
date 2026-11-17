@@ -2,7 +2,7 @@ import { expect, test } from 'vitest';
 
 import { PUZZLE_LINTS } from '../../../scripts/story/puzzles/index.ts';
 import type { PuzzleLintRegistry } from '../../../scripts/story/puzzles/shape.ts';
-import { UI_MOTIONS, uiMotion } from '../../cues/stage/motions.ts';
+import { UI_MOTIONS, declaredControls, uiMotion } from '../../cues/stage/motions.ts';
 import type { ControlCue, GestureCue } from '../../cues/types.ts';
 import { MIN_TARGET_PX } from '../../explore/controller.ts';
 import type { ChapterId, LineId, PuzzleLocalId, Rect } from '../../story/staging.ts';
@@ -697,6 +697,33 @@ test('levers: a saved work fits only where the throws reach it from the start', 
   expect(reachable(L84, deepest, 524_279)).toBeNull();
 });
 
+/** The devices' three controls join `ControlCue` through the registry, with no cues/types.ts edit (tsc: false before). */
+const LEVER_CONTROL: 'lever' extends ControlCue ? true : false = true;
+const SETTING_PART: 'setting-part' extends ControlCue ? true : false = true;
+const SETTING_PULL: 'setting-pull' extends ControlCue ? true : false = true;
+
+test('puzzles: levers and setting declare their parts and the pull, no part with a haptic', () => {
+  expect([LEVER_CONTROL, SETTING_PART, SETTING_PULL]).toEqual([true, true, true]);
+  // Read through the registry (`declaredControls` reads PUZZLE_TYPES): `uiMotion` falls back to the control default for
+  // a name no registry declares, so the null haptic alone would hold for an undeclared name; "found" makes it bite.
+  const declared = declaredControls();
+  for (const name of ['lever', 'setting-part'] as const) {
+    const decl = declared.find((d) => d.name === name);
+    // D18 (A15): a moved part plays the roll's `puzzle:input`, one light haptic per part; its own control adds none.
+    expect(decl, name).toStrictEqual({ name, on: 'click' });
+    expect(uiMotion(name).haptic, name).toBeNull();
+    expect(uiMotion(name), name).toEqual(UI_MOTIONS.control);
+  }
+  // The pull plays as the frame's Try does: the click default, its outcome's haptic the reply cue's.
+  expect(declared.find((d) => d.name === 'setting-pull')).toStrictEqual({ name: 'setting-pull', on: 'click' });
+  expect(uiMotion('setting-pull')).toEqual(UI_MOTIONS.control);
+  expect(LEVERS_RULES.controls).toEqual([{ name: 'lever', on: 'click' }]);
+  expect(SETTING_RULES.controls).toEqual([
+    { name: 'setting-part', on: 'click' },
+    { name: 'setting-pull', on: 'click' },
+  ]);
+});
+
 test("levers: a part's least side is the hotspots' minimum", () => {
   // A3: the device's parts take taps as the room's hotspots do; a literal in the play half (the controller is the explore
   // family's chunk), held equal to the controller's here.
@@ -769,7 +796,7 @@ test('puzzles: every type has a data half, a loader and a lint', () => {
   const types = PUZZLE_TYPES.map((t) => t.type);
   expect(new Set(types).size).toBe(types.length);
   const sorted = [...types].sort();
-  expect(sorted).toEqual(['code', 'grid', 'order', 'path']);
+  expect(sorted).toEqual(['code', 'grid', 'levers', 'order', 'path', 'setting']);
   expect(Object.keys(PUZZLE_RULES).sort()).toEqual(sorted);
   expect(Object.keys(PUZZLE_UI).sort()).toEqual(sorted);
   expect(Object.keys(PUZZLE_LINTS).sort()).toEqual(sorted);
@@ -777,16 +804,19 @@ test('puzzles: every type has a data half, a loader and a lint', () => {
     // The keyed view is the registry's own object, not a copy that could drift from it.
     expect(PUZZLE_RULES[t.type], t.type).toBe(t);
     expect(PUZZLE_UI[t.type], t.type).toBeTypeOf('function');
-    // `code`, `order`, `path` and `grid` save no working configuration and demonstrate nothing (§7.2).
-    expect('workFits' in t, t.type).toBe(false);
+    // The view types, `levers` and `setting`, save a working configuration; the overlays (`code`, `order`, `path`,
+    // `grid`) save none, and no type demonstrates (§7.2).
+    expect('workFits' in t, t.type).toBe(['levers', 'setting'].includes(t.type));
     expect('demo' in t, t.type).toBe(false);
   }
   // The commit types' start configuration is shown before any input (§7.1 `startShown`; per-player's floor excludes
-  // it); a path shows no full-length configuration before input, a grid its givens and blanks.
+  // it); a path shows no full-length configuration before input, a grid its givens and blanks, a device its zeros.
   expect(code.startShown(DIALS4)).toEqual(code.initial(DIALS4));
   expect(order.startShown(MEDALS)).toEqual(order.initial(MEDALS));
   expect(PUZZLE_RULES.path.startShown(P32)).toBeNull();
   expect(PUZZLE_RULES.grid.startShown(G23)).toEqual(PUZZLE_RULES.grid.initial(G23));
+  expect(PUZZLE_RULES.levers.startShown(L23)).toEqual(PUZZLE_RULES.levers.initial(L23));
+  expect(PUZZLE_RULES.setting.startShown(S3)).toEqual(PUZZLE_RULES.setting.initial(S3));
 });
 
 test('puzzles: a commit type posts its wrong answers; a reach type has none or a local one', () => {
@@ -844,6 +874,8 @@ test('puzzles: a commit type checks its solution and a reach type solves, reache
   expect(PUZZLE_LINTS.path.canonical).toBe(PATH_PLAY.canonical);
   expect(PUZZLE_LINTS.grid.reached).toBe(GRID_PLAY.reached);
   expect(PUZZLE_LINTS.grid.canonical).toBe(GRID_PLAY.canonical);
+  expect(PUZZLE_LINTS.levers.reached).toBe(LEVERS_PLAY.reached);
+  expect(PUZZLE_LINTS.levers.canonical).toBe(LEVERS_PLAY.canonical);
   // The checker against its own fixtures: each misses one member set; the full ones pass.
   const count = (): 1 => 1;
   const valid = (): null => null;
@@ -903,7 +935,7 @@ test('puzzles: a fixture type passed as types decodes in a world', () => {
     expect(r.value.puzzles[GATE]?.params).toBe(TUMBLER_PARAMS);
   }
   // Without `types` the decoder knows PUZZLE_TYPES only, and names them.
-  const issue = { ok: false, error: [{ path: 'puzzles.gate.type', reason: 'shape', detail: '"tumbler" is not code or order or path or grid' }] };
+  const issue = { ok: false, error: [{ path: 'puzzles.gate.type', reason: 'shape', detail: '"tumbler" is not code or order or path or grid or levers or setting' }] };
   expect(decodeWorldPublic(publicRaw)).toEqual(issue);
   expect(decodeWorldSource(sourceRaw)).toEqual(issue);
 });

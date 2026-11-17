@@ -18,6 +18,9 @@ export type SettingParams = {
 
 const KEYS: readonly string[] = ['parts', 'positions', 'rects', 'pull'];
 
+/** `zeros` at this type's params, so `ParamsOf<'setting'>` infers `SettingParams` (not `zeros`' wider parameter). */
+const initial: (p: SettingParams) => readonly number[] = zeros;
+
 function decodeParams(raw: unknown): Result<SettingParams, string> {
   const r = keyed(raw, 'setting', KEYS);
   if (!r.ok) {
@@ -52,9 +55,9 @@ export const SETTING_RULES = Object.freeze({
   commit: 'control',
   decodeParams,
   answerShape: (p: SettingParams): { len: number; max: number } => ({ len: p.parts, max: p.positions - 1 }),
-  initial: zeros,
+  initial,
   // The knobs show their zeros before any input.
-  startShown: zeros,
+  startShown: initial,
   workFits: (p: SettingParams, work: readonly number[]): boolean => fitsConfiguration(work, p.parts, p.positions),
   controls: [
     { name: 'setting-part', on: 'click' },

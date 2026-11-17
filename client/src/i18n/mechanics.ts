@@ -1,8 +1,9 @@
-// The mechanics' UI strings (engine plan §6.1 UI, 12c GM3u; §7.4 GM7r; §7.2 GM7p, GM7g): the item ribbon's label, the
-// text a refused use shows when neither its item nor its room says why, the update toast of a reach mismatch, the path
-// puzzle's rule line and cell names, and the grid puzzle's rule line, cell names and Clear. Their own table, imported
-// only by app/yields.ts (the engine), the explore UI (the ribbon) and the path and grid type UIs (their rules and
-// cells), so these texts ship with the engine and never in the entry
+// The mechanics' UI strings (engine plan §6.1 UI, 12c GM3u; §7.4 GM7r; §7.2 GM7p, GM7g, GM8a): the item ribbon's label,
+// the text a refused use shows when neither its item nor its room says why, the update toast of a reach mismatch, the
+// path puzzle's rule line and cell names, the grid puzzle's rule line, cell names and Clear, and the devices' rule lines,
+// part names and the setting's pull. Their own table, imported only by app/yields.ts (the engine), the explore UI (the
+// ribbon) and the path, grid and device type UIs (their rules and parts), so these texts ship with the engine and never
+// in the entry
 // (`arch: the mechanics string table loads with the engine, never with the entry`). Russian first (its keys are the
 // contract), English second; all but `mech.content_updated` are drafts for the owner's copy pass (OPEN-QUESTIONS Q61,
 // RULINGS 226 Q6); `mech.content_updated` is the owner's adopted copy (Q15e, RULINGS 154).
@@ -21,6 +22,11 @@ export const mechanicsRu = {
   'mech.grid_empty': 'Ряд {r}, столбец {c}: пусто',
   'mech.grid_given': 'Ряд {r}, столбец {c}: {n}, задано',
   'mech.grid_clear': 'Стереть',
+  'mech.levers_rule': 'Рычаг двигает и связанные с ним. Поставьте каждый на его метку.',
+  'mech.levers_part': 'Рычаг {n}: положение {p} из {m}, метка {t}',
+  'mech.setting_rule': 'Поверните ручки, затем потяните.',
+  'mech.setting_part': 'Ручка {n}: положение {p} из {m}',
+  'mech.setting_pull': 'Потянуть',
 } as const;
 
 /** A key of the mechanics table; mechanicsRu defines the set. */
@@ -39,6 +45,11 @@ export const mechanicsEn: Readonly<Record<MechanicsKey, string>> = {
   'mech.grid_empty': 'Row {r}, column {c}: empty',
   'mech.grid_given': 'Row {r}, column {c}: {n}, given',
   'mech.grid_clear': 'Clear',
+  'mech.levers_rule': 'A lever moves the levers tied to it. Set each lever to its mark.',
+  'mech.levers_part': 'Lever {n}: position {p} of {m}, mark {t}',
+  'mech.setting_rule': 'Turn the knobs, then pull.',
+  'mech.setting_part': 'Knob {n}: position {p} of {m}',
+  'mech.setting_pull': 'Pull',
 };
 
 const TABLES: Readonly<Record<Lang, Readonly<Record<MechanicsKey, string>>>> = { ru: mechanicsRu, en: mechanicsEn };

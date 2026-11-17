@@ -7,8 +7,10 @@ import type { Rect } from '../../../src/story/staging.ts';
 import type { Severity } from '../lint.ts';
 import { CODE_LINT } from './code.ts';
 import { GRID_LINT } from './grid.ts';
+import { LEVERS_LINT } from './levers.ts';
 import { ORDER_LINT } from './order.ts';
 import { PATH_LINT } from './path.ts';
+import { SETTING_LINT } from './setting.ts';
 
 /** The build half of one puzzle type: what the story gate checks of its instances. */
 export interface PuzzleTypeLint<P> {
@@ -45,9 +47,16 @@ type PuzzleLints = {
 
 /** One lint half per type. `satisfies`, not an annotation: each entry keeps its own members, so the defined ones are
  *  callable without `?.` where the half is named. */
-export const PUZZLE_LINTS = Object.freeze({ code: CODE_LINT, order: ORDER_LINT, path: PATH_LINT, grid: GRID_LINT }) satisfies PuzzleLints;
+export const PUZZLE_LINTS = Object.freeze({
+  code: CODE_LINT,
+  order: ORDER_LINT,
+  path: PATH_LINT,
+  grid: GRID_LINT,
+  levers: LEVERS_LINT,
+  setting: SETTING_LINT,
+}) satisfies PuzzleLints;
 
 type CodesOf<L> = L extends { readonly codes: infer C } ? keyof C & string : never;
-/** Every code of every PUZZLE_LINTS entry (none yet: `code` and `order` report through the core's, `path` and `grid`
- *  through the core's and the reach pass's). */
+/** Every code of every PUZZLE_LINTS entry (none yet: `code`, `order` and `setting` report through the core's, `path`,
+ *  `grid` and `levers` through the core's and the reach pass's). */
 export type PuzzleLintCode = CodesOf<(typeof PUZZLE_LINTS)[PuzzleType]>;

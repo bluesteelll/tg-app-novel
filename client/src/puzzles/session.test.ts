@@ -388,6 +388,8 @@ const SAMPLE_PARAMS: { readonly [T in PuzzleType]: ParamsOf<T> } = {
   order: { pieces: ['sun', 'moon', 'star'] as ItemId[] }, // a fixture's ids, as decoded
   path: { cols: 3, rows: 2, ends: [0, 3], blocked: [] },
   grid: { rows: 2, cols: 2, symbols: 2, given: [1, 0, 0, 0] },
+  levers: { parts: 2, positions: 3, couples: [[1], []], target: [2, 1], rects: [[100, 800, 200, 300], [600, 800, 150, 150]] },
+  setting: { parts: 3, positions: 10, rects: [[80, 800, 150, 150], [310, 800, 150, 150], [540, 800, 150, 150]], pull: [400, 1500, 300, 150] },
 };
 
 test('session: an instance answers initial and shape for every type', () => {
@@ -515,9 +517,9 @@ test('session: a wrong reply to a reach post is a mismatch and counts no attempt
 });
 
 /**
- * A fixture view type outside PUZZLE_TYPES (engine plan §7.5; no registered type is a view before GM8a): three knobs of
- * 0..2, all 0 at the start, a wrong input its device sees itself, and a saved work that fits while it holds three knobs
- * in range.
+ * A fixture view type outside PUZZLE_TYPES (engine plan §7.5): three knobs of 0..2, all 0 at the start, a wrong input its
+ * device sees itself (which neither registered view type, `levers` nor `setting`, has), and a saved work that fits while
+ * it holds three knobs in range.
  */
 const KNOBS: PuzzleTypeData<'knobs', { readonly knobs: number }> = {
   type: 'knobs',

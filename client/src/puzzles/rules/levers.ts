@@ -155,6 +155,9 @@ export function zeros(p: { readonly parts: number }): readonly number[] {
   return new Array<number>(p.parts).fill(0);
 }
 
+/** `zeros` at this type's params, so `ParamsOf<'levers'>` infers `LeversParams` (not `zeros`' wider parameter). */
+const initial: (p: LeversParams) => readonly number[] = zeros;
+
 /**
  * `reachable`'s bound, in throws tried: every throw from every configuration of the largest decode-legal instance
  * (4^8 configurations x 8 throws), so the shipped bound never stops on a decode-legal one.
@@ -210,8 +213,8 @@ export const LEVERS_RULES = Object.freeze({
   commit: 'control',
   decodeParams,
   answerShape: (p: LeversParams): { len: number; max: number } => ({ len: p.parts, max: p.positions - 1 }),
-  initial: zeros,
-  startShown: zeros,
+  initial,
+  startShown: initial,
   // A work an older version left may fit the shape and still lie beyond every throw from the start (B2): the device
   // could then never reach its goal, so that work goes and the device starts over. A stopped search is no fit too.
   workFits: (p: LeversParams, work: readonly number[]): boolean => fitsConfiguration(work, p.parts, p.positions) && reachable(p, work) === true,
