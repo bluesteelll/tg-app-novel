@@ -1542,8 +1542,10 @@ test('sequence, ritual: a full answer refuses a press and a busy device takes no
     for (const spy of [onwork, onblocked, ondemo, oncommit]) {
       spy.mockClear();
     }
-    // Free, full: a press is refused, once, and writes nothing.
+    // Free, full: a tap is refused, once, and writes nothing: the refused pointerdown arms the part (B2), so the tap's
+    // own click is consumed and reports no second refusal.
     pointerDown(must(parts[1]));
+    clickOf(must(parts[1]), 1);
     expect([onblocked.mock.calls, onwork.mock.calls], JSON.stringify(full)).toEqual([[[1]], []]);
     onblocked.mockClear();
     // Busy (the full answer posting): every part disabled, and a press on each takes nothing.
@@ -1553,10 +1555,20 @@ test('sequence, ritual: a full answer refuses a press and a busy device takes no
       pointerDown(b);
     }
     expect([onwork, onblocked, ondemo, oncommit].map((spy) => spy.mock.calls.length), JSON.stringify(full)).toEqual([0, 0, 0, 0]);
-    // The control: free again, the same press reaches the handler and is refused once.
+    // The control: free again, the same tap reaches the handler and is refused once.
     await rerender({ busy: false });
     pointerDown(must(parts[0]));
+    clickOf(must(parts[0]), 1);
     expect([onblocked.mock.calls, onwork.mock.calls], JSON.stringify(full)).toEqual([[[0]], []]);
+    onblocked.mockClear();
+    // B2: a touch that starts while busy arms nothing, so once the device frees (here with room to write), that touch's
+    // click is the press, once.
+    await rerender({ answer: [], busy: true });
+    pointerDown(must(parts[0]));
+    expect([onwork.mock.calls, onblocked.mock.calls], `${JSON.stringify(full)}: busy`).toEqual([[], []]);
+    await rerender({ busy: false });
+    clickOf(must(parts[0]), 1);
+    expect([onwork.mock.calls, onblocked.mock.calls], `${JSON.stringify(full)}: freed`).toEqual([[[[0], false]], []]);
   }
 });
 
@@ -1706,6 +1718,10 @@ test('puzzles: a push part presses once per activation, by pointer, keyboard or 
     expect(onwork, `${type}: the tap's pointerdown`).toHaveBeenCalledTimes(1);
     clickOf(part, 1);
     expect(onwork, `${type}: the tap's click`).toHaveBeenCalledTimes(1);
+    // The tap's click consumed its arm (A4): a later assistive click on the same part, with no pointer or key between, is
+    // an activation of its own and presses once more.
+    clickOf(part, 1);
+    expect(onwork.mock.calls.map(([w, wrong]) => `[${w.join(' ')}] ${String(wrong)}`), `${type}: an assistive click after the tap`).toEqual(['[0] false', '[0] false']);
     tapped.unmount();
     for (const [name, act, presses] of cases) {
       const work = vi.fn<(w: readonly number[], wrong: boolean) => void>();
