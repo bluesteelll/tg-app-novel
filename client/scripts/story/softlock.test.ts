@@ -375,6 +375,29 @@ test('softlock: optional carried items prove 2^k starts', () => {
   expect(checkSection(mixed, S, FILE).findings.map((f) => f.message)).toEqual([
     'section s (start: no a, b): a reachable state cannot reach a leave (stuck in cell): insert hall.door b → tap hall.door',
   ]);
+  // A required item beside an optional one: the required one is held in both starts, the one with b too. The only
+  // leave needs a: clean.
+  const both = [inherit('a', true), inherit('b', false)];
+  expect(checkSection(hall([outOn('out', 'a')], both), S, FILE).findings).toEqual([]);
+  // The same two, stuck only where both are held: b opens a one-way door to a passage whose door a opens into a cell
+  // whose only leave needs the b the first door took. In the start without b that door never opens.
+  const deep = world({
+    items: ['a', 'b'],
+    inherits: both,
+    sections: {
+      s: {
+        start: 'hall',
+        rooms: {
+          hall: room([exit('out', { story: 'out' }), exit('door1', 'mid', lock(['b']))]),
+          mid: room([exit('back', 'hall'), exit('door2', 'cell', lock(['a']))]),
+          cell: room([outOn('cell_out', 'b')]),
+        },
+      },
+    },
+  });
+  expect(checkSection(deep, S, FILE).findings.map((f) => f.message)).toEqual([
+    'section s (start: b): a reachable state cannot reach a leave (stuck in cell): insert hall.door1 b → tap hall.door1 → insert mid.door2 a → tap mid.door2',
+  ]);
 });
 
 /** A hall with an open way out and, per item of `ids`, a door it unlocks into a room holding a document; `inherits`
