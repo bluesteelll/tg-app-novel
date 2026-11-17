@@ -4058,6 +4058,32 @@ test('executor: a landing sync that drops a shown group and a hidden one asks fo
   h.ex.destroy();
 });
 
+// Triage r4 L1 (review r1 M1): a puzzle frame's cover holds a face mid-blink; its eyes open under the cover, and the
+// uncover draws that on its first frame, not at the face's next change.
+test("executor: an uncover draws a held face's current state on its first frame", async () => {
+  const d = drivenLoop();
+  const h = harness(S390, d.loop, MOTION);
+  const { kit, faces } = fakeKit();
+  h.ex.setMotion(kit);
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  const ally = faceAt(faces, 0);
+  const CLOSED = 'sheet_lamp.avif#300,30,80,30';
+  ally.state = { eyes: 'closed', accent: false, mouth: null };
+  d.run(1_100);
+  expect(shownOf(h, 'ally')).toEqual([CLOSED]);
+  d.loop.setCovered('panel', true);
+  ally.state = OPEN;
+  d.run(5_000);
+  // Held: nothing steps the face under the cover.
+  expect(shownOf(h, 'ally')).toEqual([CLOSED]);
+  const frames = d.loop.stats().frames;
+  d.loop.setCovered('panel', false);
+  d.run(1000 / 60);
+  expect([shownOf(h, 'ally'), d.loop.stats().frames - frames]).toEqual([[], 1]);
+  h.ex.destroy();
+});
+
 // Reduced motion (lane SH7, D2, D12): a camera move lands at its end; cuts, dissolves and the faces keep their time.
 
 test('executor: under reduced motion a camera move jumps to its end', async () => {

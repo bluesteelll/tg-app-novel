@@ -301,10 +301,19 @@ export function createRenderLoop(deps: RenderLoopDeps): RenderLoop {
         return;
       }
       settle();
+      const t = time();
+      const stood = on ? [] : [...sources].filter((s) => !live(s, t));
       if (on) {
         covers.add(reason);
       } else {
         covers.delete(reason);
+      }
+      // An uncover steps every source it held that is live now on the next tick, as resume() does: a change that came due
+      // under the cover (a face's blink ending) is drawn at once, not at the source's next change. A source still held
+      // (another cover, frozen) stays held; while paused, resume() draws it.
+      if (!paused && stood.some((s) => live(s, t))) {
+        due = true;
+        listen();
       }
       remode();
     },

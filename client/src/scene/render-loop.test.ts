@@ -335,6 +335,61 @@ test('render-loop: a cover set while paused draws no frame', () => {
   r.loop.destroy();
 });
 
+// Review r1 M1 (triage r4 L1): a discrete source whose changes came due under a cover is stepped and drawn on the first
+// tick after the uncover, as resume() does, not at its next change; a source another hold still holds is not.
+test('render-loop: an uncover steps the sources it held on the next tick', () => {
+  for (const reason of ['panel', 'cg'] as const) {
+    const r = rig();
+    const d = source({ every: 1_000 });
+    r.loop.addAmbient(d.s);
+    r.run(500);
+    r.loop.setCovered(reason, true);
+    // Its changes at 1 s and 2 s come due under the cover; the next is at 3 s.
+    r.run(2_200);
+    const [steps, frames] = [d.steps.length, r.loop.stats().frames];
+    expect(steps).toBe(0);
+    r.loop.setCovered(reason, false);
+    r.run(FRAME_MS);
+    expect.soft([d.steps.length - steps, r.loop.stats().frames - frames], `${reason}: stepped and drawn at the uncover`).toEqual([1, 1]);
+    // Then it rests until its next change.
+    expect.soft([r.listening(), r.armed()], `${reason}: at rest after the uncover`).toEqual([false, 1]);
+    r.loop.destroy();
+  }
+  // Two covers: the panel lifts, the CG stays. The top layer's source is stepped; the stage's, still under the CG, is not.
+  const r = rig();
+  const stage = source({ every: 1_000 });
+  const top = source({ every: 1_000, layer: 'top' });
+  r.loop.addAmbient(stage.s);
+  r.loop.addAmbient(top.s);
+  r.run(500);
+  r.loop.setCovered('cg', true);
+  r.loop.setCovered('panel', true);
+  r.run(2_200);
+  r.loop.setCovered('panel', false);
+  r.run(FRAME_MS);
+  expect.soft([stage.steps.length, top.steps.length], 'the panel lifted under a CG').toEqual([0, 1]);
+  // Frozen holds every source through an uncover: no step and no frame.
+  r.loop.setAnimation({ frozen: true });
+  r.run(1_000);
+  const frozen = r.loop.stats().frames;
+  r.loop.setCovered('cg', false);
+  r.run(1_000);
+  expect.soft([stage.steps.length, r.loop.stats().frames - frozen], 'the CG lifted while frozen').toEqual([0, 0]);
+  // Paused: the uncover draws nothing until resume, which steps the source.
+  r.loop.setAnimation({ frozen: false });
+  r.loop.setCovered('cg', true);
+  r.run(1_000);
+  r.loop.pause();
+  const paused = [stage.steps.length, r.loop.stats().frames];
+  r.loop.setCovered('cg', false);
+  r.tick();
+  expect.soft([r.listening(), stage.steps.length, r.loop.stats().frames], 'the CG lifted while paused').toEqual([false, ...paused]);
+  r.loop.resume();
+  r.run(FRAME_MS);
+  expect.soft(stage.steps.length - (paused[0] ?? 0), 'resumed: the stage source stepped').toBe(1);
+  r.loop.destroy();
+});
+
 test('render-loop: a gated tick is not an ambient frame', () => {
   let open = false;
   const r = rig({ gate: () => open });
