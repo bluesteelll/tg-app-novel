@@ -1399,4 +1399,15 @@ test('setting: a pull commits once and calls nothing else', async () => {
   await rerender({ busy: false });
   pull.click();
   expect(calls).toEqual(['commit', 'commit']);
+  // Any configuration may be pulled (X5): with every knob at either edge (0, or 9, the last of `positions: 10`), in
+  // each of the 2^3 combinations, the pull is enabled and one tap commits once.
+  for (const answer of [[0, 0, 0], [9, 0, 0], [0, 9, 0], [9, 9, 0], [0, 0, 9], [9, 0, 9], [0, 9, 9], [9, 9, 9]]) {
+    const once = vi.fn<() => void>();
+    const edge = render(LeverDevice, props({ params: SETTING, answer, oncommit: once }));
+    const edgePull = must(edge.container.querySelector<HTMLButtonElement>('button[data-cue="setting-pull"]'));
+    expect(edgePull.disabled, JSON.stringify(answer)).toBe(false);
+    edgePull.click();
+    expect(once, JSON.stringify(answer)).toHaveBeenCalledTimes(1);
+    edge.unmount();
+  }
 });
