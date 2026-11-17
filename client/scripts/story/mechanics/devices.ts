@@ -1,22 +1,23 @@
 // Module `devices`' build half (engine plan §7.5 "Placement lints", the band): its world lint, with its own codes (all
-// errors), and the device bar's band constants. A puzzle whose type is `presentation: 'view'` is the puzzle of exactly
-// one lock, the zero-slot lock of a view room's `device` hotspot, and a `device` sits only in a view
-// (`world/view-type-site`); a device's hotspot carries a zero-slot lock with a puzzle of a view type
-// (`world/device-type`); a view type has no close-up (`world/device-closeup`). The device hotspot is a plain `object`
-// with no `uses` (`world/device-object`), always present (`world/device-when`), the room's only puzzle lock
-// (`world/device-alone`) and no trigger's `unlock` target (`world/device-unlock`): the arrival hook opens its session,
-// so nothing else may hide, open or replace it. A capped device shows its jam (`world/device-failed-state`), and a `part`
-// atom reads its own room's device within the type's answer shape (`world/device-part`). Each part of a device's puzzle,
-// as its type's lint half gives it (`partRects`), lies inside the safe frame, under the device bar's band, with each side
-// at least the hotspot minimum, and over no other part (`world/device-parts-frame`); a view type whose lint half gives no
-// rects is skipped here and held to them by the registry pin. Every other hotspot of a device room lies under the band
-// and under no part (`world/device-hotspot-cover`). A `device` naming a hotspot its room lacks is the DSL's
-// `world/unknown-ref`. The registries are parameters (`types`, the one the world was decoded with, and `lints`, the
-// puzzle lint halves): a fixture view type in tests beside the registered ones. A device carries no text and enters no
-// knot, so the module has no text or story walker. Build only and pure, no node:*: world.ts imports the registry and
-// scan-dist.ts imports world.ts. Its imports from index.ts and lint.ts are `import type`; it never imports world.ts
-// (index.ts's value graph has no edge back), and the puzzle lint registry it reads imports nothing of mechanics/. It
-// alone imports geom/cover.ts: the module's src halves stay pure-world.
+// errors), the device bar's band constants and, beside them, the item ribbon's floor over an open device. A puzzle
+// whose type is `presentation: 'view'` is the puzzle of exactly one lock, the zero-slot lock of a view room's `device`
+// hotspot, and a `device` sits only in a view (`world/view-type-site`); a device's hotspot carries a zero-slot lock with
+// a puzzle of a view type (`world/device-type`); a view type has no close-up (`world/device-closeup`). The device
+// hotspot is a plain `object` with no `uses` (`world/device-object`), always present (`world/device-when`), the room's
+// only puzzle lock (`world/device-alone`) and no trigger's `unlock` target (`world/device-unlock`): the arrival hook
+// opens its session, so nothing else may hide, open or replace it. A capped device shows its jam
+// (`world/device-failed-state`), and a `part` atom reads its own room's device within the type's answer shape
+// (`world/device-part`). Each part of a device's puzzle, as its type's lint half gives it (`partRects`), lies inside the
+// safe frame, under the device bar's band, above the item ribbon's rows, with each side at least the hotspot minimum, and
+// over no other part (`world/device-parts-frame`); a view type whose lint half gives no rects is skipped here and held to
+// them by the registry pin. Every other hotspot of a device room lies under the band and under no part
+// (`world/device-hotspot-cover`). A `device` naming a hotspot its room lacks is the DSL's `world/unknown-ref`. The
+// registries are parameters (`types`, the one the world was decoded with, and `lints`, the puzzle lint halves): a
+// fixture view type in tests beside the registered ones. A device carries no text and enters no knot, so the module has
+// no text or story walker. Build only and pure, no node:*: world.ts imports the registry and scan-dist.ts imports
+// world.ts. Its imports from index.ts and lint.ts are `import type`; it never imports world.ts (index.ts's value graph
+// has no edge back), and the puzzle lint registry it reads imports nothing of mechanics/. It alone imports
+// geom/cover.ts: the module's src halves stay pure-world.
 import { hotspotKey, lockOf, own } from '../../../src/explore/reduce.ts';
 import { HOTSPOT_MIN_SOURCE_PX, HOTSPOT_SAFE_FRAME, ROOM_SOURCE } from '../../../src/geom/cover.ts';
 import { condEntry, condReads } from '../../../src/mechanics/data/conditions.ts';
@@ -37,7 +38,7 @@ export const DEVICES_CODES = {
   'world/device-type': 'E',
   // This module's check (RULINGS 353 Q1 (c)) over GM8a's part-rects accessor (`PuzzleTypeLint.partRects`): each part
   // inside HOTSPOT_SAFE_FRAME, each side at least HOTSPOT_MIN_SOURCE_PX, both from geom/cover.ts, its top at or below
-  // DEVICE_BAND_Y, and no part over another.
+  // DEVICE_BAND_Y, its bottom at or above the item ribbon's top (deviceRibbonY), and no part over another.
   'world/device-parts-frame': 'E',
   'world/device-closeup': 'E',
   'world/device-failed-state': 'E',
@@ -75,6 +76,30 @@ export function deviceBandY(barCss: number, insetCss: number): number {
  * 320 px one under Q67's layer (telegram/viewport.ts) 685, so 733 is the stricter bound and stays.
  */
 export const DEVICE_BAND_Y = deviceBandY(DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS);
+
+// The item ribbon's CSS (ui/explore/Ribbon.svelte), mirrored for its top while a device is open: `bottom: calc(inset +
+// 60px)`; padding `0 12px 8px 12px` beside the insets; `gap: 8px`; slots of 56 x 56 px, wrapping.
+const RIBBON_BOTTOM_CSS = 60;
+const RIBBON_PAD_BOTTOM_CSS = 8;
+const RIBBON_PAD_SIDE_CSS = 12;
+const RIBBON_SLOT_CSS = 56;
+const RIBBON_GAP_CSS = 8;
+/** The largest bottom inset under the ribbon, in CSS px: the mock's, NOTCH's 34 (e2e/layout.spec.ts). */
+export const DEVICE_BOTTOM_INSET_CSS = 34;
+/** The ribbon's slots per row on the band's 320 px basis: (320 - 2 x 12 + 8) / (56 + 8), rounded down. */
+export const DEVICE_RIBBON_PER_ROW = Math.floor((BAND_WIDTH_CSS - 2 * RIBBON_PAD_SIDE_CSS + RIBBON_GAP_CSS) / (RIBBON_SLOT_CSS + RIBBON_GAP_CSS));
+
+/** The ribbon's rows for `items` declared items: at least one (an upper bound on what it can hold at once). */
+export function deviceRibbonRows(items: number): number {
+  return Math.max(1, Math.ceil(items / DEVICE_RIBBON_PER_ROW));
+}
+
+/** The canonical y of the ribbon's top for `rows` rows over a bottom inset of `insetCss` at the worst cover: from the
+ *  cover's visible bottom, its CSS height at 1080 / 320 canonical px each, rounded up (stricter, as the band's). */
+export function deviceRibbonY(rows: number, insetCss: number): number {
+  const css = insetCss + RIBBON_BOTTOM_CSS + RIBBON_PAD_BOTTOM_CSS + rows * RIBBON_SLOT_CSS + (rows - 1) * RIBBON_GAP_CSS;
+  return ROOM_SOURCE.h - TOP_CROP - Math.ceil((css * ROOM_SOURCE.w) / BAND_WIDTH_CSS);
+}
 
 /** Every `part` atom of `c`, in tree order (a `not`'s included). */
 function partsOf(c: Cond): PartAtom[] {
@@ -156,7 +181,10 @@ export function devicesFindings(input: WorldLintInput, types: PuzzleTypes = PUZZ
     }
     judged.add(pid);
     const top = Math.max(frame.y0, DEVICE_BAND_Y);
-    const floor = frame.y1;
+    // The ribbon's top for every item the world declares; always above the frame's y1 (1565 at most), which `min` keeps
+    // read so no ribbon change lets a part past the frame.
+    const items = Object.keys(w.items).length;
+    const floor = Math.min(frame.y1, deviceRibbonY(deviceRibbonRows(items), DEVICE_BOTTOM_INSET_CSS));
     rects.forEach((rect, i) => {
       const [x, y, rw, rh] = rect;
       const causes: string[] = [];
@@ -170,7 +198,7 @@ export function devicesFindings(input: WorldLintInput, types: PuzzleTypes = PUZZ
         causes.push(`starts at y ${y}, above the device bar's band at y ${top}`);
       }
       if (y + rh > floor) {
-        causes.push(`ends at y ${y + rh}, below the safe frame's y ${frame.y1}`);
+        causes.push(`ends at y ${y + rh}, below y ${floor}, the item ribbon's top for ${items} declared items`);
       }
       if (rw < HOTSPOT_MIN_SOURCE_PX || rh < HOTSPOT_MIN_SOURCE_PX) {
         causes.push(`is ${rw}×${rh}, a side under ${HOTSPOT_MIN_SOURCE_PX} source px`);

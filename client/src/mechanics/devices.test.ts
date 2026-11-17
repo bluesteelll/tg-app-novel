@@ -12,7 +12,17 @@
 import { expect, test } from 'vitest';
 
 import { stripComments } from '../../scripts/story/classify.ts';
-import { DEVICE_BAND_Y, DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS, devicesFindings, deviceBandY } from '../../scripts/story/mechanics/devices.ts';
+import {
+  DEVICE_BAND_Y,
+  DEVICE_BAR_CSS_H,
+  DEVICE_BOTTOM_INSET_CSS,
+  DEVICE_RIBBON_PER_ROW,
+  DEVICE_TOP_INSET_CSS,
+  devicesFindings,
+  deviceBandY,
+  deviceRibbonRows,
+  deviceRibbonY,
+} from '../../scripts/story/mechanics/devices.ts';
 import devicesSource from '../../scripts/story/mechanics/devices.ts?raw';
 import type { WorldLintInput } from '../../scripts/story/mechanics/index.ts';
 import { PUZZLE_LINTS } from '../../scripts/story/puzzles/index.ts';
@@ -74,11 +84,11 @@ const code = (dials: number, maxAttempts: number | null = null): Json => ({
   hints: [txt()],
 });
 
-/** The source of one section `s` over `rooms`, starting in `hall`. */
-function source(rooms: Readonly<Record<string, Json>>, o: { puzzles?: Json; flags?: Readonly<Record<string, string>> } = {}): Json {
+/** The source of one section `s` over `rooms`, starting in `hall`; `o.items` declares that many items (`item0`...). */
+function source(rooms: Readonly<Record<string, Json>>, o: { puzzles?: Json; flags?: Readonly<Record<string, string>>; items?: number } = {}): Json {
   return {
     format: 1,
-    items: {},
+    items: Object.fromEntries(Array.from({ length: o.items ?? 0 }, (_, i) => [`item${i}`, { name: txt(), desc: txt(), glyph: 'key' }])),
     docs: {},
     puzzles: o.puzzles ?? {},
     sections: { s: { start: 'hall', bgm: null, rooms } },
@@ -576,17 +586,17 @@ function lint(raw: Json, yielded: readonly string[] = [], lints?: PuzzleLintRegi
  * A lint fixture: the hall and its device view `panel`, whose device hotspot `dial` carries `o.dial` (default: a zero-slot
  * lock with the view-type puzzle `dial`); `o.hall` adds hotspots to the hall and `o.hallKeys` keys, `o.spots` hotspots to
  * the panel after the device and `o.panel` keys, `o.puzzles` puzzles beside `dial` (a `CRANKS` puzzle of four parts, each
- * at 0..2, unless replaced).
+ * at 0..2, unless replaced), `o.items` the items the world declares (none unless given).
  */
 function deviceWorld(
-  o: { dial?: Json; hall?: readonly Json[]; hallKeys?: Json; spots?: readonly Json[]; panel?: Json; puzzles?: Json } = {},
+  o: { dial?: Json; hall?: readonly Json[]; hallKeys?: Json; spots?: readonly Json[]; panel?: Json; puzzles?: Json; items?: number } = {},
 ): Json {
   return source(
     {
       hall: room([exit('to_panel', 'panel'), exit('out', { story: 'end' }), ...(o.hall ?? [])], o.hallKeys),
       panel: room([o.dial ?? object('dial', lock('dial')), ...(o.spots ?? [])], { view: { of: 'hall' }, device: 'dial', ...o.panel }),
     },
-    { puzzles: { dial: cranks(4), ...o.puzzles } },
+    { puzzles: { dial: cranks(4), ...o.puzzles }, items: o.items ?? 0 },
   );
 }
 
@@ -845,6 +855,32 @@ test("story: the device part checks run once per device puzzle, on a view room's
     { puzzles: { dial: leversPuzzle(bad) } },
   );
   expect(lint(twice)).toEqual([partFinding('.rects.0', 0, [79, 800, 150, 150], "starts at x 79, left of the safe frame's x 80")]);
+});
+
+test('story: a device part ending under the item ribbon is refused', () => {
+  // D5: the item ribbon shows over the open device, its rows from the items the world declares (4 a row on the 320 px
+  // basis, over the mock's 34 px bottom inset), so a part ends above its top: y 1450 for one row, 1234 for two. Literal
+  // figures: a row written against the bound would move with a wrong inset.
+  const dial = (rect: Rect, items: number): string[] => lint(deviceWorld({ items, puzzles: { dial: leversPuzzle([rect, [400, 800, 150, 150]]) } }));
+  const under = (rect: Rect, floor: number, items: number): string =>
+    partFinding('.rects.0', 0, rect, `ends at y ${rect[1] + rect[3]}, below y ${floor}, the item ribbon's top for ${items} declared items`);
+  // No item: one row.
+  expect(dial([100, 1300, 150, 150], 0)).toEqual([]);
+  expect(dial([100, 1301, 150, 150], 0)).toEqual([under([100, 1301, 150, 150], 1450, 0)]);
+  // Four items fill one row; a fifth starts the second.
+  expect(dial([100, 1300, 150, 150], 4)).toEqual([]);
+  expect(dial([100, 1300, 150, 150], 5)).toEqual([under([100, 1300, 150, 150], 1234, 5)]);
+  expect(dial([100, 1084, 150, 150], 5)).toEqual([]);
+  expect(dial([100, 1085, 150, 150], 5)).toEqual([under([100, 1085, 150, 150], 1234, 5)]);
+});
+
+test("devices: the ribbon bound follows the ribbon's rows", () => {
+  // Ribbon.svelte on the 320 px basis: 60 px over the bottom inset, 8 px padding under 56 px slots with 8 px gaps and
+  // 12 px side padding (4 slots a row), each CSS px 3.375 canonical px rounded up, from the cover's visible bottom (1984).
+  expect([DEVICE_BOTTOM_INSET_CSS, DEVICE_RIBBON_PER_ROW]).toEqual([34, 4]);
+  expect([1, 2, 3, 4].map((rows) => deviceRibbonY(rows, 34))).toEqual([1450, 1234, 1018, 802]);
+  expect([deviceRibbonY(1, 0), deviceRibbonY(2, 0)]).toEqual([1565, 1349]);
+  expect([0, 4, 5, 8, 9].map((items) => deviceRibbonRows(items))).toEqual([1, 1, 2, 2, 3]);
 });
 
 test("story: a device room's hotspot under the bar's band or under a part is refused", () => {
