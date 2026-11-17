@@ -1610,3 +1610,25 @@ test('sequence: a full sequence seeded at mount reports reached once', async () 
   expect(onreach.mock.calls).toEqual([[[0, 2, 1]], [[0, 2, 1]]]);
   expect(onwork).not.toHaveBeenCalled();
 });
+
+test('ritual: the attempt posts at full length with no per-press feedback', async () => {
+  // c5 (D5): every press appends and reports `onwork(work, false)`, with no right or wrong, no commit and no reach: the
+  // host posts the full list (`commit: 'full'`, yields' postFull) and the server's reply says whether it opens. Each
+  // press after the caller's rerender with the work before it, as the session's answer follows `onwork`.
+  const calls: string[] = [];
+  const record: Partial<PuzzleUiProps> = {
+    onchange: () => calls.push('change'),
+    onwork: (w, wrong) => calls.push(`work [${w.join(' ')}] ${String(wrong)}`),
+    oncommit: () => calls.push('commit'),
+    onreach: () => calls.push('reach'),
+    onblocked: (i) => calls.push(`blocked ${i}`),
+  };
+  const { container, rerender } = render(ButtonDevice, props({ params: RITUAL, answer: [], ...record }));
+  let work: readonly number[] = [];
+  for (const part of [2, 0, 1, 1, 2]) {
+    pointerDown(must(pushParts(container)[part]));
+    work = [...work, part];
+    await rerender({ answer: work });
+  }
+  expect(calls).toEqual(['work [2] false', 'work [2 0] false', 'work [2 0 1] false', 'work [2 0 1 1] false', 'work [2 0 1 1 2] false']);
+});

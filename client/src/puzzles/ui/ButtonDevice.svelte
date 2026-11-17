@@ -7,7 +7,8 @@
   // it shows as a numeral; a line read by a screen reader counts the presses. A part presses at touch (`pointerdown`,
   // its declared trigger: the button sinks at touch). Presentational: the presses are the `answer` prop; a press computes
   // the next list from it and leaves as one fresh array through `onwork`, never `onchange`: a right `sequence` press
-  // appends, a wrong one resets to `[]` with `wrong` (the device's own wrong, which counts one attempt). A `sequence`
+  // appends, a wrong one resets to `[]` with `wrong` (the device's own wrong, which counts one attempt); a `ritual` press
+  // appends and is never wrong (the host posts the full list, `commit: 'full'`; its reply says). A `sequence`
   // report is the reach edge's (`puzzles/play/reach.ts`) over the `answer` prop, never a handler's: once per turn to
   // reached, at mount too. The rule order of a press (D5): busy, nothing; a full answer, `onblocked`; else the type's
   // press. Busy disables every part, and every handler is delegated to the mount root, so none outlives the component.
@@ -18,6 +19,7 @@
   import type { MechanicsKey } from '../../i18n/mechanics.ts';
   import type { Rect } from '../../story/staging.ts';
   import { reachEdge } from '../play/reach.ts';
+  import { pressRitual } from '../play/ritual.ts';
   import { PART_MIN_PX, pressSequence, SEQUENCE_PLAY } from '../play/sequence.ts';
   import type { PuzzleUiProps } from '../registry.ts';
   import { PUZZLE_RULES } from '../rules/index.ts';
@@ -76,6 +78,11 @@
       const next = pressSequence(sequence, answer, part);
       if (next !== null) {
         onwork?.(next.work, next.wrong);
+      }
+    } else if (ritual !== null) {
+      const next = pressRitual(ritual, answer, part);
+      if (next !== null) {
+        onwork?.(next, false);
       }
     }
   }
