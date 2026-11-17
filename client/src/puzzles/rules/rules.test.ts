@@ -3,7 +3,7 @@ import { expect, test } from 'vitest';
 import { PUZZLE_LINTS } from '../../../scripts/story/puzzles/index.ts';
 import type { PuzzleLintRegistry } from '../../../scripts/story/puzzles/shape.ts';
 import { UI_MOTIONS, declaredControls, uiMotion } from '../../cues/stage/motions.ts';
-import type { ControlCue, GestureCue } from '../../cues/types.ts';
+import type { ControlCue, ControlDecl, GestureCue } from '../../cues/types.ts';
 import { MIN_TARGET_PX } from '../../explore/controller.ts';
 import type { ChapterId, LineId, PuzzleLocalId, Rect } from '../../story/staging.ts';
 import { decodeWorldPublic, decodeWorldSource, toServer } from '../../world/decode.ts';
@@ -704,7 +704,8 @@ test('levers: a saved work fits only where the throws reach it from the start', 
   expect(reachable(L84, deepest, 524_279)).toBeNull();
 });
 
-/** The devices' three controls join `ControlCue` through the registry, with no cues/types.ts edit (tsc: false before). */
+/** The lever devices' three controls join `ControlCue` through the registry, with no cues/types.ts edit (tsc: false
+ *  before). */
 const LEVER_CONTROL: 'lever' extends ControlCue ? true : false = true;
 const SETTING_PART: 'setting-part' extends ControlCue ? true : false = true;
 const SETTING_PULL: 'setting-pull' extends ControlCue ? true : false = true;
@@ -978,6 +979,59 @@ test("sequence, ritual: a part's least side is the hotspots' minimum", () => {
   expect(BUTTON_PART_MIN_PX).toBe(MIN_TARGET_PX);
 });
 
+test('sequence: a saved work off the order starts the device over', () => {
+  // D3 through the registry: the instance a session builds starts from a saved work only while it is a prefix of the
+  // order; a work an older order left (in shape, no prefix of 1 2 0) goes, and the device starts from its empty start.
+  const p2: SequenceParams = { ...SQ3, order: [1, 2, 0] };
+  const start = (work: readonly number[]): readonly number[] => instanceOf(PUZZLE_RULES.sequence, p2).start({ outcome: null, attempts: 0, hintsOpened: 0, work });
+  expect(start([0, 2])).toEqual([]);
+  // The control: a prefix of the new order is kept.
+  expect(start([1, 2])).toEqual([1, 2]);
+});
+
+/** The push devices' two controls join `ControlCue` through the registry, with no cues/types.ts edit (tsc: false before). */
+const PUSH_CONTROL: 'push' extends ControlCue ? true : false = true;
+const SEQUENCE_REPLAY: 'sequence-replay' extends ControlCue ? true : false = true;
+
+test('puzzles: sequence and ritual declare one push on pointerdown and the replay, no part with a haptic', () => {
+  expect([PUSH_CONTROL, SEQUENCE_REPLAY]).toEqual([true, true]);
+  // Read through the registry, as the lever devices' are: "found" makes the null haptic bite (`uiMotion` falls back to
+  // the control default for a name no registry declares).
+  const declared = declaredControls();
+  // D4, D9: a push sinks at touch, so its trigger is `pointerdown`; a part plays the roll's own haptics, its control none.
+  expect(declared.find((d) => d.name === 'push')).toStrictEqual({ name: 'push', on: 'pointerdown' });
+  // The replay asks for the demonstration, whose steps are the feedback: the click default, no haptic of its own.
+  expect(declared.find((d) => d.name === 'sequence-replay')).toStrictEqual({ name: 'sequence-replay', on: 'click' });
+  for (const name of ['push', 'sequence-replay'] as const) {
+    expect(uiMotion(name), name).toEqual(UI_MOTIONS.control);
+    expect(uiMotion(name).haptic, name).toBeNull();
+  }
+  expect(SEQUENCE_RULES.controls).toEqual([
+    { name: 'push', on: 'pointerdown' },
+    { name: 'sequence-replay', on: 'click' },
+  ]);
+  expect(RITUAL_RULES.controls).toEqual([{ name: 'push', on: 'pointerdown' }]);
+});
+
+test('puzzles: a control two types declare is declared alike', () => {
+  // D9 (A5): `declaredControls` concatenates every type's and `uiMotion` takes the first, so a name two types share is
+  // declared identically, or one type's part would play the other's motion. `push` is shared, so the check bites.
+  const types: PuzzleTypes = PUZZLE_TYPES;
+  const byName = new Map<string, Array<{ readonly type: string; readonly decl: ControlDecl }>>();
+  for (const t of types) {
+    for (const decl of t.controls ?? []) {
+      byName.set(decl.name, [...(byName.get(decl.name) ?? []), { type: t.type, decl }]);
+    }
+  }
+  const shared = [...byName].filter(([, decls]) => new Set(decls.map((d) => d.type)).size > 1);
+  expect(shared.map(([name]) => name)).toContain('push');
+  for (const [name, decls] of shared) {
+    for (const { type, decl } of decls) {
+      expect(decl, `${name} (${type})`).toStrictEqual(decls[0]?.decl);
+    }
+  }
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // The type registry (engine plan §7.1, §7.3): the pins every type's data half keeps, each checked against fixtures
 // that break it, so a checker that lost a rule is red here and not only on a future type.
@@ -1044,7 +1098,7 @@ test('puzzles: every type has a data half, a loader and a lint', () => {
   const types = PUZZLE_TYPES.map((t) => t.type);
   expect(new Set(types).size).toBe(types.length);
   const sorted = [...types].sort();
-  expect(sorted).toEqual(['code', 'grid', 'levers', 'order', 'path', 'setting']);
+  expect(sorted).toEqual(['code', 'grid', 'levers', 'order', 'path', 'ritual', 'sequence', 'setting']);
   expect(Object.keys(PUZZLE_RULES).sort()).toEqual(sorted);
   expect(Object.keys(PUZZLE_UI).sort()).toEqual(sorted);
   expect(Object.keys(PUZZLE_LINTS).sort()).toEqual(sorted);
@@ -1052,19 +1106,22 @@ test('puzzles: every type has a data half, a loader and a lint', () => {
     // The keyed view is the registry's own object, not a copy that could drift from it.
     expect(PUZZLE_RULES[t.type], t.type).toBe(t);
     expect(PUZZLE_UI[t.type], t.type).toBeTypeOf('function');
-    // The view types, `levers` and `setting`, save a working configuration; the overlays (`code`, `order`, `path`,
-    // `grid`) save none, and no type demonstrates (§7.2).
-    expect('workFits' in t, t.type).toBe(['levers', 'setting'].includes(t.type));
-    expect('demo' in t, t.type).toBe(false);
+    // The view types, `levers`, `setting`, `sequence` and `ritual`, save a working configuration; the overlays (`code`,
+    // `order`, `path`, `grid`) save none, and only `sequence` demonstrates (§7.2, §7.5).
+    expect('workFits' in t, t.type).toBe(['levers', 'setting', 'sequence', 'ritual'].includes(t.type));
+    expect('demo' in t, t.type).toBe(t.type === 'sequence');
   }
   // The commit types' start configuration is shown before any input (§7.1 `startShown`; per-player's floor excludes
-  // it); a path shows no full-length configuration before input, a grid its givens and blanks, a device its zeros.
+  // it); a path and a push device show no full-length configuration before input, a grid its givens and blanks, a
+  // lever device its zeros.
   expect(code.startShown(DIALS4)).toEqual(code.initial(DIALS4));
   expect(order.startShown(MEDALS)).toEqual(order.initial(MEDALS));
   expect(PUZZLE_RULES.path.startShown(P32)).toBeNull();
   expect(PUZZLE_RULES.grid.startShown(G23)).toEqual(PUZZLE_RULES.grid.initial(G23));
   expect(PUZZLE_RULES.levers.startShown(L23)).toEqual(PUZZLE_RULES.levers.initial(L23));
   expect(PUZZLE_RULES.setting.startShown(S3)).toEqual(PUZZLE_RULES.setting.initial(S3));
+  expect(PUZZLE_RULES.sequence.startShown(SQ3)).toBeNull();
+  expect(PUZZLE_RULES.ritual.startShown(RT35)).toBeNull();
 });
 
 test('puzzles: a commit type posts its wrong answers; a reach type has none or a local one', () => {
@@ -1124,6 +1181,8 @@ test('puzzles: a commit type checks its solution and a reach type solves, reache
   expect(PUZZLE_LINTS.grid.canonical).toBe(GRID_PLAY.canonical);
   expect(PUZZLE_LINTS.levers.reached).toBe(LEVERS_PLAY.reached);
   expect(PUZZLE_LINTS.levers.canonical).toBe(LEVERS_PLAY.canonical);
+  expect(PUZZLE_LINTS.sequence.reached).toBe(SEQUENCE_PLAY.reached);
+  expect(PUZZLE_LINTS.sequence.canonical).toBe(SEQUENCE_PLAY.canonical);
   // The checker against its own fixtures: each misses one member set; the full ones pass.
   const count = (): 1 => 1;
   const valid = (): null => null;
@@ -1183,7 +1242,7 @@ test('puzzles: a fixture type passed as types decodes in a world', () => {
     expect(r.value.puzzles[GATE]?.params).toBe(TUMBLER_PARAMS);
   }
   // Without `types` the decoder knows PUZZLE_TYPES only, and names them.
-  const issue = { ok: false, error: [{ path: 'puzzles.gate.type', reason: 'shape', detail: '"tumbler" is not code or order or path or grid or levers or setting' }] };
+  const issue = { ok: false, error: [{ path: 'puzzles.gate.type', reason: 'shape', detail: '"tumbler" is not code or order or path or grid or levers or setting or sequence or ritual' }] };
   expect(decodeWorldPublic(publicRaw)).toEqual(issue);
   expect(decodeWorldSource(sourceRaw)).toEqual(issue);
 });

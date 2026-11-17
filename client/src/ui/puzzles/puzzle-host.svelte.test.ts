@@ -1,5 +1,5 @@
 // LP2 in happy-dom: the puzzle frame and the hint ladder (PUZZLES-PLAN X8, X14, X18; META-PLAN M21, M27, F24), the
-// view store's BackButton rule, and the reader rules over the seven puzzle components (no literal text, no I/O). Events
+// view store's BackButton rule, and the reader rules over the eight puzzle components (no literal text, no I/O). Events
 // are built by hand where it matters: a raw tap is pointerdown + click with the DOM not yet updated (a double tap).
 import { cleanup, render } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
@@ -19,6 +19,7 @@ import { LAYER_MOTIONS } from '../../cues/visible.ts';
 import type { Box } from '../../geom/cover.ts';
 import { t } from '../../i18n/index.ts';
 import type { Lang } from '../../i18n/index.ts';
+import ButtonDevice from '../../puzzles/ui/ButtonDevice.svelte';
 import CodeLock from '../../puzzles/ui/CodeLock.svelte';
 import GridPuzzle from '../../puzzles/ui/GridPuzzle.svelte';
 import LeverDevice from '../../puzzles/ui/LeverDevice.svelte';
@@ -619,7 +620,7 @@ const ORDER_PIECES = ['medal_sun', 'medal_moon', 'medal_star'];
 test('puzzles: every declared control emits its cue', () => {
   // The frame's states that show every control: a linear code frame with Give up and a ladder that can be used, an
   // exploration order frame whose ladder cannot be paid (get more), a frame whose type chunk failed (Retry), each type's
-  // own controls, and the two devices in their room.
+  // own controls, and the four devices in their room.
   const states: Array<[string, PuzzleHostProps]> = [
     ['code', hostProps({ ladder: ladderOf(TIERS, { cost: 1, balance: 2 }) })],
     [
@@ -675,6 +676,40 @@ test('puzzles: every declared control emits its cue', () => {
             params: { parts: 2, positions: 10, rects: [[80, 800, 150, 150], [310, 800, 150, 150]], pull: [400, 1500, 300, 150] },
             answer: [0, 0],
             ui: LeverDevice,
+          }),
+        }),
+        place: 'room',
+      },
+    ],
+    // The push devices in their room (GM8b): a sequence device's parts, then a ritual device's, each pressed at touch.
+    [
+      'sequence',
+      {
+        ...hostProps({
+          frame: frameOf({
+            mode: 'explore',
+            presentation: 'view',
+            type: 'sequence',
+            params: { parts: 3, order: [0, 2, 1], rects: [[80, 760, 150, 150], [270, 760, 150, 150], [460, 760, 150, 150]], replay: [650, 760, 150, 150] },
+            answer: [],
+            awaiting: false,
+            ui: ButtonDevice,
+          }),
+        }),
+        place: 'room',
+      },
+    ],
+    [
+      'ritual',
+      {
+        ...hostProps({
+          frame: frameOf({
+            mode: 'explore',
+            presentation: 'view',
+            type: 'ritual',
+            params: { parts: 3, length: 5, rects: [[80, 760, 150, 150], [270, 760, 150, 150], [460, 760, 150, 150]] },
+            answer: [],
+            ui: ButtonDevice,
           }),
         }),
         place: 'room',
@@ -754,6 +789,7 @@ test('puzzles: every declared control emits its cue', () => {
       'order-slot',
       'path-cell',
       'path-stroke',
+      'push',
       'puzzle-hint',
       'puzzle-retry',
       'puzzle-try',
@@ -1150,7 +1186,7 @@ test('puzzle host: the frame layer takes taps only on the frame and the load not
 
 // ---------------------------------------------------------------------------------------------------------------
 // The reader rules (spec 2, K26): copies of L14b's readers (menus.svelte.test.ts; RULINGS 55 accepts copies) over the
-// seven puzzle components, with an exact import list per component (critique W2): a value import beyond it, such as
+// eight puzzle components, with an exact import list per component (critique W2): a value import beyond it, such as
 // the Telegram facade, is an offender.
 
 const COMPONENT_SOURCES = import.meta.glob<string>(['./*.svelte', '../../puzzles/ui/*.svelte'], { query: '?raw', import: 'default', eager: true });
@@ -1159,6 +1195,7 @@ const COMPONENT_SOURCES = import.meta.glob<string>(['./*.svelte', '../../puzzles
 const VALUE_IMPORTS: Readonly<Record<string, readonly string[]>> = {
   './PuzzleHost.svelte': ['../../cues/root.ts', '../../i18n/index.ts', './HintLadder.svelte'],
   './HintLadder.svelte': ['../../i18n/index.ts'],
+  '../../puzzles/ui/ButtonDevice.svelte': ['../../geom/cover.ts', '../../i18n/mechanics.ts', '../play/sequence.ts', '../rules/index.ts'],
   '../../puzzles/ui/CodeLock.svelte': ['../../i18n/index.ts', '../rules/index.ts'],
   '../../puzzles/ui/GridPuzzle.svelte': ['../../i18n/mechanics.ts', '../play/grid.ts', '../play/reach.ts', '../rules/index.ts'],
   '../../puzzles/ui/LeverDevice.svelte': ['../../geom/cover.ts', '../../i18n/mechanics.ts', '../play/levers.ts', '../play/reach.ts', '../play/setting.ts', '../rules/index.ts'],
@@ -1214,7 +1251,7 @@ function literalText(source: string): string[] {
 }
 
 test('puzzle ui: components hold no literal text', () => {
-  // Non-vacuous: exactly the seven components are read.
+  // Non-vacuous: exactly the eight components are read.
   expect(Object.keys(COMPONENT_SOURCES).sort()).toEqual([...COMPONENTS].sort());
   const offenders: string[] = [];
   for (const name of COMPONENTS) {

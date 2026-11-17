@@ -1,8 +1,9 @@
-// LP2 in happy-dom: the puzzle type UIs (PUZZLES-PLAN X17; engine plan §7.2 `path`, GM7p; the devices, GM8a) and their
-// lazy loader (X14). Each is presentational: the answer comes in as a prop and every change leaves as a fresh array,
-// through `onchange` (an overlay type) or `onwork` (a device).
+// LP2 in happy-dom: the puzzle type UIs (PUZZLES-PLAN X17; engine plan §7.2 `path`, GM7p; the lever devices, GM8a; the
+// push devices, GM8b) and their lazy loader (X14). Each is presentational: the answer comes in as a prop and every change
+// leaves as a fresh array, through `onchange` (an overlay type) or `onwork` (a device).
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
+import type { Component } from 'svelte';
 import { afterEach, expect, test, vi } from 'vitest';
 
 import type { GestureCue } from '../../cues/types.ts';
@@ -15,6 +16,8 @@ import { loadPuzzleUi, PUZZLE_UI } from '../registry.ts';
 import type { PuzzleUiProps } from '../registry.ts';
 import { PUZZLE_RULES, PUZZLE_TYPES, puzzleInstance } from '../rules/index.ts';
 import type { PuzzleType, PuzzleTypeData, PuzzleTypes } from '../rules/index.ts';
+import ButtonDevice from './ButtonDevice.svelte';
+import buttonSource from './ButtonDevice.svelte?raw';
 import CodeLock from './CodeLock.svelte';
 import codeLockSource from './CodeLock.svelte?raw';
 import GridPuzzle from './GridPuzzle.svelte';
@@ -210,6 +213,10 @@ function decoded(type: PuzzleType, raw: unknown): unknown {
 const LEVERS_RAW = { parts: 2, positions: 3, couples: [[1], []], target: [2, 1], rects: [[100, 800, 200, 300], [600, 800, 150, 150]] };
 /** Three knobs of 10 positions and the pull. */
 const SETTING_RAW = { parts: 3, positions: 10, rects: [[80, 800, 150, 150], [310, 800, 150, 150], [540, 800, 150, 150]], pull: [400, 1500, 300, 150] };
+/** Three push parts in a row inside the safe frame and the band (GM8b-B4); the order 0 2 1; the replay after them. */
+const SEQUENCE_RAW = { parts: 3, order: [0, 2, 1], rects: [[80, 760, 150, 150], [270, 760, 150, 150], [460, 760, 150, 150]], replay: [650, 760, 150, 150] };
+/** The same three parts, five presses. */
+const RITUAL_RAW = { parts: 3, length: 5, rects: [[80, 760, 150, 150], [270, 760, 150, 150], [460, 760, 150, 150]] };
 
 /** Per type: params and an answer that render its parts, and how many parts they render (a type without one is a tsc
  *  error, so a new type UI is held to the marker rule from its first commit). */
@@ -223,6 +230,9 @@ const PART_FIXTURES: { readonly [T in PuzzleType]: { readonly params: unknown; r
   // Each lever is a part; each knob is, and the pull is none (D3: no position of the answer).
   levers: { params: decoded('levers', LEVERS_RAW), answer: [0, 0], parts: 2 },
   setting: { params: decoded('setting', SETTING_RAW), answer: [0, 0, 0], parts: 3 },
+  // Each push part is a part (its index the part pressed).
+  sequence: { params: decoded('sequence', SEQUENCE_RAW), answer: [0], parts: 3 },
+  ritual: { params: decoded('ritual', RITUAL_RAW), answer: [], parts: 3 },
 };
 
 test('puzzles: every type UI marks its parts', async () => {
@@ -255,6 +265,8 @@ const INDEX_KINDS: { readonly [T in PuzzleType]: 'position' | 'value' } = {
   grid: 'position',
   levers: 'position',
   setting: 'position',
+  sequence: 'value',
+  ritual: 'value',
 };
 
 test('puzzles: every registered type declares its index kind and its start gives that kind', () => {
@@ -279,16 +291,21 @@ test('registry: each type loads its own component', async () => {
   const grid = await loadPuzzleUi('grid');
   const levers = await loadPuzzleUi('levers');
   const setting = await loadPuzzleUi('setting');
-  if (!code.ok || !order.ok || !path.ok || !grid.ok || !levers.ok || !setting.ok) {
-    throw new Error(`expected every chunk to load: ${JSON.stringify([code, order, path, grid, levers, setting])}`);
+  const sequence = await loadPuzzleUi('sequence');
+  const ritual = await loadPuzzleUi('ritual');
+  if (!code.ok || !order.ok || !path.ok || !grid.ok || !levers.ok || !setting.ok || !sequence.ok || !ritual.ok) {
+    throw new Error(`expected every chunk to load: ${JSON.stringify([code, order, path, grid, levers, setting, sequence, ritual])}`);
   }
   expect(code.value).toBe(CodeLock);
   expect(order.value).toBe(OrderPuzzle);
   expect(path.value).toBe(PathPuzzle);
   expect(grid.value).toBe(GridPuzzle);
-  // The two devices share one component, so one chunk.
+  // The lever devices share one component, so one chunk, and the push devices another, through one loader.
   expect(levers.value).toBe(LeverDevice);
   expect(setting.value).toBe(LeverDevice);
+  expect(sequence.value).toBe(ButtonDevice);
+  expect(ritual.value).toBe(ButtonDevice);
+  expect(PUZZLE_UI.sequence).toBe(PUZZLE_UI.ritual);
   const lock = render(code.value, props({ params: { dials: 3 }, answer: [0, 0, 0] }));
   expect(lock.getAllByRole('button', { name: t('en', 'puzzle.dial_up') })).toHaveLength(3);
   lock.unmount();
@@ -1192,11 +1209,11 @@ test('levers: the shared device renders the type its params decode as', () => {
  * The device rendered with its root measured at `w` x `h` CSS px: happy-dom lays nothing out, and `bind:clientWidth`
  * reads the root's getters once at mount, so stubbing them until the mount has flushed sets the size it reads.
  */
-function measured(w: number, h: number, over: Partial<PuzzleUiProps>) {
+function measured(w: number, h: number, over: Partial<PuzzleUiProps>, ui: Component<PuzzleUiProps> = LeverDevice) {
   const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(w);
   const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(h);
   try {
-    const view = render(LeverDevice, props(over));
+    const view = render(ui, props(over));
     flushSync();
     return view;
   } finally {
@@ -1409,5 +1426,119 @@ test('setting: a pull commits once and calls nothing else', async () => {
     edgePull.click();
     expect(once, JSON.stringify(answer)).toHaveBeenCalledTimes(1);
     edge.unmount();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The push devices (engine plan §7.2, §7.5; GM8b D4, D5, D7, D8, D10): `sequence` and `ritual` share ButtonDevice, which
+// tells the two apart by the decoder that accepts its params, lays each part on its rect over the room's cover, and
+// presses a part at touch (`pointerdown`).
+
+const SEQUENCE = decoded('sequence', SEQUENCE_RAW);
+const RITUAL = decoded('ritual', RITUAL_RAW);
+
+/** A pointer's press on `el`, as the host test's `down` (a primary pointer unless `init` says otherwise). */
+const pointerDown = (el: Element, init: PointerEventInit = {}): void => {
+  el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, ...init }));
+};
+/** The device's push parts, in part order. */
+const pushParts = (root: Element): HTMLButtonElement[] => [...root.querySelectorAll<HTMLButtonElement>('button[data-cue="push"]')];
+
+test('sequence, ritual: the shared device renders the type its params decode as', () => {
+  for (const lang of LANGS) {
+    // A sequence: one push per part, each named by its number; the rule line, and the line that counts the presses.
+    const s = render(ButtonDevice, props({ params: SEQUENCE, answer: [0], lang }));
+    expect(cuesOf(s.container), lang).toEqual(['push', 'push', 'push']);
+    expect(labelsOf(s.container), lang).toEqual([1, 2, 3].map((n) => mechT(lang, 'mech.button_part', { n })));
+    expect(shown(must(s.container.querySelector('.how'))), lang).toBe(mechT(lang, 'mech.sequence_rule'));
+    expect(shown(must(s.container.querySelector('[role="status"]'))), lang).toBe(mechT(lang, 'mech.button_progress', { k: 1, n: 3 }));
+    s.unmount();
+    // A ritual: the same parts, its own rule line, the count of its `length`; no replay.
+    const r = render(ButtonDevice, props({ params: RITUAL, answer: [1, 2], lang }));
+    expect(cuesOf(r.container), lang).toEqual(['push', 'push', 'push']);
+    expect(labelsOf(r.container), lang).toEqual([1, 2, 3].map((n) => mechT(lang, 'mech.button_part', { n })));
+    expect(shown(must(r.container.querySelector('.how'))), lang).toBe(mechT(lang, 'mech.ritual_rule'));
+    expect(shown(must(r.container.querySelector('[role="status"]'))), lang).toBe(mechT(lang, 'mech.button_progress', { k: 2, n: 5 }));
+    r.unmount();
+  }
+  // Params neither decoder accepts render nothing actionable: another type's, a lever device's, a mix of the two key
+  // sets, none.
+  for (const params of [{ dials: 4 }, LEVERS_RAW, { ...SEQUENCE_RAW, length: 5 }, null]) {
+    const view = render(ButtonDevice, props({ params, answer: [] }));
+    expect(view.container.querySelectorAll('button'), JSON.stringify(params)).toHaveLength(0);
+    view.unmount();
+  }
+});
+
+test("sequence, ritual: each part sits on its rect over the room's cover", () => {
+  // D7, D10: the room's cover, the levers' transform. At 0.5 the parts [80 | 270 | 460, 760, 150, 150] are 75 px squares.
+  const half = measured(540, 1024, { params: SEQUENCE, answer: [] }, ButtonDevice);
+  expect(boxes(half.container)).toEqual([
+    ['40px', '380px', '75px', '75px'],
+    ['135px', '380px', '75px', '75px'],
+    ['230px', '380px', '75px', '75px'],
+  ]);
+  half.unmount();
+  // At 0.25 each 37.5 px side grows to 44 around its centre (PART_MIN_PX), the ritual's parts as the sequence's.
+  for (const params of [SEQUENCE, RITUAL]) {
+    const quarter = measured(270, 512, { params, answer: [] }, ButtonDevice);
+    expect(boxes(quarter.container).slice(0, 3)).toEqual([
+      ['16.75px', '186.75px', '44px', '44px'],
+      ['64.25px', '186.75px', '44px', '44px'],
+      ['111.75px', '186.75px', '44px', '44px'],
+    ]);
+    quarter.unmount();
+  }
+});
+
+test('sequence, ritual: the parts take their own taps and open no callout', () => {
+  // T34 (A7): the host's device and parts layers take no tap, so each part declares its own; a long-press on one opens
+  // no iOS callout, and the device selects no text. happy-dom computes no style: read from the source.
+  const rule = declarationsFor(buttonSource, 'part');
+  expect([rule.get('pointer-events'), rule.get('-webkit-touch-callout'), rule.get('position')]).toEqual(['auto', 'none', 'absolute']);
+  const root = declarationsFor(buttonSource, 'device-parts');
+  expect([root.get('pointer-events'), root.get('user-select'), root.get('-webkit-user-select')]).toEqual(['none', 'none', 'none']);
+  // The rendered elements carry the classes the rules name.
+  const s = render(ButtonDevice, props({ params: SEQUENCE, answer: [] }));
+  const classes = [...s.container.querySelectorAll('button')].map((b) => [...b.classList].filter((c) => c === 'part'));
+  expect(classes).toEqual([['part'], ['part'], ['part']]);
+  expect(s.container.querySelectorAll('.device-parts')).toHaveLength(1);
+});
+
+test('sequence, ritual: a full answer refuses a press and a busy device takes none', async () => {
+  // D5: busy takes nothing, before the full check (the busy state that tells the two orders apart is a full answer
+  // being posted); a full answer refuses a press with `onblocked`. Sent as `pointerdown` on each part: happy-dom
+  // dispatches it to a disabled button and Svelte runs the part's own delegated handler, so the handler's busy rule is
+  // what is pinned (a click on a disabled part never reaches it).
+  for (const [params, full] of [
+    [SEQUENCE, [0, 2, 1]],
+    [RITUAL, [0, 1, 2, 0, 1]],
+  ] as const) {
+    const onwork = vi.fn<(w: readonly number[], wrong: boolean) => void>();
+    const onblocked = vi.fn<(part: number) => void>();
+    const ondemo = vi.fn<() => void>();
+    const oncommit = vi.fn<() => void>();
+    const { container, rerender } = render(ButtonDevice, props({ params, answer: [...full], onwork, onblocked, ondemo, oncommit }));
+    const parts = pushParts(container);
+    expect(parts, JSON.stringify(full)).toHaveLength(3);
+    // A full sequence may report reached at mount, which is none of the four.
+    for (const spy of [onwork, onblocked, ondemo, oncommit]) {
+      spy.mockClear();
+    }
+    // Free, full: a press is refused, once, and writes nothing.
+    pointerDown(must(parts[1]));
+    expect([onblocked.mock.calls, onwork.mock.calls], JSON.stringify(full)).toEqual([[[1]], []]);
+    onblocked.mockClear();
+    // Busy (the full answer posting): every part disabled, and a press on each takes nothing.
+    await rerender({ busy: true });
+    for (const b of parts) {
+      expect(b.disabled, JSON.stringify(full)).toBe(true);
+      pointerDown(b);
+    }
+    expect([onwork, onblocked, ondemo, oncommit].map((spy) => spy.mock.calls.length), JSON.stringify(full)).toEqual([0, 0, 0, 0]);
+    // The control: free again, the same press reaches the handler and is refused once.
+    await rerender({ busy: false });
+    pointerDown(must(parts[0]));
+    expect([onblocked.mock.calls, onwork.mock.calls], JSON.stringify(full)).toEqual([[[0]], []]);
   }
 });
