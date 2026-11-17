@@ -791,6 +791,15 @@ test("story: a device part outside the safe frame or under the bar's band is ref
   expect(lint(deviceWorld(), [], copies)).toEqual([partFinding('', 0, [79, 800, 150, 150], LEFT)]);
 });
 
+test("story: a device part under the bar's band is refused", () => {
+  // B3: the band sits under the fullscreen header's inset, so a top the bar alone left clear (496..732) is under it.
+  const tops = [496, 600];
+  const at = (top: number): Rect => [100, top, 150, 150];
+  expect(tops.map((top) => lint(deviceWorld({ puzzles: { dial: leversPuzzle([at(top), [400, 800, 150, 150]]) } })))).toEqual(
+    tops.map((top) => [partFinding('.rects.0', 0, at(top), `starts at y ${top}, above the device bar's band at y ${DEVICE_BAND_Y}`)]),
+  );
+});
+
 test('story: device parts that overlap are refused', () => {
   // The later part takes the taps where two overlap, and a device is a lock with no other way in; edge-touching is clean.
   const over: Rect = [200, 800, 150, 150];
@@ -858,9 +867,9 @@ test('story: the device part checks read the shared bounds, never a copy', () =>
 
 test("devices: the band constant follows the bar's bound", () => {
   // 07 §7.5 round 6: 64 canonical px cropped at the top of a 320 px 9:16 cover, then 8 + bar + inset CSS px at 3.375
-  // canonical px each, rounded up.
-  expect([DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS]).toEqual([120, 0]);
+  // canonical px each, rounded up; the inset is the mock's largest top inset (B3).
+  expect([DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS]).toEqual([120, 70]);
   expect([deviceBandY(120, 0), deviceBandY(120, 1)]).toEqual([496, 500]);
   expect(DEVICE_BAND_Y).toBe(deviceBandY(DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS));
-  expect(DEVICE_BAND_Y).toBe(496);
+  expect(DEVICE_BAND_Y).toBe(733);
 });

@@ -50,8 +50,9 @@ type DevicesCode = keyof typeof DEVICES_CODES;
 
 /** The device bar's height bound, in CSS px (07 §7.5 round 6: its three rows come to 118, rounded up). */
 export const DEVICE_BAR_CSS_H = 120;
-/** The largest top inset above the bar, in CSS px: 0 while no launch path enters fullscreen (GM8h verifies it). */
-export const DEVICE_TOP_INSET_CSS = 0;
+/** The largest top inset above the bar, in CSS px: the mock's largest, NOTCH 24 + HEADER 46 (e2e/layout.spec.ts), the
+ *  fullscreen header's (B3; Q54 may move it by a phone measurement). */
+export const DEVICE_TOP_INSET_CSS = 70;
 /** The worst supported cover's width, in CSS px: 320 at 9:16, the safe frame's widest aspect (07 §7.5). */
 const BAND_WIDTH_CSS = 320;
 /** The canonical px a 9:16 cover crops at the top: (2048 - 1080 x 16 / 9) / 2 = 64. */
@@ -65,8 +66,8 @@ export function deviceBandY(barCss: number, insetCss: number): number {
 
 /**
  * Every device part's top edge lies at or below this canonical y (`world/device-parts-frame`, this module's check):
- * 64 + 432 = 496 at the 320 px worst case. At the 360 px design width (telegram/viewport.ts, Q67) the same formula gives
- * 448, so 496 is the stricter bound and stays.
+ * 64 + ceil(198 x 3.375) = 64 + 669 = 733 at the 320 px worst case. A 360 px window (`columnScale` 1) gives 658, and a
+ * 320 px one under Q67's layer (telegram/viewport.ts) 685, so 733 is the stricter bound and stays.
  */
 export const DEVICE_BAND_Y = deviceBandY(DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS);
 
