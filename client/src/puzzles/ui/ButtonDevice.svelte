@@ -5,20 +5,24 @@
   // through the room's cover (geom/cover.ts, the hotspots' own transform) at the root's measured size, each side grown to
   // PART_MIN_PX around its centre. A part is a button and a part (`data-cue-part`, its index), named by its number, which
   // it shows as a numeral; a line read by a screen reader counts the presses. A part presses at touch (`pointerdown`,
-  // its declared trigger: the button sinks at touch). Presentational: the presses are the `answer` prop. The rule order
-  // of a press (D5): busy, nothing; a full answer, `onblocked`; else the type's press. Busy disables every part, and every
-  // handler is delegated to the mount root, so none outlives the component. Params neither type decodes render nothing
-  // actionable.
+  // its declared trigger: the button sinks at touch). Presentational: the presses are the `answer` prop; a press computes
+  // the next list from it and leaves as one fresh array through `onwork`, never `onchange`: a right `sequence` press
+  // appends, a wrong one resets to `[]` with `wrong` (the device's own wrong, which counts one attempt). A `sequence`
+  // report is the reach edge's (`puzzles/play/reach.ts`) over the `answer` prop, never a handler's: once per turn to
+  // reached, at mount too. The rule order of a press (D5): busy, nothing; a full answer, `onblocked`; else the type's
+  // press. Busy disables every part, and every handler is delegated to the mount root, so none outlives the component.
+  // Params neither type decodes render nothing actionable.
   import { cover, minTarget, ROOM_SOURCE, toStage } from '../../geom/cover.ts';
   import type { Box } from '../../geom/cover.ts';
   import { mechT } from '../../i18n/mechanics.ts';
   import type { MechanicsKey } from '../../i18n/mechanics.ts';
   import type { Rect } from '../../story/staging.ts';
-  import { PART_MIN_PX } from '../play/sequence.ts';
+  import { reachEdge } from '../play/reach.ts';
+  import { PART_MIN_PX, pressSequence, SEQUENCE_PLAY } from '../play/sequence.ts';
   import type { PuzzleUiProps } from '../registry.ts';
   import { PUZZLE_RULES } from '../rules/index.ts';
 
-  let { params, answer, busy, lang, onblocked }: PuzzleUiProps = $props();
+  let { params, answer, busy, lang, onwork, onreach, onblocked }: PuzzleUiProps = $props();
 
   const uid = $props.id();
   /** The root's size in CSS px, from its bindings: 0 x 0 until it is laid out. */
@@ -50,13 +54,29 @@
     return minTarget(toStage(r, fit), PART_MIN_PX);
   }
 
-  /** A press of part `part`, by D5's order: busy takes nothing; a full answer refuses it. */
+  const edge = reachEdge();
+  $effect(() => {
+    const p = sequence;
+    const a = answer;
+    if (p !== null && edge.step(SEQUENCE_PLAY.reached(p, a))) {
+      onreach?.(SEQUENCE_PLAY.canonical(p, a));
+    }
+  });
+
+  /** A press of part `part`, by D5's order: busy takes nothing; a full answer refuses it; else the type's press. */
   function press(part: number): void {
     if (busy || device === null) {
       return;
     }
     if (answer.length >= device.len) {
       onblocked?.(part);
+      return;
+    }
+    if (sequence !== null) {
+      const next = pressSequence(sequence, answer, part);
+      if (next !== null) {
+        onwork?.(next.work, next.wrong);
+      }
     }
   }
 </script>

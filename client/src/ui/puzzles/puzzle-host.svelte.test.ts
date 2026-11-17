@@ -1195,7 +1195,7 @@ const COMPONENT_SOURCES = import.meta.glob<string>(['./*.svelte', '../../puzzles
 const VALUE_IMPORTS: Readonly<Record<string, readonly string[]>> = {
   './PuzzleHost.svelte': ['../../cues/root.ts', '../../i18n/index.ts', './HintLadder.svelte'],
   './HintLadder.svelte': ['../../i18n/index.ts'],
-  '../../puzzles/ui/ButtonDevice.svelte': ['../../geom/cover.ts', '../../i18n/mechanics.ts', '../play/sequence.ts', '../rules/index.ts'],
+  '../../puzzles/ui/ButtonDevice.svelte': ['../../geom/cover.ts', '../../i18n/mechanics.ts', '../play/reach.ts', '../play/sequence.ts', '../rules/index.ts'],
   '../../puzzles/ui/CodeLock.svelte': ['../../i18n/index.ts', '../rules/index.ts'],
   '../../puzzles/ui/GridPuzzle.svelte': ['../../i18n/mechanics.ts', '../play/grid.ts', '../play/reach.ts', '../rules/index.ts'],
   '../../puzzles/ui/LeverDevice.svelte': ['../../geom/cover.ts', '../../i18n/mechanics.ts', '../play/levers.ts', '../play/reach.ts', '../play/setting.ts', '../rules/index.ts'],

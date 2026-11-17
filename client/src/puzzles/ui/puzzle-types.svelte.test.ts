@@ -1542,3 +1542,71 @@ test('sequence, ritual: a full answer refuses a press and a busy device takes no
     expect([onblocked.mock.calls, onwork.mock.calls], JSON.stringify(full)).toEqual([[[0]], []]);
   }
 });
+
+test('sequence: a right press appends to the answer prop', async () => {
+  // D5 (GM8a's c9 form): a press computes from the `answer` prop and keeps no copy: the session's answer is the one list.
+  const onwork = vi.fn<(w: readonly number[], wrong: boolean) => void>();
+  const onchange = vi.fn<(a: readonly number[]) => void>();
+  const answer = Object.freeze([0]);
+  const { container, rerender } = render(ButtonDevice, props({ params: SEQUENCE, answer, onwork, onchange }));
+  const part = (i: number): HTMLButtonElement => must(pushParts(container)[i]);
+  pointerDown(part(2));
+  // Until the caller's answer changes, a second press computes from the same answer: [0, 2] again, never [0, 2, 2].
+  pointerDown(part(2));
+  expect(answer).toEqual([0]);
+  await rerender({ answer: [0, 2] });
+  pointerDown(part(1));
+  expect(onwork.mock.calls).toEqual([
+    [[0, 2], false],
+    [[0, 2], false],
+    [[0, 2, 1], false],
+  ]);
+  // A device writes through `onwork` alone.
+  expect(onchange).not.toHaveBeenCalled();
+});
+
+test('sequence: a wrong press reports the reset work as wrong', () => {
+  // c1, the UI half: from a non-empty prefix (from [] the reset and the kept work are equal), a press off the order is
+  // one `onwork([], true)`: the device's own wrong, which yields counts; no refusal and no reach.
+  const calls: string[] = [];
+  const record: Partial<PuzzleUiProps> = {
+    onwork: (w, wrong) => calls.push(`work [${w.join(' ')}] ${String(wrong)}`),
+    onblocked: (i) => calls.push(`blocked ${i}`),
+    onreach: (a) => calls.push(`reach ${a.join(' ')}`),
+  };
+  const { container } = render(ButtonDevice, props({ params: SEQUENCE, answer: [0], ...record }));
+  pointerDown(must(pushParts(container)[1]));
+  expect(calls).toEqual(['work [] true']);
+});
+
+test('sequence: three wrong rings in a row each report a reset', () => {
+  // c2, the UI half: the device keeps no jam of its own; each wrong ring reports, and the session counts them (the
+  // session half: `sequence: three wrong rings jam the bell`).
+  const onwork = vi.fn<(w: readonly number[], wrong: boolean) => void>();
+  const { container } = render(ButtonDevice, props({ params: SEQUENCE, answer: [], onwork }));
+  const wrong = must(pushParts(container)[1]);
+  pointerDown(wrong);
+  pointerDown(wrong);
+  pointerDown(wrong);
+  expect(onwork.mock.calls).toEqual([
+    [[], true],
+    [[], true],
+    [[], true],
+  ]);
+});
+
+test('sequence: a full sequence seeded at mount reports reached once', async () => {
+  // c10: the report is the reach edge's over the `answer` prop, so a device seeded at its whole order (a saved work
+  // awaiting its POST) reports at mount, once; a re-render with the same presses adds none.
+  const onreach = vi.fn<(a: readonly number[]) => void>();
+  const onwork = vi.fn<(w: readonly number[], wrong: boolean) => void>();
+  const { rerender } = render(ButtonDevice, props({ params: SEQUENCE, answer: [0, 2, 1], onreach, onwork }));
+  expect(onreach.mock.calls).toEqual([[[0, 2, 1]]]);
+  await rerender({ answer: [0, 2, 1] });
+  expect(onreach).toHaveBeenCalledTimes(1);
+  // Off the order and back: a second turn to reached, a second report; no press reported it.
+  await rerender({ answer: [0, 2] });
+  await rerender({ answer: [0, 2, 1] });
+  expect(onreach.mock.calls).toEqual([[[0, 2, 1]], [[0, 2, 1]]]);
+  expect(onwork).not.toHaveBeenCalled();
+});
