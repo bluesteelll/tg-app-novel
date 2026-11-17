@@ -17,7 +17,7 @@ import type { WorldLintInput } from '../mechanics/index.ts';
 import { lintWorld } from '../world.ts';
 import { PUZZLE_LINTS } from './index.ts';
 import { LEVERS_LINT, LEVERS_SEARCH_STEPS, leversLint, searchLevers } from './levers.ts';
-import { SETTING_LINT } from './setting.ts';
+import { SETTING_LINT, settingDomainSize } from './setting.ts';
 import type { PuzzleLintRegistry } from './shape.ts';
 
 /** `n` rects in a 4-column grid of 150 px squares inside HOTSPOT_SAFE_FRAME and the device band (A6). */
@@ -359,4 +359,14 @@ test('emit: a levers tier 3 renders its throw order in both languages', () => {
   // literal `[moves]` shipped.
   expect(() => LEVERS_LINT.renderHints(PARITY, ladder(T1, T2, T3))).toThrow('levers hints: no throw order reaches the target');
   expect(LEVERS_LINT.renderHints(PARITY, [])).toEqual([]);
+});
+
+test('setting: the per-player domain counts every configuration but the start shown', () => {
+  // D1: a per-player `setting` draws its secret from every configuration the knobs hold but the start the device shows
+  // (`startShown`, all zeros): positions ^ parts - 1. Exact values, not a comparison with the server's floor of 1,000.
+  const knobs = (parts: number, positions: number): SettingParams => ({ parts, positions, rects: rectsOf(parts), pull: [380, 1300, 300, 150] });
+  expect(settingDomainSize(knobs(3, 10))).toBe(999);
+  expect(settingDomainSize(knobs(5, 4))).toBe(1023);
+  expect(settingDomainSize(knobs(1, 2))).toBe(1);
+  expect(settingDomainSize(knobs(8, 10))).toBe(99_999_999);
 });

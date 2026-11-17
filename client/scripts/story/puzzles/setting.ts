@@ -21,3 +21,12 @@ export const SETTING_LINT = Object.freeze({
   // Its `world/solution*` codes are the core's (LINT_CODES).
   codes: {},
 }) satisfies PuzzleTypeLint<SettingParams>;
+
+/**
+ * D1: how many configurations a per-player `setting`'s secret may be drawn from: every one the knobs hold but the start
+ * the device shows (all zeros, `startShown`). Per-player's own lint (GM6c1a) wires it to the server's floor
+ * (`size >= 1,000`, server/src/puzzles/values.rs); no decode-legal instance gives exactly 1,000.
+ */
+export function settingDomainSize(p: SettingParams): number {
+  return p.positions ** p.parts - 1;
+}
