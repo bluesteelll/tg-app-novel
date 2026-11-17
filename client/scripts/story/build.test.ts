@@ -1276,6 +1276,60 @@ test('emit: server puzzle content matches the server fixture shape', () => {
   });
 });
 
+test("emit: a ritual's solution reaches only the server content", () => {
+  // c7 (GM8b D12): a ritual's goal is secret (the server judges the posted presses), so its solution is stripped from
+  // the public world as every puzzle's is. The cafe world plus `rite` on no lock: emitFixture lints no world, so it needs
+  // no device room, and the server mirror puzzleProblems (closed to code and order) is not run on it. Five presses:
+  // no 4-integer rect's text can equal the needle.
+  const presses = [2, 0, 1, 1, 2];
+  const raw = worldSource('ch1', 'cafe');
+  const rite = {
+    type: 'ritual',
+    title: { id: 'ch1.rite.r000', ru: 'Обряд' },
+    prompt: { id: 'ch1.rite.r001', ru: 'Три камня' },
+    closeup: null,
+    params: {
+      parts: 3,
+      length: 5,
+      rects: [
+        [80, 760, 150, 150],
+        [270, 760, 150, 150],
+        [460, 760, 150, 150],
+      ],
+    },
+    maxAttempts: null,
+    giveUp: false,
+    solution: presses,
+    hints: [],
+  };
+  raw['puzzles'] = { ...objectAt(raw, 'puzzles'), rite };
+  const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, decodedWorld(raw)]]));
+  const text = planned(plan, CH1_WORLD);
+  const pub = JSON.parse(text) as { puzzles: Record<string, Record<string, unknown>> }; // a planned world, decoded next
+  const decoded = decodeWorldPublic(pub);
+  expect(decoded.ok, JSON.stringify(decoded)).toBe(true);
+  expect(pub.puzzles['rite']?.['type']).toBe('ritual');
+  expect(Object.hasOwn(pub.puzzles['rite'] ?? {}, 'solution')).toBe(false);
+  expect(text).not.toContain('"solution"');
+  // No public output holds the presses (the public world is compact JSON, as the needle).
+  const needle = JSON.stringify(presses);
+  expect([...plan].filter(([path, out]) => path.startsWith('client/') && out.includes(needle)).map(([path]) => path)).toEqual([]);
+  // The control: the server puzzle content (pretty-printed, so parsed) holds them, under the type's answer shape.
+  const server = JSON.parse(planned(plan, 'server/content/puzzles/ch1.json')) as { puzzles: Record<string, unknown> }; // as above
+  expect(server.puzzles['rite']).toEqual({
+    type: 'ritual',
+    answerLen: 5,
+    answerMax: 2,
+    solution: presses,
+    title: { ru: 'Обряд', en: 'en ch1.rite.r000' },
+    hints: [],
+  });
+  // A public world with the solution put back is refused (X7).
+  const leaked = decodeWorldPublic({ ...pub, puzzles: { ...pub.puzzles, rite: { ...pub.puzzles['rite'], solution: presses } } });
+  expect(leaked.ok).toBe(false);
+  expect(leaked.ok ? [] : leaked.error).toContainEqual(expect.objectContaining({ path: 'puzzles.rite.solution', reason: 'secret' }));
+});
+
 test('lint: paid/leak red on fixture (hint text)', () => {
   const source = decodedWorld(worldSource('ch1', 'cafe'));
   const { plan } = emitFixture(LIST, [MANOR], new Map([[CH1_ENTRY.id, source]]));
@@ -1688,6 +1742,115 @@ test('emit: server meta matches the server fixture shape', () => {
     'format 2, expected 1',
     'manor.achievements.cabinet_open.when: {"puzzle":"ch2.cabinet"} names nothing of manor',
   ]);
+  // LM1 M4 (GM8b D12, A6): every other check of the oracle seen failing, each on its own edit of the emitted meta (pinned
+  // below) with the one problem it reports.
+  type Editable = {
+    choices: Record<string, Record<string, string>>;
+    stories: Record<string, { endings: Record<string, { ru: string; en: string }>; achievements: Array<Record<string, unknown>> }>;
+  };
+  const edited = (edit: (m: Editable) => void): string => {
+    const m = JSON.parse(text) as Editable; // the emitted meta, pinned below
+    edit(m);
+    return JSON.stringify(m, null, 2);
+  };
+  const manor = (m: Editable): Editable['stories'][string] => {
+    const s = m.stories['manor'];
+    if (s === undefined) {
+      throw new Error('invariant: the emitted meta holds manor');
+    }
+    return s;
+  };
+  const ch2 = (m: Editable): Record<string, string> => {
+    const c = m.choices['ch2'];
+    if (c === undefined) {
+      throw new Error('invariant: the emitted meta holds ch2 choices');
+    }
+    return c;
+  };
+  const achievement = (m: Editable, id: string): Record<string, unknown> => {
+    const a = manor(m).achievements.find((x) => x['id'] === id);
+    if (a === undefined) {
+      throw new Error(`invariant: the emitted meta holds the achievement ${id}`);
+    }
+    return a;
+  };
+  const variants: ReadonlyArray<readonly [string, string, readonly string[]]> = [
+    ['256 KiB of spaces more', `${text}${' '.repeat(256 * 1024)}`, ['over 256 KB']],
+    [
+      'choices of a chapter the index lists not',
+      edited((m) => {
+        m.choices['ch3'] = {};
+      }),
+      ['choices for ch1, ch2, ch3, the index lists ch1, ch2'],
+    ],
+    [
+      "an option of another chapter's id",
+      edited((m) => {
+        ch2(m)['ch1.archive.p005'] = 'ch1.archive.p005';
+      }),
+      ['ch2: option ch1.archive.p005'],
+    ],
+    [
+      'a point that is no option',
+      edited((m) => {
+        ch2(m)['ch2.archive.p004'] = 'ch2.archive.p009';
+      }),
+      ['ch2: point ch2.archive.p009 is no option of ch2'],
+    ],
+    [
+      'a story the index lists not',
+      edited((m) => {
+        m.stories['other'] = { endings: {}, achievements: [] };
+      }),
+      ["stories manor, other are not the index's"],
+    ],
+    [
+      'an ending the index declares not',
+      edited((m) => {
+        manor(m).endings['extra'] = META_TEXTS.title;
+      }),
+      ['manor: endings q7_sealed_vault, extra, the index declares q7_sealed_vault'],
+    ],
+    [
+      "an ending's en of 41 code points",
+      edited((m) => {
+        manor(m).endings['q7_sealed_vault'] = { ...META_TEXTS.title, en: 'x'.repeat(41) };
+      }),
+      ['manor.endings.q7_sealed_vault.en: not 1-40 code points'],
+    ],
+    [
+      'the first achievement twice',
+      edited((m) => {
+        const first = achievement(m, 'vault_found');
+        manor(m).achievements.push({ ...first });
+      }),
+      ['manor: achievement ids vault_found, one_ending, every_ending, drawer_no_hints, cabinet_open, archive_drawer, archive_done, key_and_lock, vault_found'],
+    ],
+    [
+      'hints beside a chapter',
+      edited((m) => {
+        achievement(m, 'archive_done')['when'] = { chapter: 'ch2', hints: 0 };
+      }),
+      ['manor.achievements.archive_done.when: hints beside chapter'],
+    ],
+    [
+      'a hidden that is no boolean',
+      edited((m) => {
+        achievement(m, 'vault_found')['hidden'] = 'no';
+      }),
+      ['manor.achievements.vault_found: id or hidden'],
+    ],
+    [
+      "a desc's ru of 141 code points",
+      edited((m) => {
+        achievement(m, 'vault_found')['desc'] = { ...META_TEXTS.foundDesc, ru: 'д'.repeat(141) };
+      }),
+      ['manor.achievements.vault_found.desc.ru: not 1-140 code points'],
+    ],
+  ];
+  for (const [name, variant, problems] of variants) {
+    expect(metaProblems(variant, index, puzzles), name).toEqual(problems);
+  }
   const expected: ServerMeta = {
     format: 1,
     choices: { ch1: {}, ch2: { 'ch2.archive.p004': 'ch2.archive.p004' } } as ServerMeta['choices'], // fixture ids
