@@ -618,6 +618,7 @@ test('setting: a turn advances one knob, and any configuration may be pulled', (
   expect(SETTING_PLAY.validAnswer(S3, [0, 0])).toBe(false);
   expect(SETTING_PLAY.validAnswer(S3, [0, 10, 0])).toBe(false);
   expect(SETTING_PLAY.validAnswer(S3, [0, 0.5, 0])).toBe(false);
+  expect(SETTING_PLAY.validAnswer(S3, [0, 0, 0, 0]), 'a longer answer').toBe(false);
 });
 
 test('levers: canonical is the configuration itself', () => {
