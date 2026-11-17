@@ -127,8 +127,8 @@ function exprOf(face: FaceRig, x: ExprId | undefined): ExprId {
 /**
  * The drawn members, back to front: per cast member its figure plane (where it has one), then, for a face not at its
  * rest, that expression's own layer and the member's hair locks. A face at rest lists nothing (the plate shows it), and
- * no member of another expression's set is ever listed (RULINGS 273 O2). Motion members are SH7's: when it draws them,
- * they come from the same expression's `MotionSet` here.
+ * no member of another expression's set is ever listed (RULINGS 273 O2). Motion members are not listed here: SH7 draws
+ * them from `faceMotion`, the same expression's `MotionSet`.
  */
 export function faceLayers(rig: ShotRig, faces: ReadonlyMap<CharId, ExprId>): readonly LayerPlan[] {
   const out: LayerPlan[] = [];
@@ -147,6 +147,58 @@ export function faceLayers(rig: ShotRig, faces: ReadonlyMap<CharId, ExprId>): re
     out.push({ char: m.char, expr: x, kind: 'layer', file: layer.file, frame: layer.frame, at: layer.at });
     for (const h of m.hair) {
       out.push({ char: m.char, expr: null, kind: 'hair', file: h.member.file, frame: h.member.frame, at: h.member.at });
+    }
+  }
+  return out;
+}
+
+/** One motion member of a face's expression (D3): the brow accent, an eyes state, or a talk mouth (`index` in its set). */
+export type MotionPlan = {
+  readonly role: 'accent' | 'blink.half' | 'blink.closed' | 'joint.half' | 'joint.closed' | 'talk';
+  readonly index: number;
+  readonly file: AssetId;
+  readonly frame: Box;
+  readonly at: Box;
+};
+
+/**
+ * A face's motion members at `expr`, that expression's own `MotionSet` only (RULINGS 273 O2), back to front: the
+ * accent, the eyes (the blink pair, then the joint pair drawn on the accent), then the mouths, so a mouth wins any box
+ * it overlaps (C6). Empty for a member with no face, or an expression its rig lacks.
+ */
+export function faceMotion(rig: ShotRig, char: CharId, expr: ExprId): readonly MotionPlan[] {
+  const face = rig.cast.find((m) => m.char === char)?.face ?? null;
+  const set = face !== null && Object.hasOwn(face.exprs, expr) ? face.exprs[expr]?.motion : undefined;
+  if (set === undefined) {
+    return [];
+  }
+  const plan = (role: MotionPlan['role'], index: number, m: { file: AssetId; frame: Box; at: Box }): MotionPlan => ({ role, index, file: m.file, frame: m.frame, at: m.at });
+  return [
+    plan('accent', 0, set.accent),
+    plan('blink.half', 0, set.blink.half),
+    plan('blink.closed', 0, set.blink.closed),
+    ...(set.joint === undefined ? [] : [plan('joint.half', 0, set.joint.half), plan('joint.closed', 0, set.joint.closed)]),
+    ...set.talk.map((m, i) => plan('talk', i, m)),
+  ];
+}
+
+/**
+ * The motion-only slots of a stage of this shot (D3, A14): per face at its rest, the files its rest's blink, accent and
+ * joint members sit in (on the real rigs `sheet/<s>`), keyed `motion:<file>`; its talk keeps the `talk:` slot that
+ * `shotSlots` names. Read only by the executor once the motion kit is set, and taken unawaited: nothing waits on them,
+ * so `shotSlots` and `imageIds` (the first line's wait) stay as they are.
+ */
+export function motionSlots(rig: ShotRig, s: SceneSnapshot): Map<string, AssetId> {
+  const out = new Map<string, AssetId>();
+  const faces = facesOf(s);
+  for (const m of rig.cast) {
+    if (m.face === null || exprOf(m.face, faces.get(m.char)) !== m.face.rest) {
+      continue;
+    }
+    for (const p of faceMotion(rig, m.char, m.face.rest)) {
+      if (p.role !== 'talk') {
+        out.set(`motion:${p.file}`, p.file);
+      }
     }
   }
   return out;
