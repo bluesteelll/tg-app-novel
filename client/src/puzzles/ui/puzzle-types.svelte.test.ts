@@ -1360,14 +1360,18 @@ test('levers, setting: a busy device takes no throw and no turn', async () => {
 });
 
 test('setting: a misshapen answer leaves the pull disabled and commits nothing', () => {
-  // D7: whether an answer may be tried is the type UI's (`validAnswer`): a configuration of the wrong length cannot be
-  // pulled, so the pull is disabled and a tap posts nothing. The app never hands the device such an answer (the start
-  // and the session check the shape first); this pins the device's own gate.
+  // D7: whether an answer may be tried is the type UI's (`validAnswer`): a configuration of the wrong shape (length,
+  // range, integer) cannot be pulled, so the pull is disabled and a tap posts nothing. One row per clause of
+  // `shapeProblem`: short, long, above the last position, below 0, not an integer. The app never hands the device such
+  // an answer (the start and the session check the shape first); this pins the device's own gate.
   const oncommit = vi.fn<() => void>();
-  const { container } = render(LeverDevice, props({ params: SETTING, answer: [1], oncommit }));
-  const pull = must(container.querySelector<HTMLButtonElement>('button[data-cue="setting-pull"]'));
-  expect(pull.disabled).toBe(true);
-  pull.click();
+  for (const answer of [[1], [0, 0, 0, 0], [0, 10, 0], [0, -1, 0], [0, 0.5, 0]]) {
+    const { container, unmount } = render(LeverDevice, props({ params: SETTING, answer, oncommit }));
+    const pull = must(container.querySelector<HTMLButtonElement>('button[data-cue="setting-pull"]'));
+    expect(pull.disabled, JSON.stringify(answer)).toBe(true);
+    pull.click();
+    unmount();
+  }
   expect(oncommit).not.toHaveBeenCalled();
 });
 
