@@ -82,9 +82,12 @@ export const CARRY_PROOF_LINT: WorldLint<CarryProofCode> = { id: 'carry-proof', 
 // ---------------------------------------------------------------------------------------------------------------
 // The story-level pass (CARRY_PROOF_LINT's rules), over every listed chapter at once.
 
-/** One explore yield of a giver's section, as story.ts reads it off the chapter's graph: its knot and repo-relative
- *  place. */
-export type YieldSite = { readonly knot: KnotName; readonly file: string; readonly line: number };
+/**
+ * One explore yield of a giver's section, as story.ts reads it off the chapter's graph: its knot and repo-relative place;
+ * `prefix`: every entry of its knot reaches it (graph.ts `ExploreSite.prefix`); `exempt`: its knot is entered only as
+ * the section's own event, so the section's search covers it.
+ */
+export type YieldSite = { readonly knot: KnotName; readonly file: string; readonly line: number; readonly prefix: boolean; readonly exempt: boolean };
 /** A chapter's yields of one section, in source order, and the first continuing END its first knot reaches around all
  *  of them (null: none). */
 export type SectionPath = { readonly sites: readonly YieldSite[]; readonly bypass: KnotName | null };
@@ -261,7 +264,9 @@ function registryOf(text: string | null, listed: ReadonlySet<ChapterId>, report:
  * (`world/carry-registry`, a row whose chapter gives its item in no section included); each receiver's inherited item
  * registered, from a chapter before it on its chain whose world marks it (`world/carry-inherit`); each mark registered,
  * at its giving chapter or at a chapter that inherits it (`world/carry-mark`); for each required item, its giver section
- * yielded and no continuing END reachable around that section's yields (`world/carry-required-path`). Returns the
+ * yielded and no continuing END reachable around that section's yields (`world/carry-required-path`), and each knot
+ * holding such a yield reaching one of them on every entry (`world/carry-giver-prefix`: a path through the knot then
+ * passes the yield). Returns the
  * findings and, per giver section of a required item, the leave search story.ts runs (`world/carry-leave`). A mark with
  * a row and no receiver is no finding: a story may carry an item into a chapter not yet written.
  */
@@ -381,6 +386,15 @@ export function carryProof(input: CarryInput): { findings: Finding[]; leaves: Le
       report('world/carry-required-path', worldFile(from.id), carryLines(from.world.text)(`sections.${g}`), `${why}, but no explore yield of ${from.id} enters it (§6.6)`);
     } else if (path.bypass !== null) {
       report('world/carry-required-path', first.file, first.line, `${why}, but the END of knot '${path.bypass}' is reachable without a yield of ${g} (§6.6)`);
+    }
+    // Per knot, its first yield of G on every entry (the first such yield runs; later ones are irrelevant).
+    for (const knot of new Set(path?.sites.map((x) => x.knot) ?? [])) {
+      const own = path?.sites.filter((x) => x.knot === knot) ?? [];
+      const head = own[0];
+      if (head !== undefined && !own.some((x) => x.prefix || x.exempt)) {
+        const where = `the yield of ${g} in knot '${knot}' follows a choice not gathered, a divert, a thread, a stitch or an open block`;
+        report('world/carry-giver-prefix', head.file, head.line, `${why}, but ${where}: an entry of the knot may never reach it (§6.6)`);
+      }
     }
   }
   return { findings, leaves: [...leaves.values()] };

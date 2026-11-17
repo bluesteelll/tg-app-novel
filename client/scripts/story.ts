@@ -350,16 +350,20 @@ function readWorlds(root: string, chapters: readonly ChapterListEntry[], out: Fi
  * in knot order, that the first knot reaches around every knot holding one of them (`mustPass`); null when the entry
  * names no knot (its `ink/entry` error says why). A continuing END is one the story goes on after: an END in a knot
  * that `endings` (the chapter's declared story endings) does not hold. A declared ending's END runs inside its own knot
- * (`catalog/stories` rule 8: no successor, no yield), and its player never reaches the receiver.
+ * (`catalog/stories` rule 8: no successor, no yield), and its player never reaches the receiver. A yield's `exempt`: its
+ * knot is the section's own event knot (graph.ts `ExploreSite.event`), not the first knot and in no knot's `next`, so
+ * every entry of it is the section's event, which the section's search proves.
  */
 export function carryPaths(graph: ChapterGraph, facts: GraphFacts, endings: ReadonlyMap<KnotName, EndingName>): ReadonlyMap<SectionId, SectionPath> | null {
   const first = graph.firstKnot;
   if (first === null) {
     return null;
   }
+  const entered = new Set([...graph.knots.values()].flatMap((k) => k.next));
   const bySection = new Map<SectionId, YieldSite[]>();
   for (const e of facts.explores ?? []) {
-    bySection.set(e.section, [...(bySection.get(e.section) ?? []), { knot: e.knot, file: `story/${e.file}`, line: e.line }]);
+    const exempt = e.event && e.knot !== first && !entered.has(e.knot);
+    bySection.set(e.section, [...(bySection.get(e.section) ?? []), { knot: e.knot, file: `story/${e.file}`, line: e.line, prefix: e.prefix, exempt }]);
   }
   const ends = [...graph.knots.values()].filter((k) => k.ending && !endings.has(k.name)).map((k) => k.name);
   return new Map(

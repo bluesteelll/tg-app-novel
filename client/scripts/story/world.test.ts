@@ -3187,3 +3187,94 @@ test('carry: the carry pass locates a world path where the world runner does', (
   // Not vacuous: array elements and members land on different lines.
   expect(new Set(all.map(ours)).size).toBeGreaterThan(100);
 });
+
+/** The giver chapter ch1 from `main` against the manor (plus `edit` on its world): its `world/carry-giver-prefix`
+ *  findings as `line`. */
+function prefixRefusals(main: readonly string[], edit: (w: Json) => void = () => undefined): number[] {
+  const w = giver();
+  edit(w);
+  const g = graphWith(main, okWorld(w));
+  const chapters = [carryChapter('ch1', 'ch2', w, carryPaths(g.graph, g.facts, new Map())), carryChapter('ch2', null, heir())];
+  const found = carryProof({ chapters, registry: SUN_ROW }).findings;
+  // Every row's yields are on every path to an END: only the prefix rule can refuse.
+  expect(found.filter((f) => f.code !== 'world/carry-giver-prefix')).toEqual([]);
+  return found.filter((f) => f.code === 'world/carry-giver-prefix').map((f) => f.line);
+}
+
+test('carry: a giver yield after an ungathered choice or a divert is refused', () => {
+  const start = [...INK_HEAD, 'Перед усадьбой. #id:ch1.start.a001', '-> hall'];
+  const after = ['=== away ===', 'Мы ушли. #id:ch1.away.a009', '-> END', '=== manor_out ===', 'Мы вышли. #id:ch1.manor_out.a010', '-> END'];
+  /** ch1 whose `hall` knot runs `body` and then yields the manor. */
+  const hall = (body: readonly string[]): string[] => [...start, '=== hall ===', 'Холл. #id:ch1.hall.a002', ...body, '# explore: manor', '-> DONE', ...after];
+  const yieldIn = (main: readonly string[]): number => lineIn(main, '# explore: manor');
+  // ch1's shape (story/ch1/main.ink:41-48): a choice whose every branch falls to the gather before the yield.
+  const gathered = hall(['* [Взять за руку #id:ch1.hall.c001]', '    Спасибо. #id:ch1.hall.a003', '* [Спорить #id:ch1.hall.c002]', '    Ну и ладно. #id:ch1.hall.a004', '- Дальше. #id:ch1.hall.a005']);
+  expect(prefixRefusals(gathered)).toEqual([]);
+  // A branch that diverts out before the gather: an entry of the hall may never reach its yield.
+  const out = hall(['* [Остаться #id:ch1.hall.c001]', '    Остались. #id:ch1.hall.a003', '* [Уйти #id:ch1.hall.c002]', '    -> away', '- Дальше. #id:ch1.hall.a005']);
+  expect(prefixRefusals(out)).toEqual([yieldIn(out)]);
+  // A yield inside one branch (no gather).
+  const inBranch = [...start, '=== hall ===', 'Холл. #id:ch1.hall.a002', '* [Войти #id:ch1.hall.c001]', '    # explore: manor', '    -> DONE', '* [Уйти #id:ch1.hall.c002]', '    -> away', ...after];
+  expect(prefixRefusals(inBranch)).toEqual([lineIn(inBranch, '    # explore: manor')]);
+  // A multi-line conditional holding a divert out; the same inline (one text line, 06:685's third class).
+  const block = hall(['{ g_trust > 0:', '    -> away', '}']);
+  expect(prefixRefusals(block)).toEqual([yieldIn(block)]);
+  const inline = hall(['{g_trust > 0: -> away}']);
+  expect(prefixRefusals(inline)).toEqual([yieldIn(inline)]);
+  // A closed conditional block with no divert: every branch falls through to the yield.
+  const closed = hall(['{ g_trust > 0:', '    Доверие. #id:ch1.hall.a003', '- else:', '    Недоверие. #id:ch1.hall.a004', '}']);
+  expect(prefixRefusals(closed)).toEqual([]);
+
+  // The event knot of the cellar (ch1's `manor_cellar_voice`, story/ch1/main.ink:56-63): choices gathered before its
+  // yield back, clean.
+  const voice = (body: readonly string[]): string[] => [
+    ...hall([]),
+    '=== manor_cellar_voice ===',
+    'Голос. #id:ch1.manor_cellar_voice.v001',
+    ...body,
+    '# explore: manor',
+    '-> DONE',
+  ];
+  const evented = voice(['* [Держись #id:ch1.manor_cellar_voice.c001]', '    Спасибо. #id:ch1.manor_cellar_voice.v002', '* [Кто ты? #id:ch1.manor_cellar_voice.c002]', '    Потом. #id:ch1.manor_cellar_voice.v003', '- Тихо. #id:ch1.manor_cellar_voice.v004']);
+  expect(prefixRefusals(evented)).toEqual([]);
+  // An event knot entered only by its section's edges, a yield in each branch of an ungathered choice: clean only
+  // because the knot is exempt (every entry is the section's own event).
+  const branches = [
+    '=== manor_cellar_voice ===',
+    'Голос. #id:ch1.manor_cellar_voice.v001',
+    '* [Держись #id:ch1.manor_cellar_voice.c001]',
+    '    # explore: manor',
+    '    -> DONE',
+    '* [Кто ты? #id:ch1.manor_cellar_voice.c002]',
+    '    # explore: manor',
+    '    -> DONE',
+  ];
+  const exempt = [...hall([]), ...branches];
+  expect(prefixRefusals(exempt)).toEqual([]);
+  // The same knot also entered by a divert from another knot: judged by the prefix, refused at its first yield.
+  const entered = [...INK_HEAD, 'Перед усадьбой. #id:ch1.start.a001', '* [Холл #id:ch1.start.c001]', '    -> hall', '* [Подвал #id:ch1.start.c002]', '    -> manor_cellar_voice', ...hall([]).slice(start.length), ...branches];
+  expect(prefixRefusals(entered)).toEqual([lineIn(entered, '    # explore: manor')]);
+  // The same knot named by a second section's rooms too, one branch returning to each: no longer the manor's own
+  // event, so judged by the prefix and refused (RULINGS 403 B3).
+  const shared = [
+    ...hall([]),
+    '=== manor_cellar_voice ===',
+    'Голос. #id:ch1.manor_cellar_voice.v001',
+    '* [В подвал #id:ch1.manor_cellar_voice.c001]',
+    '    # explore: manor',
+    '    -> DONE',
+    '* [В сад #id:ch1.manor_cellar_voice.c002]',
+    '    # explore: garden',
+    '    -> DONE',
+  ];
+  /** A second section, `garden`, whose one room's entry runs `knots`. */
+  const garden =
+    (knots: readonly string[]) =>
+    (w: Json): void => {
+      const yard = { bg: 'room', title: t('garden', 'Сад'), onEnter: knots.map((story) => ({ story })), hotspots: [] };
+      at(w, 'sections')['garden'] = { start: 'yard', bgm: null, rooms: { yard } };
+    };
+  expect(prefixRefusals(shared, garden(['manor_cellar_voice']))).toEqual([lineIn(shared, '    # explore: manor')]);
+  // Its control: the garden names no knot, so the cellar's event is the manor's own again.
+  expect(prefixRefusals(shared, garden([]))).toEqual([]);
+});

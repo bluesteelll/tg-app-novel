@@ -86,8 +86,38 @@ export type GraphFacts = {
    */
   explores?: readonly ExploreSite[];
 };
-/** An explore yield inside a knot: the section it explores, where it is written (story-relative). */
-export type ExploreSite = { knot: KnotName; section: SectionId; file: string; line: number };
+/**
+ * An explore yield inside a knot: the section it explores, where it is written (story-relative), and two facts of the
+ * carry proof's giver-prefix rule (engine plan §6.6). `prefix`: every entry of the knot reaches the yield, because no
+ * line between the knot's header and the yield takes the flow elsewhere: a divert (an earlier yield's `-> DONE`, a
+ * branch's or a block's divert out, an inline `{c: -> k}`), a thread, a stitch header, a choice not gathered before the
+ * yield, a multi-line block still open at it, or a choice inside an open block. A choice whose every branch falls to its
+ * gather, and a closed block with no divert, keep the yield on the prefix. `event`: the knot is an event knot of the
+ * section it yields and no other section's rooms name it, so each section edge into it is that section's own event.
+ */
+export type ExploreSite = { knot: KnotName; section: SectionId; file: string; line: number; prefix: boolean; event: boolean };
+
+/** How far a knot's flow from its header is straight-line (ExploreSite's `prefix`): what the lines so far opened. */
+type PrefixScan = { broken: boolean; choices: number[]; blocks: number };
+
+/** `scan` after line `cls` of the same knot. */
+function scanned(scan: PrefixScan, cls: LineClass): PrefixScan {
+  const broken = scan.broken || cls.kind === 'stitch' || cls.kind === 'thread' || divertsOf(cls).length > 0 || (cls.kind === 'choice' && scan.blocks > 0);
+  switch (cls.kind) {
+    case 'choice':
+      return { broken, choices: scan.choices.includes(cls.depth) ? scan.choices : [...scan.choices, cls.depth], blocks: scan.blocks };
+    case 'gather':
+      return { broken, choices: scan.choices.filter((d) => d < cls.depth), blocks: scan.blocks };
+    case 'block-open':
+      return { broken, choices: scan.choices, blocks: scan.blocks + 1 };
+    case 'block-close':
+      return { broken, choices: scan.choices, blocks: Math.max(0, scan.blocks - 1) };
+    default:
+      return { broken, choices: scan.choices, blocks: scan.blocks };
+  }
+}
+
+const STRAIGHT: PrefixScan = { broken: false, choices: [], blocks: 0 };
 /** An explore yield's section knots: reachability edges from the yielding knot, and their entry stage. */
 export type SectionEdges = { edges: ReadonlyMap<KnotName, readonly KnotName[]>; seeds: ReadonlyMap<KnotName, readonly AssetId[]> };
 /** The section edges, and per section knot the rooms that name it as an event and as a leave (sorted ids). */
@@ -613,11 +643,12 @@ export function buildGraph(input: {
     [...scopes.keys()].map((k) => [k, { assets: new Set(), next: new Set(), ending: false }]),
   );
   const lines: StoryLine[] = [];
-  const sites: { knot: KnotName | null; file: string; line: number; cmd: YieldCommand }[] = [];
+  const sites: { knot: KnotName | null; file: string; line: number; cmd: YieldCommand; prefix: boolean }[] = [];
   let entryDivert: { line: number; target: string; resolved: Target } | null = null;
   for (const { file, lines: source } of parsed) {
     // The knot whose body this line is in: null at top level, inside a function, and inside a repeated definition.
     let knot: string | null = null;
+    let scan = STRAIGHT;
     for (const l of source) {
       const cls = l.cls;
       if (cls.kind === 'knot') {
@@ -634,9 +665,12 @@ export function buildGraph(input: {
       if (node === undefined && l.knot !== null) {
         continue; // a function body or a repeated definition: no successors, no ID'd lines of a knot
       }
+      // A yield on the prefix: nothing before it in the knot opened, and its own line is no choice.
+      const prefix = !scan.broken && scan.choices.length === 0 && scan.blocks === 0 && cls.kind !== 'choice';
+      scan = cls.kind === 'knot' ? STRAIGHT : scanned(scan, cls);
       for (const c of commands) {
         if (c.kind === 'puzzle' || c.kind === 'explore') {
-          sites.push({ knot: knot as KnotName | null, file, line: l.line, cmd: c }); // a compiled knot name, as above
+          sites.push({ knot: knot as KnotName | null, file, line: l.line, cmd: c, prefix }); // a compiled knot name, as above
         }
       }
       for (const d of divertsOf(cls)) {
@@ -681,11 +715,14 @@ export function buildGraph(input: {
   const edges = new Map<KnotName, Set<KnotName>>();
   const seeds = new Map<KnotName, Set<AssetId>>();
   const roomsOf = new Map<KnotName, { events: Set<RoomId>; leaves: Set<RoomId> }>();
-  for (const { knot, file, line, cmd } of sites) {
+  const named = (k: KnotName, section: SectionId): boolean => knotsOf(section).events.has(k) || knotsOf(section).leaves.has(k);
+  const others = (section: SectionId): SectionId[] => (body === null ? [] : (Object.keys(body.sections) as SectionId[]).filter((x) => x !== section)); // decoded ids
+  for (const { knot, file, line, cmd, prefix } of sites) {
     if (knot !== null) {
       yields.set(knot, [...(yields.get(knot) ?? []), cmd]);
       if (cmd.kind === 'explore') {
-        explores.push({ knot, section: cmd.section, file, line });
+        const event = index?.sections.has(cmd.section) === true && knotsOf(cmd.section).events.has(knot) && !others(cmd.section).some((s) => named(knot, s));
+        explores.push({ knot, section: cmd.section, file, line, prefix, event });
       }
     }
     if (cmd.kind === 'puzzle') {
