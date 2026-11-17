@@ -42,6 +42,7 @@ import { MECHANIC_LINTS, MECHANIC_TEXTS } from './mechanics/index.ts';
 import type { MechanicLintCode, WorldLint, WorldLintInput } from './mechanics/index.ts';
 import type { ModuleText, TextRegistry, TextWalker } from './mechanics/texts.ts';
 import { playChapter } from './playthrough.ts';
+import { checkSection } from './softlock.ts';
 import { PUZZLE_LINTS } from './puzzles/index.ts';
 import type { PuzzleLintCode, PuzzleTypeLint } from './puzzles/index.ts';
 import { MAX_ANSWER_LEN, answerLenFindings, answerLenIssues } from './puzzles/shape.ts';
@@ -3023,8 +3024,8 @@ function carryCodes(out: readonly string[]): string[] {
 }
 
 /** The giver ch1: `start` enters the manor (`bypass`: a choice also leads to an END of its own), whose hall gives the
- *  lamp, kept by the only way out (every leave holds it). `mark`: the lamp is marked carry: true. */
-function giverChapter(opts: { bypass?: boolean; mark?: boolean; paid?: boolean; id?: string; next?: string } = {}): RepoChapter {
+ *  lamp, kept by its way out (`back`: a second, open way out too). `mark`: the lamp is marked carry: true. */
+function giverChapter(opts: { bypass?: boolean; back?: boolean; mark?: boolean; paid?: boolean; id?: string; next?: string } = {}): RepoChapter {
   const id = opts.id ?? 'ch1';
   const choice = opts.bypass === true ? ['* [Войти #id:ch1.start.c001]', '    -> hall', '* [Уйти #id:ch1.start.c002]', '    -> away'] : ['-> hall'];
   const away = opts.bypass === true ? ['=== away ===', 'Мы ушли. #id:ch1.away.a003', '-> END'] : [];
@@ -3046,7 +3047,7 @@ function giverChapter(opts: { bypass?: boolean; mark?: boolean; paid?: boolean; 
   ].map((l) => l.replaceAll('ch1.', `${id}.`));
   const world = repoWorld(id, {
     items: { lamp: opts.mark === false ? {} : { carry: true } },
-    sections: { manor: { hall: [takeIt('t_lamp', 'lamp'), leaveBy('out', 'manor_out', [{ accepts: 'lamp', keep: true }])] } },
+    sections: { manor: { hall: [takeIt('t_lamp', 'lamp'), leaveBy('out', 'manor_out', [{ accepts: 'lamp', keep: true }]), ...(opts.back === true ? [leaveBy('back', 'manor_out')] : [])] } },
   });
   return { id, paid: opts.paid ?? false, next: opts.next ?? 'ch2', ink, world };
 }
@@ -3278,3 +3279,44 @@ test('carry: a giver yield after an ungathered choice or a divert is refused', (
   // Its control: the garden names no knot, so the cellar's event is the manor's own again.
   expect(prefixRefusals(shared, garden([]))).toEqual([]);
 });
+
+/** A fixture world as the proof searches it: decoded, its public body with the decoded `mods`. */
+function kernelOf(w: Json): KernelWorld {
+  const r = decodeWorldSource(w);
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods };
+}
+
+test('carry: a skipped or capped giver section fails closed on its own error', () => {
+  const required = new Map([['medal_sun' as ItemId, ch('ch2')]]); // a fixture item id
+  // Skipped: a part atom in a gating `when` leaves the manor unsearched; `world/visual-only-atom` refuses the world.
+  const skipped = recipeBase(() => t('manor', 'Монета легла в оправу.'));
+  spot(skipped, 'hall', 'inscription')['when'] = { part: { puzzle: 'drawer', index: 0, is: 1 } };
+  expect(checkSection(kernelOf(skipped), 'manor' as SectionId, FILE, required)).toEqual({ section: 'manor', states: null, findings: [] });
+  expect(of(lint(skipped), 'world/visual-only-atom')).toHaveLength(1);
+  // Capped: thirteen documents beside the sun medallion, past RESUME_STATE_CAP; only its `world/state-cap`.
+  const docs = Array.from({ length: 13 }, (_, i) => `d${i}`);
+  const capped = mini({ items: ['medal_sun'], docs, sections: { s: { start: 'hall', rooms: { hall: [leave('out'), take('sun', { item: 'medal_sun' }), ...docs.map((d) => take(d, { doc: d }))] } } } });
+  const c = checkSection(kernelOf(capped), 's' as SectionId, FILE, required);
+  expect([c.states, c.findings.map((f) => f.code)]).toEqual([null, ['world/state-cap']]);
+  expect(of(lint(capped), 'world/state-cap')).toHaveLength(1);
+});
+
+test(
+  "carry: the story gate runs the giver's leave check",
+  () => {
+    const files = carryRepo({ chapters: [giverChapter({ back: true }), receiverChapter(LAMP_REQUIRED)], items: LAMP_ROW });
+    const r = storyRun(files);
+    const line = (files['story/ch1/world.json'] ?? '').split('\n').indexOf('    "manor": {') + 1;
+    expect(line).toBeGreaterThan(0);
+    expect(printed(r.out, 'world/carry-leave'), r.out.join('\n')).toEqual([`story/ch1/world.json:${line}`]);
+    expect(r.code).toBe(1);
+    // The control: the only way out keeps the lamp.
+    const control = storyRun(carryRepo({ chapters: [giverChapter(), receiverChapter(LAMP_REQUIRED)], items: LAMP_ROW }));
+    expect(printed(control.out, 'world/carry-leave'), control.out.join('\n')).toEqual([]);
+    expect(control.code).toBe(0);
+  },
+  IN_PROCESS_TIMEOUT_MS,
+);

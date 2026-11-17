@@ -32,7 +32,7 @@ import { LINT_CODES, lintCatalog, lintSources } from './story/lint.ts';
 import type { Finding, LintCode, Severity, SourceChapter, SourceLintInput } from './story/lint.ts';
 import { RETIRED_FILE, checkLocales, decodeEnTable, decodeNameTable, decodeRetired } from './story/locales.ts';
 import type { EnTable } from './story/locales.ts';
-import { ITEMS_FILE, carryProof } from './story/mechanics/carry.ts';
+import { ITEMS_FILE, carryLines, carryProof } from './story/mechanics/carry.ts';
 import type { CarryChapter, SectionPath, YieldSite } from './story/mechanics/carry.ts';
 import { META_FILE, choicePoints, lintMeta } from './story/meta.ts';
 import type { ChoiceMap, MetaSource, StoryMeta } from './story/meta.ts';
@@ -46,6 +46,7 @@ import type { ShotFinding } from './story/shots/lint.ts';
 import { SHOTS_FILE, decodeShotList, effectiveCatalog, effectiveShots } from './story/shots/list.ts';
 import type { EffectiveShot, ShotList } from './story/shots/list.ts';
 import { SHOT_USAGE_FILE, encodeShotUsage, shotUsage } from './story/shots/usage.ts';
+import { checkSection } from './story/softlock.ts';
 import { STORIES_FILE, checkEndings, checkInvoiceTitles, decodeStories, endingKnots } from './story/stories.ts';
 import type { StoryPlan } from './story/stories.ts';
 import { WORLD_FILE, decodeWorldFile, lintWorld, worldFingerprints, worldLines } from './story/world.ts';
@@ -806,7 +807,19 @@ export function main(argv: readonly string[], repoRoot: string): number {
   // above: they never keep a chapter from being played, and the run still fails on them. Judged only on a decoded story
   // list, like the endings: a list that failed has its own error, so the skip fails closed.
   if (plans !== null) {
-    found.push(...carryProof({ chapters: carryChapters(chapters, worlds, graphs, facts, endings), registry: readRaw(root, ITEMS_FILE) }).findings);
+    const pass = carryProof({ chapters: carryChapters(chapters, worlds, graphs, facts, endings), registry: readRaw(root, ITEMS_FILE) });
+    found.push(...pass.findings);
+    // Each giver section of a required item searched again with what its receivers require: only its leave check is
+    // new (its soft-lock and cap findings are the world lint's, already reported), at the section's line.
+    for (const run of pass.leaves) {
+      const w = worlds.get(run.chapter);
+      if (w?.kind !== 'ok') {
+        continue;
+      }
+      const check = checkSection({ ...toPublic(w.source), mods: w.source.mods }, run.section, `story/${run.chapter}/${WORLD_FILE}`, run.required);
+      const line = carryLines(w.text)(`sections.${run.section}`);
+      found.push(...check.findings.filter((f) => f.code === 'world/carry-leave').map((f) => ({ ...f, line })));
+    }
   }
 
   // 5. Localization (after `--sync-locales` appended the new IDs): the en tables of the compiled chapters, the names

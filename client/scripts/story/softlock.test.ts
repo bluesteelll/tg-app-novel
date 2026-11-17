@@ -5,9 +5,9 @@ import { EMPTY_WORLD_STATE } from '../../src/explore/state.ts';
 import type { KernelWorld } from '../../src/mechanics/contract.ts';
 import { reduce } from '../../src/mechanics/rules/core.ts';
 import { admitEvent, admitSection, inSectionReach, ownScope, resetSection, searchSection, sectionEntry, sectionKey, successors } from '../../src/mechanics/rules/search.ts';
-import type { SectionId } from '../../src/story/staging.ts';
+import type { ChapterId, SectionId } from '../../src/story/staging.ts';
 import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
-import type { RoomId, WorldPublicBody } from '../../src/world/types.ts';
+import type { ItemId, RoomId, WorldPublicBody } from '../../src/world/types.ts';
 import type { PlayInput } from './playthrough.ts';
 import { checkSection, checkWorld } from './softlock.ts';
 import type { SectionCheck } from './softlock.ts';
@@ -59,14 +59,23 @@ const code = (dials: number, maxAttempts: number | null): Json => ({
   hints: [txt()],
 });
 
-function world(spec: { items?: string[]; docs?: string[]; puzzles?: Record<string, Json>; sections: Record<string, { start: string; rooms: Record<string, Json> }> }): KernelWorld {
-  const named = (ids: string[], body: () => Json) => Object.fromEntries(ids.map((id) => [id, body()]));
+/** A fixture world; `marks`: items marked `carry: true`; `inherits`: the world's `inherits` entries, if any (§6.6). */
+function world(spec: {
+  items?: string[];
+  marks?: string[];
+  inherits?: Json[];
+  docs?: string[];
+  puzzles?: Record<string, Json>;
+  sections: Record<string, { start: string; rooms: Record<string, Json> }>;
+}): KernelWorld {
+  const named = (ids: string[], body: (id: string) => Json) => Object.fromEntries(ids.map((id) => [id, body(id)]));
   const r = decodeWorldSource({
     format: 1,
-    items: named(spec.items ?? [], () => ({ name: txt(), desc: txt(), glyph: 'key' })),
+    items: named(spec.items ?? [], (id) => ({ name: txt(), desc: txt(), glyph: 'key', ...(spec.marks?.includes(id) === true ? { carry: true } : {}) })),
     docs: named(spec.docs ?? [], () => ({ title: txt(), body: [txt()] })),
     puzzles: spec.puzzles ?? {},
     sections: Object.fromEntries(Object.entries(spec.sections).map(([id, s]) => [id, { start: s.start, bgm: null, rooms: s.rooms }])),
+    ...(spec.inherits === undefined ? {} : { inherits: spec.inherits }),
   });
   if (!r.ok) {
     throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
@@ -289,4 +298,46 @@ test("softlock: a search, reset or proof call without the modules' data fails ch
   expect(pins).toBeTypeOf('function'); // a type check only: never run
   // The live control: the kernel world's proof runs, the hub's (1 + 1) x 3^1 states.
   expect(checkWorld(w, FILE)).toEqual([{ section: 's', states: 6, findings: [] }]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM9p: the carry proof's section checks (engine plan §6.6).
+
+const LAMP_TO_CH2: ReadonlyMap<ItemId, ChapterId> = new Map([['lamp' as ItemId, 'ch2' as ChapterId]]); // fixture ids
+
+test('carry: a section leave without the item is refused', () => {
+  const keep: Json = { slots: [{ accepts: 'lamp', keep: true }], puzzle: null, locked: txt(), onFail: [] };
+  /** The hall gives the lamp and its way out keeps it in `slot`; `back`: the cellar has a second, open way out. */
+  const giver = (back: boolean, slot: Json = keep): KernelWorld =>
+    world({
+      items: ['lamp'],
+      marks: ['lamp'],
+      sections: {
+        s: {
+          start: 'hall',
+          rooms: {
+            hall: room([take('t_lamp', { item: 'lamp' }), exit('out', { story: 'out' }, slot), exit('to_cellar', 'cellar')]),
+            cellar: room([exit('to_hall', 'hall'), ...(back ? [exit('back', { story: 'back' })] : [])]),
+          },
+        },
+      },
+    });
+  // The control: every leave holds the lamp.
+  expect(checkSection(giver(false), S, FILE, LAMP_TO_CH2)).toEqual({ section: 's', states: expect.any(Number) as number, findings: [] });
+  // The cellar's open way out: one finding, its path ending in the leave.
+  expect(checkSection(giver(true), S, FILE, LAMP_TO_CH2).findings).toEqual([
+    {
+      code: 'world/carry-leave',
+      severity: 'E',
+      file: FILE,
+      line: 0,
+      message: "section s: a leave without 'lamp', which ch2 inherits as required (§6.6): tap hall.to_cellar → tap cellar.back",
+    },
+  ]);
+  // Without the required items (the per-world run) no leave is checked.
+  expect(checkSection(giver(true), S, FILE).findings).toEqual([]);
+  // A way out whose slot consumes the lamp: the leave holds it no more (it is `used`, not `held`).
+  const spent = checkSection(giver(false, lock(['lamp'])), S, FILE, LAMP_TO_CH2).findings;
+  expect(spent.map((f) => f.code)).toEqual(['world/carry-leave']);
+  expect(spent[0]?.message).toMatch(/: tap hall\.t_lamp → insert hall\.out lamp → tap hall\.out$/);
 });
