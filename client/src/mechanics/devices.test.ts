@@ -5,14 +5,30 @@
 // the writer, a `work` fact per moved part, and a part's picture is a decor state chosen by the visual atom `part` over
 // that saved work; at resume a saved work its type judges no longer fits the device is dropped. The story gate's
 // devices lint places a view type only on a device and a device only in a view, keeps the device hotspot a plain,
-// always-present object that only its puzzle opens, and bounds a `part` atom by its room's device, with the types as a
-// parameter (a fixture view type, `cranks`, beside the registered ones; the real `levers` and `setting` are GM8a's).
+// always-present object that only its puzzle opens, bounds a visual `part` atom by its room's device and a clue's by any
+// room's device, and keeps a device's parts inside the safe frame, under the bar's band, above the item ribbon and apart,
+// and its room's other hotspots clear of the band and the parts, with the types and the lint halves as parameters (a
+// fixture view type, `cranks`, beside the registered ones; the real `levers` and `setting` are GM8a's).
 // Fixture worlds are written in the source format and decoded with the real registries; a proof world carries the
 // decoded `mods`, as the explore controller's and the story gate's do.
 import { expect, test } from 'vitest';
 
-import { DEVICE_BAND_Y, DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS, devicesFindings, deviceBandY } from '../../scripts/story/mechanics/devices.ts';
+import { stripComments } from '../../scripts/story/classify.ts';
+import {
+  DEVICE_BAND_Y,
+  DEVICE_BAR_CSS_H,
+  DEVICE_BOTTOM_INSET_CSS,
+  DEVICE_RIBBON_PER_ROW,
+  DEVICE_TOP_INSET_CSS,
+  devicesFindings,
+  deviceBandY,
+  deviceRibbonRows,
+  deviceRibbonY,
+} from '../../scripts/story/mechanics/devices.ts';
+import devicesSource from '../../scripts/story/mechanics/devices.ts?raw';
 import type { WorldLintInput } from '../../scripts/story/mechanics/index.ts';
+import { PUZZLE_LINTS } from '../../scripts/story/puzzles/index.ts';
+import type { PuzzleLintRegistry } from '../../scripts/story/puzzles/shape.ts';
 import { RESUME_STATE_CAP } from '../explore/reduce.ts';
 import type { ExploreAction, ExploreEffect } from '../explore/reduce.ts';
 import { EMPTY_WORLD_STATE } from '../explore/state.ts';
@@ -23,7 +39,7 @@ import type { AssetCatalog } from '../story/catalog.ts';
 import { decodeSave, encodeSave } from '../story/save-codec.ts';
 import type { SaveBody } from '../story/save-codec.ts';
 import { EMPTY_SNAPSHOT } from '../story/staging.ts';
-import type { ChapterId, KnotName, LineId, PuzzleLocalId, SectionId, StoryVersion } from '../story/staging.ts';
+import type { ChapterId, KnotName, LineId, PuzzleLocalId, Rect, SectionId, StoryVersion } from '../story/staging.ts';
 import { decodeWorldSource, toPublic } from '../world/decode.ts';
 import type { HotspotKey, RoomId } from '../world/types.ts';
 import type { DecodeCtx, FlagId, KernelWorld, OwnedAt, RulesRegistry, SectionAction } from './contract.ts';
@@ -70,11 +86,11 @@ const code = (dials: number, maxAttempts: number | null = null): Json => ({
   hints: [txt()],
 });
 
-/** The source of one section `s` over `rooms`, starting in `hall`. */
-function source(rooms: Readonly<Record<string, Json>>, o: { puzzles?: Json; flags?: Readonly<Record<string, string>> } = {}): Json {
+/** The source of one section `s` over `rooms`, starting in `hall`; `o.items` declares that many items (`item0`...). */
+function source(rooms: Readonly<Record<string, Json>>, o: { puzzles?: Json; flags?: Readonly<Record<string, string>>; items?: number } = {}): Json {
   return {
     format: 1,
-    items: {},
+    items: Object.fromEntries(Array.from({ length: o.items ?? 0 }, (_, i) => [`item${i}`, { name: txt(), desc: txt(), glyph: 'key' }])),
     docs: {},
     puzzles: o.puzzles ?? {},
     sections: { s: { start: 'hall', bgm: null, rooms } },
@@ -175,6 +191,14 @@ function partsOf(p: unknown): number {
   return (p as { readonly parts: number }).parts; // the fixture's params, decoded as written
 }
 const TYPES: PuzzleTypes = [...PUZZLE_TYPES, CRANKS];
+/** A second fixture view type, `cranks` but for its `workFits`, which throws on any saved work. */
+const JAMMED: PuzzleTypeData<string, unknown> = Object.freeze({
+  ...CRANKS,
+  type: 'jammed',
+  workFits: () => {
+    throw new Error('jammed: this fixture type reads no saved work');
+  },
+});
 const cranks = (parts: number): Json => ({ ...code(2), type: 'cranks', params: { parts }, solution: new Array<number>(parts).fill(1) });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -387,6 +411,21 @@ test('device: a saved work that no longer fits the device is dropped at resume',
   expect(kept).toEqual([]);
 });
 
+test('device: a saved work its type throws on is dropped at resume', () => {
+  // A `workFits` that throws is a misfit (`instanceOf.fits`' reading, RULINGS 368): its work goes as `work:<p>` and its
+  // run stays, and the runs after it are judged as before (the misfit `gauge` still goes, the rest keep theirs).
+  const types: PuzzleTypes = [...TYPES, JAMMED];
+  const puzzles = { wide: cranks(2), stuck: { ...cranks(2), type: 'jammed' }, gauge: cranks(3), drawer: code(2) };
+  const w = kernel(source({ hall: room([exit('out', { story: 'end' })]) }, { puzzles }), types);
+  const saved = (work: readonly number[]): PuzzleRun => ({ outcome: null, attempts: 1, hintsOpened: 0, work });
+  const s = at('hall', { puzzles: { [pz('wide')]: saved([2, 0]), [pz('stuck')]: saved([0, 0]), [pz('gauge')]: saved([0, 1]), [pz('drawer')]: saved([2, 0, 1]) } });
+  const dropped: string[] = [];
+  const r = fitWork(w, s, dropped, types);
+  const bare = { outcome: null, attempts: 1, hintsOpened: 0 };
+  expect(r.puzzles).toStrictEqual({ wide: saved([2, 0]), stuck: bare, gauge: bare, drawer: saved([2, 0, 1]) });
+  expect(dropped).toEqual(['work:stuck', 'work:gauge']);
+});
+
 test("device: the default registry drops a real view type's misfit work at resume", () => {
   // D8 (A9): the registry wiring on a real view type. `gate` is a levers device whose two levers each move the other
   // (critique W1): from the start only 0 0 and 1 1 are reachable. Decoded and judged with the default registry, no types.
@@ -536,14 +575,69 @@ test("search: a device's arrival adds no state", () => {
   expect(kinds(at('hall'), all)).toEqual(['tap', 'tap', 'tap']);
 });
 
+test("search: an uncapped device's arrival adds one evaluation and no state", () => {
+  // P3: the world above with an uncapped device. With no cap it never fails, so the one zoom-in edge into the present,
+  // unsolved device expands into its `closed` edge and its one outcome, as the device's own tap does: one evaluation
+  // more than a registry without the hook, on the same states (the entry, `power` set, the device solved).
+  const w = kernel(
+    source(
+      {
+        hall: room([look('switch', [{ set: 'power' }]), exit('to_panel', 'panel'), exit('out', { story: 'end' })]),
+        panel: room([object('dial', lock('dial'), { when: { flag: 'power' } })], { view: { of: 'hall' }, device: 'dial' }),
+      },
+      { puzzles: { dial: code(2) }, flags: { power: 's' } },
+    ),
+  );
+  const all: RulesRegistry = MECHANIC_RULES;
+  const quiet: RulesRegistry = all.map((m) => {
+    if (m.id !== 'devices') {
+      return m;
+    }
+    const { arrived: _arrived, ...rest } = m;
+    return rest;
+  });
+  const search = (rules: RulesRegistry): { result: string; states: number; stats: SearchStats | null } => {
+    let stats: SearchStats | null = null;
+    const r = searchSection(w, sectionEntry(w, EMPTY_WORLD_STATE, S, rules), S, RESUME_STATE_CAP, {
+      rules,
+      onStats: (x) => {
+        stats = x;
+      },
+    });
+    return { ...r, stats };
+  };
+  const plain = search(quiet);
+  const hooked = search(all);
+  expect(plain.result).toBe('exhausted');
+  expect({ result: hooked.result, states: hooked.states, expansions: hooked.stats?.expansions }).toEqual({
+    result: plain.result,
+    states: plain.states,
+    expansions: plain.stats?.expansions,
+  });
+  expect((hooked.stats?.work ?? 0) - (plain.stats?.work ?? 0)).toBe(1);
+  expect(hooked.stats?.work).toBeLessThanOrEqual(plain.states * RESUME_WORK_PER_STATE);
+  expect([plain.states, plain.stats, hooked.stats]).toEqual([3, { expansions: 6, work: 18, bound: null }, { expansions: 6, work: 19, bound: null }]);
+  // The hook is live: with `power` set, the zoom-in expands into the device's `closed` edge and its one outcome.
+  const lit = at('hall', { flags: [fl('power')], fired: ['enter:hall', 'then:hall.switch'], examined: [k('hall.switch')] });
+  const kinds = (s: WorldState, rules: RulesRegistry): string[] => successors(w, s, rules).map((x) => x.step.kind);
+  expect([kinds(lit, quiet), kinds(lit, all)]).toEqual([
+    ['tap', 'tap', 'tap'],
+    ['tap', 'closed', 'puzzle-ended', 'tap'],
+  ]);
+  // The search reads one `puzzle` effect per action, so a second one would leave every count above unmoved: the
+  // arrival's effect stream is what pins the hook to exactly one opening.
+  expect(opens(reduce(w, lit, tap('hall.to_panel')).effects)).toEqual([OPEN_DIAL]);
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // The story gate: placement lints (each a code of the module's own table) and the band
 
 const CATALOG: AssetCatalog = { bg: {}, chars: {}, cg: {}, bgm: {}, sfx: {}, prop: {}, cover: {} };
 
-/** The devices lint over `raw` decoded with the fixture types, `yielded` the puzzles the chapter yields: each finding as
- *  `<code> <message>` (a message starts with its path). */
-function lint(raw: Json, yielded: readonly string[] = []): string[] {
+/** The devices lint over `raw` decoded with the fixture types, `yielded` the puzzles the chapter yields, `lints` the
+ *  puzzle lint halves (the registered ones unless given): each finding as `<code> <message>` (a message starts with its
+ *  path). */
+function lint(raw: Json, yielded: readonly string[] = [], lints?: PuzzleLintRegistry): string[] {
   const r = decodeWorldSource(raw, { types: TYPES });
   if (!r.ok) {
     throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(r.error)}`);
@@ -561,7 +655,7 @@ function lint(raw: Json, yielded: readonly string[] = []): string[] {
     line: (path) => (paths.includes(path) ? paths.indexOf(path) : paths.push(path) - 1) + 1,
     moduleLines: new Map(),
   };
-  return devicesFindings(input, TYPES).map((f) => {
+  return devicesFindings(input, TYPES, lints).map((f) => {
     expect([f.severity, f.file, paths[f.line - 1] !== undefined && f.message.startsWith(`${paths[f.line - 1] ?? ''}: `)]).toEqual(['E', 'story/ch1/world.json', true]);
     return `${f.code} ${f.message}`;
   });
@@ -571,17 +665,17 @@ function lint(raw: Json, yielded: readonly string[] = []): string[] {
  * A lint fixture: the hall and its device view `panel`, whose device hotspot `dial` carries `o.dial` (default: a zero-slot
  * lock with the view-type puzzle `dial`); `o.hall` adds hotspots to the hall and `o.hallKeys` keys, `o.spots` hotspots to
  * the panel after the device and `o.panel` keys, `o.puzzles` puzzles beside `dial` (a `CRANKS` puzzle of four parts, each
- * at 0..2, unless replaced).
+ * at 0..2, unless replaced), `o.items` the items the world declares (none unless given).
  */
 function deviceWorld(
-  o: { dial?: Json; hall?: readonly Json[]; hallKeys?: Json; spots?: readonly Json[]; panel?: Json; puzzles?: Json } = {},
+  o: { dial?: Json; hall?: readonly Json[]; hallKeys?: Json; spots?: readonly Json[]; panel?: Json; puzzles?: Json; items?: number } = {},
 ): Json {
   return source(
     {
       hall: room([exit('to_panel', 'panel'), exit('out', { story: 'end' }), ...(o.hall ?? [])], o.hallKeys),
       panel: room([o.dial ?? object('dial', lock('dial')), ...(o.spots ?? [])], { view: { of: 'hall' }, device: 'dial', ...o.panel }),
     },
-    { puzzles: { dial: cranks(4), ...o.puzzles } },
+    { puzzles: { dial: cranks(4), ...o.puzzles }, items: o.items ?? 0 },
   );
 }
 
@@ -589,6 +683,27 @@ function deviceWorld(
 const decor = (id: string, when: Json): Json => ({ id, prop: 'lever', rect: [100, 900, 160, 320], z: 1, states: { on: { prop: 'lever_up' } }, is: [{ when, state: 'on' }] });
 /** A `part` atom of `puzzle`. */
 const part = (puzzle: string, index: number, is: number): Json => ({ part: { puzzle, index, is } });
+
+/** A `levers` device puzzle with a lever per rect: two positions, no couples, every target 1 (one throw each); `o.hints`
+ *  its ladder, none unless given (`code()`'s default tier holds no `[moves]`). */
+function leversPuzzle(rects: readonly Rect[], o: { hints?: readonly Json[] } = {}): Json {
+  const target = rects.map(() => 1);
+  return { ...code(2), type: 'levers', params: { parts: rects.length, positions: 2, couples: rects.map(() => []), target, rects }, solution: target, hints: o.hints ?? [] };
+}
+/** A `setting` device puzzle with a knob of ten positions per rect and its pull at `pull`; `o.hints` its ladder. */
+function settingPuzzle(rects: readonly Rect[], pull: Rect, o: { hints?: readonly Json[] } = {}): Json {
+  return { ...code(2), type: 'setting', params: { parts: rects.length, positions: 10, rects, pull }, solution: rects.map((_, i) => i + 1), hints: o.hints ?? [] };
+}
+/** Two parts inside the frame, under the band, above the ribbon and apart: the base every part row breaks one clause of. */
+const PARTS: readonly Rect[] = [
+  [100, 800, 150, 150],
+  [400, 800, 150, 150],
+];
+/** A hint tier whose ru text is `ru`. */
+const hint = (ru: string): Json => ({ ...txt(), ru });
+/** The `world/device-parts-frame` finding of part `i` of the device puzzle `dial` at `rect`, reported at `params<at>`. */
+const partFinding = (at: string, i: number, rect: Rect, why: string): string =>
+  `world/device-parts-frame puzzles.dial.params${at}: part ${i} of puzzle 'dial' [${rect.join(', ')}] ${why} (§7.5)`;
 
 test('story: a device room without a zero-slot lock is refused', () => {
   const TYPE = 'world/device-type sections.s.rooms.panel.device: hotspot';
@@ -686,8 +801,13 @@ test('story: a device hotspot with a when is refused', () => {
 });
 
 test('story: a device room with another puzzle lock is refused', () => {
-  // A plain slot lock and a lockless object beside the device are allowed; a second puzzle lock is not.
-  const spots = [object('box', lock(null, ['key'])), object('vase', null), object('safe', lock('safe'))];
+  // A plain slot lock and a lockless object beside the device are allowed; a second puzzle lock is not. The spots sit
+  // under the bar's band, as every hotspot of a device room does.
+  const spots = [
+    object('box', lock(null, ['key']), { rect: [100, 800, 200, 200] }),
+    object('vase', null, { rect: [400, 800, 200, 200] }),
+    object('safe', lock('safe'), { rect: [700, 800, 200, 200] }),
+  ];
   expect(lint(deviceWorld({ spots, puzzles: { safe: code(3) } }))).toEqual([
     "world/device-alone sections.s.rooms.panel.hotspots.3.lock.puzzle: hotspot 'safe' carries puzzle 'safe' beside device 'dial': a device room holds no other puzzle lock (§7.5)",
   ]);
@@ -736,11 +856,205 @@ test("story: a part atom outside its device's range is refused", () => {
   ]);
 });
 
+test("story: a part atom in a clue reads a device's work within its shape", () => {
+  // RULINGS 356 (b): a clue's `part` reads any room's device, within that device's answer shape (the `cranks` dial: four
+  // parts at 0..2), and is reported at the clue.
+  const clues = [part('dial', 4, 1), part('dial', 0, 3), part('safe', 0, 1), part('dial', 3, 2)];
+  const CLUE = 'world/device-part puzzles.safe.clues';
+  expect(lint(deviceWorld({ puzzles: { safe: { ...code(3), clues } } }))).toEqual([
+    `${CLUE}.0: {"part":{"puzzle":"dial","index":4,"is":1}}: index 4 is not below the device's 4 parts (§7.5)`,
+    `${CLUE}.1: {"part":{"puzzle":"dial","index":0,"is":3}}: is 3 is outside the part's range 0..2 (§7.5)`,
+    `${CLUE}.2: {"part":{"puzzle":"safe","index":0,"is":1}} reads puzzle 'safe', which is no room's device: a clue's part reads a device's work (§7.5)`,
+  ]);
+});
+
+test('story: a part atom on a device lock with no puzzle says the device has no puzzle', () => {
+  // M1: the room has a device, whose lock names no puzzle; beside the lock's own two findings.
+  expect(lint(deviceWorld({ dial: object('dial', lock(null)), panel: { decor: [decor('a', part('dial', 0, 1))] } }))).toEqual([
+    "world/device-type sections.s.rooms.panel.device: hotspot 'dial' carries a lock with no puzzle: a device's hotspot carries a zero-slot lock with its puzzle (§7.5)",
+    "world/view-type-site puzzles.dial: view-type puzzle 'dial' is on no lock: a view type is played only by its device, never as a linear yield (§7.5)",
+    `world/device-part sections.s.rooms.panel.decor.0.is.0.when: {"part":{"puzzle":"dial","index":0,"is":1}} reads puzzle 'dial', but room 'panel''s device has no puzzle: a part reads its own room's device (§7.5)`,
+  ]);
+});
+
+test("story: a levers puzzle's [moves] sits once in its last ru tier, at its line", () => {
+  // W6 (07 §7.3): the build replaces the last tier's `[moves]` with the throw order, so it sits there exactly once and in
+  // no earlier tier; refused at the tier (the emit's own throw names no puzzle).
+  const ladder = (...ru: string[]): string[] => lint(deviceWorld({ puzzles: { dial: leversPuzzle(PARTS, { hints: ru.map(hint) }) } }));
+  const moves = (i: number, why: string): string => `world/hint-moves puzzles.dial.hints.${i}: levers puzzle 'dial': ${why} (§7.3, W6)`;
+  expect(ladder('Один', 'Два', 'Порядок.')).toEqual([moves(2, 'its last hint tier (3 of 3) holds no [moves], which the build replaces with the throw order')]);
+  expect(ladder('[moves], [moves]')).toEqual([moves(0, 'its last hint tier (1 of 1) holds [moves] 2 times, not once')]);
+  expect(ladder('Сначала [moves].', 'Порядок: [moves].')).toEqual([moves(0, 'hint tier 1 of 2 holds [moves], which only the last tier may')]);
+  // The controls: a clean ladder, and none.
+  expect(ladder('Один', 'Порядок: [moves].')).toEqual([]);
+  expect(ladder()).toEqual([]);
+});
+
+test('story: [moves] on a puzzle that is no levers is refused at its line', () => {
+  // No other type's build replaces it: shipped, it would show as written.
+  const OTHER = "hint tier 1 holds [moves], which only a levers puzzle's last tier may (§7.3, W6)";
+  expect(lint(deviceWorld({ puzzles: { safe: { ...code(3), hints: [hint('Код: [moves].')] } } }))).toEqual([`world/hint-moves puzzles.safe.hints.0: code puzzle 'safe': ${OTHER}`]);
+  // A `setting` device, its pull inside the frame, under the band, above the ribbon and apart from its knobs.
+  const setting = settingPuzzle(PARTS, [100, 1000, 300, 150], { hints: [hint('Ручки: [moves].')] });
+  expect(lint(deviceWorld({ puzzles: { dial: setting } }))).toEqual([`world/hint-moves puzzles.dial.hints.0: setting puzzle 'dial': ${OTHER}`]);
+});
+
+test("story: a device part outside the safe frame or under the bar's band is refused", () => {
+  // D1 on a real `levers` device, one row per live edge; each row breaks that edge alone (the base PARTS elsewhere).
+  const dial = (rects: readonly Rect[]): string[] => lint(deviceWorld({ puzzles: { dial: leversPuzzle(rects) } }));
+  const LEFT = "starts at x 79, left of the safe frame's x 80";
+  expect(dial(PARTS)).toEqual([]);
+  // The left edge, strict: x 79 refused, x 80 clean.
+  expect(dial([[79, 800, 150, 150], [400, 800, 150, 150]])).toEqual([partFinding('.rects.0', 0, [79, 800, 150, 150], LEFT)]);
+  expect(dial([[80, 800, 150, 150], [400, 800, 150, 150]])).toEqual([]);
+  // The right edge: a part ending at x 1000 clean, at 1001 refused.
+  expect(dial([[100, 800, 150, 150], [850, 800, 150, 150]])).toEqual([]);
+  expect(dial([[100, 800, 150, 150], [851, 800, 150, 150]])).toEqual([
+    partFinding('.rects.1', 1, [851, 800, 150, 150], "ends at x 1001, right of the safe frame's x 1000"),
+  ]);
+  // Each side's minimum, in either dimension: 149 refused (150 x 150 is the base, clean).
+  expect(dial([[100, 800, 149, 150], [400, 800, 150, 150]])).toEqual([partFinding('.rects.0', 0, [100, 800, 149, 150], 'is 149×150, a side under 150 source px')]);
+  expect(dial([[100, 800, 150, 149], [400, 800, 150, 150]])).toEqual([partFinding('.rects.0', 0, [100, 800, 150, 149], 'is 150×149, a side under 150 source px')]);
+  // The band, against its constant (B3 moves it): a top one px above it refused, a top on it clean.
+  const above: Rect = [100, DEVICE_BAND_Y - 1, 150, 150];
+  expect(dial([above, [400, 800, 150, 150]])).toEqual([
+    partFinding('.rects.0', 0, above, `starts at y ${DEVICE_BAND_Y - 1}, above the device bar's band at y ${DEVICE_BAND_Y}`),
+  ]);
+  expect(dial([[100, DEVICE_BAND_Y, 150, 150], [400, 800, 150, 150]])).toEqual([]);
+  // D3: a `setting` pull is a part too, the last, reported at its own key.
+  const pull: Rect = [79, 1000, 300, 150];
+  expect(lint(deviceWorld({ puzzles: { dial: settingPuzzle(PARTS, pull) } }))).toEqual([partFinding('.pull', 2, pull, LEFT)]);
+  // A lint half whose rects are no value of the params (copies) is reported at the params, the part index in its message:
+  // given through the `lints` parameter, for the fixture `cranks` device.
+  const copies: PuzzleLintRegistry = { ...PUZZLE_LINTS, cranks: { countSolutions: () => 1, partRects: (): readonly Rect[] => [[79, 800, 150, 150]] } };
+  expect(lint(deviceWorld(), [], copies)).toEqual([partFinding('', 0, [79, 800, 150, 150], LEFT)]);
+});
+
+test("story: a device part under the bar's band is refused", () => {
+  // B3: the band sits under the fullscreen header's inset, so a top the bar alone left clear (496..732) is under it.
+  const tops = [496, 600];
+  const at = (top: number): Rect => [100, top, 150, 150];
+  expect(tops.map((top) => lint(deviceWorld({ puzzles: { dial: leversPuzzle([at(top), [400, 800, 150, 150]]) } })))).toEqual(
+    tops.map((top) => [partFinding('.rects.0', 0, at(top), `starts at y ${top}, above the device bar's band at y ${DEVICE_BAND_Y}`)]),
+  );
+});
+
+test('story: device parts that overlap are refused', () => {
+  // The later part takes the taps where two overlap, and a device is a lock with no other way in; edge-touching is clean.
+  const over: Rect = [200, 800, 150, 150];
+  expect(lint(deviceWorld({ puzzles: { dial: leversPuzzle([[100, 800, 150, 150], over]) } }))).toEqual([
+    partFinding('.rects.1', 1, over, 'overlaps part 0, which then takes its taps'),
+  ]);
+  // A `setting` pull over a knob.
+  const pull: Rect = [450, 850, 150, 150];
+  expect(lint(deviceWorld({ puzzles: { dial: settingPuzzle(PARTS, pull) } }))).toEqual([partFinding('.pull', 2, pull, 'overlaps part 1, which then takes its taps')]);
+  // Three levers touching on both axes.
+  const touching: readonly Rect[] = [
+    [100, 800, 150, 150],
+    [250, 800, 150, 150],
+    [100, 950, 150, 150],
+  ];
+  expect(lint(deviceWorld({ puzzles: { dial: leversPuzzle(touching) } }))).toEqual([]);
+});
+
+test("story: the device part checks run once per device puzzle, on a view room's device only", () => {
+  const bad: readonly Rect[] = [
+    [79, 800, 150, 150],
+    [400, 800, 150, 150],
+  ];
+  // A view-type puzzle on no lock is `world/view-type-site`'s alone: one root cause, one finding.
+  expect(lint(deviceWorld({ puzzles: { loose: leversPuzzle(bad) } }))).toEqual([
+    "world/view-type-site puzzles.loose: view-type puzzle 'loose' is on no lock: a view type is played only by its device, never as a linear yield (§7.5)",
+  ]);
+  // A `device` in a room that is no view: the site's two findings alone (no seat, so no part is judged).
+  const flat = source({ hall: room([object('dial', lock('dial')), exit('out', { story: 'end' })], { device: 'dial' }) }, { puzzles: { dial: leversPuzzle(bad) } });
+  expect(lint(flat)).toEqual([
+    "world/view-type-site sections.s.rooms.hall.device: room 'hall' is no view: a device sits in a view room (§7.5)",
+    "world/view-type-site sections.s.rooms.hall.hotspots.0.lock.puzzle: view-type puzzle 'dial' is on a lock that is no view room's device: a view type is the puzzle of its device's zero-slot lock (§7.5)",
+  ]);
+  // One puzzle as the device of two view rooms: its parts are judged once, at its first device room.
+  const view = room([object('dial', lock('dial'))], { view: { of: 'hall' }, device: 'dial' });
+  const twice = source(
+    { hall: room([exit('to_panel', 'panel'), exit('to_panel2', 'panel2'), exit('out', { story: 'end' })]), panel: view, panel2: view },
+    { puzzles: { dial: leversPuzzle(bad) } },
+  );
+  expect(lint(twice)).toEqual([partFinding('.rects.0', 0, [79, 800, 150, 150], "starts at x 79, left of the safe frame's x 80")]);
+});
+
+test('story: a device part ending under the item ribbon is refused', () => {
+  // D5: the item ribbon shows over the open device, its rows from the items the world declares (4 a row on the 320 px
+  // basis, over the mock's 34 px bottom inset), so a part ends above its top: y 1450 for one row, 1234 for two. Literal
+  // figures: a row written against the bound would move with a wrong inset.
+  const dial = (rect: Rect, items: number): string[] => lint(deviceWorld({ items, puzzles: { dial: leversPuzzle([rect, [400, 800, 150, 150]]) } }));
+  const under = (rect: Rect, floor: number, items: number): string =>
+    partFinding('.rects.0', 0, rect, `ends at y ${rect[1] + rect[3]}, below y ${floor}, the item ribbon's top for ${items} declared items`);
+  // No item: one row.
+  expect(dial([100, 1300, 150, 150], 0)).toEqual([]);
+  expect(dial([100, 1301, 150, 150], 0)).toEqual([under([100, 1301, 150, 150], 1450, 0)]);
+  // Four items fill one row; a fifth starts the second.
+  expect(dial([100, 1300, 150, 150], 4)).toEqual([]);
+  expect(dial([100, 1300, 150, 150], 5)).toEqual([under([100, 1300, 150, 150], 1234, 5)]);
+  expect(dial([100, 1084, 150, 150], 5)).toEqual([]);
+  expect(dial([100, 1085, 150, 150], 5)).toEqual([under([100, 1085, 150, 150], 1234, 5)]);
+});
+
+test("devices: the ribbon bound follows the ribbon's rows", () => {
+  // Ribbon.svelte on the 320 px basis: 60 px over the bottom inset, 8 px padding under 56 px slots with 8 px gaps and
+  // 12 px side padding (4 slots a row), each CSS px 3.375 canonical px rounded up, from the cover's visible bottom (1984).
+  expect([DEVICE_BOTTOM_INSET_CSS, DEVICE_RIBBON_PER_ROW]).toEqual([34, 4]);
+  expect([1, 2, 3, 4].map((rows) => deviceRibbonY(rows, 34))).toEqual([1450, 1234, 1018, 802]);
+  expect([deviceRibbonY(1, 0), deviceRibbonY(2, 0)]).toEqual([1565, 1349]);
+  expect([0, 4, 5, 8, 9].map((items) => deviceRibbonRows(items))).toEqual([1, 1, 2, 2, 3]);
+});
+
+test("story: a device room's hotspot under the bar's band or under a part is refused", () => {
+  // F6: while the device is open its bar covers the band and takes the taps there, and a part takes the taps of what it
+  // lies over. The device's own hotspot draws no button, so it is never judged.
+  const vase = (rect: Rect): string[] => lint(deviceWorld({ spots: [object('vase', null, { rect })], puzzles: { dial: leversPuzzle(PARTS) } }));
+  const cover = (rect: Rect, why: string): string =>
+    `world/device-hotspot-cover sections.s.rooms.panel.hotspots.1.rect: hotspot 'vase' [${rect.join(', ')}] ${why} (§7.5)`;
+  const band = (y: number): string => `starts at y ${y}, above the device bar's band at y ${DEVICE_BAND_Y}, which covers it while the device is open`;
+  // F6a, against the band's constant: a top one px above it, a hotspot wholly above it, one straddling it; a top on it
+  // is clean.
+  const edge: Rect = [700, DEVICE_BAND_Y - 1, 150, 150];
+  expect(vase(edge)).toEqual([cover(edge, band(DEVICE_BAND_Y - 1))]);
+  expect(vase([700, 520, 150, 150])).toEqual([cover([700, 520, 150, 150], band(520))]);
+  expect(vase([700, 600, 200, 200])).toEqual([cover([700, 600, 200, 200], band(600))]);
+  expect(vase([700, DEVICE_BAND_Y, 150, 150])).toEqual([]);
+  // F6b: a part over the hotspot.
+  expect(vase([400, 800, 200, 200])).toEqual([cover([400, 800, 200, 200], "lies under part 1 of puzzle 'dial', which takes its taps")]);
+  // The control: the device's own hotspot under a part.
+  expect(lint(deviceWorld({ dial: object('dial', lock('dial'), { rect: [100, 800, 200, 200] }), puzzles: { dial: leversPuzzle(PARTS) } }))).toEqual([]);
+});
+
+test("devices: every view type's lint half gives its part rects", () => {
+  // D2: the lint skips a view type whose lint half has no `partRects`, so the registry holds every view type to one.
+  const views = PUZZLE_TYPES.filter((t) => t.presentation === 'view').map((t) => t.type);
+  expect(views).toEqual(expect.arrayContaining(['levers', 'setting']));
+  const lints: PuzzleLintRegistry = PUZZLE_LINTS;
+  for (const t of views) {
+    expect(typeof lints[t]?.partRects, t).toBe('function');
+  }
+});
+
+test('story: the device part checks read the shared bounds, never a copy', () => {
+  // A2: the frame and the side minimum are geom/cover.ts's, imported; no figure of theirs or of the band is written in
+  // the lint's code. Comments are stripped first: they may state the figures.
+  const code = stripComments(devicesSource);
+  // Never vacuous: the stripped text is the module's code, and it had comments to strip.
+  expect([code.includes('export function devicesFindings'), code.includes('export const DEVICES_LINT'), code.length < devicesSource.length]).toEqual([true, true, true]);
+  const names = [...code.matchAll(/^import\s*\{([^}]*)\}\s*from\s*'(?:\.\.\/)+src\/geom\/cover\.ts';/gm)].flatMap((m) => (m[1] ?? '').split(',').map((n) => n.trim()));
+  expect(names).toEqual(expect.arrayContaining(['HOTSPOT_MIN_SOURCE_PX', 'HOTSPOT_SAFE_FRAME']));
+  expect(code).not.toMatch(/\b150\b/);
+  expect(code).not.toMatch(/\b733\b/);
+  expect(code).not.toMatch(/\b(?:80|1000|160|1760)\b/);
+});
+
 test("devices: the band constant follows the bar's bound", () => {
   // 07 §7.5 round 6: 64 canonical px cropped at the top of a 320 px 9:16 cover, then 8 + bar + inset CSS px at 3.375
-  // canonical px each, rounded up.
-  expect([DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS]).toEqual([120, 0]);
+  // canonical px each, rounded up; the inset is the mock's largest top inset (B3).
+  expect([DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS]).toEqual([120, 70]);
   expect([deviceBandY(120, 0), deviceBandY(120, 1)]).toEqual([496, 500]);
   expect(DEVICE_BAND_Y).toBe(deviceBandY(DEVICE_BAR_CSS_H, DEVICE_TOP_INSET_CSS));
-  expect(DEVICE_BAND_Y).toBe(496);
+  expect(DEVICE_BAND_Y).toBe(733);
 });
