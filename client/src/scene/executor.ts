@@ -2017,7 +2017,6 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
       if (destroyed) {
         return;
       }
-      loop.activity();
       const think = o?.think === true;
       talking = char === null ? null : { char, think, at: loop.time(), forMs: o?.forMs };
       // A heard line cues the listeners (05a :84): any speaker's, a faceless one's included; narration and thought none.
@@ -2032,6 +2031,9 @@ export function createExecutor<T>(deps: ExecutorDeps<T>): Executor<T> {
           }
         }
       }
+      // After the latches (triage r4 L3): the loop arms from each face's next change, 0 while a latch is pending, so the
+      // talk shows on the next tick with no batch frame around it.
+      loop.activity();
     },
     blinks: () => blinks,
     destroy() {

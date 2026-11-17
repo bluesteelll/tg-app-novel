@@ -11,6 +11,7 @@ import { createMotionLoader } from './controller.ts';
 import { createExecutor } from './executor.ts';
 import type { ExecutorDeps, Layer, Placement, StageAdapter, VisualCommand } from './executor.ts';
 import { patchPlan } from './flatten.ts';
+import { TALK_MAX_MS, createFaceAnimator } from './motion/animator.ts';
 import type { FaceState, MotionKit } from './motion/animator.ts';
 import type { FlatPlan } from './flatten.ts';
 import { backdropPlacement, propPlacement } from './layout.ts';
@@ -4081,6 +4082,31 @@ test("executor: an uncover draws a held face's current state on its first frame"
   d.loop.setCovered('panel', false);
   d.run(1000 / 60);
   expect([shownOf(h, 'ally'), d.loop.stats().frames - frames]).toEqual([[], 1]);
+  h.ex.destroy();
+});
+
+// Triage r4 L3: a talk latches before it arms the loop, so a talk with no batch around it (a mid-line cue) starts and
+// stops on the next tick, not at the face's next blink or brow move.
+test('executor: a talk with no batch around it flaps and stops on the next tick', async () => {
+  const d = drivenLoop();
+  const h = harness(S390, d.loop, MOTION);
+  // The real animator with a fixed draw: each face's first blink is at 4 s and its first brow move at 5 s.
+  h.ex.setMotion({ face: (set) => createFaceAnimator(set, () => 0.5), talkMaxMs: TALK_MAX_MS });
+  await h.ex.apply([scene('lamp', 'cut')], NOW);
+  await flush();
+  d.run(300);
+  const MOUTH = 'talk_lamp_ally_neutral.avif#0,0,40,20';
+  expect(shownOf(h, 'ally')).toEqual([]);
+  h.ex.talk('ally' as CharId);
+  d.run(1000 / 60);
+  expect.soft(shownOf(h, 'ally'), 'the first flap').toEqual([MOUTH]);
+  for (let t = 0; t < 10_000 && !shownOf(h, 'ally').includes(MOUTH); t += 1000 / 60) {
+    d.run(1000 / 60);
+  }
+  // The mouth shows until the speaker's next flap, about 110 ms on; the stop closes it on the next tick.
+  h.ex.talk(null);
+  d.run(1000 / 60);
+  expect(shownOf(h, 'ally'), 'the stop').not.toContain(MOUTH);
   h.ex.destroy();
 });
 
