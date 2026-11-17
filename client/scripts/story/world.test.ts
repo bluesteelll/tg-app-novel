@@ -3232,6 +3232,10 @@ test('carry: a giver yield after an ungathered choice or a divert is refused', (
   // A closed conditional block with no divert: every branch falls through to the yield.
   const closed = hall(['{ g_trust > 0:', '    Доверие. #id:ch1.hall.a003', '- else:', '    Недоверие. #id:ch1.hall.a004', '}']);
   expect(prefixRefusals(closed)).toEqual([]);
+  // A yield inside a multi-line conditional still open at the yield (no divert): an entry whose condition fails never
+  // runs it, so the block's yield is refused; the yield after the block is on the prefix.
+  const open = hall(['{ g_trust > 0:', '    # explore: manor', '    -> DONE', '}']);
+  expect(prefixRefusals(open)).toEqual([lineIn(open, '    # explore: manor')]);
 
   // The event knot of the cellar (ch1's `manor_cellar_voice`, story/ch1/main.ink:56-63): choices gathered before its
   // yield back, clean.
