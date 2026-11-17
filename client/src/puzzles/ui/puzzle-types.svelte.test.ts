@@ -1284,3 +1284,54 @@ test('levers: the parts and the pull take their own taps and open no callout', (
   expect(classes).toEqual([['part'], ['part'], ['part'], ['pull']]);
   expect(s.container.querySelectorAll('.device-parts')).toHaveLength(1);
 });
+
+test('levers: a throw continues from the answer prop', async () => {
+  // c9: a lever computes from the `answer` prop and keeps no copy: the session's answer is the one configuration.
+  const onwork = vi.fn<(w: readonly number[], wrong: boolean) => void>();
+  const onchange = vi.fn<(a: readonly number[]) => void>();
+  const answer = Object.freeze([0, 0]);
+  const { container, rerender } = render(LeverDevice, props({ params: LEVERS, answer, onwork, onchange }));
+  const lever = (i: number): HTMLButtonElement => must(container.querySelectorAll<HTMLButtonElement>('button[data-cue="lever"]')[i]);
+  lever(1).click();
+  // Until the caller's answer changes, a second throw computes from the same answer: [0, 1] again, never [0, 2].
+  lever(1).click();
+  expect(answer).toEqual([0, 0]);
+  await rerender({ answer: [2, 2] });
+  // From the new prop: lever 0 moves itself and lever 1, each from 2 round to 0.
+  lever(0).click();
+  expect(onwork.mock.calls).toEqual([
+    [[0, 1], false],
+    [[0, 1], false],
+    [[0, 0], false],
+  ]);
+  // A device writes through `onwork` alone.
+  expect(onchange).not.toHaveBeenCalled();
+  // What shows is the prop's: each lever's position numeral.
+  expect([...container.querySelectorAll('button[data-cue="lever"] > span:first-child')].map(shown)).toEqual(['3', '3']);
+});
+
+test('levers: a configuration seeded at the target reports reached once at mount', async () => {
+  // c11: the report is the reach edge's over the `answer` prop, so a device seeded at its target (a saved work at the
+  // goal) reports at mount, once; a re-render with the same configuration adds none.
+  const onreach = vi.fn<(a: readonly number[]) => void>();
+  const onwork = vi.fn<(w: readonly number[], wrong: boolean) => void>();
+  const { rerender } = render(LeverDevice, props({ params: LEVERS, answer: [2, 1], onreach, onwork }));
+  expect(onreach.mock.calls).toEqual([[[2, 1]]]);
+  await rerender({ answer: [2, 1] });
+  expect(onreach).toHaveBeenCalledTimes(1);
+  // Off the target and back: a second turn to reached, a second report; no throw reported it.
+  await rerender({ answer: [0, 1] });
+  await rerender({ answer: [2, 1] });
+  expect(onreach.mock.calls).toEqual([[[2, 1]], [[2, 1]]]);
+  expect(onwork).not.toHaveBeenCalled();
+});
+
+test('levers: a coupled throw is one onwork carrying the whole configuration', () => {
+  // D3's write path: lever 0 moves levers 1 and 2 too; the three positions leave in one call, which yields diffs into one
+  // `puzzle:input` per moved lever (one write of the saved work, one queue drain).
+  const onwork = vi.fn<(w: readonly number[], wrong: boolean) => void>();
+  const three = decoded('levers', { parts: 3, positions: 4, couples: [[1, 2], [], []], target: [1, 1, 2], rects: [[80, 800, 150, 150], [310, 800, 150, 150], [540, 800, 150, 150]] });
+  const { container } = render(LeverDevice, props({ params: three, answer: [0, 3, 1], onwork }));
+  must(container.querySelector<HTMLButtonElement>('button[data-cue="lever"]')).click();
+  expect(onwork.mock.calls).toEqual([[[1, 0, 2], false]]);
+});
