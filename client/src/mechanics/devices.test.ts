@@ -622,6 +622,8 @@ const PARTS: readonly Rect[] = [
   [100, 800, 150, 150],
   [400, 800, 150, 150],
 ];
+/** A hint tier whose ru text is `ru`. */
+const hint = (ru: string): Json => ({ ...txt(), ru });
 /** The `world/device-parts-frame` finding of part `i` of the device puzzle `dial` at `rect`, reported at `params<at>`. */
 const partFinding = (at: string, i: number, rect: Rect, why: string): string =>
   `world/device-parts-frame puzzles.dial.params${at}: part ${i} of puzzle 'dial' [${rect.join(', ')}] ${why} (§7.5)`;
@@ -796,6 +798,28 @@ test('story: a part atom on a device lock with no puzzle says the device has no 
     "world/view-type-site puzzles.dial: view-type puzzle 'dial' is on no lock: a view type is played only by its device, never as a linear yield (§7.5)",
     `world/device-part sections.s.rooms.panel.decor.0.is.0.when: {"part":{"puzzle":"dial","index":0,"is":1}} reads puzzle 'dial', but room 'panel''s device has no puzzle: a part reads its own room's device (§7.5)`,
   ]);
+});
+
+test("story: a levers puzzle's [moves] sits once in its last ru tier, at its line", () => {
+  // W6 (07 §7.3): the build replaces the last tier's `[moves]` with the throw order, so it sits there exactly once and in
+  // no earlier tier; refused at the tier (the emit's own throw names no puzzle).
+  const ladder = (...ru: string[]): string[] => lint(deviceWorld({ puzzles: { dial: leversPuzzle(PARTS, { hints: ru.map(hint) }) } }));
+  const moves = (i: number, why: string): string => `world/hint-moves puzzles.dial.hints.${i}: levers puzzle 'dial': ${why} (§7.3, W6)`;
+  expect(ladder('Один', 'Два', 'Порядок.')).toEqual([moves(2, 'its last hint tier (3 of 3) holds no [moves], which the build replaces with the throw order')]);
+  expect(ladder('[moves], [moves]')).toEqual([moves(0, 'its last hint tier (1 of 1) holds [moves] 2 times, not once')]);
+  expect(ladder('Сначала [moves].', 'Порядок: [moves].')).toEqual([moves(0, 'hint tier 1 of 2 holds [moves], which only the last tier may')]);
+  // The controls: a clean ladder, and none.
+  expect(ladder('Один', 'Порядок: [moves].')).toEqual([]);
+  expect(ladder()).toEqual([]);
+});
+
+test('story: [moves] on a puzzle that is no levers is refused at its line', () => {
+  // No other type's build replaces it: shipped, it would show as written.
+  const OTHER = "hint tier 1 holds [moves], which only a levers puzzle's last tier may (§7.3, W6)";
+  expect(lint(deviceWorld({ puzzles: { safe: { ...code(3), hints: [hint('Код: [moves].')] } } }))).toEqual([`world/hint-moves puzzles.safe.hints.0: code puzzle 'safe': ${OTHER}`]);
+  // A `setting` device, its pull inside the frame, under the band, above the ribbon and apart from its knobs.
+  const setting = settingPuzzle(PARTS, [100, 1000, 300, 150], { hints: [hint('Ручки: [moves].')] });
+  expect(lint(deviceWorld({ puzzles: { dial: setting } }))).toEqual([`world/hint-moves puzzles.dial.hints.0: setting puzzle 'dial': ${OTHER}`]);
 });
 
 test("story: a device part outside the safe frame or under the bar's band is refused", () => {

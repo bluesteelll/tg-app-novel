@@ -15,10 +15,11 @@
 // (`world/device-hotspot-cover`). A `device` naming a hotspot its room lacks is the DSL's `world/unknown-ref`. The
 // registries are parameters (`types`, the one the world was decoded with, and `lints`, the puzzle lint halves): a
 // fixture view type in tests beside the registered ones. A device carries no text and enters no knot, so the module has
-// no text or story walker. Build only and pure, no node:*: world.ts imports the registry and scan-dist.ts imports
-// world.ts. Its imports from index.ts and lint.ts are `import type`; it never imports world.ts (index.ts's value graph
-// has no edge back), and the puzzle lint registry it reads imports nothing of mechanics/. It alone imports
-// geom/cover.ts: the module's src halves stay pure-world.
+// no text or story walker; it reads hint text for one marker (`[moves]`: a levers puzzle's last ru tier holds it once,
+// no other tier does, `world/hint-moves`) and owns none, so MECHANIC_TEXTS keeps `devices: null`. Build only and pure,
+// no node:*: world.ts imports the registry and scan-dist.ts imports world.ts. Its imports from index.ts and lint.ts are
+// `import type`; it never imports world.ts (index.ts's value graph has no edge back), and the puzzle lint registry it
+// reads imports nothing of mechanics/. It alone imports geom/cover.ts: the module's src halves stay pure-world.
 import { hotspotKey, lockOf, own } from '../../../src/explore/reduce.ts';
 import { HOTSPOT_MIN_SOURCE_PX, HOTSPOT_SAFE_FRAME, ROOM_SOURCE } from '../../../src/geom/cover.ts';
 import { condEntry, condReads } from '../../../src/mechanics/data/conditions.ts';
@@ -51,8 +52,15 @@ export const DEVICES_CODES = {
   // A device room's other hotspot above the band (the open device's bar covers it and takes its taps) or under a part
   // (the part takes them): a clue there is lost while the device is open (verify-places F6).
   'world/device-hotspot-cover': 'E',
+  // W6 (07 §7.3): a levers puzzle's last ru tier holds `[moves]` exactly once and no earlier tier holds it; no other
+  // type's tier does. Located here, at the tier: the emit's own throw (GM8a D2) names no puzzle.
+  'world/hint-moves': 'E',
 } as const satisfies Readonly<Record<string, Severity>>;
 type DevicesCode = keyof typeof DEVICES_CODES;
+
+/** The marker a levers puzzle's last hint tier holds, which its build replaces with the throw order (07 §7.3; the levers
+ *  lint half's own spelling is private to it). */
+const MOVES = '[moves]';
 
 /** The device bar's height bound, in CSS px (07 §7.5 round 6: its three rows come to 118, rounded up). */
 export const DEVICE_BAR_CSS_H = 120;
@@ -147,7 +155,7 @@ function paramPath(params: unknown, rect: Rect): string | null {
  * site, its hotspot and lock, the room's other puzzle locks, its failed state, then, in a device room, its puzzle's parts
  * once per puzzle, at its first device room, and the room's other hotspots), then per puzzle of a view type (its
  * close-up, then every lock that carries it), then per room again (each trigger list's `unlock` of a device, each visual
- * condition's `part` atoms), then per puzzle (each clue's `part` atoms).
+ * condition's `part` atoms), then per puzzle (each clue's `part` atoms, each hint tier's `[moves]`).
  */
 export function devicesFindings(input: WorldLintInput, types: PuzzleTypes = PUZZLE_TYPES, lints: PuzzleLintRegistry = PUZZLE_LINTS): Finding[] {
   const out: Finding[] = [];
@@ -396,6 +404,24 @@ export function devicesFindings(input: WorldLintInput, types: PuzzleTypes = PUZZ
         if (issue !== null) {
           report('world/device-part', path, issue);
         }
+      }
+    });
+    // W6 over the ru text, the source's: an en-only defect still meets the levers emit's own throw, and the en half of
+    // another type's tiers is carried (GM9p).
+    const n = p.hints.length;
+    p.hints.forEach((h, i) => {
+      const times = h.ru.split(MOVES).length - 1;
+      let why: string | null;
+      if (p.type !== 'levers') {
+        why = times > 0 ? `${p.type} puzzle '${pid}': hint tier ${i + 1} holds ${MOVES}, which only a levers puzzle's last tier may` : null;
+      } else if (i === n - 1) {
+        const tier = `levers puzzle '${pid}': its last hint tier (${i + 1} of ${n})`;
+        why = times === 0 ? `${tier} holds no ${MOVES}, which the build replaces with the throw order` : times > 1 ? `${tier} holds ${MOVES} ${times} times, not once` : null;
+      } else {
+        why = times > 0 ? `levers puzzle '${pid}': hint tier ${i + 1} of ${n} holds ${MOVES}, which only the last tier may` : null;
+      }
+      if (why !== null) {
+        report('world/hint-moves', `puzzles.${pid}.hints.${i}`, `${why} (§7.3, W6)`);
       }
     });
   }
