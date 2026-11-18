@@ -270,9 +270,11 @@ test('stories: ending knot must end the chapter', () => {
   ]) {
     expect(archiveEnding([...body, '-> END']), body.join(' / ')).toEqual(silent);
   }
-  // The controls: a line first, after tag-only, logic, blank and comment lines, said by a speaker, or with text beside
-  // an inline conditional (text/inline-logic refuses that line in the gate; this clause keeps only the text outside it).
+  // The controls: a line first, after a TODO line (ink/todo is a warning, and the line compiles to nothing), after
+  // tag-only, logic, blank and comment lines, said by a speaker, or with text beside an inline conditional
+  // (text/inline-logic refuses that line in the gate; this clause keeps only the text outside it).
   expect(archiveEnding([line, '-> END'])).toEqual([]);
+  expect(archiveEnding(['TODO: wording', line, '-> END'])).toEqual([]);
   expect(archiveEnding(['# bgm: calm', '~ g_x = 1', '', '// the archive', `stranger: ${line}`, '-> END'])).toEqual([]);
   expect(archiveEnding(['Архив{g_x > 0: наконец}. #id:ch2.archive.a001', '-> END'])).toEqual([]);
 });
