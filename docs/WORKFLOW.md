@@ -61,16 +61,21 @@ on Opus, the owner rule inherited from boyko-engine, RULINGS 2):
   - results-analyst;
   - project-analyst for audits and pre-merge lenses;
   - every verifier and adversarial refuter;
-  - the spec drafter.
+  - the spec drafter and the spec workflow's fixer;
+  - the three launch-pack scouts and the pack critic.
 - **Sonnet**, the gathering and writing roles:
   - tester;
-  - the scouts: the lane's per-round context pack and the three launch-pack scouts. The pack critic stays Opus.
+  - the lane's per-round context-pack scout;
   - researcher;
   - doc-writer. The docs lanes' verifiers stay Opus, and the link check stays.
   - narrative-designer. Stories are MVP placeholders with one mechanical verifier.
-  - the spec workflow's fixer.
 
 Each Sonnet role's output is re-checked by a later Opus stage. That is the condition for moving a role.
+
+**Moved back to Opus after escapes:** the launch-pack scouts (RULINGS 388 W: a Sonnet pack's wrong cites and a refuted
+feasibility claim) and the spec fixer (RULINGS 395 W: a second fix that introduced an important error). The doc-writer
+stayed on Sonnet after a two-lane trial (RULINGS 378, 406: docs-errata-21 needed five verify rounds, docs-errata-22a
+two).
 
 **How the model is applied.** It is set per call:
 

@@ -112,9 +112,10 @@ Agent files are registered at session start: in a session that created or change
 
 **Model routing** (owner, 2026-11-16: less Opus, more Sonnet). Every thinking and checking role runs on **Opus**:
 architect, architecture-critic, developer, code-reviewer (triage included), results-analyst, project-analyst
-(audits, lenses), every verifier and refuter, and the spec drafter. The gathering and writing roles run on
-**Sonnet**: tester, the scouts (the lane's context pack, the launch-pack scouts), researcher, doc-writer,
-narrative-designer, and the spec fixer. The lane script passes the model per call (its `MODEL` map,
+(audits, lenses), every verifier and refuter, the spec drafter and fixer, and the launch-pack scouts (both moved
+back after escapes: RULINGS 388 W, 395 W). The gathering and writing roles run on **Sonnet**: tester, the lane's
+per-round context-pack scout, researcher, doc-writer (its trial passed, RULINGS 406), and narrative-designer. The
+lane script passes the model per call (its `MODEL` map,
 `testerModel`, `scoutModel`), since an `inlineRoles` run never reads the frontmatter. **Effort:** `xhigh` for
 architect / critic / developer / code-reviewer / results-analyst / project-analyst, `high` for tester / researcher /
 doc-writer / narrative-designer (frontmatter + the lane script's `EFFORT` map); nothing below `high`. Never move a
