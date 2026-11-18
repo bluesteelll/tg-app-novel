@@ -379,8 +379,9 @@ test('softlock: optional carried items prove 2^k starts', () => {
   // leave needs a: clean.
   const both = [inherit('a', true), inherit('b', false)];
   expect(checkSection(hall([outOn('out', 'a')], both), S, FILE).findings).toEqual([]);
-  // The same two, stuck only where both are held: b opens a one-way door to a passage whose door a opens into a cell
-  // whose only leave needs the b the first door took. In the start without b that door never opens.
+  // The same two, stuck only where both are held: b opens the door to a passage (it has a way back) whose door a opens
+  // one way into a cell whose only leave needs the b the first door took. In the start without b the first door never
+  // opens.
   const deep = world({
     items: ['a', 'b'],
     inherits: both,
@@ -397,6 +398,28 @@ test('softlock: optional carried items prove 2^k starts', () => {
   });
   expect(checkSection(deep, S, FILE).findings.map((f) => f.message)).toEqual([
     'section s (start: b): a reachable state cannot reach a leave (stuck in cell): insert hall.door1 b → tap hall.door1 → insert mid.door2 a → tap mid.door2',
+  ]);
+  // The same trap beside two and three optional items (k = 2, and k = 3, the bound): the required a is held in every
+  // start, so the first start that is stuck is the one holding b alone.
+  const trap = {
+    s: {
+      start: 'hall',
+      rooms: {
+        hall: room([exit('out', { story: 'out' }), exit('door1', 'mid', lock(['b']))]),
+        mid: room([exit('back', 'hall'), exit('door2', 'cell', lock(['a']))]),
+        cell: room([outOn('cell_out', 'b')]),
+      },
+    },
+  };
+  const three = [inherit('a', true), inherit('b', false), inherit('c', false)];
+  const deep3 = world({ items: ['a', 'b', 'c'], inherits: three, sections: trap });
+  expect(checkSection(deep3, S, FILE).findings.map((f) => f.message)).toEqual([
+    'section s (start: b, no c): a reachable state cannot reach a leave (stuck in cell): insert hall.door1 b → tap hall.door1 → insert mid.door2 a → tap mid.door2',
+  ]);
+  const four = [inherit('a', true), inherit('b', false), inherit('c', false), inherit('d', false)];
+  const deep4 = world({ items: ['a', 'b', 'c', 'd'], inherits: four, sections: trap });
+  expect(checkSection(deep4, S, FILE).findings.map((f) => f.message)).toEqual([
+    'section s (start: b, no c, no d): a reachable state cannot reach a leave (stuck in cell): insert hall.door1 b → tap hall.door1 → insert mid.door2 a → tap mid.door2',
   ]);
 });
 
