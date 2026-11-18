@@ -2,7 +2,9 @@
 // and the per-section soft-lock check of world.ts, and the yield edges of graph.ts. Fixture worlds are inline JSON
 // in the source format; the clean base is the demo manor of PUZZLES-PLAN "World data", which each red fixture
 // mutates in one place. The catalog is the committed one.
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative } from 'node:path';
 
 import { expect, test, vi } from 'vitest';
 
@@ -19,24 +21,28 @@ import type { SearchOptions } from '../../src/mechanics/rules/search.ts';
 import { PUZZLE_TYPES } from '../../src/puzzles/rules/index.ts';
 import type { PuzzleTypeData, PuzzleTypes } from '../../src/puzzles/rules/index.ts';
 import { assetIndex, decodeAssetCatalog, decodeCast } from '../../src/story/catalog.ts';
-import type { AssetCatalog, Cast } from '../../src/story/catalog.ts';
+import type { AssetCatalog, Cast, EndingName } from '../../src/story/catalog.ts';
 import type { ChapterId, KnotName, PuzzleLocalId, SectionId, VarName } from '../../src/story/staging.ts';
-import { decodeWorldSource, toPublic } from '../../src/world/decode.ts';
+import { decodeWorldPublic, decodeWorldSource, toPublic } from '../../src/world/decode.ts';
 import type { DecodeOptions, WorldIssue } from '../../src/world/decode.ts';
 import type { HotspotKey, ItemId, WorldSource, WorldText } from '../../src/world/types.ts';
+import { carryPaths, main } from '../story.ts';
 import { compileChapter } from './compile.ts';
-import { buildGraph, worldRef } from './graph.ts';
+import { buildGraph, mustPass, worldRef, writeOnly } from './graph.ts';
 import type { ChapterGraph, GraphFacts, WorldRef } from './graph.ts';
 import { GLOBALS_PATH, LINT_CODES } from './lint.ts';
 import { checkLocales, decodeEnTable, decodeNameTable } from './locales.ts';
 import type { Finding, LintCode, Severity, SourceChapter } from './lint.ts';
-import { clueFindings } from './mechanics/clues.ts';
+import { carryLines, carryProof } from './mechanics/carry.ts';
+import type { CarryChapter, CarryWorld, SectionPath } from './mechanics/carry.ts';
+import { clueFindings, reachFindings } from './mechanics/clues.ts';
 import { CONDITIONS_LINT, condFindings } from './mechanics/conditions.ts';
 import type { CondSite } from './mechanics/conditions.ts';
 import { MECHANIC_LINTS, MECHANIC_TEXTS } from './mechanics/index.ts';
 import type { MechanicLintCode, WorldLint, WorldLintInput } from './mechanics/index.ts';
 import type { ModuleText, TextRegistry, TextWalker } from './mechanics/texts.ts';
 import { playChapter } from './playthrough.ts';
+import { checkSection } from './softlock.ts';
 import { PUZZLE_LINTS } from './puzzles/index.ts';
 import type { PuzzleLintCode, PuzzleTypeLint } from './puzzles/index.ts';
 import { MAX_ANSWER_LEN, answerLenFindings, answerLenIssues } from './puzzles/shape.ts';
@@ -1021,6 +1027,16 @@ test('story: module and type lint codes are unique and none is a DSL code', () =
     'world/device-part E',
     'world/device-hotspot-cover E',
     'world/hint-moves E',
+    'world/inherit-count E',
+    'world/inherit-item E',
+    'world/carry-registry E',
+    'world/carry-inherit E',
+    'world/carry-mark E',
+    'world/carry-required-path E',
+    'world/carry-giver-prefix E',
+    'world/carry-leave E',
+    'world/carry-consumed E',
+    'world/carry-tier E',
   ]);
   // The registry restates world.ts's VarLiteral (its types stay out of the app program): one type (tsc).
   type InputVar = WorldLintInput['declared'] extends ReadonlyMap<VarName, infer V> ? V : never;
@@ -1349,7 +1365,8 @@ test('story: a clue naming no fact of its world is refused', () => {
     `${clueLine(w, 'drawer', 1)} puzzle 'drawer': clue {"examined":"hall.nothing"} names no hotspot of this world`,
     `${clueLine(w, 'drawer', 2)} puzzle 'drawer': clue {"solved":"ghost"} names no puzzle of this world`,
   ]);
-  // A linear puzzle's atoms too; whether they hold is the story's order (GM9p), so a named fact passes.
+  // A linear puzzle's atoms too; whether they hold is the story's order, judged by a cross-chapter clue pass once
+  // content needs one (RULINGS 402 C4), so a named fact passes.
   const linear = withCabinet(base());
   const yielded = new Set(['cabinet'] as PuzzleLocalId[]); // a fixture id
   at(linear, 'puzzles.cabinet')['clues'] = [{ visited: 'attic' }, { has: 'lamp' }, { doc: 'diary' }];
@@ -1446,6 +1463,23 @@ test("story: the build's answer bound never exceeds the server's MAX_ANSWER_LEN"
   const m = /pub const MAX_ANSWER_LEN: usize = (\d+);/.exec(rust);
   expect(m, 'server/src/puzzles/mod.rs: pub const MAX_ANSWER_LEN: usize = <n>;').not.toBeNull();
   expect(MAX_ANSWER_LEN).toBeLessThanOrEqual(Number(m?.[1]));
+});
+
+test('story: a reach type whose lint half lacks a hook is refused by its code', () => {
+  // K5's M1 (fix3): the reach pass names a missing `solve`, `reached` or `canonical` by its own code. The control's lint
+  // half has all three: its one answer is all ones, which the zero start does not reach.
+  const n = 4;
+  const input = passInput(lengthWorld('reaches', n), LENGTH_TYPES);
+  const countSolutions = (): 1 => 1;
+  const solve = (): number[] => Array.from({ length: n }, () => 1);
+  const reached = (_p: unknown, a: readonly number[]): boolean => a.every((v) => v === 1);
+  const canonical = (_p: unknown, a: readonly number[]): readonly number[] => a;
+  const codes = (half: PuzzleTypeLint<unknown>): string[] => reachFindings(input, { ...LENGTH_LINTS, reaches: half }, LENGTH_TYPES).map((f) => `${f.code} ${f.line}`);
+  expect(codes({ countSolutions, solve, reached, canonical })).toEqual([]);
+  const at = input.line('puzzles.drawer.params');
+  expect(codes({ countSolutions, reached, canonical }), 'no solve').toEqual([`world/reach-solution ${at}`]);
+  expect(codes({ countSolutions, solve, canonical }), 'no reached').toEqual([`world/reach-solution ${at}`]);
+  expect(codes({ countSolutions, solve, reached }), 'no canonical').toEqual([`world/reach-solution ${at}`]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2442,7 +2476,7 @@ test('story: a part atom in a gating condition is refused at its line, not a cra
   ];
   const plain = (): Json => recipeBase(() => t('manor', 'Монета легла в оправу.'));
   // The device: a view `desk` of the study, entered by the study's `to_desk`, whose device `dial` is a zero-slot lock on
-  // the secret code puzzle `dial` (a clue). No view type is registered before GM8a, so `world/device-type` refuses it.
+  // the secret code puzzle `dial` (a clue). A code puzzle is no view type, so `world/device-type` refuses it.
   const desk = (): Json => {
     const w = plain();
     at(w, 'puzzles')['dial'] = {
@@ -2494,4 +2528,1079 @@ test('story: a part atom in a gating condition is refused at its line, not a cra
       expect(r.sections.map((s) => s.states), `${label}, ${path}: unsearched`).toEqual([null]);
     }
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM9p: the carry proof (engine plan §6.6). A giving world marks `items.<id>.carry: true`; a receiving world lists
+// `inherits: [{ id, required }]`; story/items.json registers each carried item's giving chapter.
+
+/** The demo manor with a lamp declared (no section gives it) and `inherits` set, unless null. */
+function receiver(inherits: readonly unknown[] | null): Json {
+  const w = base();
+  obj(w['items'])['lamp'] = { name: t('lamp', 'Лампа'), desc: t('lamp', 'Старая лампа.'), glyph: 'key' };
+  if (inherits !== null) {
+    w['inherits'] = inherits;
+  }
+  return w;
+}
+
+/** The line of `inherits.<n>` in the fixture's two-space JSON: each entry `{ id, required }` spans four lines. */
+function inheritLine(w: Json, n: number): number {
+  return jsonLine(w, '"inherits": [') + 1 + 4 * n;
+}
+
+/** The findings of the carry codes, as `code line message`. */
+function carrySeen(findings: readonly Finding[]): string[] {
+  return findings.filter((f) => f.code.startsWith('world/carry-') || f.code.startsWith('world/inherit-')).map((f) => `${f.code} ${f.line} ${f.message}`);
+}
+
+test("carry: a receiver's inherits and a giver's mark decode into mods.carry", () => {
+  const w = receiver([
+    { id: 'lamp', required: true },
+    { id: 'rope', required: false },
+  ]);
+  at(w, 'items.medal_sun')['carry'] = true;
+  const r = decodeWorldSource(w);
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture decodes: ${JSON.stringify(r.error)}`);
+  }
+  const d = r.value.mods.carry;
+  expect(d).toEqual({
+    marks: ['medal_sun'],
+    inherits: [
+      { id: 'lamp', required: true },
+      { id: 'rope', required: false },
+    ],
+  });
+  // Plain JSON (registry.test.ts's form for every module's data).
+  expect(d).toStrictEqual(JSON.parse(JSON.stringify(d)));
+  // Through the public body and back: the same data, each key after the kernel's of its place.
+  const pub = JSON.parse(JSON.stringify(toPublic(r.value))) as Json; // the body's JSON, owned keys untyped there
+  expect(Object.keys(at(pub, 'items.medal_sun'))).toEqual(['name', 'desc', 'glyph', 'carry']);
+  expect(Object.keys(pub).at(-1)).toBe('inherits');
+  const back = decodeWorldPublic({ ...pub, version: '0123456789abcdef' });
+  expect(back.ok ? back.value.mods.carry : back.error).toEqual(d);
+  // Strict: each issue a world/schema finding at its own path.
+  const schema = (inherits: unknown, mark: unknown = undefined): string[] => {
+    const x = receiver([]);
+    x['inherits'] = inherits;
+    if (mark !== undefined) {
+      at(x, 'items.medal_sun')['carry'] = mark;
+    }
+    return of(lint(x), 'world/schema').map((f) => f.message);
+  };
+  expect(schema([{ id: 'lamp', required: true, note: 1 }])).toEqual(['inherits.0.note: unknown key (expected id, required)']);
+  expect(schema([{ id: 'lamp', required: 'yes' }])).toEqual(['inherits.0.required: not a boolean']);
+  expect(schema([{ id: 'lamp' }])).toEqual(['inherits.0.required: not a boolean']);
+  expect(
+    schema([
+      { id: 'lamp', required: true },
+      { id: 'lamp', required: false },
+    ]),
+  ).toEqual(["inherits.1.id: 'lamp' repeats"]);
+  expect(schema([{ id: 'Lamp', required: true }])).toEqual(['inherits.0.id: not an item id ^[a-z][a-z0-9_]*$']);
+  expect(schema({ id: 'lamp', required: true })).toEqual(['inherits: not an array']);
+  expect(schema(['lamp'])).toEqual(['inherits.0: not an { id, required } object']);
+  expect(schema([], false)).toEqual(['items.medal_sun.carry: not true (omit the key)']);
+  // The control of the rows above: the same receiver, well formed.
+  expect(schema([{ id: 'lamp', required: true }])).toEqual([]);
+  // At the author's line.
+  const bad = receiver([{ id: 'lamp', required: 'yes' }]);
+  expect(of(lint(bad), 'world/schema').map((f) => f.line)).toEqual([jsonLine(bad, '"required": "yes"')]);
+});
+
+test('carry: an inherited item is a declared item no section of the receiver gives', () => {
+  // The control: the lamp is declared and no section gives it.
+  expect(carrySeen(lint(receiver([{ id: 'lamp', required: true }])))).toEqual([]);
+  const given = (id: string, edit: (x: Json) => void = () => undefined): string[] => {
+    const x = receiver([{ id, required: true }]);
+    edit(x);
+    return carrySeen(lint(x));
+  };
+  const line = inheritLine(receiver([{ id: 'lamp', required: true }]), 0);
+  const refused = (id: string): string[] => [`world/inherit-item ${line} item '${id}' is inherited and given in section manor: its reset would drop the inherited item (§6.6)`];
+  // A kernel gift: the study's take, the drawer's `give` effect.
+  expect(given('medal_sun')).toEqual(refused('medal_sun'));
+  expect(given('medal_moon')).toEqual(refused('medal_moon'));
+  // A module gift: a recipe's product (S's own items, `ownScope`).
+  expect(given('lamp', (x) => (x['recipes'] = [{ a: 'medal_sun', b: 'medal_star', gives: 'lamp' }]))).toEqual(refused('lamp'));
+  // An undeclared item: the receiver declares the texts of what it inherits.
+  expect(given('ghost')).toEqual([`world/inherit-item ${line} item 'ghost' is inherited but not declared in items: the receiver declares its texts (§6.6)`]);
+});
+
+test('carry: more than three optional inherited items are refused', () => {
+  const world = (optional: number, required: number): Json => {
+    const ids = ['rope', 'map', 'coin', 'ring', 'lamp'].slice(0, optional + required);
+    const w = receiver(ids.map((id, i) => ({ id, required: i >= optional })));
+    for (const id of ids.filter((x) => x !== 'lamp')) {
+      obj(w['items'])[id] = { name: t(id, 'Предмет'), desc: t(id, 'Описание.'), glyph: 'key' };
+    }
+    return w;
+  };
+  const four = world(4, 0);
+  expect(carrySeen(lint(four))).toEqual([
+    `world/inherit-count ${jsonLine(four, '"inherits": [')} 4 optional inherited items: at most 3, each doubles the starts a section proves (§6.6)`,
+  ]);
+  // The edge, and required items, which do not count.
+  expect(carrySeen(lint(world(3, 0)))).toEqual([]);
+  expect(carrySeen(lint(world(3, 2)))).toEqual([]);
+});
+
+test('carry: a carry-less world encodes no carry key', () => {
+  const plain = decodeWorldSource(base());
+  if (!plain.ok) {
+    throw new Error('invariant: the demo manor decodes');
+  }
+  expect(plain.value.mods.carry).toEqual({ marks: [], inherits: [] });
+  expect(MECHANIC_DATA[7].encode(plain.value.mods.carry)).toEqual([]);
+  // So its public body is the kernel's: no `inherits`, no item's `carry`.
+  const pub = JSON.stringify(toPublic(plain.value));
+  expect(pub).not.toContain('"inherits"');
+  expect(pub).not.toContain('"carry"');
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// GM9p: the story-level pass. Unit rows build the graph (`mustPass`, `carryPaths`) and hand `carryProof` plain data;
+// the in-process rows run the story gate's `main` over a fixture repo (D9), never the committed story.
+
+type KnotSpec = { readonly next?: readonly string[]; readonly ending?: boolean };
+
+/** A hand-built graph: its knots in the given order (the first is the first knot), and its section edges. */
+function knotGraph(knots: Readonly<Record<string, KnotSpec>>, edges: Readonly<Record<string, readonly string[]>> = {}): ChapterGraph {
+  const kn = (s: string): KnotName => s as KnotName; // fixture knot names
+  const nodes = new Map(
+    Object.entries(knots).map(([name, k], i) => [
+      kn(name),
+      { name: kn(name), file: 'ch1/main.ink', line: i + 1, assets: [], next: (k.next ?? []).map(kn), ending: k.ending ?? false, clears: { all: false, bg: false, cg: false, chars: [] } },
+    ]),
+  );
+  return {
+    chapter: CH1.id,
+    firstKnot: kn(Object.keys(knots)[0] ?? ''),
+    knots: nodes,
+    globals: [],
+    vars: [],
+    lines: [],
+    carried: new Map(),
+    sections: { edges: new Map(Object.entries(edges).map(([k, v]) => [kn(k), v.map(kn)])), seeds: new Map(), rooms: new Map() },
+  };
+}
+
+const knots = (...names: string[]): ReadonlySet<KnotName> => new Set(names as KnotName[]); // fixture knot names
+
+test('graph: mustPass is true iff every path from the start to a target passes an avoided knot', () => {
+  const diamond = knotGraph({ a: { next: ['b', 'c'] }, b: { next: ['d'] }, c: { next: ['d'] }, d: { ending: true } });
+  const a = 'a' as KnotName;
+  // Around the avoided knot: false; every path through it: true.
+  expect(mustPass(diamond, a, knots('b'), knots('d'))).toBe(false);
+  expect(mustPass(diamond, a, knots('b', 'c'), knots('d'))).toBe(true);
+  const line = knotGraph({ a: { next: ['b'] }, b: { next: ['d'] }, d: { ending: true }, z: { ending: true } });
+  expect(mustPass(line, a, knots('b'), knots('d'))).toBe(true);
+  expect(mustPass(line, a, knots(), knots('d'))).toBe(false);
+  // Vacuous: an unreachable target, a start in `avoid`, a target in `avoid`, a start that is no knot.
+  expect(mustPass(line, a, knots(), knots('z'))).toBe(true);
+  expect(mustPass(line, a, knots('a'), knots('d'))).toBe(true);
+  expect(mustPass(line, a, knots('d'), knots('d'))).toBe(true);
+  expect(mustPass(line, 'nowhere' as KnotName, knots(), knots('d'))).toBe(true); // a fixture knot name
+  // A section edge is a path too: a target reached only over one is reached.
+  const yielded = knotGraph({ a: {}, out: { ending: true } }, { a: ['out'] });
+  expect(mustPass(yielded, a, knots('b'), knots('out'))).toBe(false);
+  expect(mustPass(yielded, a, knots('a'), knots('out'))).toBe(true);
+});
+
+/** A fixture world as the carry pass reads it: its two-space text, decoded the way the story gate decodes it. */
+function carryWorldOf(w: Json): CarryWorld {
+  const text = `${JSON.stringify(w, null, 2)}\n`;
+  const decoded = decodeWorldFile({ file: FILE, text });
+  if (decoded.world === null) {
+    throw new Error(`invariant: the fixture world decodes: ${JSON.stringify(decoded.findings)}`);
+  }
+  return { kind: 'ok', source: decoded.world, text };
+}
+
+/** The demo manor marking the sun medallion, which its study gives and its gate's slot keeps (a required carried item
+ *  is never used up on its way, §6.6). */
+function giver(): Json {
+  const w = base();
+  at(w, 'items.medal_sun')['carry'] = true;
+  list(obj(gateOf(w)['lock'])['slots'])[0] = { accepts: 'medal_sun', keep: true };
+  return w;
+}
+
+/** The demo manor's gate, whose lock's slot 0 accepts the sun medallion. */
+function gateOf(w: Json): Json {
+  return obj(hotspots(w, 'hall').find((h) => h['id'] === 'gate'));
+}
+
+/** A small receiving world declaring the sun medallion, which no section of it gives, inheriting `inherits`. */
+function heir(inherits: readonly Json[] = [{ id: 'medal_sun', required: true }], mark = false): Json {
+  const w = mini({ items: ['medal_sun'], sections: { s: { start: 'hall', rooms: { hall: [leave('out')] } } } });
+  w['inherits'] = inherits;
+  if (mark) {
+    at(w, 'items.medal_sun')['carry'] = true;
+  }
+  return w;
+}
+
+const ch = (id: string): ChapterId => id as ChapterId; // fixture chapter ids
+
+/** A listed chapter for `carryProof`: no paths unless given (no path verdict). */
+function carryChapter(id: string, next: string | null, world: Json | null, paths: ReadonlyMap<SectionId, SectionPath> | null = null, paid = false): CarryChapter {
+  return { id: ch(id), paid, next: next === null ? null : ch(next), world: world === null ? { kind: 'none' } : carryWorldOf(world), paths };
+}
+
+/** The carry findings as `code file:line`. */
+function carried(findings: readonly Finding[]): string[] {
+  return findings.map((f) => `${f.code} ${f.file}:${f.line}`);
+}
+
+const SUN_ROW = '[{ "id": "medal_sun", "from": "ch1" }]\n';
+/** A spawned or in-process run loads inkjs/full and compiles: allow for a loaded machine (build.test.ts's value). */
+const IN_PROCESS_TIMEOUT_MS = 60_000;
+
+/** ch1 entering the manor from `start`, with a choice that also leads to an END of its own when `bypass`. */
+function enterManor(bypass: boolean): string[] {
+  const choice = bypass ? ['* [Войти #id:ch1.start.c001]', '    -> hall', '* [Уйти #id:ch1.start.c002]', '    -> away'] : ['-> hall'];
+  const away = bypass ? ['=== away ===', 'Мы ушли. #id:ch1.away.a003', '-> END'] : [];
+  return [...INK_HEAD, 'Перед усадьбой. #id:ch1.start.a001', ...choice, '=== hall ===', 'Мы вошли. #id:ch1.hall.a002', '# explore: manor', '-> DONE', ...away, '=== manor_out ===', 'Мы вышли. #id:ch1.manor_out.a004', '-> END'];
+}
+
+/** The manor giver's chapter (ch1) built from `main`, its declared story endings `endings`, the medallion's receiver ch2
+ *  after it. */
+function proofOf(main: readonly string[], endings: Readonly<Record<string, string>> = {}): Finding[] {
+  const w = giver();
+  const g = graphWith(main, okWorld(w));
+  const declared = new Map(Object.entries(endings) as Array<[KnotName, EndingName]>); // fixture knot and ending names
+  const chapters = [carryChapter('ch1', 'ch2', w, carryPaths(g.graph, g.facts, declared)), carryChapter('ch2', null, heir())];
+  return carryProof({ chapters, registry: SUN_ROW }).findings;
+}
+
+test('carry: a continuing END reachable without the giver yield is refused', () => {
+  const main = enterManor(true);
+  const yieldLine = lineIn(main, '# explore: manor');
+  expect(proofOf(main).map((f) => `${f.code} ${f.file}:${f.line} ${f.message}`)).toEqual([
+    `world/carry-required-path story/ch1/main.ink:${yieldLine} section manor gives item 'medal_sun', which ch2 inherits as required, but the END of knot 'away' is reachable without a yield of manor (§6.6)`,
+  ]);
+  // The control: the manor's yield is on every path to an END.
+  expect(proofOf(enterManor(false))).toEqual([]);
+  // The manor never yielded: refused at the giver's section.
+  const never = [...INK_HEAD, 'Перед усадьбой. #id:ch1.start.a001', '-> manor_out', '=== manor_out ===', 'Мы вышли. #id:ch1.manor_out.a004', '-> END'];
+  expect(carried(proofOf(never))).toEqual([`world/carry-required-path ${FILE}:${jsonLine(giver(), '"manor": {')}`]);
+});
+
+test('carry: a story ending reachable before the giver is allowed', () => {
+  // ch3's `shore_drowned` shape: before the manor, a choice may end the story (a declared ending) or walk away (an END
+  // the story continues after, to ch2).
+  const main = [
+    ...INK_HEAD,
+    'Перед усадьбой. #id:ch1.start.a001',
+    '* [Войти #id:ch1.start.c001]',
+    '    -> hall',
+    '* [Утонуть #id:ch1.start.c002]',
+    '    -> drowned',
+    '=== hall ===',
+    'Мы вошли. #id:ch1.hall.a002',
+    '# explore: manor',
+    '-> DONE',
+    '=== drowned ===',
+    'Волна накрыла нас. #id:ch1.drowned.a003',
+    '-> END',
+    '=== manor_out ===',
+    'Мы вышли. #id:ch1.manor_out.a004',
+    '-> END',
+  ];
+  expect(proofOf(main, { drowned: 'drowned' })).toEqual([]);
+  // The same END undeclared continues the story, so it is refused (the plan's m5: every END counted, T2's red).
+  expect(proofOf(main).map((f) => `${f.code} ${f.line} ${f.message.slice(f.message.indexOf('END'))}`)).toEqual([
+    `world/carry-required-path ${lineIn(main, '# explore: manor')} END of knot 'drowned' is reachable without a yield of manor (§6.6)`,
+  ]);
+  // A declared ending beside a continuing END: the continuing one is still refused.
+  const both = enterManor(true);
+  expect(proofOf(both, { manor_out: 'out' }).map((f) => f.message.slice(f.message.indexOf('END')))).toEqual(["END of knot 'away' is reachable without a yield of manor (§6.6)"]);
+  expect(proofOf(both, { away: 'away' })).toEqual([]);
+  // RULINGS 404, through the story gate: the exemption's premise is rule 8's. An ending that shows no line of its own
+  // plays as a continuing END (the game places no knot at the END step), so the gate refuses it at its declaration
+  // under catalog/stories, and the carry pass, which still exempts it, reports nothing.
+  const drowned = 'Волна накрыла нас. #id:ch1.drowned.a003';
+  const repo = (ink: readonly string[]): Record<string, string> => {
+    const giverInk = ink.flatMap((l) => (l === '=== start ===' ? [l, '# scene: hall'] : [l]));
+    const files = carryRepo({
+      chapters: [{ ...giverChapter(), ink: giverInk }, receiverChapter(LAMP_REQUIRED)],
+      items: LAMP_ROW,
+      stories: [{ id: 'manor', first: 'ch1', cover: 'cover/manor', endings: { drowned: { chapter: 'ch1', knot: 'drowned' } } }],
+    });
+    files['story/meta.json'] = `${JSON.stringify({ manor: { endings: { drowned: { ru: 'Утонули', en: 'Drowned' } }, achievements: {} } }, null, 2)}\n`;
+    return files;
+  };
+  const silent = storyRun(repo(main.filter((l) => l !== drowned)));
+  expect(silent.out.filter((l) => l.includes(' catalog/stories ')), silent.out.join('\n')).toEqual([
+    "E story/stories.json:0 catalog/stories 0.endings.drowned.knot: ch1 knot 'drowned' shows no line before its END: the game would end the chapter, not the story",
+  ]);
+  expect(carryCodes(silent.out)).toEqual([]);
+  expect(silent.code).toBe(1);
+  // The control: with its line (the runner places that line's step in `drowned`, so the game's checkpoint is the ending
+  // at its END), the gate passes.
+  const lined = storyRun(repo(main));
+  expect(lined.out.filter((l) => /^E /.test(l)), lined.out.join('\n')).toEqual([]);
+  expect(lined.code).toBe(0);
+}, IN_PROCESS_TIMEOUT_MS);
+
+test('carry: an inherited item is checked against story/items.json', () => {
+  const run = (chapters: readonly CarryChapter[], registry: string | null): string[] => carried(carryProof({ chapters, registry }).findings);
+  const said = (chapters: readonly CarryChapter[], registry: string | null): string[] => carryProof({ chapters, registry }).findings.map((f) => `${f.code} ${f.file}:${f.line} ${f.message}`);
+  const inherit = `story/ch2/world.json:${inheritLine(heir(), 0)}`;
+  const markOf = (c: string, w: Json): string => `world/carry-mark story/${c}/world.json:${jsonLine(w, '"carry": true')}`;
+  const pair = (r: Json = heir(), g: Json = giver()): CarryChapter[] => [carryChapter('ch1', 'ch2', g), carryChapter('ch2', null, r)];
+  // The consistent control: ch1 gives and marks the medallion, ch2 inherits it, the row names ch1.
+  expect(run(pair(), SUN_ROW)).toEqual([]);
+  // No row, in an empty registry or an absent one (so ch1's mark has none either).
+  expect(run(pair(), '[]')).toEqual([`world/carry-inherit ${inherit}`, markOf('ch1', giver())]);
+  expect(run(pair(), null)).toEqual([`world/carry-inherit ${inherit}`, markOf('ch1', giver())]);
+  // Two rows for one id: the repeat refused at its own line, and nothing that names the id judged again.
+  const twice = '[\n  { "id": "medal_sun", "from": "ch1" },\n  { "id": "medal_sun", "from": "ch1" }\n]\n';
+  expect(said(pair(), twice)).toEqual(["world/carry-registry story/items.json:3 1.id: item 'medal_sun' has row 0 too: one giving chapter per carried item"]);
+  // `from` not before the receiver on its chain: another chain (story/chapters.json's shape, ch1 -> ch2, ch3 -> ch4),
+  // later on the receiver's own chain (ch1 -> ch2 -> ch3), the receiver itself. ch3 gives the medallion and marks
+  // nothing, so each control (the row naming ch1) is clean; in each refusal ch1's mark has a row naming another chapter.
+  const notBefore = (from: string): string => `world/carry-inherit ${inherit} item 'medal_sun': it comes from ${from}, which is not before ch2 on its chain (§6.6)`;
+  const misplaced = `${markOf('ch1', giver())} item 'medal_sun' is marked carry: true, but story/items.json gives it from ch3 and ch1 does not inherit it (§6.6)`;
+  const chains = [carryChapter('ch1', 'ch2', giver()), carryChapter('ch2', null, heir()), carryChapter('ch3', 'ch4', base()), carryChapter('ch4', null, null)];
+  expect(said(chains, SUN_ROW)).toEqual([]);
+  expect(said(chains, '[{ "id": "medal_sun", "from": "ch3" }]')).toEqual([notBefore('ch3'), misplaced]);
+  const three = [carryChapter('ch1', 'ch2', giver()), carryChapter('ch2', 'ch3', heir()), carryChapter('ch3', null, base())];
+  expect(said(three, SUN_ROW)).toEqual([]);
+  expect(said(three, '[{ "id": "medal_sun", "from": "ch3" }]')).toEqual([notBefore('ch3'), misplaced]);
+  // The receiver as its own giver: its world gives and marks the medallion.
+  const self = [carryChapter('ch1', 'ch2', base()), carryChapter('ch2', null, { ...giver(), inherits: [{ id: 'medal_sun', required: true }] })];
+  const selfLine = inheritLine({ ...giver(), inherits: [{ id: 'medal_sun', required: true }] }, 0);
+  expect(said(self, '[{ "id": "medal_sun", "from": "ch2" }]')).toEqual([
+    `world/carry-inherit story/ch2/world.json:${selfLine} item 'medal_sun': story/items.json gives it from ch2 itself (§6.6)`,
+  ]);
+  // The giver's world does not mark it.
+  expect(said(pair(heir(), base()), SUN_ROW)).toEqual([`world/carry-inherit ${inherit} item 'medal_sun': ch1's world does not mark it carry: true (§6.6)`]);
+  // A mark with no row; a mark with a row and no receiver (no finding); a mark at a chapter that neither gives nor
+  // inherits the item.
+  expect(run([carryChapter('ch1', null, giver())], '[]')).toEqual([markOf('ch1', giver())]);
+  expect(run([carryChapter('ch1', null, giver())], SUN_ROW)).toEqual([]);
+  const marked = heir([], true);
+  expect(run(pair(marked), SUN_ROW)).toEqual([markOf('ch2', marked)]);
+  // A row whose giving chapter gives its item in no section: refused at the row.
+  expect(said(pair(), '[{ "id": "medal_sun", "from": "ch1" }, { "id": "lamp", "from": "ch1" }]')).toEqual([
+    "world/carry-registry story/items.json:1 1: chapter ch1 gives item 'lamp' in no section of its world (§6.6)",
+  ]);
+  // story/items.json not JSON, or not an array: one finding, and nothing that needs its rows is judged.
+  expect(run(pair(), '[{ "id": ')).toEqual(['world/carry-registry story/items.json:0']);
+  expect(run(pair(), '{}')).toEqual(['world/carry-registry story/items.json:0']);
+  // A chain item: ch2 inherits and re-marks it, ch3 inherits it from ch1, whatever ch2 holds.
+  const chain = [carryChapter('ch1', 'ch2', giver()), carryChapter('ch2', 'ch3', heir([{ id: 'medal_sun', required: false }], true)), carryChapter('ch3', null, heir())];
+  expect(run(chain, SUN_ROW)).toEqual([]);
+});
+
+// The in-process story gate (D9): `main` over a fixture repo in a temp directory, its console captured.
+
+/** The marker a fixture world's texts are written with: `repoWorld` replaces each with a fresh text of its chapter. */
+const TEXT = '<text>';
+
+/** A fixture world of chapter `ch` in the source format: `sections` of rooms (the first room is the start, every room's
+ *  bg is `room`, rects on mini()'s grid), `items` with any extra keys, then `top` keys; each TEXT a fresh line. */
+function repoWorld(ch: string, spec: { items?: Readonly<Record<string, Json>>; sections: Readonly<Record<string, Readonly<Record<string, readonly Json[]>>>>; top?: Json }): Json {
+  let n = 0;
+  const fill = (v: unknown): unknown => {
+    if (v === TEXT) {
+      const id = `${ch}.w.${(n++).toString(36).padStart(4, '0')}`;
+      return { id, ru: `${ch} текст ${n}` };
+    }
+    if (Array.isArray(v)) {
+      return v.map(fill);
+    }
+    return typeof v === 'object' && v !== null ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)])) : v;
+  };
+  const room = (spots: readonly Json[]): Json => ({ bg: 'room', title: TEXT, onEnter: [], hotspots: spots.map((h, i) => ({ ...h, rect: [100 + (i % 3) * 300, 300 + Math.floor(i / 3) * 300, 200, 200] })) });
+  const sections = Object.fromEntries(Object.entries(spec.sections).map(([id, rooms]) => [id, { start: Object.keys(rooms)[0], bgm: null, rooms: Object.fromEntries(Object.entries(rooms).map(([r, spots]) => [r, room(spots)])) }]));
+  const items = Object.fromEntries(Object.entries(spec.items ?? {}).map(([id, extra]) => [id, { name: TEXT, desc: TEXT, glyph: 'key', ...extra }]));
+  return obj(fill({ format: 1, items, docs: {}, puzzles: {}, sections, ...spec.top }));
+}
+
+const takeIt = (id: string, item: string): Json => ({ id, kind: 'take', label: TEXT, gives: { item }, prop: null, then: [] });
+/** An exit to the leave knot `knot`, locked on `slots` (none: open). */
+const leaveBy = (id: string, knot: string, slots: readonly Json[] = []): Json => ({
+  id,
+  kind: 'exit',
+  label: TEXT,
+  to: { story: knot },
+  lock: slots.length === 0 ? null : { slots, puzzle: null, locked: TEXT, onOpen: [], onFail: [] },
+  sfx: null,
+});
+
+/** One chapter of a fixture repo: its ink lines (the INCLUDE first) and its world, if any. */
+type RepoChapter = { readonly id: string; readonly paid?: boolean; readonly next?: string | null; readonly ink: readonly string[]; readonly world?: Json };
+
+/** Every `{ id, ru }` text of a fixture JSON, in walk order. */
+function textsIn(v: unknown): Array<{ id: string; ru: string }> {
+  if (Array.isArray(v)) {
+    return v.flatMap(textsIn);
+  }
+  if (typeof v !== 'object' || v === null) {
+    return [];
+  }
+  const o = v as Json; // an object, checked above
+  return typeof o['id'] === 'string' && typeof o['ru'] === 'string' ? [{ id: o['id'], ru: o['ru'] }] : Object.values(o).flatMap(textsIn);
+}
+
+/** A chapter's ID'd lines as the graph reads them (the en table's `ru`), from its ink compiled alone. */
+function inkLines(id: string, ink: string): Array<{ id: string; ru: string }> {
+  const chapter: SourceChapter = { id: ch(id), paid: false, entry: `${id}/main.ink` };
+  const files = new Map([
+    [GLOBALS_PATH, 'VAR g_x = 0\n'],
+    [chapter.entry, ink],
+  ]);
+  const r = compileChapter(chapter, (key) => files.get(key) ?? null);
+  if (r.compiled === null) {
+    throw new Error(`invariant: the fixture chapter ${id} compiles: ${JSON.stringify(r.findings)}`);
+  }
+  return buildGraph({ chapter, files: r.compiled.files, sources: files, assets: ASSETS }).graph.lines.map((l) => ({ id: l.id, ru: l.text }));
+}
+
+/**
+ * A fixture repo (path -> text) in graph-shot.test.ts's `faceRepo` shape: the committed catalog, an inline cast, the
+ * chapter list (a paid chapter's product is `chapter:<id>`), the stories (default: one per chain, endings none), the
+ * globals, each chapter's ink and world, the en tables of every ink line and world text, the names; and
+ * story/items.json when `items` is given.
+ */
+function carryRepo(spec: { chapters: readonly RepoChapter[]; stories?: unknown; items?: string }): Record<string, string> {
+  const table = (o: unknown): string => `${JSON.stringify(o, null, 2)}\n`;
+  const nexts = new Set(spec.chapters.flatMap((c) => (c.next === undefined || c.next === null ? [] : [c.next])));
+  const firsts = spec.chapters.filter((c) => !nexts.has(c.id)).map((c) => c.id);
+  const covers = ['manor', 'tide'];
+  const stories = spec.stories ?? firsts.map((first, i) => ({ id: covers[i] ?? 'manor', first, cover: `cover/${covers[i] ?? 'manor'}`, endings: {} }));
+  const files: Record<string, string> = {
+    'assets/catalog.json': readFileSync(new URL('../../../assets/catalog.json', import.meta.url), 'utf8'),
+    'story/cast.json': JSON.stringify({ ally: { char: 'ally' }, stranger: { char: 'stranger' }, voice: { char: null } }),
+    'story/chapters.json': JSON.stringify(
+      spec.chapters.map((c) => ({ id: c.id, entry: `${c.id}/main.ink`, paid: c.paid === true, ...(c.paid === true ? { productId: `chapter:${c.id}` } : {}), next: c.next ?? null })),
+    ),
+    'story/stories.json': JSON.stringify(stories),
+    'story/common/globals.ink': 'VAR g_x = 0\n',
+  };
+  for (const c of spec.chapters) {
+    const ink = `${c.ink.join('\n')}\n`;
+    files[`story/${c.id}/main.ink`] = ink;
+    if (c.world !== undefined) {
+      files[`story/${c.id}/world.json`] = table(c.world);
+    }
+    files[`story/locales/en/${c.id}.json`] = table(Object.fromEntries([...inkLines(c.id, ink), ...textsIn(c.world ?? {})].map((x) => [x.id, { ru: x.ru, en: `en ${x.id}` }])));
+  }
+  const names = (ru: boolean): unknown => ({
+    names: ru ? { ally: 'Подруга', stranger: 'Незнакомец', voice: 'Голос' } : { ally: 'Ally', stranger: 'Stranger', voice: 'Voice' },
+    chapters: Object.fromEntries(spec.chapters.map((c, i) => [c.id, ru ? `Глава ${i + 1}` : `Chapter ${i + 1}`])),
+    stories: Object.fromEntries(covers.slice(0, Math.max(1, firsts.length)).map((s) => [s, ru ? `История ${s}` : `Story ${s}`])),
+    teasers: Object.fromEntries(covers.slice(0, Math.max(1, firsts.length)).map((s) => [s, ru ? 'Черновик истории.' : 'A draft story.'])),
+  });
+  files['story/locales/ru/story.json'] = table(names(true));
+  files['story/locales/en/story.json'] = table(names(false));
+  if (spec.items !== undefined) {
+    files['story/items.json'] = spec.items;
+  }
+  return files;
+}
+
+/** Every file under `rel` of `root`, repo-relative posix, sorted. */
+function outputsUnder(root: string, rel: string): string[] {
+  const abs = join(root, rel);
+  return existsSync(abs)
+    ? readdirSync(abs, { recursive: true, withFileTypes: true })
+        .filter((e) => e.isFile())
+        .map((e) => relative(root, join(e.parentPath, e.name)).split('\\').join('/'))
+        .sort()
+    : [];
+}
+
+/**
+ * The story gate's `main` over `files` written into a fresh temp repo: its exit code, its stdout lines (console.log
+ * captured, restored after), and the files it wrote under client/ and server/. A run that printed nothing, or not its
+ * tally last, is a vacuous green: refused here.
+ */
+function storyRun(files: Readonly<Record<string, string>>): { code: number; out: string[]; emitted: string[] } {
+  const root = mkdtempSync(join(tmpdir(), 'story-carry-'));
+  const out: string[] = [];
+  const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+    out.push(args.map(String).join(' '));
+  });
+  try {
+    for (const [rel, text] of Object.entries(files)) {
+      const abs = join(root, ...rel.split('/'));
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, text);
+    }
+    const code = main([], root);
+    expect(out.length, 'the run printed its report').toBeGreaterThan(0);
+    expect(out.at(-1), out.join('\n')).toMatch(/^story: \d+ errors, \d+ warnings$/);
+    return { code, out, emitted: [...outputsUnder(root, 'client'), ...outputsUnder(root, 'server')] };
+  } finally {
+    spy.mockRestore();
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/** A run's findings of `code` as `file:line`. */
+function printed(out: readonly string[], code: string): string[] {
+  return out.flatMap((l) => {
+    const m = /^[EW] (\S+):(\d+) (\S+) /.exec(l);
+    return m !== null && m[3] === code ? [`${m[1]}:${m[2]}`] : [];
+  });
+}
+
+/** The carry codes a run printed. */
+function carryCodes(out: readonly string[]): string[] {
+  return out.flatMap((l) => /^[EW] \S+ ((?:world\/carry-|world\/inherit-)\S+) /.exec(l)?.[1] ?? []);
+}
+
+/** The giver ch1: `start` enters the manor (`bypass`: a choice also leads to an END of its own), whose hall gives the
+ *  lamp, kept by its way out (`back`: a second, open way out too). `mark`: the lamp is marked carry: true. */
+function giverChapter(opts: { bypass?: boolean; back?: boolean; mark?: boolean; paid?: boolean; id?: string; next?: string } = {}): RepoChapter {
+  const id = opts.id ?? 'ch1';
+  const choice = opts.bypass === true ? ['* [Войти #id:ch1.start.c001]', '    -> hall', '* [Уйти #id:ch1.start.c002]', '    -> away'] : ['-> hall'];
+  const away = opts.bypass === true ? ['=== away ===', 'Мы ушли. #id:ch1.away.a003', '-> END'] : [];
+  const ink = [
+    'INCLUDE ../common/globals.ink',
+    '-> start',
+    '=== start ===',
+    '# scene: hall',
+    'Перед усадьбой. #id:ch1.start.a001',
+    ...choice,
+    '=== hall ===',
+    'Мы вошли. #id:ch1.hall.a002',
+    '# explore: manor',
+    '-> DONE',
+    ...away,
+    '=== manor_out ===',
+    'Мы вышли. #id:ch1.manor_out.a004',
+    '-> END',
+  ].map((l) => l.replaceAll('ch1.', `${id}.`));
+  const world = repoWorld(id, {
+    items: { lamp: opts.mark === false ? {} : { carry: true } },
+    sections: { manor: { hall: [takeIt('t_lamp', 'lamp'), leaveBy('out', 'manor_out', [{ accepts: 'lamp', keep: true }]), ...(opts.back === true ? [leaveBy('back', 'manor_out')] : [])] } },
+  });
+  return { id, paid: opts.paid ?? false, next: opts.next ?? 'ch2', ink, world };
+}
+
+/** The receiver ch2: `start` enters its archive, left by an open door; its world declares the lamp and inherits
+ *  `inherits` (none: no `inherits` key, nor the lamp). */
+function receiverChapter(inherits: readonly Json[] | null, opts: { paid?: boolean; id?: string; next?: string | null } = {}): RepoChapter {
+  const id = opts.id ?? 'ch2';
+  const ink = ['INCLUDE ../common/globals.ink', '-> start', '=== start ===', '# scene: archive', 'Архив. #id:ch2.start.a001', '# explore: archive', '-> DONE', '=== archive_out ===', 'Конец. #id:ch2.archive_out.a002', '-> END'].map((l) =>
+    l.replaceAll('ch2.', `${id}.`),
+  );
+  const world = repoWorld(id, {
+    items: inherits === null ? {} : { lamp: {} },
+    sections: { archive: { hall: [leaveBy('out', 'archive_out')] } },
+    ...(inherits === null ? {} : { top: { inherits } }),
+  });
+  return { id, paid: opts.paid ?? true, next: opts.next ?? null, ink, world };
+}
+
+const LAMP_ROW = '[{ "id": "lamp", "from": "ch1" }]\n';
+const LAMP_REQUIRED: readonly Json[] = [{ id: 'lamp', required: true }];
+
+test(
+  'carry: the story gate runs the cross-chapter pass',
+  () => {
+    const fault = carryRepo({ chapters: [giverChapter({ bypass: true }), receiverChapter(LAMP_REQUIRED)], items: LAMP_ROW });
+    const r = storyRun(fault);
+    const yieldLine = (fault['story/ch1/main.ink'] ?? '').split('\n').indexOf('# explore: manor') + 1;
+    expect(printed(r.out, 'world/carry-required-path'), r.out.join('\n')).toEqual([`story/ch1/main.ink:${yieldLine}`]);
+    expect(r.code).toBe(1);
+    // The control: the manor's yield on every path. Clean, so it exits 0.
+    const control = storyRun(carryRepo({ chapters: [giverChapter(), receiverChapter(LAMP_REQUIRED)], items: LAMP_ROW }));
+    expect(carryCodes(control.out), control.out.join('\n')).toEqual([]);
+    expect(control.code, control.out.join('\n')).toBe(0);
+  },
+  IN_PROCESS_TIMEOUT_MS,
+);
+
+test(
+  'carry: inherits without story/items.json are refused',
+  () => {
+    const files = carryRepo({ chapters: [giverChapter(), receiverChapter(LAMP_REQUIRED)] });
+    const r = storyRun(files);
+    const line = (files['story/ch2/world.json'] ?? '').split('\n').indexOf('    {') + 1;
+    expect(printed(r.out, 'world/carry-inherit'), r.out.join('\n')).toEqual([`story/ch2/world.json:${line}`]);
+    expect(line).toBe(carryLines(files['story/ch2/world.json'] ?? '')('inherits.0'));
+    expect(r.code).toBe(1);
+  },
+  IN_PROCESS_TIMEOUT_MS,
+);
+
+/** The kind of each stdout line of a run, in story.ts's report order. */
+function lineKinds(out: readonly string[]): string[] {
+  return out.map((l) => (/^story: \d+ errors, \d+ warnings$/.test(l) ? 'tally' : /^[EW] /.test(l) ? l.slice(0, 2) : (/^[a-z]+:/.exec(l)?.[0] ?? l)));
+}
+
+test(
+  'carry: a carry-less repo prints what it printed before',
+  () => {
+    const chapters = [giverChapter({ mark: false }), receiverChapter(null)];
+    for (const items of [undefined, '[]\n']) {
+      const r = storyRun(carryRepo({ chapters, ...(items === undefined ? {} : { items }) }));
+      const label = `${items ?? 'no story/items.json'}\n${r.out.join('\n')}`;
+      expect(r.code, label).toBe(0);
+      expect(carryCodes(r.out), label).toEqual([]);
+      expect(r.out[r.out.findIndex((l) => l.startsWith('stories: ')) + 1], label).toMatch(/^meta: /);
+      expect(
+        r.out.filter((l) => l.startsWith('world: ')),
+        label,
+      ).toEqual(['world: ch1: 1 section, 1 room, 0 puzzles, softlock OK (3 states)', 'world: ch2: 1 section, 1 room, 0 puzzles, softlock OK (1 states)']);
+      expect(lineKinds(r.out), label).toEqual(['story:', 'story:', 'world:', 'world:', 'stories:', 'meta:', 'play:', 'play:', 'shots:', 'tally']);
+    }
+  },
+  IN_PROCESS_TIMEOUT_MS,
+);
+
+test(
+  'carry: story/items.json is never emitted',
+  () => {
+    const r = storyRun(carryRepo({ chapters: [giverChapter(), receiverChapter(LAMP_REQUIRED)], items: LAMP_ROW }));
+    expect(r.code, r.out.join('\n')).toBe(0);
+    expect(r.emitted.filter((p) => p.startsWith('client/')).length).toBeGreaterThan(0);
+    expect(r.emitted.filter((p) => p.startsWith('server/')).length).toBeGreaterThan(0);
+    expect(r.emitted.filter((p) => p.endsWith('items.json'))).toEqual([]);
+  },
+  IN_PROCESS_TIMEOUT_MS,
+);
+
+test(
+  'carry: a run whose story list fails skips the cross-chapter pass',
+  () => {
+    // A story ending reachable before the giver's yield: the skip removed, the pass would read no ending and refuse it.
+    const files = carryRepo({ chapters: [giverChapter({ bypass: true }), receiverChapter(LAMP_REQUIRED)], items: LAMP_ROW, stories: { manor: {} } });
+    const r = storyRun(files);
+    expect(printed(r.out, 'catalog/stories'), r.out.join('\n')).not.toEqual([]);
+    expect(carryCodes(r.out), r.out.join('\n')).toEqual([]);
+    expect(r.code).toBe(1);
+  },
+  IN_PROCESS_TIMEOUT_MS,
+);
+
+test('carry: the carry pass locates a world path where the world runner does', () => {
+  const w = base();
+  at(w, 'items.medal_sun')['carry'] = true;
+  w['inherits'] = [{ id: 'lamp', required: false }];
+  obj(w['items'])['lamp'] = { name: t('lamp', 'Лампа'), desc: t('lamp', 'Лампа.'), glyph: 'key' };
+  const text = `${JSON.stringify(w, null, 2)}\n`;
+  const decoded = decodeWorldFile({ file: FILE, text });
+  if (decoded.world === null) {
+    throw new Error('invariant: the fixture decodes');
+  }
+  const seen: WorldLintInput[] = [];
+  const capture: WorldLint<never> = {
+    id: 'capture',
+    codes: {},
+    lint: (input) => {
+      seen.push(input);
+      return [];
+    },
+  };
+  lintWorld({ chapter: CH1, file: FILE, text, world: decoded.world, catalog: CATALOG, knots: KNOTS, yielded: null, declared: new Map() }, [...MECHANIC_LINTS, capture]);
+  const runner = seen[0]?.line;
+  if (runner === undefined) {
+    throw new Error('invariant: the capture pass ran');
+  }
+  // Every written path (each member key and array element), then paths that fall back to an ancestor or to 0.
+  const paths = (v: unknown, path: string): string[] => {
+    const under = (k: string | number): string => (path === '' ? String(k) : `${path}.${k}`);
+    if (Array.isArray(v)) {
+      return v.flatMap((x, i) => [under(i), ...paths(x, under(i))]);
+    }
+    return typeof v === 'object' && v !== null ? Object.entries(v).flatMap(([k, x]) => [under(k), ...paths(x, under(k))]) : [];
+  };
+  const all = [...paths(w, ''), 'inherits.0.id.x', 'sections.manor.rooms.hall.hotspots.9.rect', 'nowhere', ''];
+  expect(all.length).toBeGreaterThan(200);
+  const ours = carryLines(text);
+  expect(all.map((p) => `${p} ${ours(p)}`)).toEqual(all.map((p) => `${p} ${runner(p)}`));
+  // Not vacuous: array elements and members land on different lines.
+  expect(new Set(all.map(ours)).size).toBeGreaterThan(100);
+});
+
+/** The giver chapter ch1 from `main` against the manor (plus `edit` on its world): its `world/carry-giver-prefix`
+ *  findings as `line`. */
+function prefixRefusals(main: readonly string[], edit: (w: Json) => void = () => undefined): number[] {
+  const w = giver();
+  edit(w);
+  const g = graphWith(main, okWorld(w));
+  const chapters = [carryChapter('ch1', 'ch2', w, carryPaths(g.graph, g.facts, new Map())), carryChapter('ch2', null, heir())];
+  const found = carryProof({ chapters, registry: SUN_ROW }).findings;
+  // Every row's yields are on every path to an END: only the prefix rule can refuse.
+  expect(found.filter((f) => f.code !== 'world/carry-giver-prefix')).toEqual([]);
+  return found.filter((f) => f.code === 'world/carry-giver-prefix').map((f) => f.line);
+}
+
+test('carry: a giver yield after an ungathered choice or a divert is refused', () => {
+  const start = [...INK_HEAD, 'Перед усадьбой. #id:ch1.start.a001', '-> hall'];
+  const after = ['=== away ===', 'Мы ушли. #id:ch1.away.a009', '-> END', '=== manor_out ===', 'Мы вышли. #id:ch1.manor_out.a010', '-> END'];
+  /** ch1 whose `hall` knot runs `body` and then yields the manor. */
+  const hall = (body: readonly string[]): string[] => [...start, '=== hall ===', 'Холл. #id:ch1.hall.a002', ...body, '# explore: manor', '-> DONE', ...after];
+  const yieldIn = (main: readonly string[]): number => lineIn(main, '# explore: manor');
+  // ch1's shape (story/ch1/main.ink:41-48): a choice whose every branch falls to the gather before the yield.
+  const gathered = hall(['* [Взять за руку #id:ch1.hall.c001]', '    Спасибо. #id:ch1.hall.a003', '* [Спорить #id:ch1.hall.c002]', '    Ну и ладно. #id:ch1.hall.a004', '- Дальше. #id:ch1.hall.a005']);
+  expect(prefixRefusals(gathered)).toEqual([]);
+  // A branch that diverts out before the gather: an entry of the hall may never reach its yield.
+  const out = hall(['* [Остаться #id:ch1.hall.c001]', '    Остались. #id:ch1.hall.a003', '* [Уйти #id:ch1.hall.c002]', '    -> away', '- Дальше. #id:ch1.hall.a005']);
+  expect(prefixRefusals(out)).toEqual([yieldIn(out)]);
+  // A yield inside one branch (no gather).
+  const inBranch = [...start, '=== hall ===', 'Холл. #id:ch1.hall.a002', '* [Войти #id:ch1.hall.c001]', '    # explore: manor', '    -> DONE', '* [Уйти #id:ch1.hall.c002]', '    -> away', ...after];
+  expect(prefixRefusals(inBranch)).toEqual([lineIn(inBranch, '    # explore: manor')]);
+  // A multi-line conditional holding a divert out; the same inline (one text line, 06:685's third class).
+  const block = hall(['{ g_trust > 0:', '    -> away', '}']);
+  expect(prefixRefusals(block)).toEqual([yieldIn(block)]);
+  const inline = hall(['{g_trust > 0: -> away}']);
+  expect(prefixRefusals(inline)).toEqual([yieldIn(inline)]);
+  // A closed conditional block with no divert: every branch falls through to the yield.
+  const closed = hall(['{ g_trust > 0:', '    Доверие. #id:ch1.hall.a003', '- else:', '    Недоверие. #id:ch1.hall.a004', '}']);
+  expect(prefixRefusals(closed)).toEqual([]);
+  // A yield inside a multi-line conditional still open at the yield: an entry whose condition fails never runs it, so it
+  // is off the prefix. The yield after the block follows the in-block yield's `-> DONE` (a divert) and is off the prefix
+  // too, so no yield of the knot is on it: refused at the first.
+  const open = hall(['{ g_trust > 0:', '    # explore: manor', '    -> DONE', '}']);
+  expect(prefixRefusals(open)).toEqual([lineIn(open, '    # explore: manor')]);
+  // The knot's only yield inside an outer multi-line conditional, after a nested closed one; otherwise the knot leaves
+  // to `away`. The outer block is still open at the yield (an inner close does not close it), so an entry whose outer
+  // condition fails leaves without the item.
+  const nestedOnly = [...start, '=== hall ===', 'Холл. #id:ch1.hall.a002', '{ g_trust > 0:', '    { g_trust > 1:', '        Глубже. #id:ch1.hall.a006', '    }', '    # explore: manor', '    -> DONE', '}', '-> away', ...after];
+  expect(prefixRefusals(nestedOnly)).toEqual([lineIn(nestedOnly, '    # explore: manor')]);
+
+  // The event knot of the cellar (ch1's `manor_cellar_voice`, story/ch1/main.ink:56-63): choices gathered before its
+  // yield back, clean.
+  const voice = (body: readonly string[]): string[] => [
+    ...hall([]),
+    '=== manor_cellar_voice ===',
+    'Голос. #id:ch1.manor_cellar_voice.v001',
+    ...body,
+    '# explore: manor',
+    '-> DONE',
+  ];
+  const evented = voice(['* [Держись #id:ch1.manor_cellar_voice.c001]', '    Спасибо. #id:ch1.manor_cellar_voice.v002', '* [Кто ты? #id:ch1.manor_cellar_voice.c002]', '    Потом. #id:ch1.manor_cellar_voice.v003', '- Тихо. #id:ch1.manor_cellar_voice.v004']);
+  expect(prefixRefusals(evented)).toEqual([]);
+  // An event knot entered only by its section's edges, a yield in each branch of an ungathered choice: clean only
+  // because the knot is exempt (every entry is the section's own event).
+  const branches = [
+    '=== manor_cellar_voice ===',
+    'Голос. #id:ch1.manor_cellar_voice.v001',
+    '* [Держись #id:ch1.manor_cellar_voice.c001]',
+    '    # explore: manor',
+    '    -> DONE',
+    '* [Кто ты? #id:ch1.manor_cellar_voice.c002]',
+    '    # explore: manor',
+    '    -> DONE',
+  ];
+  const exempt = [...hall([]), ...branches];
+  expect(prefixRefusals(exempt)).toEqual([]);
+  // The same knot also entered by a divert from another knot: judged by the prefix, refused at its first yield.
+  const entered = [...INK_HEAD, 'Перед усадьбой. #id:ch1.start.a001', '* [Холл #id:ch1.start.c001]', '    -> hall', '* [Подвал #id:ch1.start.c002]', '    -> manor_cellar_voice', ...hall([]).slice(start.length), ...branches];
+  expect(prefixRefusals(entered)).toEqual([lineIn(entered, '    # explore: manor')]);
+  // The same knot named by a second section's rooms too, one branch returning to each: no longer the manor's own
+  // event, so judged by the prefix and refused (RULINGS 403 B3).
+  const shared = [
+    ...hall([]),
+    '=== manor_cellar_voice ===',
+    'Голос. #id:ch1.manor_cellar_voice.v001',
+    '* [В подвал #id:ch1.manor_cellar_voice.c001]',
+    '    # explore: manor',
+    '    -> DONE',
+    '* [В сад #id:ch1.manor_cellar_voice.c002]',
+    '    # explore: garden',
+    '    -> DONE',
+  ];
+  /** A second section, `garden`, whose one room's entry runs `knots`. */
+  const garden =
+    (knots: readonly string[]) =>
+    (w: Json): void => {
+      const yard = { bg: 'room', title: t('garden', 'Сад'), onEnter: knots.map((story) => ({ story })), hotspots: [] };
+      at(w, 'sections')['garden'] = { start: 'yard', bgm: null, rooms: { yard } };
+    };
+  expect(prefixRefusals(shared, garden(['manor_cellar_voice']))).toEqual([lineIn(shared, '    # explore: manor')]);
+  // Its control: the garden names no knot, so the cellar's event is the manor's own again.
+  expect(prefixRefusals(shared, garden([]))).toEqual([]);
+});
+
+/** A fixture world as the proof searches it: decoded, its public body with the decoded `mods`. */
+function kernelOf(w: Json): KernelWorld {
+  const r = decodeWorldSource(w);
+  if (!r.ok) {
+    throw new Error(`invariant: the fixture decodes: ${JSON.stringify(r.error)}`);
+  }
+  return { ...toPublic(r.value), mods: r.value.mods };
+}
+
+test('carry: a skipped or capped giver section fails closed on its own error', () => {
+  const required = new Map([['medal_sun' as ItemId, ch('ch2')]]); // a fixture item id
+  // Skipped: a part atom in a gating `when` leaves the manor unsearched; `world/visual-only-atom` refuses the world.
+  const skipped = recipeBase(() => t('manor', 'Монета легла в оправу.'));
+  spot(skipped, 'hall', 'inscription')['when'] = { part: { puzzle: 'drawer', index: 0, is: 1 } };
+  expect(checkSection(kernelOf(skipped), 'manor' as SectionId, FILE, required)).toEqual({ section: 'manor', states: null, findings: [] });
+  expect(of(lint(skipped), 'world/visual-only-atom')).toHaveLength(1);
+  // Capped: thirteen documents beside the sun medallion, past RESUME_STATE_CAP; only its `world/state-cap`.
+  const docs = Array.from({ length: 13 }, (_, i) => `d${i}`);
+  const capped = mini({ items: ['medal_sun'], docs, sections: { s: { start: 'hall', rooms: { hall: [leave('out'), take('sun', { item: 'medal_sun' }), ...docs.map((d) => take(d, { doc: d }))] } } } });
+  const c = checkSection(kernelOf(capped), 's' as SectionId, FILE, required);
+  expect([c.states, c.findings.map((f) => f.code)]).toEqual([null, ['world/state-cap']]);
+  expect(of(lint(capped), 'world/state-cap')).toHaveLength(1);
+});
+
+test(
+  "carry: the story gate runs the giver's leave check",
+  () => {
+    const files = carryRepo({ chapters: [giverChapter({ back: true }), receiverChapter(LAMP_REQUIRED)], items: LAMP_ROW });
+    const r = storyRun(files);
+    const line = (files['story/ch1/world.json'] ?? '').split('\n').indexOf('    "manor": {') + 1;
+    expect(line).toBeGreaterThan(0);
+    expect(printed(r.out, 'world/carry-leave'), r.out.join('\n')).toEqual([`story/ch1/world.json:${line}`]);
+    expect(r.code).toBe(1);
+    // The control: the only way out keeps the lamp.
+    const control = storyRun(carryRepo({ chapters: [giverChapter(), receiverChapter(LAMP_REQUIRED)], items: LAMP_ROW }));
+    expect(printed(control.out, 'world/carry-leave'), control.out.join('\n')).toEqual([]);
+    expect(control.code).toBe(0);
+  },
+  IN_PROCESS_TIMEOUT_MS,
+);
+
+test('carry: a required item consumable later is refused', () => {
+  type Form = 'slot' | 'rule' | 'recipe';
+  const FORMS: readonly Form[] = ['slot', 'rule', 'recipe'];
+  /** `form` consuming the sun medallion (`keep`: keeping it) in the manor: the gate's slot, a rule on the inscription, a
+   *  recipe. */
+  const manor = (form: Form | null, keep: boolean): Json => {
+    const w = giver();
+    if (form === 'slot') {
+      list(obj(gateOf(w)['lock'])['slots'])[0] = { accepts: 'medal_sun', ...(keep ? { keep: true } : {}) };
+    } else if (form === 'rule') {
+      spot(w, 'hall', 'inscription')['uses'] = [{ item: 'medal_sun', ...(keep ? { keep: true } : {}), do: [] }];
+    } else if (form === 'recipe') {
+      obj(w['items'])['coin'] = { name: t('coin', 'Монета'), desc: t('coin', 'Старая монета.'), glyph: 'key' };
+      obj(w['items'])['amulet'] = { name: t('amulet', 'Амулет'), desc: t('amulet', 'Монета в оправе.'), glyph: 'key' };
+      w['recipes'] = [{ a: 'medal_sun', b: 'coin', gives: 'amulet', ...(keep ? { keep: ['medal_sun'] } : {}) }];
+    }
+    return w;
+  };
+  /** A small world declaring the medallion and a recipe's coin and amulet, none of which it gives; `form` consumes the
+   *  medallion (`keep`: keeps it) on its hall's box or as a recipe; `inherits` set unless null. */
+  const holder = (form: Form | null, keep: boolean, inherits: readonly Json[] | null = null): Json => {
+    const slot = { accepts: 'medal_sun', ...(keep ? { keep: true } : {}) };
+    const box = form === 'slot' ? [object('box', { ...lockOf([]), slots: [slot] })] : form === 'rule' ? [{ ...object('box', null), uses: [{ item: 'medal_sun', ...(keep ? { keep: true } : {}), do: [] }] }] : [];
+    const w = mini({ items: ['medal_sun', 'coin', 'amulet'], sections: { s: { start: 'hall', rooms: { hall: [leave('out'), ...box] } } } });
+    if (form === 'recipe') {
+      w['recipes'] = [{ a: 'medal_sun', b: 'coin', gives: 'amulet', ...(keep ? { keep: ['medal_sun'] } : {}) }];
+    }
+    if (inherits !== null) {
+      w['inherits'] = inherits;
+    }
+    return w;
+  };
+  const REQUIRED: readonly Json[] = [{ id: 'medal_sun', required: true }];
+  /** ch1 gives the medallion, ch2 passes it on, ch3 inherits it as required, ch4 follows; `w` replaces chapter `place`. */
+  const chain = (place: string, w: Json, ch2Inherits: readonly Json[] | null = null): CarryChapter[] => {
+    const worlds: Record<string, Json> = { ch1: giver(), ch2: holder(null, false, ch2Inherits), ch3: holder(null, false, REQUIRED), ch4: holder(null, false), [place]: w };
+    return ['ch1', 'ch2', 'ch3', 'ch4'].map((c, i, all) => carryChapter(c, all[i + 1] ?? null, worlds[c] ?? null));
+  };
+  /** The pass's consumed findings as `code file:line message`; every other carry rule holds (the chain is valid). */
+  const consumed = (chapters: readonly CarryChapter[]): string[] => {
+    const found = carryProof({ chapters, registry: SUN_ROW }).findings;
+    expect(found.filter((f) => f.code !== 'world/carry-consumed')).toEqual([]);
+    return found.filter((f) => f.code === 'world/carry-consumed').map((f) => `${f.code} ${f.file}:${f.line} ${f.message}`);
+  };
+  const refusal = (c: string, line: number, what: string): string =>
+    `world/carry-consumed story/${c}/world.json:${line} item 'medal_sun' is inherited as required from ch1, but ${what} consumes it: a required carried item stays held from its giver through its receiver (§6.6)`;
+  /** The consumer's line (the line naming the item) and its name, in world `w`. */
+  const consumer = (form: Form, w: Json, hotspot: string): [number, string] =>
+    form === 'slot' ? [jsonLine(w, '"accepts": "medal_sun"'), `slot ${hotspot}#0`] : form === 'rule' ? [jsonLine(w, '"uses": [') + 2, `rule 0 of ${hotspot}`] : [jsonLine(w, '"a": "medal_sun"'), 'recipe 0'];
+
+  // The control: nothing on the way consumes the medallion.
+  expect(consumed(chain('ch1', giver()))).toEqual([]);
+  for (const form of FORMS) {
+    // In the giver, an intermediate chapter and the receiver: refused at the consumer; each with `keep`: clean.
+    const rows: ReadonlyArray<readonly [c: string, make: (keep: boolean) => Json, hotspot: string]> = [
+      ['ch1', (keep) => manor(form, keep), form === 'slot' ? 'hall.gate' : 'hall.inscription'],
+      ['ch2', (keep) => holder(form, keep), 'hall.box'],
+      ['ch3', (keep) => holder(form, keep, REQUIRED), 'hall.box'],
+    ];
+    for (const [c, make, hotspot] of rows) {
+      const w = make(false);
+      const [line, what] = consumer(form, w, hotspot);
+      expect(consumed(chain(c, w)), `${form} in ${c}`).toEqual([refusal(c, line, what)]);
+      expect(consumed(chain(c, make(true))), `${form} in ${c}, kept`).toEqual([]);
+    }
+    // After the receiver (ch4), and in a receiver that inherits it as optional: clean.
+    expect(consumed(chain('ch4', holder(form, false))), `${form} in ch4`).toEqual([]);
+    expect(consumed(chain('ch3', holder(form, false, [{ id: 'medal_sun', required: false }]))), `${form} in an optional receiver`).toEqual([]);
+  }
+  // Two receivers whose chains both pass the consumer (ch2 and ch3 each inherit it as required): one finding.
+  const gate = manor('slot', false);
+  const [line] = consumer('slot', gate, 'hall.gate');
+  expect(consumed(chain('ch1', gate, REQUIRED))).toEqual([refusal('ch1', line, 'slot hall.gate#0')]);
+});
+
+test('carry: a paid giver into a free chapter is refused', () => {
+  /** The pass over ch1 (the manor giver) -> ch2 (inheriting `inherits`) at the given tiers. */
+  const tiers = (giverPaid: boolean, receiverPaid: boolean, inherits: readonly Json[] = [{ id: 'medal_sun', required: true }]): string[] => {
+    const chapters = [carryChapter('ch1', 'ch2', giver(), null, giverPaid), carryChapter('ch2', null, heir(inherits), null, receiverPaid)];
+    return carryProof({ chapters, registry: SUN_ROW }).findings.map((f) => `${f.code} ${f.file}:${f.line} ${f.message}`);
+  };
+  const refused = `world/carry-tier story/ch2/world.json:${inheritLine(heir(), 0)} item 'medal_sun' comes from ch1, a paid chapter, into ch2, a free one: a paid chapter's item would reach a free chapter's player (§6.6)`;
+  // Paid -> free, a required item and an optional one.
+  expect(tiers(true, false)).toEqual([refused]);
+  expect(tiers(true, false, [{ id: 'medal_sun', required: false }])).toEqual([refused]);
+  // Free -> paid (the committed chains' shape), paid -> paid and free -> free: clean.
+  expect(tiers(false, true)).toEqual([]);
+  expect(tiers(true, true)).toEqual([]);
+  expect(tiers(false, false)).toEqual([]);
+});
+
+test(
+  'carry: the story gate refuses a paid giver into a free chapter',
+  () => {
+    /** Free ch1 -> ch2 (paid unless `free`), giving the lamp -> free ch3, inheriting it as required. */
+    const repo = (free: boolean): Record<string, string> =>
+      carryRepo({
+        chapters: [
+          receiverChapter(null, { id: 'ch1', paid: false, next: 'ch2' }),
+          giverChapter({ id: 'ch2', paid: !free, next: 'ch3' }),
+          receiverChapter(LAMP_REQUIRED, { id: 'ch3', paid: false }),
+        ],
+        items: '[{ "id": "lamp", "from": "ch2" }]\n',
+      });
+    const files = repo(false);
+    const r = storyRun(files);
+    const line = carryLines(files['story/ch3/world.json'] ?? '')('inherits.0');
+    expect(line).toBeGreaterThan(0);
+    expect(printed(r.out, 'world/carry-tier'), r.out.join('\n')).toEqual([`story/ch3/world.json:${line}`]);
+    expect(r.code).toBe(1);
+    // The control: ch2 free. Clean, so it exits 0.
+    const control = storyRun(repo(true));
+    expect(carryCodes(control.out), control.out.join('\n')).toEqual([]);
+    expect(control.code, control.out.join('\n')).toBe(0);
+  },
+  IN_PROCESS_TIMEOUT_MS,
+);
+
+/** The receiver with `optional` optional inherited items it declares (lamp first), none of them read. */
+function optionalHeir(optional: number): Json {
+  const ids = ['lamp', 'rope', 'map', 'coin'].slice(0, optional);
+  const w = receiver(ids.map((id) => ({ id, required: false })));
+  for (const id of ids.filter((x) => x !== 'lamp')) {
+    obj(w['items'])[id] = { name: t(id, 'Предмет'), desc: t(id, 'Описание.'), glyph: 'key' };
+  }
+  return w;
+}
+
+test('carry: above three optional inherited items no section start is searched', () => {
+  const four = run(optionalHeir(4));
+  expect(four.sections.map((s) => s.states)).toEqual([null]);
+  expect(four.findings.map((f) => f.code)).toContain('world/inherit-count');
+  expect(four.findings.filter((f) => f.code === 'world/softlock' || f.code === 'world/state-cap')).toEqual([]);
+  // The edge: three, searched (2^3 starts).
+  expect(run(optionalHeir(3)).sections.map((s) => typeof s.states)).toEqual(['number']);
+});
+
+test(
+  'story: a section not searched is reported as such',
+  () => {
+    /** The first chapter alone, its archive's world inheriting `optional` optional items it declares. */
+    const repo = (optional: number): Record<string, string> => {
+      const ids = ['lamp', 'rope', 'map', 'coin'].slice(0, optional);
+      const ch1 = receiverChapter(null, { id: 'ch1', paid: false });
+      const world = repoWorld('ch1', {
+        items: Object.fromEntries(ids.map((id) => [id, {}])),
+        sections: { archive: { hall: [leaveBy('out', 'archive_out')] } },
+        top: { inherits: ids.map((id) => ({ id, required: false })) },
+      });
+      return carryRepo({ chapters: [{ ...ch1, world }] });
+    };
+    const worldLine = (out: readonly string[]): string[] => out.filter((l) => l.startsWith('world: ch1:'));
+    const r = storyRun(repo(4));
+    expect(worldLine(r.out), r.out.join('\n')).toEqual(['world: ch1: 1 section, 1 room, 0 puzzles, softlock NOT SEARCHED (1 of 1 sections)']);
+    expect(printed(r.out, 'world/inherit-count')).toHaveLength(1);
+    // The OK form's head fields, on the same world with three: searched, its eight starts of one state each.
+    const control = storyRun(repo(3));
+    expect(worldLine(control.out), control.out.join('\n')).toEqual(['world: ch1: 1 section, 1 room, 0 puzzles, softlock OK (8 states)']);
+  },
+  IN_PROCESS_TIMEOUT_MS,
+);
+
+test(
+  'story: the en half of [moves] is refused at its en line',
+  () => {
+    const SAFE_HINT = 'ch1.w.m001'; // fixture text ids, beside repoWorld's `ch1.w.<n>`
+    const DIAL_HINT = 'ch1.w.m002';
+    /** ch1 alone: its archive's hall holds a code safe (its clue a note beside it) and a door into the view of a two-lever
+     *  device (07 §7.5), whose ru hints obey W6; `safeEn` and `dialEn` are the en texts of the safe's one hint and the levers' last tier. */
+    const repo = (safeEn: string, dialEn: string): Record<string, string> => {
+      const ch1 = receiverChapter(null, { id: 'ch1', paid: false });
+      const zeroSlot = (puzzle: string): Json => ({ slots: [], puzzle, locked: TEXT, onOpen: [], onFail: [] });
+      const common = { title: TEXT, prompt: TEXT, closeup: null, maxAttempts: null, giveUp: false };
+      const puzzles = {
+        safe: { type: 'code', ...common, params: { dials: 3 }, solution: [1, 1, 1], hints: [{ id: SAFE_HINT, ru: 'Код в письме.' }], clues: [{ examined: 'hall.note' }] },
+        dial: {
+          type: 'levers',
+          ...common,
+          params: { parts: 2, positions: 2, couples: [[], []], target: [1, 1], rects: [[100, 800, 150, 150], [400, 800, 150, 150]] },
+          solution: [1, 1],
+          hints: [{ id: DIAL_HINT, ru: 'Порядок: [moves].' }],
+        },
+      };
+      const world = repoWorld('ch1', {
+        sections: {
+          archive: {
+            hall: [
+              leaveBy('out', 'archive_out'),
+              { id: 'safe', kind: 'object', label: TEXT, lock: zeroSlot('safe'), then: [], look: null, prop: null },
+              { id: 'note', kind: 'look', label: TEXT, look: TEXT, then: [] },
+              { id: 'to_panel', kind: 'exit', label: TEXT, to: { room: 'panel' }, lock: null, sfx: null },
+            ],
+            panel: [{ id: 'dial', kind: 'object', label: TEXT, lock: zeroSlot('dial'), then: [], look: null, prop: null }],
+          },
+        },
+        top: { puzzles },
+      });
+      const panel = at(world, 'sections.archive.rooms.panel');
+      panel['view'] = { of: 'hall' };
+      panel['device'] = 'dial';
+      const files = carryRepo({ chapters: [{ ...ch1, world }] });
+      const en = JSON.parse(files['story/locales/en/ch1.json'] ?? '{}') as Record<string, Json>; // the harness's en table
+      obj(en[SAFE_HINT])['en'] = safeEn;
+      obj(en[DIAL_HINT])['en'] = dialEn;
+      files['story/locales/en/ch1.json'] = `${JSON.stringify(en, null, 2)}\n`;
+      return files;
+    };
+    /** The run's `world/hint-moves` lines, and the en table line of `id` in its repo. */
+    const refused = (out: readonly string[]): string[] => out.filter((l) => l.includes(' world/hint-moves '));
+    const enLine = (files: Readonly<Record<string, string>>, id: string): number => (files['story/locales/en/ch1.json'] ?? '').split('\n').indexOf(`  "${id}": {`) + 1;
+
+    // The control: each en tier as its ru. Clean, so it exits 0 (and the levers build replaced the marker).
+    const control = storyRun(repo('The code is in the letter.', 'Order: [moves].'));
+    expect(control.out.filter((l) => /^[EW] /.test(l)), control.out.join('\n')).toEqual([]);
+    expect(control.code).toBe(0);
+    // A code puzzle's en tier holding the marker.
+    const codeFiles = repo('Code: [moves].', 'Order: [moves].');
+    const code = storyRun(codeFiles);
+    expect(refused(code.out), code.out.join('\n')).toEqual([
+      `E story/locales/en/ch1.json:${enLine(codeFiles, SAFE_HINT)} world/hint-moves code puzzle 'safe': en hint tier 1 holds [moves], which only a levers puzzle's last tier may (§7.3, W6)`,
+    ]);
+    expect(code.code).toBe(1);
+    // The levers' last en tier without it.
+    const leversFiles = repo('The code is in the letter.', 'Order.');
+    const levers = storyRun(leversFiles);
+    expect(refused(levers.out), levers.out.join('\n')).toEqual([
+      `E story/locales/en/ch1.json:${enLine(leversFiles, DIAL_HINT)} world/hint-moves levers puzzle 'dial': its last en hint tier (1 of 1) holds no [moves], which the build replaces with the throw order (§7.3, W6)`,
+    ]);
+    expect(levers.code).toBe(1);
+  },
+  IN_PROCESS_TIMEOUT_MS,
+);
+
+test('vars: a nested inline read counts as a read', () => {
+  /** ch1 assigning its VAR `seen` and saying `said`. */
+  const chapter = (said: string): string[] => [...INK_HEAD.slice(0, 1), 'VAR seen = false', ...INK_HEAD.slice(1), '~ seen = true', `${said} #id:ch1.start.a001`, '-> END'];
+  // `seen` read only by the outer group of a nested inline: `{g_trust}` sits inside its branch.
+  expect(writeOnly([graphWith(chapter('Мы {seen: снова {g_trust}|впервые} здесь.')).facts])).toEqual([]);
+  // The control: the same write, read nowhere.
+  expect(writeOnly([graphWith(chapter('Мы здесь.')).facts]).map((f) => f.message)).toEqual(['VAR seen is assigned, but its chapter never reads it (§11)']);
 });

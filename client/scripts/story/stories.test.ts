@@ -233,6 +233,17 @@ function lines(findings: readonly Finding[]): string[] {
   return findings.map((f) => `${f.severity} ${f.file}:${f.line} ${f.code} ${f.message}`);
 }
 
+/** ch2's source whose knot `archive` (line 4, its graph node's line) is written as `body`, then the knot `vault`. */
+function archiveInk(body: readonly string[]): ReadonlyMap<string, string> {
+  const text = ['INCLUDE ../common/globals.ink', '-> archive', '', '=== archive ===', ...body, '', '=== vault ===', 'Склеп. #id:ch2.vault.v001', '-> END', ''];
+  return new Map([['ch2/main.ink', text.join('\n')]]);
+}
+
+/** The ending `archive` judged on its source `body`: in its graph it ends the chapter and has no successor. */
+function archiveEnding(body: readonly string[]): string[] {
+  return lines(checkEndings(manor(ARCHIVE_END), graphs([knot('archive', { line: 4 }), knot('vault', { line: 6 + body.length })]), archiveInk(body)));
+}
+
 test('stories: ending knot must end the chapter', () => {
   expect(lines(checkEndings(manor({ end: { chapter: 'ch2', knot: 'vault' } }), graphs(), NO_SOURCES))).toEqual([
     e("0.endings.end.knot: 'vault' is not a knot of ch2"),
@@ -242,6 +253,37 @@ test('stories: ending knot must end the chapter', () => {
     e("0.endings.end.knot: ch2 knot 'archive' writes no -> END: an ending knot ends the chapter"),
   ]);
   expect(checkEndings(manor(ARCHIVE_END), graphs(), NO_SOURCES)).toEqual([]);
+  // RULINGS 404: the game ends the story only when its checkpoint is the ending knot at the END, and only a line the
+  // knot shows places it there; a knot that shows none ends the chapter, and the game goes on to the next one.
+  // RULINGS 407: a text line of escaped spaces prints whitespace only (ink prints "\n", and the runner keeps a
+  // tag-only step), so the clause unescapes before it trims and tests.
+  const silent = [e("0.endings.end.knot: ch2 knot 'archive' shows no line before its END: the game would end the chapter, not the story")];
+  const line = 'Архив. #id:ch2.archive.a001';
+  for (const body of [
+    [],
+    ['# bgm: calm'],
+    ['TODO: wording'],
+    ['\\  #id:ch2.archive.a001'],
+    ['\\ \\  #id:ch2.archive.a001'],
+    ['{ g_x > 0:', `    ${line}`, '}'],
+    ['{ g_x > 0:', `    ${line}`, '- else:', '    Склад. #id:ch2.archive.a002', '}'],
+    ['{g_x > 0: Архив.} #id:ch2.archive.a001'],
+    ['{&Архив.|Склад.} #id:ch2.archive.a001'],
+    ['* [Открыть #id:ch2.archive.c001]', `    ${line}`],
+    [`- ${line}`],
+    ['= inner', line],
+  ]) {
+    expect(archiveEnding([...body, '-> END']), body.join(' / ')).toEqual(silent);
+  }
+  // The controls: a line first, after a TODO line (ink/todo is a warning, and the line compiles to nothing), after
+  // tag-only, logic, blank and comment lines, said by a speaker, or with text beside an inline conditional
+  // (text/inline-logic refuses that line in the gate; this clause keeps only the text outside it), or escaped glyphs
+  // alone: ink prints `\<\>` as "<>" (an escape prints its character, and an escaped glue is no glue).
+  expect(archiveEnding([line, '-> END'])).toEqual([]);
+  expect(archiveEnding(['TODO: wording', line, '-> END'])).toEqual([]);
+  expect(archiveEnding(['# bgm: calm', '~ g_x = 1', '', '// the archive', `stranger: ${line}`, '-> END'])).toEqual([]);
+  expect(archiveEnding(['Архив{g_x > 0: наконец}. #id:ch2.archive.a001', '-> END'])).toEqual([]);
+  expect(archiveEnding(['\\<\\> #id:ch2.archive.a001', '-> END'])).toEqual([]);
 });
 
 test('stories: ending knot with successors fails', () => {
@@ -250,6 +292,21 @@ test('stories: ending knot with successors fails', () => {
     e("0.endings.end.knot: ch2 knot 'archive' leads on to vault: an ending knot has no successor"),
   ]);
   expect(checkEndings(manor(ARCHIVE_END), graphs([knot('archive'), knot('vault')]), NO_SOURCES)).toEqual([]);
+  // RULINGS 404: the graph's `next` holds neither a thread's knot nor a tunnel within the knot (graph.ts `next`), and a
+  // line shown there would stand in another knot; the first one is reported, a stitch's included.
+  const line = 'Архив. #id:ch2.archive.a001';
+  expect(archiveEnding([line, '<- vault', '-> END'])).toEqual([
+    e("0.endings.end.knot: ch2 knot 'archive' runs a thread or a tunnel ('<- vault', story/ch2/main.ink:6): an ending knot has no successor"),
+  ]);
+  const tunnel = [line, '-> inner ->', '-> END', '= inner', 'Внутри. #id:ch2.archive.a002', '->->'];
+  expect(archiveEnding(tunnel)).toEqual([
+    e("0.endings.end.knot: ch2 knot 'archive' runs a thread or a tunnel ('-> inner ->', story/ch2/main.ink:6): an ending knot has no successor"),
+  ]);
+  expect(archiveEnding([line, '-> END', '= inner', 'Внутри. #id:ch2.archive.a002', '->->'])).toEqual([
+    e("0.endings.end.knot: ch2 knot 'archive' runs a thread or a tunnel ('->->', story/ch2/main.ink:9): an ending knot has no successor"),
+  ]);
+  // The control: the same knot without them.
+  expect(archiveEnding([line, '-> END', '= inner', 'Внутри. #id:ch2.archive.a002', '-> END'])).toEqual([]);
 });
 
 test('stories: ending knot with a yield fails', () => {

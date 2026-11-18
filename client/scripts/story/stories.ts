@@ -7,6 +7,7 @@ import type { AssetCatalog, ChapterListEntry, EndingName, Result, StoryId } from
 import type { AssetId, ChapterId, KnotName } from '../../src/story/staging.ts';
 import { YIELD_KINDS, tagKind } from '../../src/story/tags.ts';
 import { classify } from './classify.ts';
+import type { SourceLine } from './classify.ts';
 import type { StoryNames } from './emit.ts';
 import type { ChapterGraph, KnotNode } from './graph.ts';
 import { LINT_CODES, tagsOf } from './lint.ts';
@@ -210,11 +211,87 @@ function yieldIn(node: KnotNode, sources: ReadonlyMap<string, string>): { tag: s
   return null;
 }
 
+/** The knot's lines after its header up to the next knot header, its stitches included (as `yieldIn` scopes them). */
+function bodyOf(node: KnotNode, text: string): readonly SourceLine[] {
+  const after = classify(text).slice(node.line);
+  const end = after.findIndex((l) => l.cls.kind === 'knot');
+  return end < 0 ? after : after.slice(0, end);
+}
+
+/**
+ * `text` as it always prints: every inline `{…}` (a conditional or an alternative may print nothing) and glue removed,
+ * and every escape outside them unescaped, as ink prints it (`\x` prints `x`: an escaped space prints whitespace only,
+ * and an escaped `<` or `>` is no glue), before the trim.
+ */
+function unconditional(text: string): string {
+  let out = '';
+  let depth = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (c === '\\') {
+      out += depth === 0 ? text.slice(i + 1, i + 2) : '';
+      i += 1;
+    } else if (c === '{') {
+      depth += 1;
+    } else if (c === '}') {
+      depth = Math.max(0, depth - 1);
+    } else if (depth === 0 && c === '<' && text[i + 1] === '>') {
+      i += 1;
+    } else if (depth === 0) {
+      out += c;
+    }
+  }
+  return out.trim();
+}
+
+/**
+ * Whether the knot shows a line on its straight-line prefix: a text line whose text prints whatever the state, before
+ * any divert, tunnel, thread, choice, gather, block, stitch or its END. Tag-only, logic, blank and comment lines pass
+ * over; anything else ends the prefix (fail closed). The runner places such a line's step in the knot (runner.ts
+ * `#place`), so the game's checkpoint is the knot when its END runs; without one, game.ts's `chapterEnd` sees an earlier
+ * knot and continues to the next chapter.
+ */
+function showsLine(body: readonly SourceLine[]): boolean {
+  for (const { cls } of body) {
+    switch (cls.kind) {
+      case 'blank':
+      case 'comment':
+      case 'todo':
+      case 'tags':
+      case 'logic':
+        continue;
+      case 'text':
+        if (unconditional(cls.text) !== '') {
+          return true;
+        }
+        if (cls.diverts.length > 0) {
+          return false;
+        }
+        continue;
+      default:
+        return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * The first thread or tunnel (a call or a return) written in the knot, its stitches included. The graph's `next` holds a
+ * tunnel call's knot, but no thread's knot, no tunnel into the knot's own stitches and no return; a line a thread or a
+ * tunnel shows may stand in another knot, which then holds the game's checkpoint at the END.
+ */
+function callIn(body: readonly SourceLine[]): { code: string; line: number } | null {
+  const call = body.find(({ cls }) => cls.kind === 'thread' || ('diverts' in cls && cls.diverts.some((d) => d.tunnel)));
+  return call === undefined ? null : { code: call.code.trim(), line: call.line };
+}
+
 /**
  * Rule 8 of `catalog/stories` (STAGING-DSL §11): each ending's knot is in its chapter's graph, writes `-> END`, has no
- * successor knot and no yield tag, and no two endings name one knot; and a chapter with a `next` keeps a `-> END` knot
- * that is no story ending, or no run could reach its successor. An ending in a chapter without a graph is skipped: its
- * compile or list error already fails the run. Every finding names story/stories.json (line 0).
+ * successor knot, no yield tag, no thread and no tunnel, shows a line on its straight-line prefix (`showsLine`: the game
+ * ends the story only when its checkpoint is the ending knot at the END), and no two endings name one knot; and a
+ * chapter with a `next` keeps a `-> END` knot that is no story ending, or no run could reach its successor. An ending in
+ * a chapter without a graph is skipped: its compile or list error already fails the run; the source clauses judge the
+ * files `sources` holds (story.ts passes every file it compiled). Every finding names story/stories.json (line 0).
  */
 export function checkEndings(stories: readonly StoryPlan[], graphs: ReadonlyMap<ChapterId, ChapterGraph>, sources: ReadonlyMap<string, string>): Finding[] {
   const out: Finding[] = [];
@@ -251,6 +328,15 @@ export function checkEndings(stories: readonly StoryPlan[], graphs: ReadonlyMap<
       const y = yieldIn(node, sources);
       if (y !== null) {
         report(at, `${e.chapter} knot '${e.knot}' yields ('${y.tag}', story/${node.file}:${y.line}): an ending knot carries no puzzle / explore tag`);
+      }
+      const text = sources.get(node.file);
+      const body = text === undefined ? null : bodyOf(node, text);
+      if (body !== null && !showsLine(body)) {
+        report(at, `${e.chapter} knot '${e.knot}' shows no line before its END: the game would end the chapter, not the story`);
+      }
+      const call = body === null ? null : callIn(body);
+      if (call !== null) {
+        report(at, `${e.chapter} knot '${e.knot}' runs a thread or a tunnel ('${call.code}', story/${node.file}:${call.line}): an ending knot has no successor`);
       }
     }
     story.chapters.forEach((ch, k) => {

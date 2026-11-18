@@ -13,6 +13,7 @@ import type { KnotName, LineId, PuzzleLocalId, SectionId, VarName } from '../../
 import type { RoomId, WorldPublicBody, WorldSource } from '../../../src/world/types.ts';
 import type { Finding, Severity, SourceChapter } from '../lint.ts';
 import { SHAPE_LINT } from '../puzzles/shape.ts';
+import { CARRY_LINT, CARRY_PROOF_LINT } from './carry.ts';
 import { CLUES_LINT } from './clues.ts';
 import { COMBINE_LINT, COMBINE_TEXTS } from './combine.ts';
 import { CONDITIONS_LINT } from './conditions.ts';
@@ -59,7 +60,7 @@ export type WorldLint<C extends string> = {
   | { readonly runsFrom: 'story' }
 );
 
-export const MECHANIC_LINTS = [CORE_LINT, CLUES_LINT, SHAPE_LINT, CONDITIONS_LINT, TEXTS_LINT, USE_LINT, VISUAL_LINT, VIEW_LINT, COMBINE_LINT, FLAGS_LINT, DEVICES_LINT] as const satisfies readonly WorldLint<string>[];
+export const MECHANIC_LINTS = [CORE_LINT, CLUES_LINT, SHAPE_LINT, CONDITIONS_LINT, TEXTS_LINT, USE_LINT, VISUAL_LINT, VIEW_LINT, COMBINE_LINT, FLAGS_LINT, DEVICES_LINT, CARRY_LINT, CARRY_PROOF_LINT] as const satisfies readonly WorldLint<string>[];
 
 /**
  * Each data module's text walker (engine plan §3.2 "Module texts"), exhaustive over MECHANIC_DATA ids (an id without
@@ -73,6 +74,7 @@ export const MECHANIC_TEXTS: { readonly [M in (typeof MECHANIC_DATA)[number] as 
   combine: COMBINE_TEXTS,
   flags: null,
   devices: null,
+  carry: null,
 };
 
 /** One list of effects a module's data fires in a section, with its room: the story knots it enters, in fire order. */
@@ -94,6 +96,7 @@ export const MECHANIC_STORIES: { readonly [M in (typeof MECHANIC_DATA)[number] a
   combine: null,
   flags: null,
   devices: null,
+  carry: null,
 };
 
 type CodesOf<L> = L extends { readonly codes: infer C } ? keyof C & string : never;

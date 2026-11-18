@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import type { KernelWorld } from '../src/mechanics/contract.ts';
 import { assetIndex, decodeChapterList } from '../src/story/catalog.ts';
 import type { AssetCatalog, Cast, CatalogIssue, ChapterListEntry, EndingName, StoryId } from '../src/story/catalog.ts';
-import type { AssetId, AssetIndex, BgId, ChapterId, KnotName, LineId, PuzzleLocalId } from '../src/story/staging.ts';
+import type { AssetId, AssetIndex, BgId, ChapterId, KnotName, LineId, PuzzleLocalId, SectionId } from '../src/story/staging.ts';
 import { toPublic } from '../src/world/decode.ts';
 import type { RoomId, WorldPublicBody, WorldSource } from '../src/world/types.ts';
 import { compileChapter } from './story/compile.ts';
@@ -26,12 +26,15 @@ import type { CompiledChapter } from './story/compile.ts';
 import { OUT, chapterPaths, decodeLineFingerprints, decodeStoryUsage, hintIdsOf, paidLeak, planEmit, storyVersion } from './story/emit.ts';
 import type { StoryNames, WorldNeedles } from './story/emit.ts';
 import { ID_SHAPED_RE, fixIds, fixWorldIds, syncLocales } from './story/fix.ts';
-import { buildGraph, worldRef, writeOnly } from './story/graph.ts';
+import { buildGraph, mustPass, worldRef, writeOnly } from './story/graph.ts';
 import type { ChapterGraph, GraphFacts } from './story/graph.ts';
 import { LINT_CODES, lintCatalog, lintSources } from './story/lint.ts';
 import type { Finding, LintCode, Severity, SourceChapter, SourceLintInput } from './story/lint.ts';
 import { RETIRED_FILE, checkLocales, decodeEnTable, decodeNameTable, decodeRetired } from './story/locales.ts';
 import type { EnTable } from './story/locales.ts';
+import { ITEMS_FILE, carryLines, carryProof } from './story/mechanics/carry.ts';
+import type { CarryChapter, SectionPath, YieldSite } from './story/mechanics/carry.ts';
+import { DEVICES_CODES } from './story/mechanics/devices.ts';
 import { META_FILE, choicePoints, lintMeta } from './story/meta.ts';
 import type { ChoiceMap, MetaSource, StoryMeta } from './story/meta.ts';
 import { ALLOW_FILE, coverageLine, decodeAllow, playChapter } from './story/playthrough.ts';
@@ -44,6 +47,7 @@ import type { ShotFinding } from './story/shots/lint.ts';
 import { SHOTS_FILE, decodeShotList, effectiveCatalog, effectiveShots } from './story/shots/list.ts';
 import type { EffectiveShot, ShotList } from './story/shots/list.ts';
 import { SHOT_USAGE_FILE, encodeShotUsage, shotUsage } from './story/shots/usage.ts';
+import { checkSection } from './story/softlock.ts';
 import { STORIES_FILE, checkEndings, checkInvoiceTitles, decodeStories, endingKnots } from './story/stories.ts';
 import type { StoryPlan } from './story/stories.ts';
 import { WORLD_FILE, decodeWorldFile, lintWorld, worldFingerprints, worldLines } from './story/world.ts';
@@ -254,6 +258,50 @@ function localeStage(
   return { en, names: r.names };
 }
 
+/** The marker a levers puzzle's last hint tier holds (07 §7.3); restated from scripts/story/mechanics/devices.ts, where
+ *  it is private. */
+const MOVES = '[moves]';
+
+/**
+ * W6's en half (07 §7.3): the build replaces a levers puzzle's last-tier `[moves]` with the throw order in both
+ * languages, so each decoded world's en hint tiers obey the ru rule the devices lint judges: no other type's tier holds
+ * the marker, and a levers puzzle's last tier holds it exactly once and no earlier tier does. Each refusal is a
+ * `world/hint-moves` (the devices lint's code) at the tier's line in story/locales/en/<ch>.json; a tier with no en entry
+ * is the locales check's.
+ */
+function enHintMoves(worlds: ReadonlyMap<ChapterId, ChapterWorld>, en: ReadonlyMap<string, EnTable>): Finding[] {
+  const out: Finding[] = [];
+  for (const [ch, w] of worlds) {
+    const table = en.get(ch);
+    if (w.kind !== 'ok' || table === undefined) {
+      continue;
+    }
+    for (const [pid, p] of Object.entries(w.source.puzzles)) {
+      const n = p.hints.length;
+      p.hints.forEach((h, i) => {
+        const text = table.entries.get(h.id)?.en;
+        if (text === undefined) {
+          return;
+        }
+        const times = text.split(MOVES).length - 1;
+        let why: string | null;
+        if (p.type !== 'levers') {
+          why = times > 0 ? `${p.type} puzzle '${pid}': en hint tier ${i + 1} holds ${MOVES}, which only a levers puzzle's last tier may` : null;
+        } else if (i === n - 1) {
+          const tier = `levers puzzle '${pid}': its last en hint tier (${i + 1} of ${n})`;
+          why = times === 0 ? `${tier} holds no ${MOVES}, which the build replaces with the throw order` : times > 1 ? `${tier} holds ${MOVES} ${times} times, not once` : null;
+        } else {
+          why = times > 0 ? `levers puzzle '${pid}': en hint tier ${i + 1} of ${n} holds ${MOVES}, which only the last tier may` : null;
+        }
+        if (why !== null) {
+          out.push({ code: 'world/hint-moves', severity: DEVICES_CODES['world/hint-moves'], file: `story/${table.file}`, line: table.keyLine(h.id), message: `${why} (§7.3, W6)` });
+        }
+      });
+    }
+  }
+  return out;
+}
+
 /**
  * `--fix-ids` (STAGING-DSL §4): first a fresh ID into every world text that has none, in each listed chapter's
  * story/<ch>/world.json (D13: on the raw JSON, since such a world does not decode; it is read after this pass); then
@@ -343,6 +391,60 @@ function readWorlds(root: string, chapters: readonly ChapterListEntry[], out: Fi
 }
 
 /**
+ * The carry pass's graph glue (engine plan §6.6; scripts/story/mechanics/carry.ts takes plain data, never a graph): per
+ * section an explore yield of the chapter names, its yields (repo-relative, source order) and the first continuing END,
+ * in knot order, that the first knot reaches around every knot holding one of them (`mustPass`); null when the entry
+ * names no knot (its `ink/entry` error says why). A continuing END is one the story goes on after: an END in a knot
+ * that `endings` (the chapter's declared story endings) does not hold. A declared ending's END runs with the game's
+ * checkpoint at its own knot, so the game ends the story there and its player never reaches the receiver: the premise
+ * `catalog/stories` rule 8 makes true (stories.ts `checkEndings`: no successor, no yield, no thread or tunnel, and a line
+ * shown on the knot's straight-line prefix, which the runner places in the knot before the END). A yield's `exempt`: its
+ * knot is the section's own event knot (graph.ts `ExploreSite.event`), not the first knot and in no knot's `next`, so
+ * every entry of it is the section's event, which the section's search proves.
+ */
+export function carryPaths(graph: ChapterGraph, facts: GraphFacts, endings: ReadonlyMap<KnotName, EndingName>): ReadonlyMap<SectionId, SectionPath> | null {
+  const first = graph.firstKnot;
+  if (first === null) {
+    return null;
+  }
+  const entered = new Set([...graph.knots.values()].flatMap((k) => k.next));
+  const bySection = new Map<SectionId, YieldSite[]>();
+  for (const e of facts.explores ?? []) {
+    const exempt = e.event && e.knot !== first && !entered.has(e.knot);
+    bySection.set(e.section, [...(bySection.get(e.section) ?? []), { knot: e.knot, file: `story/${e.file}`, line: e.line, prefix: e.prefix, exempt }]);
+  }
+  const ends = [...graph.knots.values()].filter((k) => k.ending && !endings.has(k.name)).map((k) => k.name);
+  return new Map(
+    [...bySection].map(([section, sites]) => {
+      const yielding = new Set(sites.map((s) => s.knot));
+      return [section, { sites, bypass: ends.find((e) => !mustPass(graph, first, yielding, new Set([e]))) ?? null }] as const;
+    }),
+  );
+}
+
+/** Each listed chapter as the carry pass reads it, in list order; `endings`: the declared story endings per chapter. */
+function carryChapters(
+  chapters: readonly ChapterListEntry[],
+  worlds: ReadonlyMap<ChapterId, ChapterWorld>,
+  graphs: ReadonlyMap<ChapterId, ChapterGraph>,
+  facts: ReadonlyMap<ChapterId, GraphFacts>,
+  endings: ReadonlyMap<ChapterId, ReadonlyMap<KnotName, EndingName>>,
+): CarryChapter[] {
+  return chapters.map((ch) => {
+    const w = worlds.get(ch.id);
+    const g = graphs.get(ch.id);
+    const f = facts.get(ch.id);
+    return {
+      id: ch.id,
+      paid: ch.paid,
+      next: ch.next,
+      world: w === undefined || w.kind === 'none' ? { kind: 'none' } : w.kind === 'invalid' ? { kind: 'invalid' } : { kind: 'ok', source: w.source, text: w.text },
+      paths: g === undefined || f === undefined ? null : carryPaths(g, f, endings.get(ch.id) ?? new Map()),
+    };
+  });
+}
+
+/**
  * Per listed chapter, the puzzle ids its world defines, for `catalog/meta` rule 5: an empty set without a world, null
  * for a world that did not decode (its `world/schema` finding already fails the run, so nothing is judged against it).
  */
@@ -406,8 +508,14 @@ function worldReport(ch: ChapterId, w: ChapterWorld | undefined, sections: reado
   const rooms = sections.reduce((n, s) => n + s.rooms, 0);
   const head = `world: ${ch}: ${plural(sections.length, 'section')}, ${plural(rooms, 'room')}, ${plural(Object.keys(w.source.puzzles).length, 'puzzle')}`;
   const failed = sections.filter((s) => !s.ok).length;
-  return failed > 0
-    ? `${head}, softlock FAIL (${failed} of ${sections.length} sections)`
+  // A section with no finding and no count was not searched (a visual-only read, or too many optional inherited items):
+  // its world's own E says why, and the line never calls it proved.
+  const skipped = sections.filter((s) => s.ok && s.states === null).length;
+  if (failed > 0) {
+    return `${head}, softlock FAIL (${failed} of ${sections.length} sections)`;
+  }
+  return skipped > 0
+    ? `${head}, softlock NOT SEARCHED (${skipped} of ${sections.length} sections)`
     : `${head}, softlock OK (${sections.reduce((n, s) => n + (s.states ?? 0), 0)} states)`;
 }
 
@@ -746,6 +854,27 @@ export function main(argv: readonly string[], repoRoot: string): number {
   // The files an error of stages 1-4 names: such a chapter is not played (stage 6). Localization errors do not gate play.
   const sourceErrors = new Set(found.filter((f) => f.severity === 'E').map((f) => f.file));
 
+  // The declared story endings per chapter: the carry proof's and the playthroughs' (stage 6).
+  const endings = plans === null ? new Map<ChapterId, ReadonlyMap<KnotName, EndingName>>() : endingKnots(plans);
+  // The carry proof across the chapters (engine plan §6.6). Its findings name chapter files, so it runs after the set
+  // above: they never keep a chapter from being played, and the run still fails on them. Judged only on a decoded story
+  // list, like the endings: a list that failed has its own error, so the skip fails closed.
+  if (plans !== null) {
+    const pass = carryProof({ chapters: carryChapters(chapters, worlds, graphs, facts, endings), registry: readRaw(root, ITEMS_FILE) });
+    found.push(...pass.findings);
+    // Each giver section of a required item searched again with what its receivers require: only its leave check is
+    // new (its soft-lock and cap findings are the world lint's, already reported), at the section's line.
+    for (const run of pass.leaves) {
+      const w = worlds.get(run.chapter);
+      if (w?.kind !== 'ok') {
+        continue;
+      }
+      const check = checkSection({ ...toPublic(w.source), mods: w.source.mods }, run.section, `story/${run.chapter}/${WORLD_FILE}`, run.required);
+      const line = carryLines(w.text)(`sections.${run.section}`);
+      found.push(...check.findings.filter((f) => f.code === 'world/carry-leave').map((f) => ({ ...f, line })));
+    }
+  }
+
   // 5. Localization (after `--sync-locales` appended the new IDs): the en tables of the compiled chapters, the names
   // and titles, and the ID rules no single chapter can see. Without the cast no name can be checked.
   const enTexts = readEnTables(root);
@@ -760,9 +889,13 @@ export function main(argv: readonly string[], repoRoot: string): number {
   if (plans !== null && localized !== null && localized.names !== null) {
     found.push(...checkInvoiceTitles(plans, chapters, localized.names));
   }
+  // The en half of the hint marker rule, once the en tables are decoded: after `sourceErrors`, so it never keeps a
+  // chapter from being played, and its error keeps the run from emitting (the levers build would throw on it).
+  if (localized !== null) {
+    found.push(...enHintMoves(worlds, localized.en));
+  }
 
   // 6. Seeded playthroughs of the chapters, in list order.
-  const endings = plans === null ? new Map<ChapterId, ReadonlyMap<KnotName, EndingName>>() : endingKnots(plans);
   const sourceWorlds = new Map([...worlds].flatMap(([ch, w]) => (w.kind === 'ok' ? [[ch, w.source] as const] : [])));
   // The played world carries the decoded `mods`, as the explore controller's does: a module's rules read their data there.
   const publicWorlds = new Map([...sourceWorlds].map(([ch, w]) => [ch, { ...toPublic(w), mods: w.mods }]));

@@ -11,6 +11,8 @@
 //   (`world/text-unwalked`) and the version hash read it as data (`mechanics: every module's decoded data is plain
 //   JSON`).
 import type { MechanicData, OwnedRaw } from '../contract.ts';
+import { decodeCarry, encodeCarry, normalizeCarry } from './carry.ts';
+import type { CarryData } from './carry.ts';
 import { decodeCombine, encodeCombine, normalizeCombine } from './combine.ts';
 import type { CombineData } from './combine.ts';
 import { core } from './core.ts';
@@ -88,7 +90,18 @@ const devices = {
   atoms: { part: { decode: decodePartAtom, gating: false } },
 } satisfies MechanicData<'devices', DevicesData>;
 
-export const MECHANIC_DATA = [core, use, visual, view, combine, flags, devices] as const;
+const carry = {
+  id: 'carry',
+  // Data only: the giver's mark and the receiver's `inherits` are read by the story gate's proof and the chapter start;
+  // no rule of a section acts on them, so there is no rules half to align.
+  rules: 'none',
+  owns: { item: ['carry'], world: ['inherits'], facts: [] },
+  decode: decodeCarry,
+  encode: encodeCarry as (d: unknown) => OwnedRaw,
+  normalize: normalizeCarry,
+} satisfies MechanicData<'carry', CarryData>;
+
+export const MECHANIC_DATA = [core, use, visual, view, combine, flags, devices, carry] as const;
 
 /** A data registry as a decode takes it: `MECHANIC_DATA`, or a test's fixture modules beside it. */
 export type DataRegistry = readonly MechanicData<string, unknown, unknown>[];
