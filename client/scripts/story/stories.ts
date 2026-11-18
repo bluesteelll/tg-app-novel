@@ -218,24 +218,30 @@ function bodyOf(node: KnotNode, text: string): readonly SourceLine[] {
   return end < 0 ? after : after.slice(0, end);
 }
 
-/** `text` as it always prints: every inline `{…}` (a conditional or an alternative may print nothing) and glue removed. */
+/**
+ * `text` as it always prints: every inline `{…}` (a conditional or an alternative may print nothing) and glue removed,
+ * and every escape outside them unescaped, as ink prints it (`\x` prints `x`: an escaped space prints whitespace only,
+ * and an escaped `<` or `>` is no glue), before the trim.
+ */
 function unconditional(text: string): string {
   let out = '';
   let depth = 0;
   for (let i = 0; i < text.length; i += 1) {
     const c = text[i];
     if (c === '\\') {
-      out += depth === 0 ? text.slice(i, i + 2) : '';
+      out += depth === 0 ? text.slice(i + 1, i + 2) : '';
       i += 1;
     } else if (c === '{') {
       depth += 1;
     } else if (c === '}') {
       depth = Math.max(0, depth - 1);
+    } else if (depth === 0 && c === '<' && text[i + 1] === '>') {
+      i += 1;
     } else if (depth === 0) {
       out += c;
     }
   }
-  return out.replaceAll('<>', '').trim();
+  return out.trim();
 }
 
 /**

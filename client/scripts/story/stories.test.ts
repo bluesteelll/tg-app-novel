@@ -255,12 +255,16 @@ test('stories: ending knot must end the chapter', () => {
   expect(checkEndings(manor(ARCHIVE_END), graphs(), NO_SOURCES)).toEqual([]);
   // RULINGS 404: the game ends the story only when its checkpoint is the ending knot at the END, and only a line the
   // knot shows places it there; a knot that shows none ends the chapter, and the game goes on to the next one.
+  // RULINGS 407: a text line of escaped spaces prints whitespace only (ink prints "\n", and the runner keeps a
+  // tag-only step), so the clause unescapes before it trims and tests.
   const silent = [e("0.endings.end.knot: ch2 knot 'archive' shows no line before its END: the game would end the chapter, not the story")];
   const line = 'Архив. #id:ch2.archive.a001';
   for (const body of [
     [],
     ['# bgm: calm'],
     ['TODO: wording'],
+    ['\\  #id:ch2.archive.a001'],
+    ['\\ \\  #id:ch2.archive.a001'],
     ['{ g_x > 0:', `    ${line}`, '}'],
     ['{ g_x > 0:', `    ${line}`, '- else:', '    Склад. #id:ch2.archive.a002', '}'],
     ['{g_x > 0: Архив.} #id:ch2.archive.a001'],
@@ -273,11 +277,13 @@ test('stories: ending knot must end the chapter', () => {
   }
   // The controls: a line first, after a TODO line (ink/todo is a warning, and the line compiles to nothing), after
   // tag-only, logic, blank and comment lines, said by a speaker, or with text beside an inline conditional
-  // (text/inline-logic refuses that line in the gate; this clause keeps only the text outside it).
+  // (text/inline-logic refuses that line in the gate; this clause keeps only the text outside it), or escaped glyphs
+  // alone: ink prints `\<\>` as "<>" (an escape prints its character, and an escaped glue is no glue).
   expect(archiveEnding([line, '-> END'])).toEqual([]);
   expect(archiveEnding(['TODO: wording', line, '-> END'])).toEqual([]);
   expect(archiveEnding(['# bgm: calm', '~ g_x = 1', '', '// the archive', `stranger: ${line}`, '-> END'])).toEqual([]);
   expect(archiveEnding(['Архив{g_x > 0: наконец}. #id:ch2.archive.a001', '-> END'])).toEqual([]);
+  expect(archiveEnding(['\\<\\> #id:ch2.archive.a001', '-> END'])).toEqual([]);
 });
 
 test('stories: ending knot with successors fails', () => {
