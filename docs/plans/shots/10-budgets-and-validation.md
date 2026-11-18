@@ -50,7 +50,7 @@
 | shot-view | 1.5 | engine |
 | frames | 0.3 | engine |
 | preload (+ deferred needs; rev. 3: + hope / neighbour eviction 0.1) | 0.5 | engine |
-| flatten | 0.8 | engine |
+| flatten | 0.8 | engine (Changed by RULINGS 381, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): D1 (RULINGS 381): m3 dropped; `flatten` stays in the engine closure (`client/src/scene/controller.ts:18`); SH7 booked E_engine 3.50 (RULINGS 387) and measured +3,179 B (RULINGS 392); the `scene-motion` chunk holds the animator, 749 B) |
 | camera | 0.6 | engine |
 | loop (rev. 3: + layered cover, second clock 0.1) | 0.6 | engine (`render-loop.ts`) |
 | (rev. 3, C1) entry preview + in-place upgrade (registry, loader, controller order) | 0.4 | engine |
@@ -60,17 +60,17 @@
 | (rev. 4, W2) room windows (`roomWindowKey`, the host `apply` hunk) | 0.1 | engine |
 | (rev. 4, W1) the entry window beside the upgrade | 0.05 | engine |
 | (rev. 4, W4) face and talk files in `imageIds` and the executor | 0.1 | engine |
-| (rev. 4, m3) `flatten` reached through the kit from SH7 on | − 0.8 | moves to `scene/motion/` |
+| (rev. 4, m3) `flatten` reached through the kit from SH7 on | − 0.8 | moves to `scene/motion/` (Changed by RULINGS 381, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): D1 (RULINGS 381): m3 dropped; `flatten` stays in the engine closure (`client/src/scene/controller.ts:18`); SH7 booked E_engine 3.50 (RULINGS 387) and measured +3,179 B (RULINGS 392); the `scene-motion` chunk holds the animator, 749 B) |
 | (rev. 5) eviction of `room:*` at any step and by a reservation (W2), the one ordered queue with `near` (m3), face and talk slots (m1) | 0.2 | engine |
 | (rev. 6) the recency re-insert and step 6 (c) (W1, W2), the `next:*` tail class (W1), `withEventRoom` (W2), the warm-decode rule (m2) | 0.1 | engine |
 | (rev. 7) synchronous joins, `registry.state`, the entry tag (W1); the `eventRoom` class and step 6 (d) (W2) | 0.1 | engine. **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 19):** SH5a's +1.3 ([engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13)) includes the synchronous joins and `registry.state` that LHJ landed (`preload.ts:163-172`, `registry.ts:523-527`), so up to 0.1 is already in the MEASURED base; engine §11.1 keeps the figure (the safe direction), and SH5a's cut quotes its measured delta against the base |
-| **engine subtotal** | **~6.15** (rev. 7; rev. 6: 6.05; rev. 5: 5.95; rev. 4: 5.75; 6.95 without the lever; 6.35 between SH6 and SH7, before SH7's loop) | engine row 214.5 MEASURED (S4 :170) + EN 1.53 + PPL 3.00 + 6.15 = 226.08 ([engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13), main `3c62a86`) / 230.0 (rev. 6, m6: EN and PPL re-read; rev. 7: not re-read, a delta round) |
-| `flatten` (rev. 4, from SH7) | 0.8 | `scene/motion/` chunk |
+| **engine subtotal** | **~6.15** (rev. 7; rev. 6: 6.05; rev. 5: 5.95; rev. 4: 5.75; 6.95 without the lever; 6.35 between SH6 and SH7, before SH7's loop) | engine row 214.5 MEASURED (S4 :170) + EN 1.53 + PPL 3.00 + 6.15 = 226.08 ([engine §11.1 The shared ledgers](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13), main `3c62a86`) / 230.0 (rev. 6, m6: EN and PPL re-read; rev. 7: not re-read, a delta round) (Changed by RULINGS 381, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): D1 (RULINGS 381): m3 dropped; `flatten` stays in the engine closure (`client/src/scene/controller.ts:18`); SH7 booked E_engine 3.50 (RULINGS 387) and measured +3,179 B (RULINGS 392); the `scene-motion` chunk holds the animator, 749 B) |
+| `flatten` (rev. 4, from SH7) | 0.8 | `scene/motion/` chunk (Changed by RULINGS 381, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): D1 (RULINGS 381): m3 dropped; `flatten` stays in the engine closure (`client/src/scene/controller.ts:18`); SH7 booked E_engine 3.50 (RULINGS 387) and measured +3,179 B (RULINGS 392); the `scene-motion` chunk holds the animator, 749 B) |
 | animator | 1.5 | `scene/motion/` |
 | warp + drive + hair mesh | 1.5 | `scene/motion/` |
 | ambient | 1.2 | `scene/motion/` |
 | scene-motions | 1.0 | `scene/motion/` |
-| **chunk subtotal** | **~6.0** (rev. 4: + `flatten`) | `scene-motion chunk (br)` <= 8.0. Changed by RULINGS 201 (as of `461424d`; docs lane `docs-errata-13`, group A): at the estimate policy's R (the all-JS R, 2.031 at SH1's merge; `scene-motion` has no MEASURED sample) the chunk reads 6.0 x 2.031 = **12.19 / 8.0** (ARITHMETIC): **flagged**: SH3b, which adds the row, and the first `scene/motion/` lane (SH7) quote it at their cuts (budget design §2.1) |
+| **chunk subtotal** | **~6.0** (rev. 4: + `flatten`; Changed by RULINGS 381, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): D1 (RULINGS 381): m3 dropped; `flatten` stays in the engine closure (`client/src/scene/controller.ts:18`); SH7 booked E_engine 3.50 (RULINGS 387) and measured +3,179 B (RULINGS 392); the `scene-motion` chunk holds the animator, 749 B; the E3 forecast at R 2.027 puts SH10 at 8.249, the first projected FAIL: the "Ruled since: RULINGS 381, 387, 392" paragraph after this table) | `scene-motion chunk (br)` <= 8.0. Changed by RULINGS 201 (as of `461424d`; docs lane `docs-errata-13`, group A): at the estimate policy's R (the all-JS R, 2.031 at SH1's merge; `scene-motion` has no MEASURED sample) the chunk reads 6.0 x 2.031 = **12.19 / 8.0** (ARITHMETIC): **flagged**: SH3b, which adds the row, and the first `scene/motion/` lane (SH7) quote it at their cuts (budget design §2.1) |
 | SH10 `scene` ids | 0.5 | cue-stage chunk |
 | Entry: catalog namespace strings | <= 0.1 | entry |
 
@@ -85,7 +85,7 @@
 | EN entry (GM3s) | + 0.05 | engine.md §11 entry row, "+0.05 (GM3s slot + mount)", as read |
 | PPL (rev. 6, m6: round 10) | + 3.00 | `per-player.md` §15 checklist: "Engine / first line: +3.00 KB br, headroom 8.27 KB br with engine.md's +1.53 (round 10)" ([per-player §15 Readiness checklist](../per-player/15-readiness-checklist.md#15-readiness-checklist)), as read 2026-11-03; round 5 used +2.85 (round 7) |
 | PPL entry (GM6s2 + GM6t) | + 0.35 | `per-player.md` §15: "0.35 KB br of this file's code in the entry" ([per-player §15 Readiness checklist](../per-player/15-readiness-checklist.md#15-readiness-checklist)), as read |
-| this design, engine part (rev. 4, m3: the decoders, SH1's growth and rev. 4's additions counted; `flatten` in the chunk from SH7; rev. 5: + 0.2; rev. 6: + 0.1; rev. 7: + 0.1) | + 6.15 | above |
+| this design, engine part (rev. 4, m3: the decoders, SH1's growth and rev. 4's additions counted; `flatten` in the chunk from SH7; rev. 5: + 0.2; rev. 6: + 0.1; rev. 7: + 0.1) (Changed by RULINGS 381, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): D1 (RULINGS 381): m3 dropped; `flatten` stays in the engine closure (`client/src/scene/controller.ts:18`); SH7 booked E_engine 3.50 (RULINGS 387) and measured +3,179 B (RULINGS 392); the `scene-motion` chunk holds the animator, 749 B) | + 6.15 | above |
 | this design, entry | + 0.1 | above |
 | **sum** | **269.08 / 270.0** (rev. 7; 0.92 left; the peak, between SH6 and SH7, is 269.28, 0.72 left; rev. 6: 268.98, peak 269.18) | A |
 | without the lazy chunk (+ 6.0) | 275.08: **FAIL** | A |
@@ -94,8 +94,8 @@ Each SH lane quotes the row base -> HEAD in its build log and STOPs at its cut i
 crosses 270.0. Rev. 4 (m3): round 3's ledger left out the `story/shots.ts` decoders and SH1's own +0.3; with them and
 this revision's additions the engine part is 6.55 KB, so **the designed lever is taken in SH7**: `flatten` (0.8 KB) is
 reached through the kit (SH7 Goal); the first step has no shot to dissolve from, and a dissolve before the kit lands
-falls back to container alpha. Round 3's "camera tweens too" is withdrawn (GSAP's one importer is `executor.ts`,
-`arch.test.ts:160-165`; `camFraming` is needed by `restore`). The next lever, if a cut STOPs: the scheduler's `warm`
+falls back to container alpha (Changed by RULINGS 381, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): D1 (RULINGS 381): m3 dropped; `flatten` stays in the engine closure (`client/src/scene/controller.ts:18`); SH7 booked E_engine 3.50 (RULINGS 387) and measured +3,179 B (RULINGS 392); the `scene-motion` chunk holds the animator, 749 B). Round 3's "camera tweens too" is withdrawn (GSAP's one importer is `executor.ts`,
+`arch.test.ts:160-165`; `camFraming` is needed by `restore`) (Changed by RULINGS 381, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): the rule is `import-gsap`, `client/src/arch.test.ts:24`, its group `:71`, its case `:379`, its report `:895`). The next lever, if a cut STOPs: the scheduler's `warm`
 decode order and the room-window helper (~0.4 KB) behind the kit, since both act only after the first line. Rev. 6
 (m6): with 0.82 KB left at the peak (rev. 7: 0.72), SH6's cut and SH7's cut quote the row first; if the MEASURED sum at SH5a's merge
 already reads above 269.6, SH6 takes that lever before its own work (the lever's cost is round 4's: until the kit
@@ -134,13 +134,15 @@ Verify the engine headroom against 230,000 B at SH4's cut.
 that a cut books at **E x R** (R per row: the median MEASURED / term since the adoption, n >= 3 else the all-JS R,
 floor 1.0; printed at each merge; engine 1.700 and all JS 2.030 at `597dded`, RULINGS 208), the lane's **net** per row
 (a net <= 0 books 0 until that lane measures it, so SH7's net on the engine, `flatten` -0.8 against its loop's growth,
-books **0**; a moved module is growth on the row it enters: `flatten` is +0.8 x R on `scene-motion`); the per-lane
+books **0**; a moved module is growth on the row it enters: `flatten` is +0.8 x R on `scene-motion`) (Changed by RULINGS 381, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): D1 (RULINGS 381): m3 dropped; `flatten` stays in the engine closure (`client/src/scene/controller.ts:18`); SH7 booked E_engine 3.50 (RULINGS 387) and measured +3,179 B (RULINGS 392); the `scene-motion` chunk holds the animator, 749 B); the per-lane
 build STOP is E x R + 0.5 KB, with an attribution tripwire (no STOP) at E + 0.5. The rows count §11.1's union rule
 (every chunk any device can request before its first line). No shots lane adds a Pixi filter, a Sprite mask or an
 advanced blend mode without lever X's import-back (rule `pixi-env`, `client/src/arch.test.ts:217`; RULINGS 201 lever X,
 design §2.4 D4): the scene skips Pixi's environment extensions, so those systems are not registered.
 
 **Ruled since: RULINGS 365, 367, 372, 374** (as of `172e47e`; docs lane `docs-errata-21`, group A) — SH6 merged `b0ef547` booked **E_engine 1.6** (RULINGS 367: its own cut's itemization, in place of this table's 1.4) and entry +0.1 KB; it measured engine **+2,396 B** (sample 2.396 / 1.6 = **1.498**; STOP +3,743 B), entry +23, first line +2,419 and all JS +2,443 (STOP +3,843 B each). The new budget row is `image bg/lamp_lens_insert`, a PASS (113 rows, 112 PASS, 1 PENDING: the `scene-motion` chunk row, SH7's). **The engine R is 1.724 at n 26** (1.748 at n 25, GM8h's merge), the remaining engine terms are **3.891** KB, and the ledgers at `b0ef547` are L4 217.834, L1 256.989, L2 39.155; the figures are owned by [engine §11.1](../engine/11-budgets-and-validation.md#111-the-shared-ledgers-reconcile-r1-r2-rulings-143-qo10-152-r4-153-155-design-shots-i-13) ("Main `b0ef547`"), not restated here.
+
+**Ruled since: RULINGS 381, 387, 392** (as of `ec3500a`; docs lane `docs-errata-22a`, group A) — SH7 merged `70c125c` booked **E_engine 3.50** (RULINGS 387: its cut's itemization, in place of this table's net 0) and **E_chunk 1.2**, and entry +100 B. It measured engine **+3,179 B** (sample 3.179 / 3.50 = **0.908**; STOP +6,534 B) and the `scene-motion` chunk **749 B** at `70c125c` (STOP 2,932 B; PASS against the 8,000 B LIMIT; RULINGS 392). **The E3 forecast** at R 2.027 (RULINGS 392): SH8 (+1.5) 3.790, SH9 (+1.2) 6.222, SH10 (+1.0) **8.249: the first projected FAIL moves from SH9 to SH10** (LIMIT 8,000); SH10's cut re-plans the chunk (a split or a trimmed term) before implement.
 
 ### 10.1 Fixture ledger (rev. 6, RULINGS 138 (c); the invariant S34)
 
@@ -161,8 +163,8 @@ Unit tests whose fixtures are built inside their own file need no row. The e2e b
 | F5 | `shots: a resume shows the half tier first and sharpens` (SH5b) | a resume in a paid shot chapter whose visible shot has gated half files: ch4 a001 | `story/ch4/main.ink:9`; the gated halves (asset tool) | SH4; M3s (before SH5b by its Order) | the resumed step's files have `half` entries in the paid manifest |
 | F6 | `shots: after an entry the first cut's half files are requested beside the upgrade` (SH5b) | a resume at a line on `lamp_wide` whose window's `need` holds `lamp_keeper_cu`'s files: ch4 a001 (SH4's rev. 6 staging) | `story/ch4/main.ink:9-15`, `story/shots.json` | SH4 | a001's `need` holds the CU's plate |
 | F7 | `shots: a dissolve leaves no target alive`, `shots: a push frames the keeper's face`, `shots: live texture bytes stay within each step's window bound across the lamp knot` (SH6) | ch4 `lamp` as a wide + a keeper CU + an insert, a `bg: <shot> t=crossfade` between two shots, a `cam: push` to the keeper | `story/ch4/main.ink`, `story/shots.json` | SH6 commit 7 | the built `look` has the crossfade step and the cam step |
-| F8 | `animation: the keeper blinks in the lamp-room shot`, `animation: an idle minute holds the breathing` (SH7) | a visible face member: ch4's keeper | as F1 | SH4 | - |
-| F9 | pin: the frozen build's pixel samples (SH7) | the existing e2e samples | `client/e2e/*.spec.ts` on main | main | - |
+| F8 | `animation: the keeper blinks in the lamp-room shot`, `animation: an idle minute holds the breathing` (SH7; Changed by RULINGS 381, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): E2, the idle-minute test, moved to SH8's §9.9 with its source, sh7-rulings D8) | a visible face member: ch4's keeper | as F1 | SH4 | - |
+| F9 | pin: the frozen build's pixel samples (SH7; Changed by RULINGS 381, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): adds D8's frozen witness, `animation: the e2e build holds the faces at rest by default`, `client/e2e/animation.spec.ts:148`, tag `sh7-shot-idle`) | the existing e2e samples | `client/e2e/*.spec.ts` on main | main | - |
 | F10 | `animation: the plate breathes in live mode`, `animation: leaving the shot leaves no mesh buffer` (SH8) | a cast member with a figure mask and a head plateau; one `anim:` and one `fx:` | `story/ch4/main.ink`; SH3a's placeholder masks (§4.2 step 8) | SH8; SH3a | - |
 | F11 | `animation: a near prop moves against the far wall in a room` (SH8) | a room prop whose rect centre lies below 35 % of the plate height under the placeholder depth grid: ch1's cellar `star` (`story/ch1/world.json:127-129`, centre y 1,300 of 2,048: n = 0.44), sampled before `take` | `story/ch1/world.json`; SH3a's grid | main (EN's chain on world.json, I-18) | the test finds such a prop in world.json |
 | F12 | `animation: a CG drifts while it covers the shot` (SH8) | ch1's `# cg: letter` | `story/ch1/main.ink:105` | main | - |

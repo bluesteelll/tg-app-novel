@@ -164,7 +164,7 @@ SH2 (rev. 5); **`game.test.ts`
 after GM9r** (the last `game.ts` / `game.test.ts` holder: "GM2a -> GM3w -> A(`game.ts`) ... -> GM6c2 -> GM6c3 ->
 GM6d1 -> GM9r", per-player.md's shared-file table, as read at [per-player §9 Shared files](../per-player/09e-order-and-shared-files.md#shared-files-w4-m9)); **`build.test.ts` after GM8b and per-player
 GM6c1a / GM6c1b** ("GM1d -> GM2b -> GM3b -> GM4g -> GM8a -> GM8b ...; per-player GM6c1a, GM6c1b by launch",
-engine.md §12, as read at [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)); `lint.test.ts`: no planned holder in either design (grep of engine.md and
+engine.md §12, as read at [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)) [Changed by RULINGS 388, 401 (as of `ec3500a`; docs lane `docs-errata-22a`, group B): the `build.test.ts` chain reads GM1d -> GM2b -> GM3b -> GM4g -> GM4 (`d695053`) -> GM8b (`3e248eb`); GM8a never held it (RULINGS 388's lock: `build.test.ts` leaves; `gm8a-rulings.md` D13); the quote above stays]; `lint.test.ts`: no planned holder in either design (grep of engine.md and
 per-player.md at round 4), re-located at the cut; `scene/*` by launch after SH9 / SH10 / GM6d1.
 
 ### 9.13b SH12b `sprites-residue` (client; rev. 4 split)

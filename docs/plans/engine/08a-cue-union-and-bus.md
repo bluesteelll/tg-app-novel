@@ -484,7 +484,7 @@ export function layerOut(node: Element, opts: { reduced: boolean; frame?: boolea
       `attempts`, `part`, `tier`, `ladder`, `alert`, `notice`, after the §8.5 table's own fallbacks such as `status` ->
       `frame`) resolved to nothing and so played at the stage centre: `fallbacks()`. A `with` entry that does not
       resolve is skipped and not counted (round 7's rule); `box`, `point`, `stage` and `edge` need no element and
-      never count (a box-less fact or module cue, an `onEnter` gift, plays over the stage by rule). CueStage writes the
+      never count (a box-less fact or module cue, an `onEnter` gift, plays over the stage by rule). Changed by RULINGS 386 (as of `ec3500a`; docs lane `docs-errata-22a`, group A; GM8h2 spec Addendum A A9), the code on `ec3500a`: `stage` and `edge` are landings and never count (`client/src/cues/stage/index.ts:150-156`); a `box` target with no box resolves to null unless the cue is a `ui-state` hold (`:124-129`), and a `point` target with no point resolves to null (`:146-149`); the player plays a null at the stage centre and counts it (`:110-113`, `fallbacks()`). So a box-less fact or module cue is counted (the known case is a linear puzzle's `at: null` cue, G-2, which SH10 carries). CueStage writes the
       count as `data-cue-fallbacks` beside `data-cue-orphans` under `__TG_MOCK__`. **A fallback is a defect**: every
       real-flush test asserts `fallbacks() === 0`, and every mechanics e2e asserts `data-cue-fallbacks` 0 at its end,
       as it asserts 0 orphans, so a new path of the class is a red test in the lane that opens it, not a review round.

@@ -12,7 +12,7 @@
   BLOCKED (§4 "World texts"). Never beside a lane holding `world/{types,decode}.ts`, `scripts/story/emit.ts`,
   `scripts/story/mechanics/index.ts`, `client/scripts/story.ts` (engine.md GM9p, GM6c1b; [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)) or
   `client/scripts/story/build.test.ts` (GM1d -> GM2b -> GM3b -> GM4g -> GM8a -> GM8b, A(`build.test.ts`), GM6c1b;
-  [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)) (round 6, r5 m4).
+  [engine §12 Order and conflicts](../engine/12f-order-and-conflicts.md#order-and-conflicts)) (round 6, r5 m4). Changed by RULINGS 388, 401 (as of `ec3500a`; docs lane `docs-errata-22a`, group B): the `build.test.ts` chain reads GM1d -> GM2b -> GM3b -> GM4g -> GM4 (`d695053`) -> GM8b (`3e248eb`); GM8a never held it (RULINGS 388's lock: `build.test.ts` leaves; `gm8a-rulings.md` D13); the line's text stays.
 - **Lock (12):** `client/src/world/values.ts` (new), `client/src/world/values.test.ts` (new),
   `client/src/world/types.ts`, `client/src/world/decode.ts`, `client/src/world/decode.test.ts`,
   `client/scripts/story/values.ts` (new), `client/scripts/story/values.test.ts` (new),

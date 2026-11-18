@@ -95,7 +95,7 @@
   to GM7g (taken there as its own commit C6, `9b5a00b`, RULINGS 354 Q3), A1 and A3 to GM7g (taken there as rider R1,
   `114483b`), A2 on to GM8a (RULINGS 354 Q4); N1, F1, F2, CQ-e and the real-layout e2e to GM8d; V3, Q4, Q5 and the stale comments
   to GM8h (Changed by RULINGS 363, 366, 375 (as of `172e47e`; docs lane `docs-errata-21`, group A): GM8h took V3, Q4's host half and the stale
-  `controls.test.ts` comment; Q4's reporters and Q5 are GM8h2's, RULINGS 363 S1, C1); Q6 and review M1 to GM9p; Q8 (dead-end pruning) to the first lane whose path search stops at its bound, or
+  `controls.test.ts` comment; Q4's reporters and Q5 are GM8h2's, RULINGS 363 S1, C1) (Changed by RULINGS 386 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): closed by GM8h2 (`c0bd001`, RULINGS 386): Q4's path reporters by D7 (the grid stays silent, D8), Q5 by D9 / D10 (a move's `puzzle:input` names its parts)); Q6 and review M1 to GM9p; Q8 (dead-end pruning) to the first lane whose path search stops at its bound, or
   GM8d (RULINGS 352 G5).
 - **Commits:** (1) rules + canonical (`path: a reversed path posts its canonical form`); the path UI reports through
   GM7r's `reachEdge` (round 5, W3: `path: a stroke that reaches the end reports once`); (2) lints (two-solution and
@@ -139,7 +139,7 @@
   engine +418 B (sample 0.871; R 2.306 after it), GridPuzzle's root closure 1,470 B; e2e 111 / 111 at r1 (RULINGS
   355). Carried (`carry.md` "GM7g carries"): solver N1 and review M1 / M2 to the grid files' next holder (GM8d unless
   another lane takes them first), A2 to GM8a, O3 / F3's twins / stack O1 / O3 to GM8h (Changed by RULINGS 363, 375 (as of `172e47e`; docs lane `docs-errata-21`, group A): O3, F3's twins and stack O3 are
-  GM8h2's, RULINGS 363 C1; stack O1 goes to the next `PuzzleHost.svelte` holder, GM8h's Addendum A13, still open), N2 to GM9p, N3 to the next
+  GM8h2's, RULINGS 363 C1; stack O1 goes to the next `PuzzleHost.svelte` holder, GM8h's Addendum A13, still open) (Changed by RULINGS 386 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): closed by GM8h2 (`c0bd001`, RULINGS 386): O3 by D8 (a given cell stays disabled and silent), F3's twins taken test-only (D17), stack O3 declined (D18; a Q54 row, `docs/OPEN-QUESTIONS.md`); stack O1 stays with the next `PuzzleHost.svelte` holder), N2 to GM9p, N3 to the next
   world-lint holder.
 - **Commits:** `story: a grid with two solutions is refused`, `grid: reached on the unique fill`, round 5: `story: a
   grid whose given cells fill it is refused` (the `world/reach-solution` start clause through a real type; a green
@@ -194,7 +194,7 @@
   holds a device yet**; GM8a makes the first real view type. Rows: engine +437 B (sample 1.748; R 2.027 after it),
   explore-ui +514, cue-stage +36; e2e 111 / 111 at fix1 (RULINGS 361). Carried (`carry.md` "GM8i carries"): D5's
   fallback set, Q6's first-write burst and the type-dependent checks to GM8h (before GM8d) (Changed by RULINGS 363, 366, 375 (as of `172e47e`; docs lane `docs-errata-21`, group A):
-  GM8h closed Q6, D5-c (the `part` target) and the type-dependent checks; D5-a/b, the device's box, are GM8h2's, RULINGS 363 S1, C1); Q1 (c), Q-2 (b), P3 and
+  GM8h closed Q6, D5-c (the `part` target) and the type-dependent checks; D5-a/b, the device's box, are GM8h2's, RULINGS 363 S1, C1) (Changed by RULINGS 386 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): closed by GM8h2 (`c0bd001`, RULINGS 386; D5): the module cues and an arrival's cues land on the device's box (`deviceBox`, `client/src/explore/controller.ts:191-196`, read by yields' `send` / `scoped`, `client/src/app/yields.ts:557-593`)); Q1 (c), Q-2 (b), P3 and
   review M1 / M3 to GM8a; R1 to GM8d or the next `explore/reconcile.ts` holder; Q-F2 to the next `world.ts` / `story.ts`
   holder; Q-F3 to the next `scripts/story/mechanics/conditions.ts` holder; review M2 to the next `softlock.ts` /
   `clues.ts` holder; D-a to the next `rules/devices.ts` holder.
@@ -286,7 +286,7 @@
   `DEVICE_TOP_INSET_CSS` verification; GM8i booked 0.32 of the explore-ui joint +0.3, and GM8h restates its +0.1 at its
   cut (the row is 13,101 B, 899 B under the 14.0 KB trigger). Changed by RULINGS 363, 366, 375 (as of `172e47e`; docs lane `docs-errata-21`, group A): of this list GM8h
   closed Q6, V3, Q4's host half and D5-c; D5-a/b, Q65, Q4's reporters, Q5, F3's twins, O3 and M7 are GM8h2's (RULINGS 363 S1, C1;
-  stack O1 goes to the next `PuzzleHost.svelte` holder, Addendum A13); `DEVICE_TOP_INSET_CSS`'s verification is GM8a's (RULINGS 366 B3, D13).
+  stack O1 goes to the next `PuzzleHost.svelte` holder, Addendum A13); `DEVICE_TOP_INSET_CSS`'s verification is GM8a's (RULINGS 366 B3, D13). Changed by RULINGS 386, 395, 399 (as of `ec3500a`; docs lane `docs-errata-22a`, group B): the list "D5-a/b, Q65, Q4's reporters, Q5, F3's twins, O3 and M7 are GM8h2's" is closed by GM8h2 (`c0bd001`, RULINGS 386): D5-a/b by D5 and D6, Q65 by D1, Q4's reporters by D7 and D8 (the path reports a refused cell, the grid stays silent), Q5 by D9 and D10, F3's twins by D17, GM7g's O3 by D8 (a given grid cell stays `disabled` and reports nothing, G10), stack O3 by D18 (declined: the grid's Tab order is not a defect; Q54 holds a row) and M7 by D14; stack O1 stays with the next `PuzzleHost.svelte` holder; and "`DEVICE_TOP_INSET_CSS` is set by GM8a2 (70; RULINGS 395 B3, 399)".
 - **Ruled since: RULINGS 363, 366, 368, 372** (as of `172e47e`; docs lane `docs-errata-21`, group A) — **GM8h is merged** (`4471fbf`, lane A, beside SH6 in lane C,
   RULINGS 363 S3, 365; its pre-merge lenses held the merge for a fix round, fix1, RULINGS 368). **Lock 15:** 13 at the launch (RULINGS 363 L1-L3: the 11
   above plus `client/src/cues/controls.test.ts`, one comment-only hunk, and `client/src/cues/stage/index.ts`, the `part` target only), +2
@@ -296,7 +296,7 @@
   `gm8h2-mech-device-cues`, before GM8a and GM8d (RULINGS 375 S3; its launch rulings are `gm8h2-rulings.md`): D5-a/b (the device's box on a
   zoom-in, a resume or an event return), Q65, Q4's reporters, Q5 (widened to every answer whose values are part indices, RULINGS 366 B7),
   F3's twins, stack O3 and M7. Q65's seam wording (RULINGS 234, [08b](08b-interactions-mechanism-presenters.md)) stays as written until
-  GM8h2 merges (RULINGS 375 D1). **Closed here:** Q6 (the first-write burst), V3, Q4's host half, D5-c (`fact:work:*` presses land on the
+  GM8h2 merges (RULINGS 375 D1). Changed by RULINGS 386 (as of `ec3500a`; docs lane `docs-errata-22a`, group B): GM8h2 is merged (`c0bd001`), so that wording no longer stands as the code's: the drop is upstream, in yields (08b's mark at its Q65 ruling), and every item of this paragraph that names GM8h2 is closed by it, stack O3 by D18's decline (the new GM8h2 section below). **Closed here:** Q6 (the first-write burst), V3, Q4's host half, D5-c (`fact:work:*` presses land on the
   part, `client/src/cues/stage/index.ts` `partIndex` and the `part` case) and the type-dependent checks. **E terms as ruled:** E_engine **0.45**
   (RULINGS 366; STOP +1,412 B at R 2.027: the cut's itemization superseded N16's joint remainder, so the remaining engine terms went from 5.401 to
   5.741), E_explore **0.1** (outside the joint 0.3 that GM8i spent; its STOP was +732 B, and the 14.0 KB trigger stands), puzzle-host **0.52**,
@@ -314,7 +314,7 @@
   hotspot-band lint, a type UI never calling back after its destroy); the next `explore/reconcile.ts` holder or GM8a (a refused saved work
   stays in `run.work` until the first move); GM8d (the device world's hit-test row, A9: the view frame is drawn after the crossfade ends,
   Q-C2: `.device-failed`'s side insets); the next holder of `ui/puzzle-view.svelte.ts` / `yields.ts` (three stale doc comments: `PuzzleView`'s,
-  `shownFrame`'s and the mismatch comment; and a conjunct no input can falsify, among the declared equivalent mutants). Q54 gained its device rows in `172e47e`.
+  `shownFrame`'s and the mismatch comment; and a conjunct no input can falsify, among the declared equivalent mutants) [Changed by RULINGS 386 (as of `ec3500a`; docs lane `docs-errata-22a`, group B): closed by GM8h2 D16 (`c0bd001`; the three comments restated, the conjunct declared among the equivalent mutants)]. Q54 gained its device rows in `172e47e`. Changed by RULINGS 386, 394, 399, 401 (as of `ec3500a`; docs lane `docs-errata-22a`, group B) (the "Carried" list above, one mark): GM8h2's items above are closed by GM8h2 (`c0bd001`); GM8a's four items are closed by GM8a (`121f856`) and GM8a2 (`27c6cd5`): `DEVICE_TOP_INSET_CSS` by GM8a2 (70); a total `workFits` (`levers, setting: workFits is total over the save codec's domain`); the hotspot-band lint (GM8a2's `world/device-hotspot-cover`); no callback after destroy (`levers: a throw or a pull after unmount reports nothing`); for the `sequence` / `ritual` view types, GM8b (`3e248eb`) pinned the same two items (`sequence, ritual: workFits is total over the save codec's domain`, `sequence, ritual: a press after unmount reports nothing`; `baseline.tsv:3039`, `:3052`, tag `gm8b-mech-sequence`). The saved-work item ("the next `explore/reconcile.ts` holder or GM8a (a refused saved work stays in `run.work` until the first move)") went to neither: it is the next `explore/reconcile.ts` holder's, before GM8d, else GM8d's lock takes it (`carry.md` "GM8a carries").
 - **Commits:** (1) `puzzle-view: coversStage is false for a view frame` (red: GM3w's `f !== null`), `puzzle-view:
   backScreen pushes no overlay for a view frame`; reconcile r2 (RC-W5; design-shots I-7): GM3p's `yields: the host
   hears every change of the shown frame` gains the case "a device view's bar never reports" (`frameShown` reports a
@@ -374,6 +374,39 @@
   `yields: a frame's appearance is emitted by the write that shows it` gains the session's first device (the bar's
   `panel-open` at the chunk write, red on **M-R10a**); the resolve test of (9) asserts the parts layer carries
   `data-cue-hit` and the bar does not (red: the attribute absent; a bar under it would draw its buttons as ghosts).
+
+### GM8h2 `mech-device-cues` (new; RULINGS 363 S1)
+- **Goal:** the before-GM8d cue items of RULINGS 363 C1 that need files outside GM8h's lock: D5-a/b (a device's cues land on
+  the device's box on a zoom-in, a resume or an event return: D5's on-demand `deviceBox`, D6's pre-run box invariant); Q65
+  (a world cue whose subject is not in the shown room plays nothing: the drop is upstream, in yields, D1, with D2's subject
+  table and D4's toast rule); Q4's path reporters (a refused cell plays `puzzle:blocked`, D7) and the grid kept silent (D8,
+  G10); Q5 (a move's `puzzle:input` names the parts it moved, for a value-indexed answer too: D9's derivation in
+  `moveWork`, D10's semantics, D11's press-list fixture); F3's twins (D17); M7 (D14: no long-press callout on the path and
+  grid surfaces); F8 (D13: the ladder sheet over a device is the room place's `hints` panel and the controls gate); G-2
+  re-carried to SH10 (D3); stack O3 declined (D18); GM8h's in-lock carries, the three stale doc comments and L1's conjunct
+  (D16, `gm8h2-rulings.md:211-216`).
+- **After:** GM8h (merged `4471fbf`); before GM8a and GM8d (RULINGS 375 S3); beside SH7 (RULINGS 381 G1); never beside
+  per-player GM6c2, GM6c4 or GM6d2 (RULINGS 375 S3, spent at the merge).
+- **Lock 13** (`git diff --name-only c43f5e0 c0bd001`): `client/src/app/yields.ts`, `client/src/app/yields.test.ts`,
+  `client/src/cues/stage/index.ts`, `client/src/cues/stage/stage.svelte.test.ts`, `client/src/explore/controller.ts`,
+  `client/src/explore/controller.test.ts`, `client/src/puzzles/ui/GridPuzzle.svelte`,
+  `client/src/puzzles/ui/PathPuzzle.svelte`, `client/src/puzzles/ui/puzzle-types.svelte.test.ts`,
+  `client/src/ui/explore/ExploreView.svelte`, `client/src/ui/explore/explore.svelte.test.ts`,
+  `client/src/ui/puzzle-view.svelte.ts`, `client/src/ui/puzzles/puzzle-host.svelte.test.ts`. No `ui/explore-view.svelte.ts`
+  (D5 adds no store field), no `puzzles/rules/*` (D9 adds no flag), no `cues/stage/player.ts` and no `cues/stage/motions.ts`
+  (D1 drops upstream; G-2 is re-carried).
+- **Ruled since: RULINGS 377, 380, 382, 384, 385, 386** (as of `ec3500a`; docs lane `docs-errata-22a`, group B) — **GM8h2 is
+  merged** (`c0bd001`, lane A from `172e47e`, beside docs-errata-21 and SH7). Fix r1 STOPPED on B8 and the leaf-panel rule
+  (RULINGS 382 C: a box-less hold considers only the leaf panels of its name, so over a device the hint request's hold
+  lands on the card inside the sheet); the pre-merge lenses (plays, yields) gave three cheap minors, fixed in the lens fix
+  round L1-L3 (RULINGS 384: the `ladder` target takes the leaf `hints` panel, `send`'s direct-path drop pinned, the declared
+  index-kind table); two unclean resets recovered the lane's branch ref (RULINGS 385). **E terms** and measured deltas as
+  [11](11-budgets-and-validation.md)'s "Main `70c125c`, MEASURED" bullet gives them (E_engine 0.47, engine +185 B, sample
+  0.39; R 1.700 at n 27; RULINGS 380 B1, 386). **Tests:** vitest 2294 by name (2259 + 35), e2e 114 on both projects
+  (RULINGS 386). **Carries** (`carry.md` "GM8h2 carries (merge `c0bd001`)"): G-2 and B9 O2 to SH10 and `cues/root.ts`'s next
+  holder; D9's seed contract and the index-kind table's rows to GM8a and GM8b; D11's wrong-press contract to GM8b; P3 (a
+  room-place stroke surface needs `pointer-events: auto`) to GM8a and GM8d; B10's two device-world e2e rows to GM8d.
+  OPEN-QUESTIONS Q65 is RESOLVED (`6bf4db7`).
 
 ### GM8a `mech-levers`
 - **Goal:** `levers` (reach, shown target; `solve` by BFS, `witness`, `renderHints` with `[moves]`, W6, m8) and
@@ -583,7 +616,7 @@
   SH7"), per-player GM6c2 / GM6c3 / GM6d1 (also `game.ts`; per-player.md's chain
   ends with GM9r; never two at once); GM8h (`yields.ts` chain); **GM8d** (`client/e2e/mechanics.spec.ts`, round 4);
   GM4u (`story/ch1/world.json`); GM2a (`resume.ts`, `resume.test.ts`). The carry motion is GM3m's `byCause.carry`
-  (round 3 m4), so no cue-stage file is in this lock.
+  (round 3 m4), so no cue-stage file is in this lock. Changed by RULINGS 386, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group B): SH7, named in the reconcile r1 list above, is merged (`70c125c`), and GM8h2 is merged (`c0bd001`): the `yields.ts` chain of this After reads GM8h -> GM8h2 -> GM9r (12f's GM9r row and `app/yields.ts` row).
 - **Lock (14; round 5 m2 +2: `story/locales/en/ch1.json` and `story/locales/en/ch2.json`, the en of the carried
   item's `name` / `desc`, `story/ch2/world.json:3` holds no item today, and of any new hotspot label):**
   `client/src/mechanics/data/carry.ts` (`carriedOut`, `chapterStartWorld`, `rearmCarried`),
