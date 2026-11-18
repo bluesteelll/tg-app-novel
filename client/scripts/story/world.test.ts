@@ -3232,10 +3232,16 @@ test('carry: a giver yield after an ungathered choice or a divert is refused', (
   // A closed conditional block with no divert: every branch falls through to the yield.
   const closed = hall(['{ g_trust > 0:', '    Доверие. #id:ch1.hall.a003', '- else:', '    Недоверие. #id:ch1.hall.a004', '}']);
   expect(prefixRefusals(closed)).toEqual([]);
-  // A yield inside a multi-line conditional still open at the yield (no divert): an entry whose condition fails never
-  // runs it, so the block's yield is refused; the yield after the block is on the prefix.
+  // A yield inside a multi-line conditional still open at the yield: an entry whose condition fails never runs it, so it
+  // is off the prefix. The yield after the block follows the in-block yield's `-> DONE` (a divert) and is off the prefix
+  // too, so no yield of the knot is on it: refused at the first.
   const open = hall(['{ g_trust > 0:', '    # explore: manor', '    -> DONE', '}']);
   expect(prefixRefusals(open)).toEqual([lineIn(open, '    # explore: manor')]);
+  // The knot's only yield inside an outer multi-line conditional, after a nested closed one; otherwise the knot leaves
+  // to `away`. The outer block is still open at the yield (an inner close does not close it), so an entry whose outer
+  // condition fails leaves without the item.
+  const nestedOnly = [...start, '=== hall ===', 'Холл. #id:ch1.hall.a002', '{ g_trust > 0:', '    { g_trust > 1:', '        Глубже. #id:ch1.hall.a006', '    }', '    # explore: manor', '    -> DONE', '}', '-> away', ...after];
+  expect(prefixRefusals(nestedOnly)).toEqual([lineIn(nestedOnly, '    # explore: manor')]);
 
   // The event knot of the cellar (ch1's `manor_cellar_voice`, story/ch1/main.ink:56-63): choices gathered before its
   // yield back, clean.
