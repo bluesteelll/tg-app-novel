@@ -395,8 +395,10 @@ function readWorlds(root: string, chapters: readonly ChapterListEntry[], out: Fi
  * section an explore yield of the chapter names, its yields (repo-relative, source order) and the first continuing END,
  * in knot order, that the first knot reaches around every knot holding one of them (`mustPass`); null when the entry
  * names no knot (its `ink/entry` error says why). A continuing END is one the story goes on after: an END in a knot
- * that `endings` (the chapter's declared story endings) does not hold. A declared ending's END runs inside its own knot
- * (`catalog/stories` rule 8: no successor, no yield), and its player never reaches the receiver. A yield's `exempt`: its
+ * that `endings` (the chapter's declared story endings) does not hold. A declared ending's END runs with the game's
+ * checkpoint at its own knot, so the game ends the story there and its player never reaches the receiver: the premise
+ * `catalog/stories` rule 8 makes true (stories.ts `checkEndings`: no successor, no yield, no thread or tunnel, and a line
+ * shown on the knot's straight-line prefix, which the runner places in the knot before the END). A yield's `exempt`: its
  * knot is the section's own event knot (graph.ts `ExploreSite.event`), not the first knot and in no knot's `next`, so
  * every entry of it is the section's event, which the section's search proves.
  */

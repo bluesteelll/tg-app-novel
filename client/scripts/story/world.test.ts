@@ -2755,6 +2755,8 @@ function carried(findings: readonly Finding[]): string[] {
 }
 
 const SUN_ROW = '[{ "id": "medal_sun", "from": "ch1" }]\n';
+/** A spawned or in-process run loads inkjs/full and compiles: allow for a loaded machine (build.test.ts's value). */
+const IN_PROCESS_TIMEOUT_MS = 60_000;
 
 /** ch1 entering the manor from `start`, with a choice that also leads to an END of its own when `bypass`. */
 function enterManor(bypass: boolean): string[] {
@@ -2816,7 +2818,32 @@ test('carry: a story ending reachable before the giver is allowed', () => {
   const both = enterManor(true);
   expect(proofOf(both, { manor_out: 'out' }).map((f) => f.message.slice(f.message.indexOf('END')))).toEqual(["END of knot 'away' is reachable without a yield of manor (§6.6)"]);
   expect(proofOf(both, { away: 'away' })).toEqual([]);
-});
+  // RULINGS 404, through the story gate: the exemption's premise is rule 8's. An ending that shows no line of its own
+  // plays as a continuing END (the game places no knot at the END step), so the gate refuses it at its declaration
+  // under catalog/stories, and the carry pass, which still exempts it, reports nothing.
+  const drowned = 'Волна накрыла нас. #id:ch1.drowned.a003';
+  const repo = (ink: readonly string[]): Record<string, string> => {
+    const giverInk = ink.flatMap((l) => (l === '=== start ===' ? [l, '# scene: hall'] : [l]));
+    const files = carryRepo({
+      chapters: [{ ...giverChapter(), ink: giverInk }, receiverChapter(LAMP_REQUIRED)],
+      items: LAMP_ROW,
+      stories: [{ id: 'manor', first: 'ch1', cover: 'cover/manor', endings: { drowned: { chapter: 'ch1', knot: 'drowned' } } }],
+    });
+    files['story/meta.json'] = `${JSON.stringify({ manor: { endings: { drowned: { ru: 'Утонули', en: 'Drowned' } }, achievements: {} } }, null, 2)}\n`;
+    return files;
+  };
+  const silent = storyRun(repo(main.filter((l) => l !== drowned)));
+  expect(silent.out.filter((l) => l.includes(' catalog/stories ')), silent.out.join('\n')).toEqual([
+    "E story/stories.json:0 catalog/stories 0.endings.drowned.knot: ch1 knot 'drowned' shows no line before its END: the game would end the chapter, not the story",
+  ]);
+  expect(carryCodes(silent.out)).toEqual([]);
+  expect(silent.code).toBe(1);
+  // The control: with its line (the runner places that line's step in `drowned`, so the game's checkpoint is the ending
+  // at its END), the gate passes.
+  const lined = storyRun(repo(main));
+  expect(lined.out.filter((l) => /^E /.test(l)), lined.out.join('\n')).toEqual([]);
+  expect(lined.code).toBe(0);
+}, IN_PROCESS_TIMEOUT_MS);
 
 test('carry: an inherited item is checked against story/items.json', () => {
   const run = (chapters: readonly CarryChapter[], registry: string | null): string[] => carried(carryProof({ chapters, registry }).findings);
@@ -2871,8 +2898,6 @@ test('carry: an inherited item is checked against story/items.json', () => {
 
 // The in-process story gate (D9): `main` over a fixture repo in a temp directory, its console captured.
 
-/** A spawned or in-process run loads inkjs/full and compiles: allow for a loaded machine (build.test.ts's value). */
-const IN_PROCESS_TIMEOUT_MS = 60_000;
 /** The marker a fixture world's texts are written with: `repoWorld` replaces each with a fresh text of its chapter. */
 const TEXT = '<text>';
 
