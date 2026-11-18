@@ -406,6 +406,10 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   rest is GM8h2's, RULINGS 375 E2). Ledgers: at `4471fbf` (R 1.748, term 5.491 x 1.748 = 9.598) L4 **218.328**, L1 **257.460**, L2 **39.132**; at `b0ef547` (R 1.724, term 3.891 x
   1.724 = 6.708) **Ledger 4** 211.126 + 6.708 = **217.834 / 230.0 (12.166 left)**; **Ledger 1** 250.281 + 6.708 = **256.989 / 270.0 (13.011 left)**; **Ledger 2** **39.155 / 40.0 (0.845
   left)**. The trigger does not hold; the engine-lever candidate waits for Ledger 4 or 1 within 2.0 KB (RULINGS 253); L2's return line does not hold.
+- **Main `70c125c`, MEASURED** (Changed by RULINGS 380, 382, 386, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A); the orchestrator's merge checks, 4 builds per tree, exact B br; per lane, main -> merge: the OPEN-QUESTIONS and workflow commits are not builds). Per lane, main -> merge:
+  - **GM8h2** `c0bd001` (E_engine 0.47, STOP +1,310 B, RULINGS 380 B1; E_explore 0.155; PathPuzzle 0.12; CSS 0.054; E_cue 0.05, STOP +601 B, RULINGS 382): engine 211,126 -> **211,311** (+185; sample 0.39), entry **39,224** (+69), first line **250,535** (+254), all JS **292,521** (+353), explore-ui **13,450** (+45), cue-stage **6,227** (+3), PathPuzzle +51 (RULINGS 386).
+  - **SH7** `70c125c` (E_engine 3.50, STOP +6,534 B; E_chunk 1.2, STOP 2,932 B; entry +100 B; RULINGS 387): engine **214,490** (+3,179; sample 0.908), the `scene-motion` chunk **749** (PASS <= 8,000; the row is no longer PENDING), entry **39,142** (-82, hash-name entropy), first line **253,632**, all JS **296,257**; 113 rows, 113 PASS (RULINGS 392).
+  **R** (engine): **1.700** at GM8h2's merge (n 27, RULINGS 386) and **1.629** at SH7's (n 28, RULINGS 392). Unlike the `b0ef547` bullet above, this bullet has no "later lanes use" clause: it is dated `ec3500a`, where the engine R is no longer 1.629 (GM8a, GM8a2 and GM8b merged since). Every R and ledger in this bullet is labelled by its merge. **Remaining engine terms (ARITHMETIC):** **4.361** at GM8h2's cut (its E_engine 0.47 booked, RULINGS 380 B1), **3.891** after GM8h2's 0.47 was measured (RULINGS 386), **7.391** with SH7's 3.50 booked (RULINGS 387), **8.411** with GM8a's 1.2 booked in place of its 0.18 of the plan's joint row (RULINGS 388, 391; `gm8a-mech-levers/spec.md:1167`: "7.391 - 0.18 + 1.2 = 8.411") and **4.911** after SH7's 3.50 was measured (GM8a's 1.2 included; RULINGS 392, `RULINGS.md:9311`). **Ledgers:** at `c0bd001` (R 1.700, term 3.891 x 1.700 = 6.615) L4 **217.926**, L1 **257.150**, L2 **39.224** (RULINGS 386); at `70c125c` (R 1.629, term 4.911 x 1.629 = 8.000) L4 **222.490**, L1 **261.632**, L2 **39.242** (39.142 + GM8a's booked entry 0.1; RULINGS 388, 392, `RULINGS.md:9312-9313`).
 - **The path rule (RULINGS 201; the union rule, budget round r198 design §3.1).** Ledgers 1 and 4 count every JS chunk
   that some supported WebView requests **automatically before its first line** on the boot -> chapter -> first-line
   path, a capability fallback included (Pixi's three renderer facades: a device requests one by what it is): the
@@ -466,7 +470,7 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   (Changed by RULINGS 351, 359, 361 (as of `b0b1b41`; docs lane `docs-errata-20`, group A)) at GM7p's (RULINGS 351): engine **2.4285** (n 22; the sample
   1.036); at GM7g's (RULINGS 359): engine **2.306** (n 23; the sample 0.871); at GM8i's (RULINGS 361): engine **2.027**
   (n 24; the sample 1.748); (Changed by RULINGS 372, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A)) at GM8h's (RULINGS 372): engine **1.748** (n 25; the sample 1.558); at SH6's (RULINGS 374): engine **1.724**
-  (n 26; the sample 1.498);
+  (n 26; the sample 1.498); (Changed by RULINGS 386, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A)) at GM8h2's (RULINGS 386): engine **1.700** (n 27; the sample 0.39, below the median); at SH7's (RULINGS 392): engine **1.629** (n 28; the sample 0.908);
   the explore-ui samples 0.582, 0.445 and 0.94 recorded, its R kept at 2.319 (and GM8i's 1.5625 / 1.606, RULINGS 356,
   361);
   cue-stage and `scene-motion` use the all-JS R. **Stability note:** the engine sample is bimodal (1.009 | 3.025, SH1
@@ -474,7 +478,7 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
   merge, and why Ledger 3's one-time LIMIT is set on the upper quartile, not the median. **Booking:** (2a) the unit is
   a lane's **net** term per row (planned module moves included at the same R); a net > 0 books net x R_row; a net <= 0
   books **0** until that lane measures it (so the projection bounds every point of the remaining order); a moved module
-  is growth on the row it enters (SH7's `flatten` +0.8 x R on `scene-motion`); a cut's own lines that move an already
+  is growth on the row it enters (SH7's `flatten` +0.8 x R on `scene-motion`) (Changed by RULINGS 381, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): D1 (RULINGS 381): m3 dropped; `flatten` stays in the engine closure (`client/src/scene/controller.ts:18`); SH7 booked E_engine 3.50 (RULINGS 387) and measured +3,179 B (RULINGS 392); the `scene-motion` chunk holds the animator, 749 B); a cut's own lines that move an already
   MEASURED module book its MEASURED bytes (R 1.0); (2b) Ledger 1 = Ledger 2 + Ledger 4 (`budget.ts` sums the two
   walks), each term at its own row's R, and Ledger 3 is its own row with its own R; (2c) what a row counts is the path
   rule above, and a lever's saving is measured under it. Every cut states per row E (with its method), R and E x R (an
@@ -524,20 +528,20 @@ ledger ([shots §10 Budgets and validation](../shots/10-budgets-and-validation.m
 | SH5a | +1.3 | - | SH §9, the lane's Gates (CLAIM) |
 | SH5b | +0.45 | - | SH §9, the lane's Gates (CLAIM) |
 | SH6 | +1.4 | - | SH §9, the lane's Gates (CLAIM) |
-| SH7 | -0.2 | - | SH §9 (`flatten` -0.8 into `scene/motion/`, [shots §10 Budgets and validation](../shots/10-budgets-and-validation.md#10-budgets-and-validation-summary), against the loop's growth) |
+| SH7 | -0.2 | - | SH §9 (`flatten` -0.8 into `scene/motion/`, [shots §10 Budgets and validation](../shots/10-budgets-and-validation.md#10-budgets-and-validation-summary), against the loop's growth; Changed by RULINGS 381, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): D1 (RULINGS 381): m3 dropped; `flatten` stays in the engine closure (`client/src/scene/controller.ts:18`); SH7 booked E_engine 3.50 (RULINGS 387) and measured +3,179 B (RULINGS 392); the `scene-motion` chunk holds the animator, 749 B) |
 | SH2, SH3b, SH3c, SH8-SH12b | 0 | - | SH §9: build-only, data, or `scene/motion/` |
 | **sum** | **+11.50** (adoption: R-E36 taken; r2 +11.48; r1 +11.34) | +0.51 | ARITHMETIC: 1.71 + 0.05 + 0.01 + 3.13 + 0.35 + (0.3 + 1.1 + 1.9 + 1.3 + 0.45 + 1.4 - 0.2 = 6.25) = 11.50 |
 
 | Case | Base (MEASURED) | Projected | Headroom | Verdict |
 |---|---|---|---|---|
 | **main `3c62a86`** | 254.075 | **265.575** | **4.425** | PASS |
-| main `3c62a86`, the peak (SH7's -0.2 last) | 254.075 | 265.775 | 4.225 | PASS |
+| main `3c62a86`, the peak (SH7's -0.2 last; Changed by RULINGS 381, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): D1 (RULINGS 381): m3 dropped; `flatten` stays in the engine closure (`client/src/scene/controller.ts:18`); SH7 booked E_engine 3.50 (RULINGS 387) and measured +3,179 B (RULINGS 392); the `scene-motion` chunk holds the animator, 749 B) | 254.075 | 265.775 | 4.225 | PASS |
 | main `3c62a86`, GM3w at its +0.04 bound | 254.075 | 265.605 | 4.395 | PASS |
 | main `3c62a86` and L1 (+0.21, CLAIM at `cdca9d4`, RULINGS 158) | 254.075 | 265.785 | 4.215 | PASS |
 
 Rule (design-shots I-13, adopted): every lane of the three designs quotes this row base -> HEAD MEASURED at its cut,
 with the still-planned lanes' figures from this table, and STOPs if the projection crosses 270.0; the designed lever
-is the shots' lazy `scene/motion/` chunk (already counted), then `flatten` + camera.
+is the shots' lazy `scene/motion/` chunk (already counted), then `flatten` + camera. (Changed by RULINGS 381, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): D1 (RULINGS 381): m3 dropped; `flatten` stays in the engine closure (`client/src/scene/controller.ts:18`); SH7 booked E_engine 3.50 (RULINGS 387) and measured +3,179 B (RULINGS 392); the `scene-motion` chunk holds the animator, 749 B.)
 
 **Ledger 2: entry closure JS (br)**, LIMIT 40.0 (`entryJsBr`, `client/scripts/budget.ts:106` on `acc4e0d`, `:109` on
 `cec347c`).
@@ -712,6 +716,8 @@ a mouse stroke's text selection cancelling the next stroke, and gates F1-F4, clo
 rows: the `6e459a3` bullet above.
 
 **Ruled since: RULINGS 362-375** (as of `172e47e`; docs lane `docs-errata-21`, group A) — GM8h (`4471fbf`) and SH6 (`b0ef547`) took the engine to 211,126 B, and **R is 1.724** (n 26; 1.748 at GM8h's merge). At `b0ef547`: **Ledger 4 217.834 / 230.0** (12.166 left), **Ledger 1 256.989 / 270.0** (13.011 left), **Ledger 2 39.155 / 40.0** (0.845 left), with 3.891 KB of engine terms left. **The trigger does not hold**; L2 stays shelved. The explore-ui row is 13,405 B, 595 B under the 14.0 KB split trigger (03:486-488); GM8h's +0.1 sat outside the joint +0.3 that GM8i spent (RULINGS 366), and its STOP of +732 B stands. The pre-merge lens check (RULINGS 289) ran at both merges. It held GM8h for a fix round (six important findings: a late answer racing a zoom back in, the QuickBar over the device bar, the ladder place's padding and scroll, a demonstration under a covering sheet, and two unpinned wirings; fix1, RULINGS 368, 372); SH6's lenses (paid, gpu, legacy, gates) found no defect that held it, and their minors are carried (RULINGS 371, 374). Per-merge rows: the `b0ef547` bullet above.
+
+**Ruled since: RULINGS 377-387, 390, 392** (as of `ec3500a`; docs lane `docs-errata-22a`, group A) — GM8h2 (`c0bd001`) and SH7 (`70c125c`) merged, and the figures here are stated **at `70c125c`**, not as the engine R now (GM8a, GM8a2 and GM8b merged since; the later merges are not counted here): at `70c125c` the engine R was **1.629** (n 28; 1.700 at GM8h2's merge), **Ledger 4 222.490 / 230.0**, **Ledger 1 261.632 / 270.0** and **Ledger 2 39.242 / 40.0** (39.142 + GM8a's booked entry 0.1), with 4.911 KB of engine terms left (GM8a's 1.2 included: RULINGS 391 booked it, RULINGS 392 counts it). The pre-merge lens check (RULINGS 289) held GM8h2 for a fix round (RULINGS 384) and held SH7 for one (RULINGS 390). RULINGS 386's standing rule: an entry delta that the tester shows is hash-name entropy alone is reported, not a STOP (`RULINGS.md:9152-9153`; applied to SH7's -82 B, RULINGS 392). Per-merge rows: the `70c125c` bullet above.
 
 **One owner per figure (reconcile r2, RC-W1).** This section owns the sums, headrooms and verdicts of the three
 designs; each design owns its own lane terms (EN §3.5, per-player §10 "Ledgers", the shots §9 / §10 with this

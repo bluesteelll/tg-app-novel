@@ -225,6 +225,10 @@ are still parsed and checked only. A `cam: push` ignores reduced motion until SH
 SH6 tags is [STAGING-DSL §14.5](STAGING-DSL.md#145-worked-example-the-lamp-knot-of-ch4-sh6): the lamp knot of
 `story/ch4/main.ink` takes a wide shot, a close shot with a `cam: push to=keeper`, an insert plate, and a crossfade back to the
 close shot (the exact dissolve), with a `face: keeper smile` that changes with it. Its art is paid content of ch4, served only after an entitlement check.
+Changed by RULINGS 381, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): `think` is drawn since SH7: a thought line keeps the speaker's mouth still
+(`client/src/scene/motion/animator.ts:17`, `:98`) and cues no listener (`client/src/scene/executor.ts:2020-2032`;
+`client/src/app/game.ts:626-637` passes `think`); `anim` and `fx` stay SH8's, so those two are still parsed and checked
+only; the push honours reduced motion: a camera move lands at its end (`executor.ts:198-202`, used `:1229`).
 The parser's list is `TAG_KINDS` ([tags.ts:29](../client/src/story/tags.ts#L29)); the syntax, options,
 defaults and conflicts of each are in [STAGING-DSL §6](STAGING-DSL.md#6-tags) and
 [§7](STAGING-DSL.md#7-batches-and-execution-order). The habits that keep a chapter green and cheap:

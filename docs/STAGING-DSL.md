@@ -460,6 +460,10 @@ ally: But I am glad you came. #id:ch1.cafe.f4c1
   (power1.inOut). The push does **not** honour reduced motion yet: the scene has no reduced-motion input, the flag lives in
   the UI only (`vm.reducedMotion`, `client/src/app/boot.ts:636`), and the rule that shortens or skips it is SH7's
   (OPEN-QUESTIONS Q71).
+  Changed by RULINGS 381, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): since SH7 (`70c125c`) a camera
+  move, and a held camera's return, land at their end under reduced motion (`client/src/scene/executor.ts:198-202`,
+  used `:1229`); cuts, dissolves and the faces' motion keep their time; the flag reaches the scene through `game.ts`'s
+  mount option (`client/src/app/game.ts:1792`; `boot.ts:636` writes `vm.reducedMotion`). OPEN-QUESTIONS Q71 is RESOLVED.
 - **Validation:** `tag/missing-arg` (`pan` without `to`); `tag/bad-arg` (an unknown move, `z` out of range, an option
   the move does not take); `tag/unknown-asset` (a `to` that is neither a character nor its move's own word: `center`
   for `push`, `left` / `right` for `pan`); with a shot list, a character `to` is checked by `shot/char-absent` and
@@ -982,11 +986,22 @@ tables, like every module code ([AUTHORING "Module and type lint codes"](AUTHORI
   that place and carries Hint, Retry after a failed chunk and, only after an offline reply, Try; the hint ladder opens as a sheet; and the QuickBar is
   hidden while a device view is up. A story author adds nothing for this: the room's `device` key and the puzzle's type
   decide it.
+  Changed by RULINGS 382, 384, 386 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): the sheet is the room
+  place's `hints` panel (`data-cue-panel="hints"`, `client/src/ui/explore/ExploreView.svelte:144-146`), so the ladder's
+  `panel-open` / `panel-close` land on the sheet (the `panel` target takes the first live match,
+  `client/src/cues/stage/index.ts:167-168`), while the `ladder`, `tier` and `alert` targets and a box-less hold (the hint
+  request's `ui-state:waiting` / `waited`, `panel: 'hints'`, `client/src/app/yields.ts:1051`, `setLadder`'s doc
+  `:1041-1043`) land on the card inside it, the leaf `hints` panel, as in the frame place (`leaves`, `index.ts:74-82`;
+  `ladder`, `:117`, `:183-189`; the box case, `:124-145`).
 - **Cues:** `fact:work:*` (`press`, 240 ms, target `part`, no haptic), `module:devices:done` (`glint`, 420 ms, target
   `box`), `module:devices:jammed` (`jam`, 480 ms, target `box`, haptic error)
   (`client/src/cues/stage/motions.ts:174-175`, `:233-234`). Changed by RULINGS 363, 375 (as of `172e47e`; docs lane `docs-errata-21`, group A): the `part` target is
   resolved by GM8h (`client/src/cues/stage/index.ts:89-95`, `:162-167`), but a device's own move plays no `fact:work:*`
   cue, and routing the `module:devices:*` cues to the box is GM8h2's.
+  Changed by RULINGS 386 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): the `part` target is `partIndex`
+  (`client/src/cues/stage/index.ts:95-108`) and the `part` case (`:176-182`); since GM8h2 (`c0bd001`) the
+  `module:devices:*` cues land on the device's box (`deviceBox`, `client/src/explore/controller.ts:191-196`, read by
+  `send` / `scoped`, `client/src/app/yields.ts:557-593`).
 - **Codes** (`client/scripts/story/mechanics/devices.ts:28-43`, all E): `world/view-type-site`, `world/device-type`,
   `world/device-parts-frame` (registered; its check is GM8a's), `world/device-closeup`, `world/device-failed-state`,
   `world/device-object`, `world/device-when`, `world/device-alone`, `world/device-unlock`, `world/device-part`.

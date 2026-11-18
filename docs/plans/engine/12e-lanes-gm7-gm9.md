@@ -95,7 +95,7 @@
   to GM7g (taken there as its own commit C6, `9b5a00b`, RULINGS 354 Q3), A1 and A3 to GM7g (taken there as rider R1,
   `114483b`), A2 on to GM8a (RULINGS 354 Q4); N1, F1, F2, CQ-e and the real-layout e2e to GM8d; V3, Q4, Q5 and the stale comments
   to GM8h (Changed by RULINGS 363, 366, 375 (as of `172e47e`; docs lane `docs-errata-21`, group A): GM8h took V3, Q4's host half and the stale
-  `controls.test.ts` comment; Q4's reporters and Q5 are GM8h2's, RULINGS 363 S1, C1); Q6 and review M1 to GM9p; Q8 (dead-end pruning) to the first lane whose path search stops at its bound, or
+  `controls.test.ts` comment; Q4's reporters and Q5 are GM8h2's, RULINGS 363 S1, C1) (Changed by RULINGS 386 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): closed by GM8h2 (`c0bd001`, RULINGS 386): Q4's path reporters by D7 (the grid stays silent, D8), Q5 by D9 / D10 (a move's `puzzle:input` names its parts)); Q6 and review M1 to GM9p; Q8 (dead-end pruning) to the first lane whose path search stops at its bound, or
   GM8d (RULINGS 352 G5).
 - **Commits:** (1) rules + canonical (`path: a reversed path posts its canonical form`); the path UI reports through
   GM7r's `reachEdge` (round 5, W3: `path: a stroke that reaches the end reports once`); (2) lints (two-solution and
@@ -139,7 +139,7 @@
   engine +418 B (sample 0.871; R 2.306 after it), GridPuzzle's root closure 1,470 B; e2e 111 / 111 at r1 (RULINGS
   355). Carried (`carry.md` "GM7g carries"): solver N1 and review M1 / M2 to the grid files' next holder (GM8d unless
   another lane takes them first), A2 to GM8a, O3 / F3's twins / stack O1 / O3 to GM8h (Changed by RULINGS 363, 375 (as of `172e47e`; docs lane `docs-errata-21`, group A): O3, F3's twins and stack O3 are
-  GM8h2's, RULINGS 363 C1; stack O1 goes to the next `PuzzleHost.svelte` holder, GM8h's Addendum A13, still open), N2 to GM9p, N3 to the next
+  GM8h2's, RULINGS 363 C1; stack O1 goes to the next `PuzzleHost.svelte` holder, GM8h's Addendum A13, still open) (Changed by RULINGS 386 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): closed by GM8h2 (`c0bd001`, RULINGS 386): O3 by D8 (a given cell stays disabled and silent), F3's twins taken test-only (D17), stack O3 declined (D18; a Q54 row, `docs/OPEN-QUESTIONS.md`); stack O1 stays with the next `PuzzleHost.svelte` holder), N2 to GM9p, N3 to the next
   world-lint holder.
 - **Commits:** `story: a grid with two solutions is refused`, `grid: reached on the unique fill`, round 5: `story: a
   grid whose given cells fill it is refused` (the `world/reach-solution` start clause through a real type; a green
@@ -194,7 +194,7 @@
   holds a device yet**; GM8a makes the first real view type. Rows: engine +437 B (sample 1.748; R 2.027 after it),
   explore-ui +514, cue-stage +36; e2e 111 / 111 at fix1 (RULINGS 361). Carried (`carry.md` "GM8i carries"): D5's
   fallback set, Q6's first-write burst and the type-dependent checks to GM8h (before GM8d) (Changed by RULINGS 363, 366, 375 (as of `172e47e`; docs lane `docs-errata-21`, group A):
-  GM8h closed Q6, D5-c (the `part` target) and the type-dependent checks; D5-a/b, the device's box, are GM8h2's, RULINGS 363 S1, C1); Q1 (c), Q-2 (b), P3 and
+  GM8h closed Q6, D5-c (the `part` target) and the type-dependent checks; D5-a/b, the device's box, are GM8h2's, RULINGS 363 S1, C1) (Changed by RULINGS 386 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): closed by GM8h2 (`c0bd001`, RULINGS 386; D5): the module cues and an arrival's cues land on the device's box (`deviceBox`, `client/src/explore/controller.ts:191-196`, read by yields' `send` / `scoped`, `client/src/app/yields.ts:557-593`)); Q1 (c), Q-2 (b), P3 and
   review M1 / M3 to GM8a; R1 to GM8d or the next `explore/reconcile.ts` holder; Q-F2 to the next `world.ts` / `story.ts`
   holder; Q-F3 to the next `scripts/story/mechanics/conditions.ts` holder; review M2 to the next `softlock.ts` /
   `clues.ts` holder; D-a to the next `rules/devices.ts` holder.

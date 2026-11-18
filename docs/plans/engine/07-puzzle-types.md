@@ -539,6 +539,18 @@ export interface PuzzleTypeLint<P> {
   The parts are `decor` of the view room with states chosen by the visual atom `{ part: { puzzle, index, is } }` over
   `run.work`, so a lever moves through the same machinery as a drawer (§6.4), and the decor and the type UI read the same
   configuration. A section reset clears the run and the picture returns to `initial`.
+  **Ruled since: RULINGS 375 (D15), 401, 405** (as of `ec3500a`; docs lane `docs-errata-22a`, group A): the `part` atom is
+  position-indexed: it holds while position `index` of the saved work is `is` (`partHolds`,
+  `client/src/mechanics/rules/devices.ts:107-109`). For a `sequence` (a value-indexed device whose goal is shown,
+  `client/src/puzzles/rules/sequence.ts:83`: the answer is a press list), "part k is lit" is an `any` over the
+  positions, one `part` atom per position whose `is` is k: n atoms, n <= 12, within `COND_MAX_ATOMS` 16
+  (`client/src/mechanics/data/conditions.ts:34`). Principle 0: on a type whose goal is secret and whose check is commit
+  (`ritual`, `client/src/puzzles/rules/ritual.ts:60-61`; `setting`, `setting.ts:50-51`), a decor or clue `part` atom
+  keyed to the solution lights only the right press or position and ships the answer in the public world (RULINGS 401,
+  lens rules F3). RULINGS 401 rules the guard as GM9d's, before any world gives a ritual a visual part atom (a `part`
+  atom on a `secret` commit type is refused), and RULINGS 405 R8 rules its scope: GM9d refuses every decor or clue
+  `part` atom on a puzzle whose type has goal `secret` and check `commit`, `ritual` and `setting` alike. So author no
+  `part` atom on a `ritual` or `setting` device; a narrower rule is GM9d's cut to prove. No lint refuses it yet.
   Tests: `session: a session starts from the instance's start answer` (GM1c, `code` / `order`: behaviour-identical;
   red: TS2339 `start`); `session: a view session starts from its saved work when it fits` (GM8h, a fixture `view` type
   with `workFits` passed through `PuzzleSessionDeps.types`; red on the parent: the answer is `initial`, because GM1c's

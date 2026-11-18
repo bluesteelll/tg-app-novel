@@ -99,6 +99,10 @@
   leaves the engine closure with no file move; until the kit lands a dissolve falls back to container alpha (counted
   `flatRefused`, CH D15) and a face change to K7. Round 3's "camera tweens too" is withdrawn: GSAP stays in
   `executor.ts` only (`arch.test.ts:160-165`) and the framing math is needed by `restore`.
+  Changed by RULINGS 381, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): D1 (RULINGS 381): m3 dropped; `flatten` stays in the engine closure (`client/src/scene/controller.ts:18`); SH7 booked E_engine 3.50 (RULINGS 387) and measured +3,179 B (RULINGS 392); the `scene-motion` chunk holds the animator, 749 B; as built, `executor.ts` keeps its value import of `flatten.ts` (`client/src/scene/executor.ts:15`), and the kit
+  (`client/src/scene/motion/index.ts:6`, `motionKit`) is the face animator and re-exports nothing of `flatten.ts`.
+  Changed by RULINGS 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A) (the GSAP importer cite): the rule is `import-gsap` (`client/src/arch.test.ts:24`,
+  its group `:71`, its case `:379`, its report `:895`), not `arch.test.ts:160-165`.
 - (The parallax drive moves to SH8 with the depth grid it needs; rev. 2.)
 - **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 3):** SH7 implements `YieldsHost.sceneCues` in `yieldsHost` (`game.ts`, in its lock) and hands the `subscribe` it receives to the scene role; SH10 subscribes `'scene'` through it. The seam is GM3s's ([engine §8.6 Reduced motion, `deactivated`, e2e determinism](../engine/08c-motion-gate-and-contracts.md#86-reduced-motion-deactivated-e2e-determinism)); SH7 runs after GM3s.
 - **Reconciled ([engine §30 Shots errata from reconcile](../engine/30-shots-errata.md#30-shots-errata-from-reconcile) item 12):** this lane keeps `meta?.stepShown()` after the step's view is set (`game.ts:776` on `cec347c`) and at D11's paywall (`game.ts:982` on `cec347c`), pinned by LFL's `game: a presented step tells the meta port` (`game.test.ts:3218` on `cec347c`), `game: a continue into a pending paid start asks for the meta chunk at its paywall` (`game.test.ts:3237`) and its e2e G2; a lane that edits the entry path keeps both calls.
@@ -133,7 +137,8 @@
    - `executor: a face's animator leaves with its shot` (the remover is called at a cut; `stats().ambientSources`);
    - `executor: a failed kit is retried at the next shot build, at most 3 times per chapter`;
    - (rev. 4, m3) `executor: a dissolve before the motion kit lands falls back to container alpha` (red on the parent:
-     the executor calls `flatten` directly).
+     the executor calls `flatten` directly). Changed by RULINGS 381, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): D1 (RULINGS 381): m3 dropped; `flatten` stays in the engine closure (`client/src/scene/controller.ts:18`); SH7 booked E_engine 3.50 (RULINGS 387) and measured +3,179 B (RULINGS 392); the `scene-motion` chunk holds the animator, 749 B; this test was struck: the executor keeps its value import of `flatten.ts`, so
+     there is no dissolve before the kit lands that falls back to container alpha.
 5. Game:
    - `game: a line's speaker talks until lineShown`;
    - `game: an instant line talks for its nominal time`;
@@ -144,15 +149,16 @@
 6. e2e:
    - `animation: the keeper blinks in the lamp-room shot` (live; waits for `stats().scene.motion === 'ready'`; the eye
      box changes within 6 s);
-   - `animation: an idle minute holds the breathing` (`page.clock`; verify it drives GSAP's ticker, CH §14);
+   - `animation: an idle minute holds the breathing` (`page.clock`; verify it drives GSAP's ticker, CH §14) (Changed by RULINGS 381, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): E2 moved to SH8's §9.9 with its source and the `page.clock` / GSAP check, sh7-rulings D8);
    - pin: the frozen build's pixel samples are unchanged.
+    Changed by RULINGS 381, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): as built (`70c125c`, `client/e2e/animation.spec.ts`, tag `sh7-shot-idle` in `baseline.tsv`) the three e2e names are `animation: the keeper blinks in the lamp-room shot`, `animation: a push without reduced motion tweens the camera` (D2's G7) and `animation: the e2e build holds the faces at rest by default` (D8); the idle-minute test is SH8's (item 7 below).
 
 **Mutations:**
 - M-SH7a: the cap ignored (red: `render-loop: continuous sources draw at most AMBIENT_FPS`);
 - M-SH7b: `heard()` never sent (red: commit 3's first test);
 - M-SH7c: the animator's remover not called at a cut (red: `executor: a face's animator leaves with its shot`);
 - M-SH7d (rev. 2; Changed by RULINGS 365, 374 (as of `172e47e`; docs lane `docs-errata-21`, group A): the rule is SH6's `scene-lazy`, merged `b0ef547`, and the generated test names are not the ones planned below. A static import of `scene/motion/**` in a real file is red on `arch: lazy ui only by dynamic import` (`client/src/arch.test.ts:1273`, its filter `:1298`), and the rule's fixture is red on `arch: scene-lazy red on fixture` (`:2380`, the fixture entry `:2371`); the tree half has no subject until SH7 creates `scene/motion/`): `controller.ts` imports `./motion/index.ts` statically (red: SH6's `arch: scene/motion is reached
-  by import() only` and SH3b's `scene-motion chunk (br)` row FAILs "inside the engine closure");
+  by import() only` and SH3b's `scene-motion chunk (br)` row FAILs "inside the engine closure") (Changed by RULINGS 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): the cites are on `c43f5e0`; on `ec3500a` the test `arch: lazy ui only by dynamic import` is `client/src/arch.test.ts:1376`, its filter `:1405`; the fixture test `arch: ${rule} red on fixture` is `:2601`, the `scene-lazy` fixture entry `:2592`);
 - M-SH7e (rev. 3, W8): covered holds every source whatever its layer (CH §6.3 as written; red: `render-loop: a cg
   cover holds the stage's sources and runs the cover's own`).
 
@@ -164,7 +170,7 @@ engine net (the loop +0.6, `flatten` -0.8) books **0** on the engine until it me
 cut quotes it at its cut, after SH3b's, which quotes it first when it adds the row ([§9.4 SH3b](09b-lanes-sh3a-sh3b.md#94-sh3b-shot-budget-client-budget);
 [§10 Budgets and validation](10-budgets-and-validation.md#10-budgets-and-validation-summary); Changed by RULINGS 211 (as of `52e328e`; docs lane
 `docs-errata-14`, group A): it read "so this cut quotes it first"); no Pixi filter, Sprite mask or advanced blend mode
-without lever X's import-back (rule `pixi-env`).
+without lever X's import-back (rule `pixi-env`). Changed by RULINGS 381, 387, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): D1 (RULINGS 381): m3 dropped; `flatten` stays in the engine closure (`client/src/scene/controller.ts:18`); SH7 booked E_engine 3.50 (RULINGS 387) and measured +3,179 B (RULINGS 392); the `scene-motion` chunk holds the animator, 749 B (the booked "-0.8" is 0 as built; "`flatten` is growth on `scene-motion`" no longer holds).
 
 **Order:**
 - After SH6, SH3b, GM3s (the `sceneCues` seam), GM3m (`FRAME_OPEN_MS`) and GM3p (the frame edge `frameShown`; merged before SH5a's GM3b in any case).
@@ -220,7 +226,8 @@ values (rev. 2, C2), back and front planes (the `front` layer), props, decor and
      the far wall, 6 s apart: the prop's offset differs, the wall's does not);
    - (rev. 3, W8) `animation: a CG drifts while it covers the shot` (live; ch1's letter CG; two samples 6 s apart
      differ, and `stats().ambientFrames` grows while the CG is up);
-   - `animation: leaving the shot leaves no mesh buffer` (`meshBuffers === 0`).
+   - `animation: leaving the shot leaves no mesh buffer` (`meshBuffers === 0`);
+   - `animation: an idle minute holds the breathing` (`page.clock`; verify it drives GSAP's ticker, CH §14) (Changed by RULINGS 381, 392 (as of `ec3500a`; docs lane `docs-errata-22a`, group A): moved here from SH7's commit 6 (E2), sh7-rulings D8).
 
 **Mutations:**
 - M-SH8a: `dropMesh` without destroying the geometry (red: e2e and commit 3);
