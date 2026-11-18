@@ -260,6 +260,7 @@ test('stories: ending knot must end the chapter', () => {
   for (const body of [
     [],
     ['# bgm: calm'],
+    ['TODO: wording'],
     ['{ g_x > 0:', `    ${line}`, '}'],
     ['{ g_x > 0:', `    ${line}`, '- else:', '    Склад. #id:ch2.archive.a002', '}'],
     ['{g_x > 0: Архив.} #id:ch2.archive.a001'],
